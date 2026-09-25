@@ -30,6 +30,7 @@ const {
   hasHeadquartersScope,
 } = require('../utils/scope')
 const { excludeDepositRefundSql } = require('../utils/consume-filter')
+const { STORE_NODE_JOIN, STORE_IS_ACTIVE } = require('../utils/store-active')
 
 /**
  * 取 selectedDate 所属月份的月末日期（YYYY-MM-DD）。
@@ -109,8 +110,12 @@ async function loadAllMarkets() {
  *     staffLevel,
  *     allowAll: boolean,
  *     allowedMarketIds: string[],
- *     markets: [{ id, name, stores: [{ storeId, storeName }] }, ...]
+ *     markets: [{ id, name, stores: [{ storeId, storeName }] }, ...],
+ *     inactiveStores: [{ storeId, storeName }, ...]
  *   }
+ *
+ * inactiveStores：权限内门店组织节点已停用的门店（#400）。不进下拉，供 scope-picker 识别
+ * 落到停用门店的默认范围：有在营门店可选就纠正过去，没有就保留并标「已停用」。
  */
 async function scopeOptions(ctx) {
   await requireManagementLevel()(ctx, async () => {})
@@ -132,12 +137,33 @@ async function scopeOptions(ctx) {
       }))
       .filter((market) => market.stores.length > 0)
 
+  const inactiveStores = await loadInactiveStores(allowAll, scopeStoreIds || [])
+
   ctx.result = {
     staffLevel,
     allowAll,
     allowedMarketIds,
     markets: visible,
+    inactiveStores,
   }
+}
+
+/**
+ * 权限内门店组织节点已停用的门店（口径见 utils/store-active.js：只看 org_nodes.is_active）。
+ * 总部看全部门店；其他账号仅看 scopeStoreIds（expandScopeStoreIds 不看启停，停用门店仍在其中）。
+ */
+async function loadInactiveStores(allowAll, scopeStoreIds) {
+  if (!allowAll && scopeStoreIds.length === 0) return []
+  const rows = await pg.query(
+    `SELECT s.store_id, s.store_name
+       FROM stores s
+       ${STORE_NODE_JOIN}
+      WHERE NOT ${STORE_IS_ACTIVE}
+        AND ($1::boolean OR s.store_id = ANY($2::text[]))
+      ORDER BY s.store_name ASC`,
+    [allowAll, scopeStoreIds],
+  )
+  return rows.map((r) => ({ storeId: r.store_id, storeName: r.store_name || '' }))
 }
 
 // =====================================================================
@@ -571,20 +597,29 @@ async function queryStoreCount(scopeType, scopeId, date) {
   return Number(rows[0]?.cnt || 0)
 }
 
-async function resolveScopeName(scopeType, scopeId) {
-  if (scopeType === 'all') return '全部市场'
+/**
+ * scope 展示名 + 是否落在已停用门店（#400）。
+ * 门店 scope 的组织节点已停用时，取数 SQL 会滤掉它的全部数据（满屏 0），前端据 inactive
+ * 出「已停用」空态，与「在营门店本期无业绩（照常显示 0）」区分开。市场 / 全部恒为 false。
+ */
+async function resolveScope(scopeType, scopeId) {
+  if (scopeType === 'all') return { name: '全部市场', inactive: false }
   if (scopeType === 'market') {
     const rows = await pg.query(
       "SELECT name FROM org_nodes WHERE id = $1 AND type = '市场'",
       [scopeId],
     )
-    return rows[0]?.name || ''
+    return { name: rows[0]?.name || '', inactive: false }
   }
   const rows = await pg.query(
-    'SELECT store_name FROM stores WHERE store_id = $1',
+    `SELECT s.store_name, ${STORE_IS_ACTIVE} AS is_active
+       FROM stores s
+       ${STORE_NODE_JOIN}
+      WHERE s.store_id = $1`,
     [scopeId],
   )
-  return rows[0]?.store_name || ''
+  if (rows.length === 0) return { name: '', inactive: false }
+  return { name: rows[0].store_name || '', inactive: rows[0].is_active !== true }
 }
 
 /**
@@ -626,7 +661,7 @@ async function summary(ctx) {
     memberCount, retainedMemberCount,
     employeeCountDay, storeCountDay,
     employeeCountMonth, storeCountMonth,
-    scopeName,
+    resolvedScope,
   ] = await Promise.all([
     queryStoreRevenue(scopeType, scopeId, date, 'day'),
     queryStoreRevenue(scopeType, scopeId, date, 'month'),
@@ -654,7 +689,7 @@ async function summary(ctx) {
     queryStoreCount(scopeType, scopeId, date),         // 当日（selectedDate 当日在营的门店数）
     queryEmployeeCount(scopeType, scopeId, monthEnd),  // 月末（用于月度派生指标分母）
     queryStoreCount(scopeType, scopeId, monthEnd),     // 月末（月度业绩对应的整月在营门店数）
-    resolveScopeName(scopeType, scopeId),
+    resolveScope(scopeType, scopeId),
   ])
   const elapsed = Date.now() - t0
 
@@ -664,7 +699,12 @@ async function summary(ctx) {
 
   ctx.result = {
     date,
-    scope: { type: scopeType, id: scopeId || null, name: scopeName },
+    scope: {
+      type: scopeType,
+      id: scopeId || null,
+      name: resolvedScope.name,
+      inactive: resolvedScope.inactive,
+    },
     storeRevenue: {
       today: round2(storeRevToday),
       month: round2(storeRevMonth),
