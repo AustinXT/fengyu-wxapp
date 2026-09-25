@@ -167,6 +167,12 @@ const PROBES: Probe[] = [
     minLines: 2,
   },
   {
+    label: '经营数据主表 · 被经营门槛 / 回店≥2 天 / 售前按体验项（#373）',
+    file: 'src/actions/data-center/operating-master.ts',
+    pattern: /^(COUNT\(\*\) FILTER \(WHERE t\.month_amount >= \$\{threshold\}\) AS month_v|COUNT\(\*\) FILTER \(WHERE mv\.days >= 2\) AS twice|AND si\.is_experience = TRUE)$/,
+    minLines: 3,
+  },
+  {
     label: '日常数据一览表 · 子项拆分缩放（#369）',
     file: 'src/lib/data-center/daily-overview-sql.ts',
     pattern: /^SUM\(rc\.amount \* pay\.amount \/ rc\.denominator\)::text AS amount$/,

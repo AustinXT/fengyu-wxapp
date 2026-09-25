@@ -123,7 +123,7 @@ describe('寄存单退款单不计入消耗业绩 — 两端过滤一致性守�
     it('admin customer.ts = 4（queryProjectCount/queryShengmeiConsume + proj_agg/sm_consume）', () => {
       expect(countCalls(src.adminCustomer)).toBe(4)
     })
-    it('admin operating-master.ts = 3（经营数据主表 V 生美项目数 / W 实耗 / X 生美实耗，#372）', () => {
+    it('admin operating-master.ts = 3（经营数据主表 V 生美项目数 / W 实耗 / X 生美实耗，#372；#373 的 S / T 到店天数按「到店不剔除」不调用）', () => {
       expect(countCalls(src.adminOperatingMaster)).toBe(3)
     })
     it('admin daily-overview-sql.ts = 2（日常数据一览表：服务合计基期 + 按经营类型分组的服务，#369）', () => {
