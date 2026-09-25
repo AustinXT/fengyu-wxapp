@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import ts from 'typescript'
 import { describe, it, expect, beforeAll } from 'vitest'
 
 /**
@@ -373,62 +374,105 @@ describe('dist/export-worker.mjs 新鲜度 · 提货记录导出接线（#341）
 })
 
 /**
- * #308 自定义区间日历校验与服务端复检的 JS 接线。与 #341 同法：按**产物里的写法**在模块区段内找固定片段。
- * 漏重建产物时，导出会继续把非法日期静默回落本月（源码单测只加载 src，发现不了）。
+ * #308 自定义区间日历校验与服务端复检：**源码 ↔ 产物逐 token 比对**（不是钉产物片段）。
+ *
+ * 做法：源码经 `ts.transpileModule` 去掉类型后，与产物对应模块区段里的**同名声明**各自切 token 比较。
+ * 归一化只抹掉 bun 会改、但不改语义的东西：分号、尾逗号、字符串引号、顶层 const→var、局部标识符名（按首次出现顺序编号，
+ * 所以 bun 把 `date` 改成 `date5` 不影响；属性名 `.x` 不改名，按原文比）。
+ * 源码逻辑有任何变动而没重建产物 → token 序列不同 → 红；反之产物被改也红。
+ *
+ * ⚠ bun 若对某条声明做了额外变换（如去冗余括号），会误红（fail-closed）——`queryDataCenter` 整函数就因此
+ *   只比对其中那条复检 if 语句。顶层声明被 bun 因同名冲突改名（`X` → `X2`）时按名找不到，同样报红，按提示处理。
  */
-/** calendar-date.ts 里随口径变化的字面量（年份上下界、日期正则），按产物写法拼成片段；提取失配直接抛错（fail-closed）。 */
-function calendarDateSourceFragments(): string[] {
-  const src = fs.readFileSync(path.join(ADMIN_ROOT, 'src/lib/calendar-date.ts'), 'utf-8')
-  const pick = (re: RegExp, what: string) => {
-    const m = re.exec(src)
-    if (!m) throw new Error(`calendar-date.ts 里提取不到${what}，dist 探针需要跟着源码调整`)
-    return m[1]
+function tokenize(code: string): string[] {
+  const sc = ts.createScanner(ts.ScriptTarget.Latest, true, ts.LanguageVariant.Standard, code)
+  const ids = new Map<string, string>()
+  const out: string[] = []
+  for (let k = sc.scan(); k !== ts.SyntaxKind.EndOfFileToken; k = sc.scan()) {
+    if (k === ts.SyntaxKind.SemicolonToken) continue
+    const prev = out[out.length - 1]
+    if (k === ts.SyntaxKind.Identifier && (prev === '.' || prev === '?.')) out.push(sc.getTokenText())
+    else if (k === ts.SyntaxKind.Identifier) {
+      const t = sc.getTokenText()
+      if (!ids.has(t)) ids.set(t, `$${ids.size}`)
+      out.push(ids.get(t)!)
+    } else if (k === ts.SyntaxKind.StringLiteral) out.push(JSON.stringify(sc.getTokenValue()))
+    else out.push(sc.getTokenText())
   }
-  return [
-    `var CALENDAR_MIN_YEAR = ${pick(/^export const CALENDAR_MIN_YEAR = (\d+)$/m, '年份下界')};`,
-    `var CALENDAR_MAX_YEAR = ${pick(/^export const CALENDAR_MAX_YEAR = (\d+)$/m, '年份上界')};`,
-    ` = ${pick(/^const DATE_RE = (\/.+\/)$/m, '日期正则')};`,
-  ]
+  const noTrailingComma = out.filter((t, i) => !(t === ',' && ['}', ')', ']'].includes(out[i + 1])))
+  const body = noTrailingComma[0] === 'export' ? noTrailingComma.slice(1) : noTrailingComma
+  // 顶层 `export const X` 在产物里是 `var X`：只归一开头这一个声明关键字
+  return ['const', 'let', 'var'].includes(body[0]) ? ['var', ...body.slice(1)] : body
 }
 
-describe('dist/export-worker.mjs 新鲜度 · 自定义区间校验接线（#308）', () => {
-  const SEGMENT_FRAGMENTS: Array<[string, string[]]> = [
-    ['src/lib/calendar-date.ts', [
-      // 年份上下界与日期正则从源码动态提取：源码改了值而没重建，产物里找不到新值 → 红
-      ...calendarDateSourceFragments(),
-    ]],
-    ['src/lib/data-center/params.ts', [
-      'return isValidCalendarDate(start) && isValidCalendarDate(end) && start <= end;',
-      'if (typeof preset !== "string" || !Object.hasOwn(TIME_RANGE_PRESETS, preset))',
-      'return preset !== "custom" || isValidCustomRange(start, end);',
-      'if (p === "custom" && start && end && isValidCustomRange(start, end)) {',
-    ]],
-    ['src/lib/data-center/context.ts', ['if (!isValidTimeRangeInput(params.timeRange)) {']],
-    ['src/export-worker/registry.ts', ['if (raw.preset === "custom" && !isValidCustomRange(raw.start, raw.end)) {']],
+/** 顶层同名声明（函数或变量语句）的源码文本 */
+function declText(code: string, name: string): string | null {
+  const sf = ts.createSourceFile('x.js', code, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS)
+  for (const st of sf.statements) {
+    if (ts.isFunctionDeclaration(st) && st.name?.text === name) return st.getText(sf)
+    if (ts.isVariableStatement(st) && st.declarationList.declarations.some((d) => d.name.getText(sf) === name)) return st.getText(sf)
+  }
+  return null
+}
+
+/** 函数体内、条件里调用了 `callee` 的第一条 if 语句（及其在函数体语句中的位置） */
+function ifStatementCalling(fnText: string, callee: string): { text: string; index: number; stmts: string[] } | null {
+  const sf = ts.createSourceFile('x.js', fnText, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS)
+  const fn = sf.statements.find(ts.isFunctionDeclaration)
+  const stmts = fn?.body?.statements ?? []
+  const index = stmts.findIndex((st) => ts.isIfStatement(st) && new RegExp(String.raw`\b${callee}\(`).test(st.expression.getText(sf)))
+  return index < 0 ? null : { text: stmts[index].getText(sf), index, stmts: stmts.map((st) => st.getText(sf)) }
+}
+
+function transpiledSource(file: string): string {
+  const src = fs.readFileSync(path.join(ADMIN_ROOT, file), 'utf-8')
+  return ts.transpileModule(src, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText
+}
+
+describe('dist/export-worker.mjs 新鲜度 · 自定义区间校验（#308，源码 ↔ 产物逐 token）', () => {
+  const DECLS: Array<[file: string, name: string]> = [
+    ['src/lib/calendar-date.ts', 'CALENDAR_MIN_YEAR'],
+    ['src/lib/calendar-date.ts', 'CALENDAR_MAX_YEAR'],
+    ['src/lib/calendar-date.ts', 'DATE_RE'],
+    ['src/lib/calendar-date.ts', 'isValidCalendarDate'],
+    ['src/lib/data-center/params.ts', 'TIME_RANGE_PRESETS'],
+    ['src/lib/data-center/params.ts', 'isValidCustomRange'],
+    ['src/lib/data-center/params.ts', 'isValidTimeRangeInput'],
+    ['src/lib/data-center/params.ts', 'parseTimeRange'],
+    ['src/lib/data-center/context.ts', 'prepareBoardContext'],
   ]
-  it('calendar-date 区段的年份判断与 UTC 往返结构完整（局部变量名按捕获比对，不依赖 bun 的改名）', () => {
-    const segment = moduleSegments(fs.readFileSync(DIST, 'utf-8'), 'src/lib/calendar-date.ts').join('\n')
-    const STRUCTURE = new RegExp([
-      String.raw`function isValidCalendarDate\((?<v>\w+)\) \{`,
-      String.raw`if \(typeof \k<v> !== "string"\)`,
-      String.raw`return false;`,
-      String.raw`const (?<m>\w+) = \k<v>\.match\(\w+\);`,
-      String.raw`if \(!\k<m>\)`,
-      String.raw`return false;`,
-      String.raw`const \[(?<y>\w+), (?<mo>\w+), (?<d>\w+)\] = \[Number\(\k<m>\[1\]\), Number\(\k<m>\[2\]\), Number\(\k<m>\[3\]\)\];`,
-      String.raw`if \(\k<y> < CALENDAR_MIN_YEAR \|\| \k<y> > CALENDAR_MAX_YEAR\)`,
-      String.raw`return false;`,
-      String.raw`const (?<dt>\w+) = new Date\(Date\.UTC\(\k<y>, \k<mo> - 1, \k<d>\)\);`,
-      String.raw`return \k<dt>\.getUTCFullYear\(\) === \k<y> && \k<dt>\.getUTCMonth\(\) === \k<mo> - 1 && \k<dt>\.getUTCDate\(\) === \k<d>;`,
-    ].join(String.raw`\n`))
-    expect(STRUCTURE.test(segment), `产物 calendar-date 区段的校验结构与源码不符${REBUILD_HINT}`).toBe(true)
+  it.each(DECLS)('%s · %s 与产物一致', (file, name) => {
+    const src = declText(transpiledSource(file), name)
+    expect(src, `源码 ${file} 里找不到顶层声明 ${name}（改名了？同步这张表）`).not.toBeNull()
+    const built = declText(moduleSegments(fs.readFileSync(DIST, 'utf-8'), file).join('\n'), name)
+    expect(built, `产物 // ${file} 区段里找不到 ${name}${REBUILD_HINT}`).not.toBeNull()
+    expect(tokenize(built!), `产物里的 ${name} 与源码不一致（产物不是按当前源码构建的）${REBUILD_HINT}`).toEqual(tokenize(src!))
   })
 
-  it.each(SEGMENT_FRAGMENTS)('%s 的 #308 片段在产物模块区段内', (file, fragments) => {
-    const segment = moduleSegments(fs.readFileSync(DIST, 'utf-8'), file).join('\n')
-    expect(segment.length, `产物里找不到 // ${file} 模块区段${REBUILD_HINT}`).toBeGreaterThan(0)
-    const missing = fragments.filter((fragment) => !segment.includes(fragment))
-    expect(missing, `产物 // ${file} 区段缺少以下 #308 片段（产物不是按当前源码构建的）${REBUILD_HINT}`).toEqual([])
+  it('导出入口 queryDataCenter：复检 if 语句与源码一致，且位于 parseBoardParams 之前', () => {
+    const file = 'src/export-worker/registry.ts'
+    const src = ifStatementCalling(declText(transpiledSource(file), 'queryDataCenter')!, 'isValidCustomRange')
+    expect(src, '源码 queryDataCenter 里找不到 isValidCustomRange 复检').not.toBeNull()
+    const builtFn = declText(moduleSegments(fs.readFileSync(DIST, 'utf-8'), file).join('\n'), 'queryDataCenter')
+    expect(builtFn, `产物里找不到 queryDataCenter${REBUILD_HINT}`).not.toBeNull()
+    const built = ifStatementCalling(builtFn!, 'isValidCustomRange')
+    expect(built, `产物 queryDataCenter 里没有 isValidCustomRange 复检${REBUILD_HINT}`).not.toBeNull()
+    expect(tokenize(built!.text)).toEqual(tokenize(src!.text))
+    const parseAt = built!.stmts.findIndex((st) => /\bparseBoardParams\(/.test(st))
+    expect(parseAt, '产物 queryDataCenter 里找不到 parseBoardParams').toBeGreaterThan(-1)
+    expect(built!.index).toBeLessThan(parseAt)
+  })
+
+  it('归一化自检：局部改名 / 分号 / 引号 / 尾逗号不影响，逻辑改动必须可见', () => {
+    const base = tokenize(`function f(a, b) { const d = new Date(a); return d.getUTCDate() === b && 'x' }`)
+    expect(tokenize(`function f(a, b) {\n  const d5 = new Date(a);\n  return d5.getUTCDate() === b && "x";\n}`)).toEqual(base)
+    expect(tokenize(`function f(a, b,) { const d = new Date(a,); return d.getUTCDate() === b && 'x' }`)).toEqual(base)
+    for (const changed of [
+      `function f(a, b) { const d = new Date(a); return d.getUTCDate() >= b && 'x' }`,
+      `function f(a, b) { const d = new Date(b); return d.getUTCDate() === b && 'x' }`,
+      `function f(a, b) { const d = new Date(a); return d.getUTCDay() === b && 'x' }`,
+      `function f(a, b) { const d = new Date(a); return d.getUTCDate() === b && 'y' }`,
+    ]) expect(tokenize(changed), changed).not.toEqual(base)
   })
 })
 

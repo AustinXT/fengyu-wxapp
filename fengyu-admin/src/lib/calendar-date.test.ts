@@ -68,7 +68,8 @@ describe('单源守护：数据中心一侧不许再长出日历校验（#308「
    *   - Date.UTC / Date.parse、Intl.DateTimeFormat
    *   - 带参数的 new Date(x)（无参 new Date() 只是取当前时刻，不可能是解析 / 校验，故不计——
    *     export-worker 的心跳时间戳大量使用，计入会让无关改动频繁误红）
-   *   - 含 \d / [0-9] 的正则字面量
+   *   - 含 \d / \D / [0-9] 的正则字面量
+   * `.toLocaleString` 在这些目录里多是数字格式化，仍保守计入：Date#toLocaleString 也能拼出日期串，登记一次的摩擦可接受。
    */
   const DATE_METHOD = /^(?:(?:get|set)(?:UTC)?(?:Date|Day|Month|FullYear|Year|Time|Hours|Minutes|Seconds|Milliseconds)|to(?:ISO|UTC|GMT|Date|Time|Locale|LocaleDate|LocaleTime)String|toJSON)$/
   const DIGIT_REGEX = /\\d|\[0-9\]|\\D/
@@ -211,10 +212,12 @@ describe('单源守护：数据中心一侧不许再长出日历校验（#308「
         const named = node.importClause?.namedBindings
         if (named && ts.isNamedImports(named)) {
           for (const el of named.elements) if ((el.propertyName ?? el.name).text === name) imported = el.name.text
+        } else if (named && ts.isNamespaceImport(named)) {
+          imported = `${named.name.text}.${name}` // import * as ns → 调用形如 ns.name(...)
         }
       }
       if ((ts.isFunctionDeclaration(node) || ts.isVariableDeclaration(node)) && node.name?.getText(sf) === name) localDefs++
-      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === (imported ?? name)) calls++
+      if (ts.isCallExpression(node) && node.expression.getText(sf) === (imported ?? name)) calls++
       ts.forEachChild(node, visit)
     }
     visit(sf)
@@ -222,6 +225,19 @@ describe('单源守护：数据中心一侧不许再长出日历校验（#308「
     expect(calls, `${file} import 了 ${name} 却没调用`).toBeGreaterThan(0)
     expect(localDefs, `${file} 本地又定义了 ${name}`).toBe(0)
   }
+
+  it('calendar-date.ts 的导出恰为闭集 {年份上下界, isValidCalendarDate}（单源本体里不许再长出平行校验）', () => {
+    const sf = parse(join(SRC, 'lib/calendar-date.ts'))
+    const exported = sf.statements.flatMap((st) => {
+      const isExport = ts.canHaveModifiers(st) && ts.getModifiers(st)?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword)
+      if (ts.isExportDeclaration(st) || ts.isExportAssignment(st)) return ['<re-export>']
+      if (!isExport) return []
+      if (ts.isFunctionDeclaration(st)) return [st.name?.text ?? '<default>']
+      if (ts.isVariableStatement(st)) return st.declarationList.declarations.map((d) => d.name.getText(sf))
+      return [`<${ts.SyntaxKind[st.kind]}>`]
+    })
+    expect(exported.sort()).toEqual(['CALENDAR_MAX_YEAR', 'CALENDAR_MIN_YEAR', 'isValidCalendarDate'])
+  })
 
   it.each([
     ['lib/data-center/params.ts', 'isValidCalendarDate', '@/lib/calendar-date'],
