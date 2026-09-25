@@ -206,6 +206,14 @@ describe('#341 exportPickupRecords keyset 分页', () => {
     expect(conditions[5].b.values).toEqual(['2026-09-30'])
   })
 
+  it('搜索词里的 % / _ 按字面匹配（转义后再拼进 ilike），导出行集与列表一致', async () => {
+    const chain = mockExportRows([])
+    await exportPickupRecords({ q: '100%_A' }, { limit: 2 })
+    const conditions = chain.where.mock.calls[0][0].args.filter(Boolean)
+    const search = conditions.find((condition: any) => condition.type === 'or')
+    expect(search.args.map((arg: any) => arg.b)).toEqual(Array(4).fill('%100\\%\\_A%'))
+  })
+
   it.each([0, -1, 1.5, Number.NaN, '20' as unknown as number])('畸形游标 %s 直接拒绝，不静默从头重扫', async (cursor) => {
     mockExportRows([])
     await expect(exportPickupRecords({}, { limit: 2, cursor })).rejects.toThrow(/导出分页游标无效/)
