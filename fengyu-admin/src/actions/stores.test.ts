@@ -391,6 +391,14 @@ describe('createStore — 挂载到门店节点', () => {
     expect(values).toHaveBeenCalledWith(expect.objectContaining({ isClosed: false, closedAt: null }))
   })
 
+  it('isClosed 传非布尔值（字符串 "true"）→ 按未关店建档，不写闭店日期', async () => {
+    mockNodeLookup(storeNode)
+    const values = vi.fn().mockResolvedValue({})
+    mockInsertTx(values)
+    await createStore({ ...baseStoreData, isClosed: 'true' } as any)
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ isClosed: false, closedAt: null }))
+  })
+
   it('多塞的 closedAt 不会被写进库（建档只按 isClosed 推导）', async () => {
     mockNodeLookup(storeNode)
     const values = vi.fn().mockResolvedValue({})
@@ -627,11 +635,33 @@ describe('updateStore — 关店时 closedAt 推导', () => {
     expect(txSelect).not.toHaveBeenCalled()
   })
 
-  it('显式给 closedAt → 原样写入，不推导', async () => {
-    const { set, txSelect } = setupTx(1, null)
-    await updateStore('STORE-001', { isClosed: true, closedAt: '2026-03-01' })
-    expect(set.mock.calls[0][0]).toEqual({ isClosed: true, closedAt: '2026-03-01' })
-    expect(txSelect).not.toHaveBeenCalled()
+  /**
+   * closedAt 不接受直传（#422 pr-ready P2）：直调 Server Action 传 closedAt 曾能写出
+   * is_closed 与 closed_at 不一致的行，而系统概览门店数按 closed_at 历史化。
+   */
+  it.each([
+    ['关店 + closedAt=null', { isClosed: true, closedAt: null }, true],
+    ['关店 + 任意日期', { isClosed: true, closedAt: '2026-03-01' }, true],
+    ['重新开业 + 日期', { isClosed: false, closedAt: '2026-01-01' }, false],
+  ])('多塞 closedAt（%s）→ 忽略，仍按 isClosed 推导', async (_label, data, closing) => {
+    const { set } = setupTx(1, '2026-01-05')
+    await updateStore('STORE-001', data as any)
+    const written = set.mock.calls[0][0]
+    expect(written.isClosed).toBe(closing)
+    if (closing) expect(sqlText(written.closedAt)).toBe(`COALESCE(closed_at, ${shanghaiToday()}::date)`)
+    else expect(written.closedAt).toBeNull()
+  })
+
+  it('只传 closedAt（不带 isClosed）→ 不写任何闭店字段', async () => {
+    const { set } = setupTx(1, null)
+    await updateStore('STORE-001', { bedCount: 6, closedAt: '2026-03-01' } as any)
+    expect(set.mock.calls[0][0]).toEqual({ bedCount: 6 })
+  })
+
+  it('isClosed 传非布尔值（字符串 "false"）→ 按未关店处理', async () => {
+    const { set } = setupTx(1, null)
+    await updateStore('STORE-001', { isClosed: 'false' } as any)
+    expect(set.mock.calls[0][0]).toEqual({ isClosed: false, closedAt: null })
   })
 
   it('不碰 isClosed → 不写 closedAt', async () => {

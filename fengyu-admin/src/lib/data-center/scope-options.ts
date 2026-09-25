@@ -61,7 +61,7 @@ export interface ScopeStoreEntry {
   closed?: boolean
 }
 
-/** 门店下拉项的展示名：只关店、节点仍启用的门店加「（已关店）」后缀（#422，写法同 legacy-orders 拉单弹层） */
+/** 门店下拉项的展示名：只关店、节点仍启用的门店加「（已关店）」后缀（#422，参考 legacy-orders 拉单弹层「（已闭店）」的后缀写法） */
 export function storeOptionLabel(store: { storeName: string; closed?: boolean }): string {
   return store.closed ? `${store.storeName}（已关店）` : store.storeName
 }

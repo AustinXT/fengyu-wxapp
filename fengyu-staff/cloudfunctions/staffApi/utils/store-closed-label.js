@@ -6,7 +6,7 @@
 //
 // 为什么单独成文件：#401 的闭集守护禁止数据中心消费方（routes/mgmt-dashboard.js 等）出现 is_closed token，
 // 以免「当前是否关店」被偷渡进统计范围。展示标记是唯一合法用途，集中在这里，由
-// __tests__/routes/cross-end-store-status-snapshot.test.js 钉死全文，消费方只拿到一个 Set。
+// __tests__/routes/cross-end-store-status-snapshot.test.js 钉死函数体，消费方只拿到一个 Set。
 //
 // ⚠️ 禁跨端共享目录：admin 独立副本 fengyu-admin/src/lib/store-closed-label.ts，改这里须同步那边。
 

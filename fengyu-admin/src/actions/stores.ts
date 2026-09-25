@@ -259,9 +259,9 @@ export const createStore = withPermission(
         orgNodeId: data.orgNodeId,
         openingDate: data.openingDate ?? null,
         bedCount: data.bedCount ?? null,
-        isClosed: data.isClosed ?? false,
+        isClosed: data.isClosed === true,
         // is_closed ↔ closed_at 双写一致（#422）：建档即关店也要记闭店日期，与 updateStore / sync-workfine 同口径
-        closedAt: data.isClosed ? shanghaiToday() : null,
+        closedAt: data.isClosed === true ? shanghaiToday() : null,
         coverImage: data.coverImage ?? null,
         images: data.images ?? null,
         district: data.district ?? null,
@@ -326,9 +326,8 @@ export const updateStore = withPermission(
       storeName: string
       openingDate: string | null
       bedCount: number | null
+      /** 关店 / 重新开业；闭店日期 closed_at 由 action 按此推导（#422：不接受调用方直传，防写出与 is_closed 不一致的行） */
       isClosed: boolean
-      /** 闭店日期（YYYY-MM-DD）；与 isClosed 双写一致，由 action 自动维护 */
-      closedAt: string | null
       coverImage: string | null
       images: string[] | null
       district: string | null
@@ -386,7 +385,7 @@ export const updateStore = withPermission(
    */
   const storeFields: Record<string, unknown> = {}
   const EDITABLE = [
-    'storeName', 'openingDate', 'bedCount', 'isClosed', 'closedAt',
+    'storeName', 'openingDate', 'bedCount', 'isClosed',
     'coverImage', 'images', 'district', 'streetAddress', 'latitude', 'longitude',
     'phone', 'businessHours', 'description', 'announcement', 'parkingInfo',
     'lakalaMerchantId',
@@ -395,16 +394,20 @@ export const updateStore = withPermission(
     if (data[key] !== undefined) storeFields[key] = data[key]
   }
   /**
-   * is_closed ↔ closed_at 双写一致：调用方仅传 isClosed 时由 action 自动推导 closedAt
-   * - isClosed=true 且未显式给 closedAt：原本无闭店日期 → 记今天；**已有闭店日期保留**（#422）
+   * is_closed ↔ closed_at 双写一致：closedAt **只由 isClosed 推导**，不在白名单里（#422）。
+   * 原先允许直传 closedAt，直调 Server Action 就能写出 is_closed=true + closed_at=NULL（或反过来），
+   * 而系统概览门店数按 closed_at 历史化，这种行会被错计。UI 从不传 closedAt。
+   * - isClosed=true：原本无闭店日期 → 记今天；**已有闭店日期保留**
    * - isClosed=false：清空 closedAt（重新开业）
+   * isClosed 按 `=== true` 归一：直调时传非布尔值（如字符串 "false"）不会被当成关店。
    *
    * 「保留原日期」在 SET 里用 `COALESCE(closed_at, today)` 表达（PG 的 SET 读的是更新前的行），
    * 与 `db/scripts/sync-workfine.js` 的 STORE_UPSERT_SQL 同一写法。不按事务外读到的 `before`
    * 判：并发重新开业会让「before 已关店」过时，据此不写 closedAt 就留下 is_closed=true + closed_at=NULL。
    */
   let closedAtKept = false
-  if (storeFields.isClosed !== undefined && storeFields.closedAt === undefined) {
+  if (storeFields.isClosed !== undefined) {
+    storeFields.isClosed = storeFields.isClosed === true
     if (storeFields.isClosed) {
       storeFields.closedAt = sql`COALESCE(${stores.closedAt}, ${shanghaiToday()}::date)`
       closedAtKept = true

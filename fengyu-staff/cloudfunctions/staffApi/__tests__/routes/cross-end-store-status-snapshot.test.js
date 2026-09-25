@@ -321,24 +321,36 @@ describe('#422 范围下拉「（已关店）」展示标记 · 两端 helper', 
     )
   })
 
-  it('两端下拉数据源从 helper 取标记，并以 closed 字段下发', () => {
-    const staff = readFile(path.join(STAFF_ROOT, 'routes/mgmt-dashboard.js'))
-    expect(staff).toContain("const { loadClosedStoreIds } = require('../utils/store-closed-label')")
-    expect(staff).toContain('closedIds.has(store.storeId) ? { ...store, closed: true } : store')
-
-    const admin = readFile(path.join(ADMIN_SRC, 'actions/data-center/shared.ts'))
-    expect(admin).toContain("import { loadClosedStoreIds } from '@/lib/store-closed-label'")
-    expect(admin).toContain('{ storeId: s.storeId, storeName: s.storeName, closed: true }')
-  })
-
-  it('helper 不被任何统计取数代码引用（只供范围下拉数据源）', () => {
-    const users = CONSUMER_FILES
-      .filter((file) => /loadClosedStoreIds\(|from '@\/lib\/store-closed-label'|require\('\.\.\/utils\/store-closed-label'\)/.test(readFile(file)))
-      .map(rel)
-      .sort()
-    expect(users).toEqual([
-      'fengyu-admin/src/actions/data-center/shared.ts',
-      'fengyu-staff/cloudfunctions/staffApi/routes/mgmt-dashboard.js',
-    ])
+  /**
+   * 数据中心消费方里凡是碰到关店标记的代码行（helper 名 / 引入路径 / 结果 Set）必须**整行**等于下表（闭集）。
+   * 只按文件放行会漏：mgmt-dashboard.js 本身也是统计文件，在 summary 里再调一次 helper、或拿 Set 去
+   * `filter(!closedIds.has(...))` 收窄统计范围都不会变红（#422 pr-ready boundary P2）。
+   * 换变量名 / 换 import 写法同样会让行对不上而变红——改动须在这里登记并说明为何仍是纯展示。
+   */
+  it('消费方里关店标记的用法闭集：只在两份下拉数据源里、只用于打 closed 标', () => {
+    const EXPECTED = {
+      'fengyu-staff/cloudfunctions/staffApi/routes/mgmt-dashboard.js': [
+        "const { loadClosedStoreIds } = require('../utils/store-closed-label')",
+        'const closedIds = await loadClosedStoreIds(pg, visible.flatMap((market) => market.stores.map((store) => store.storeId)))',
+        "console.error('[mgmtDashboard.scopeOptions] loadClosedStoreIds failed:', err)",
+        'const markets = closedIds.size === 0',
+        'stores: market.stores.map((store) => (closedIds.has(store.storeId) ? { ...store, closed: true } : store)),',
+      ],
+      'fengyu-admin/src/actions/data-center/shared.ts': [
+        "import { loadClosedStoreIds } from '@/lib/store-closed-label'",
+        'const closedIds = await loadClosedStoreIds(storeRows.map((s) => s.storeId)).catch((err: unknown) => {',
+        "console.error('[data-center] loadClosedStoreIds failed:', err)",
+        '.map((s) => ({ storeId: s.storeId, storeName: s.storeName, ...(closedIds.has(s.storeId) ? { closed: true } : {}) })),',
+      ],
+    }
+    const actual = {}
+    for (const file of CONSUMER_FILES) {
+      const hits = readFile(file).split('\n')
+        .map((line) => line.trim())
+        .filter((t) => t && !/^(\*|\/\*|\/\/)/.test(t))
+        .filter((t) => /closedIds|loadClosedStoreIds|store-closed-label/.test(t))
+      if (hits.length > 0) actual[rel(file)] = hits
+    }
+    expect(actual).toEqual(EXPECTED)
   })
 })

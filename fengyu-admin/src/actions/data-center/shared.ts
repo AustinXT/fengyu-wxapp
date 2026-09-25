@@ -138,9 +138,7 @@ async function loadScopeOptions(session: AuthSession): Promise<DataCenterScopeOp
     granted: seeAll || grantedMarketIds.has(m.id),
     stores: storeRows
       .filter((s) => s.marketId === m.id)
-      .map((s) => (closedIds.has(s.storeId)
-        ? { storeId: s.storeId, storeName: s.storeName, closed: true }
-        : { storeId: s.storeId, storeName: s.storeName })),
+      .map((s) => ({ storeId: s.storeId, storeName: s.storeName, ...(closedIds.has(s.storeId) ? { closed: true } : {}) })),
   }))
 
   return { topLevel, markets, inactiveStores }
