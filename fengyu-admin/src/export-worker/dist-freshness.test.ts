@@ -438,3 +438,43 @@ describe('dist/export-worker.mjs 会员门槛直读分支（#292）', () => {
     )
   })
 })
+
+/**
+ * #414：口径指纹的**位置**，不只是出现次数。
+ *
+ * 上面的逐行探针（连同 `exactLinesInModule` 的多重集逐字等值）比的是**行的集合**，
+ * 丢掉了「这行在哪个 CTE 里」。于是一个由**另一个真实源码状态**构建出来的过期产物
+ * —— 例如把会员守卫从 `visit_count` 挪进 `status_agg` —— 两侧多重集完全相同 ⇒ 全绿
+ * （codex round-13 P2）。而那正是本文件要防的「产物没跟着源码重建」。
+ *
+ * 这里按 CTE 区间切片再断言，把位置也钉上。不做成通用 Probe 选项：目前只有达成率这条
+ * 不变量对「谓词落在哪个 CTE」敏感（分子 ⊆ 分母全靠 `visit_count` 带着那条守卫）。
+ */
+describe('dist/export-worker.mjs 客活分子守卫的**位置**（#414）', () => {
+  it('会员守卫落在 visit_count 段内，而不是被挪去别的 CTE', () => {
+    const dist = fs.readFileSync(DIST, 'utf-8')
+    const segment = moduleSegments(dist, 'src/actions/data-center/customer.ts').join('\n')
+    expect(segment.length, `产物里找不到客量板模块区段${REBUILD_HINT}`).toBeGreaterThan(0)
+
+    const from = segment.indexOf('visit_count AS (')
+    const to = segment.indexOf('active AS (', from + 1)
+    expect(from, `产物里找不到 visit_count CTE${REBUILD_HINT}`).toBeGreaterThan(0)
+    expect(to, `产物里 visit_count 之后找不到 active CTE${REBUILD_HINT}`).toBeGreaterThan(from)
+
+    expect(
+      segment.slice(from, to),
+      '产物的 visit_count 段里没有会员守卫 —— 分子不再 ⊆ 分母，导出的达成率可 > 100%。' +
+        '（行的总数可能仍对得上：守卫被挪进别的 CTE 时多重集不变）' +
+        REBUILD_HINT,
+    ).toContain('AND c.became_member_at::date <= ${end}')
+
+    // 分母 reg 段同理：守卫在这里是「截至区间终点的会员」这个截面的定义
+    const regFrom = segment.indexOf('reg AS (')
+    const regTo = segment.indexOf('ret AS (', regFrom + 1)
+    expect(regFrom).toBeGreaterThan(0)
+    expect(regTo).toBeGreaterThan(regFrom)
+    expect(segment.slice(regFrom, regTo), `产物的 reg 段里没有会员守卫${REBUILD_HINT}`).toContain(
+      'AND c.became_member_at::date <= ${end}',
+    )
+  })
+})
