@@ -77,7 +77,7 @@ export const DATA_CENTER_REPORTS = {
     title: '员工提成日报',
     periodKind: 'month',
     requiredActions: DATA_CENTER_STAFF_COMMISSION_ACTIONS,
-    menu: { section: '员工收入', enabled: false },
+    menu: { section: '员工收入', enabled: true },
   },
   commissionDetail: {
     path: '/data-center/commission-daily/detail',
