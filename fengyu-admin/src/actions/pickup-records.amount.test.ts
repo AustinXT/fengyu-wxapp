@@ -79,7 +79,7 @@ vi.mock('@/lib/refund-cascade', () => ({ hasPendingRefund: vi.fn(async () => fal
 vi.mock('@/lib/inventory-feature-flags', () => ({ INVENTORY_LINKAGE_ENABLED: false }))
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }))
 
-import { createPickupRecord, exportPickupRecords } from './pickup-records'
+import { createPickupRecord, exportPickupRecords, getPickupRecordById, getPickupRecordsPaginated } from './pickup-records'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { lt } from 'drizzle-orm'
@@ -174,6 +174,15 @@ describe('#341 exportPickupRecords keyset 分页', () => {
     expect(lt).not.toHaveBeenCalled()
   })
 
+  it('投影把两列绑到各自的 DB 列（互换即红，#341 评审 round-3）', async () => {
+    mockExportRows([])
+    await exportPickupRecords({}, { limit: 2 })
+    const projection = (db.select as any).mock.calls[0][0]
+    expect(projection.pickupUnitPrice).toBe('pickup_records.pickup_unit_price')
+    expect(projection.pickupAmount).toBe('pickup_records.pickup_amount')
+    expect(projection.pickupQuantity).toBe('pickup_records.pickup_quantity')
+  })
+
   it('带游标时追加 id < cursor；末页不再给游标', async () => {
     mockExportRows([row(10, '177.00')])
 
@@ -201,5 +210,39 @@ describe('#341 exportPickupRecords keyset 分页', () => {
     mockExportRows([])
     await expect(exportPickupRecords({}, { limit: 2, cursor })).rejects.toThrow(/导出分页游标无效/)
     expect(db.select).not.toHaveBeenCalled()
+  })
+})
+
+describe('#341 列表 / 详情把 DB 行映射成 AdminPickupRecord（单价与金额取值不同，互换即红）', () => {
+  const dbRow = {
+    record: {
+      id: 9, saleItemId: 'SI-9', pickupQuantity: 2, storeId: 'store-1', clientUserId: 'CU-1', confirmedBy: 'E1',
+      remark: null, inventorySkuId: null, createdAt: new Date('2026-09-25T02:00:00.000Z'),
+      pickupUnitPrice: '88.50', pickupAmount: '177.00',
+    },
+    storeName: '一店', clientName: '顾客A', clientPhone: null, confirmedByName: '店长', skuName: '家居A',
+    inventorySkuName: null, saleOrderId: 'SO-9', itemQuantity: 5, itemPickedUpQuantity: 2,
+  }
+  function mockSelects(dataRows: any[]) {
+    ;(db.select as any).mockImplementation((projection: Record<string, unknown>) => {
+      const rows = 'count' in projection ? [{ count: dataRows.length }] : dataRows
+      const chain: any = Object.assign(Promise.resolve(rows), {})
+      for (const method of ['from', 'leftJoin', 'where', 'orderBy', 'offset']) chain[method] = vi.fn().mockReturnValue(chain)
+      chain.limit = vi.fn().mockReturnValue(chain)
+      return chain
+    })
+  }
+
+  it('getPickupRecordsPaginated', async () => {
+    mockSelects([dbRow])
+    const page = await getPickupRecordsPaginated({ storeId: 'store-1' })
+    expect(page.total).toBe(1)
+    expect(page.data[0]).toMatchObject({ id: 9, pickupQuantity: 2, pickupUnitPrice: '88.50', pickupAmount: '177.00' })
+  })
+
+  it('getPickupRecordById', async () => {
+    mockSelects([dbRow])
+    const detail = await getPickupRecordById(9)
+    expect(detail).toMatchObject({ id: 9, pickupUnitPrice: '88.50', pickupAmount: '177.00' })
   })
 })

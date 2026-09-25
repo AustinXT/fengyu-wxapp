@@ -3896,8 +3896,14 @@ describe('#341 提货冻结出库金额：两端副本一致', () => {
   })
 
   test('全仓写入闭集 · UPDATE：只有顾客合并改写 client_user_id，且不碰数量与冻结金额', () => {
-    const UPDATE_WRITER = /UPDATE\s+(?:"?public"?\s*\.\s*)?"?pickup_records"?\s+SET|\bupdate\s*\(\s*pickupRecords\s*\)|reassignCol\s*\(\s*pickupRecords\b/i
-    expect(repoFilesMatching(UPDATE_WRITER)).toEqual(['fengyu-admin/src/actions/customers.ts'])
+    // 容忍 ONLY / schema / `AS pr` 与裸别名 `pickup_records pr SET`（#341 评审 round-3）
+    const UPDATE_WRITER = /UPDATE\s+(?:ONLY\s+)?(?:"?public"?\s*\.\s*)?"?pickup_records"?(?:\s+(?:AS\s+)?(?!SET\b)\w+)?\s+SET\b|\bupdate\s*\(\s*pickupRecords\s*\)|reassignCol\s*\(\s*pickupRecords\b/i
+    expect(repoFilesMatching(UPDATE_WRITER)).toEqual([
+      // 豁免：2026-04 销售单领域重构的一次性脚本，改的是早已删除的 pickup_records.picked_up_quantity 列
+      'db/scripts/migrate-sale-order-domain.sql',
+      'db/scripts/migration-2026-04-26-domain-refactor/04_step_d_5channel_rollback.sql',
+      'fengyu-admin/src/actions/customers.ts',
+    ])
     const customers = stripJsComments(readFile(path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/customers.ts')))
     const calls = customers.match(/reassignCol\s*\(\s*pickupRecords\b[^)]*\)/g) || []
     expect(calls.map((call) => call.replace(/\s+/g, ' '))).toEqual([
