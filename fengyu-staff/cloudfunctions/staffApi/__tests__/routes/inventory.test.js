@@ -615,7 +615,7 @@ describe('inventory.createDoc 权限与状态', () => {
   // 与 admin 端分叉（同一种单据，admin 建的有账面数、staff 建的没有）。
 
   /** 建一张 staff 侧分院盘点单，返回事务 client 以便断言发出的 SQL。 */
-  function mockStoreStocktake({ bookRows, items, skuRow = {}, docType = '分院库存盘点' }) {
+  function mockStoreStocktake({ bookRows, items, skuRow = {}, docType = '分院库存盘点', skuMissing = false }) {
     const ctx = createCtx({
       payload: {
         docType,
@@ -650,6 +650,7 @@ describe('inventory.createDoc 权限与状态', () => {
             return { rows: bookRows, rowCount: bookRows.length, _params: params }
           }
           if (text.includes('FROM inventory_skus')) {
+            if (skuMissing) return { rows: [], rowCount: 0 }
             return {
               rows: [{
                 sku_id: params[0], product_name: '测试商品',
@@ -708,6 +709,32 @@ describe('inventory.createDoc 权限与状态', () => {
     })
 
     await expect(inventoryRoutes.createDoc(ctx)).rejects.toThrow('INVALID_STATE: 市场自采 SKU 外来自采 仅可在归属市场使用')
+    const client = getClient()
+    // 归属按发起门店主体（location_id）查所属市场
+    const locationCall = client.query.mock.calls.find(([sql]) => (
+      String(sql).includes('FROM inventory_locations') && String(sql).includes('WHERE location_id = $1')
+    ))
+    expect(locationCall[1]).toEqual(['store-A'])
+    expect(client.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO inventory_doc_items'))).toBe(false)
+  })
+
+  test('门店报货只收可报货 SKU（与 admin loadSku(reportable) 同口径），盘点不限', async () => {
+    const report = mockStoreStocktake({ docType: '门店报货', bookRows: [], items: [{ skuId: 'sku-r', quantity: 1 }] })
+    await inventoryRoutes.createDoc(report.ctx)
+    const reportSkuSql = report.getClient().query.mock.calls.find(([sql]) => String(sql).includes('FROM inventory_skus'))[0]
+    expect(reportSkuSql).toMatch(/is_active = true AND is_reportable = true/)
+
+    const stocktake = mockStoreStocktake({ bookRows: [], items: [{ skuId: 'sku-s', quantity: 1 }] })
+    await inventoryRoutes.createDoc(stocktake.ctx)
+    const stocktakeSkuSql = stocktake.getClient().query.mock.calls.find(([sql]) => String(sql).includes('FROM inventory_skus'))[0]
+    expect(stocktakeSkuSql).not.toMatch(/is_reportable/)
+  })
+
+  test('门店报货提交不可报货 SKU → NOT_FOUND（带 is_reportable 条件查不到行）', async () => {
+    const { ctx, getClient } = mockStoreStocktake({
+      docType: '门店报货', bookRows: [], items: [{ skuId: 'sku-n', quantity: 1 }], skuMissing: true,
+    })
+    await expect(inventoryRoutes.createDoc(ctx)).rejects.toThrow('NOT_FOUND: 库存 SKU 不存在、已停用或不可报货')
     expect(getClient().query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO inventory_doc_items'))).toBe(false)
   })
 

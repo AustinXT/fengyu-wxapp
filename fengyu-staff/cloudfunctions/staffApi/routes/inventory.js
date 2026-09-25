@@ -808,17 +808,23 @@ async function lockInventoryLotById(client, lotId, locationId) {
  * 两个候选接口（reportableSkuOptions / stocktakeSkuOptions）与这道闸同谓词
  * （供应链 OR 归属本店所属市场），候选能选到的建单一定收；抓包直传别的市场自采 SKU 时建单拦下。
  * `locationId` 契约同 `assertSkuAvailableAtLocation`：必须是 inventory_locations.location_id。
+ * `reportableOnly`（门店报货）：同时要求 is_reportable，与 admin 门店报货 `loadSku(tx, skuId, true)`
+ * 同口径——候选只出可报货 SKU，直调接口也不能把不可报货的 SKU 写进报货单（下游市场汇总会拒）。
  */
-async function inventorySkuSnapshot(client, skuId, locationId) {
+async function inventorySkuSnapshot(client, skuId, locationId, { reportableOnly = false } = {}) {
   const res = await client.query(
     `SELECT sku_id, product_name, spec_name, supplier, product_series, source_type, owner_market_id
        FROM inventory_skus
-      WHERE sku_id = $1 AND is_active = true
+      WHERE sku_id = $1 AND is_active = true${reportableOnly ? ' AND is_reportable = true' : ''}
       LIMIT 1`,
     [skuId],
   )
   const r = res.rows[0]
-  if (!r) throw new Error('NOT_FOUND: 库存 SKU 不存在或已停用')
+  if (!r) {
+    throw new Error(reportableOnly
+      ? 'NOT_FOUND: 库存 SKU 不存在、已停用或不可报货'
+      : 'NOT_FOUND: 库存 SKU 不存在或已停用')
+  }
   await assertSkuAvailableAtLocation(client, r, locationId)
   return {
     skuId: r.sku_id,
@@ -1764,7 +1770,9 @@ async function createDoc(ctx) {
         snapshot = lot
       } else {
         if (!item.skuId) throw new Error('INVALID_PARAMS: 明细缺少库存 SKU')
-        snapshot = await inventorySkuSnapshot(client, item.skuId, actingLocationId)
+        snapshot = await inventorySkuSnapshot(client, item.skuId, actingLocationId, {
+          reportableOnly: docType === '门店报货',
+        })
       }
       // 盘点单没有批次选择器，lot 恒为 null —— 账面数只能来自上面的汇总。
       // 一个批次都没有时 GROUP BY 不出行，落 0（不是 NULL）：账上就是 0，实盘有货即盘盈。
