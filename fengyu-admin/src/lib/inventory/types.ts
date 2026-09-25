@@ -366,6 +366,9 @@ export interface InventorySettlementReport {
 
 export type InventoryMovementDirection = '入库' | '出库' | '调整'
 
+/** 进出明细页长白名单（前后端共用；lib/inventory/movements.ts 是 server-only，客户端不能引）。 */
+export const INVENTORY_MOVEMENT_PAGE_SIZES = [20, 50, 100] as const
+
 /** 进出明细查询条件（#360）：主体必选，商品编号 / 批号二选一，日期按上海自然日闭区间。 */
 export interface InventoryMovementFilters {
   locationId?: string

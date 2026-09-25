@@ -3,10 +3,11 @@
 import { useState } from 'react'
 import Link from 'next/link'
 import { ArrowLeftRight } from 'lucide-react'
-import type {
-  InventoryLocationFilterOptions,
-  InventoryMovementPage,
-  InventoryMovementRow,
+import {
+  INVENTORY_MOVEMENT_PAGE_SIZES,
+  type InventoryLocationFilterOptions,
+  type InventoryMovementPage,
+  type InventoryMovementRow,
 } from '@/lib/inventory/types'
 import { Button } from '@/components/ui/button'
 import { DataTable, type Column } from '@/components/ui/data-table'
@@ -17,7 +18,7 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectOption } from '@/components/ui/select'
 import { useUrlFilters } from '@/lib/hooks/use-url-filters'
 
-const PAGE_SIZE_OPTIONS = [20, 50, 100]
+const PAGE_SIZE_OPTIONS: readonly number[] = INVENTORY_MOVEMENT_PAGE_SIZES
 // 短列（方向 / 数量 / 结存）被产品列挤压时会逐字折行，统一不换行
 const NOWRAP = 'whitespace-nowrap'
 
@@ -140,14 +141,19 @@ export default function InventoryMovementsPage({
             className="w-28"
             aria-label="查询方式"
             value={mode}
-            onChange={(e) => setMode(e.target.value as SearchMode)}
+            onChange={(e) => {
+              // 编号不能跨方式复用：商品编号当批号查只会静默查空
+              setMode(e.target.value as SearchMode)
+              setCode('')
+            }}
           >
             <SelectOption value="sku">商品编号</SelectOption>
             <SelectOption value="batch">批号</SelectOption>
           </Select>
           <Input
-            className="w-56"
-            placeholder={mode === 'sku' ? '输入完整商品编号' : '输入完整批号'}
+            className="w-72"
+            placeholder={mode === 'sku' ? '输入完整商品编号' : '输入完整批号（无批号请按商品编号查）'}
+            title={mode === 'batch' ? '无批号的批次请按商品编号查询' : undefined}
             value={code}
             onChange={(e) => setCode(e.target.value)}
             onKeyDown={(e) => {
@@ -159,6 +165,7 @@ export default function InventoryMovementsPage({
             aria-label="开始日期"
             placeholder="开始日期"
             value={get('start')}
+            max={get('end') || undefined}
             onValueChange={(value) => setMany({ start: value, ...resetCursor })}
           />
           <DatePicker
@@ -166,6 +173,7 @@ export default function InventoryMovementsPage({
             aria-label="结束日期"
             placeholder="结束日期"
             value={get('end')}
+            min={get('start') || undefined}
             onValueChange={(value) => setMany({ end: value, ...resetCursor })}
           />
           <Button onClick={submit}>查询</Button>
@@ -210,7 +218,11 @@ export default function InventoryMovementsPage({
       <DataTable
         columns={columns}
         data={page.rows}
-        emptyText={hasQuery ? '该条件下暂无进出流水' : '请选择库存主体，并输入商品编号或批号后查询'}
+        emptyText={
+          !selectedLocationId
+            ? '当前账号没有可查询的库存主体'
+            : hasQuery ? '该条件下暂无进出流水' : '请选择库存主体，并输入商品编号或批号后查询'
+        }
       />
       <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-[#888888]">
         <span>共 {page.total} 条</span>

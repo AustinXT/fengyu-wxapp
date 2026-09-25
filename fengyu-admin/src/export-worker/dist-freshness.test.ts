@@ -334,6 +334,15 @@ const PROBES: Probe[] = [
     exactCountsInModule: true,
   },
   {
+    // 页面与导出共用同一段 SQL：改了取数口径（JOIN / 对方主体 CASE）不重建，导出就与页面分叉
+    label: '进出明细取数 SQL（#360，列表 / 计数 / 导出共用）',
+    file: 'src/lib/inventory/movements.ts',
+    pattern: /^(FROM inventory_movements m|(LEFT )?JOIN (inventory_|staff_wechat_users )|WHEN doc\.|ELSE COALESCE\(doc\.)/,
+    minLines: 13,
+    uniqueLines: 11,
+    exactCountsInModule: true,
+  },
+  {
     label: '提成明细 · 平均提成点公式（#375）',
     file: 'src/actions/data-center/commission.ts',
     pattern: /^const averageRate = /,
@@ -369,6 +378,28 @@ describe('dist/export-worker.mjs 新鲜度 · 提货记录导出接线（#341）
     expect(segment.length, `产物里找不到 // ${file} 模块区段${REBUILD_HINT}`).toBeGreaterThan(0)
     const missing = fragments.filter((fragment) => !segment.includes(fragment))
     expect(missing, `产物 // ${file} 区段缺少以下 #341 片段（产物不是按当前源码构建的）${REBUILD_HINT}`).toEqual([])
+  })
+})
+
+/** #360 进出明细导出的 JS 接线（类型登记 / registry 分支与列 / keyset 游标）。写法同上：按产物里的写法找。 */
+describe('dist/export-worker.mjs 新鲜度 · 进出明细导出接线（#360）', () => {
+  const SEGMENT_FRAGMENTS: Array<[string, string[]]> = [
+    ['src/lib/export-job-types.ts', ['"inventory-movements",', '"inventory-movements": ["inventory:export"],', '"inventory-movements": "进出明细",']],
+    ['src/export-worker/registry.ts', [
+      'case "inventory-movements":',
+      'sheetName: "进出明细",',
+      '{ header: "批次 ID", width: 10, key: "lotId", map: (row) => numberOrEmpty(row, "lotId") },',
+    ]],
+    ['src/lib/inventory/movements.ts', [
+      'var exportInventoryMovements = withPermission("inventory:export",',
+      'resolveExportKeysetPage(fetched, limit, (row) => row.id)',
+    ]],
+  ]
+  it.each(SEGMENT_FRAGMENTS)('%s 的 #360 片段在产物模块区段内', (file, fragments) => {
+    const segment = moduleSegments(fs.readFileSync(DIST, 'utf-8'), file).join('\n')
+    expect(segment.length, `产物里找不到 // ${file} 模块区段${REBUILD_HINT}`).toBeGreaterThan(0)
+    const missing = fragments.filter((fragment) => !segment.includes(fragment))
+    expect(missing, `产物 // ${file} 区段缺少以下 #360 片段（产物不是按当前源码构建的）${REBUILD_HINT}`).toEqual([])
   })
 })
 

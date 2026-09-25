@@ -11,6 +11,8 @@ import { withPermission } from '@/lib/with-permission'
 import { sql, type SQL } from 'drizzle-orm'
 import type { AuthSession } from '@/lib/types'
 import { assertInventoryLocationInScope } from './access'
+import { assertRealCalendarDate } from './settlements'
+import { INVENTORY_MOVEMENT_PAGE_SIZES } from './types'
 import type {
   InventoryMovementDirection,
   InventoryMovementFilters,
@@ -26,9 +28,11 @@ import type {
  * - 排序与翻页键都是 `inventory_movements.id`（bigserial，不可变主键）：同一 created_at 的多行
  *   不会在页边界漏行/重行（与 export-pagination 的 keyset 约定一致）。
  * - 不含任何金额列，价格档位无关；scope 走 inventoryScopedLocationIds（总部不展开市场/门店）。
+ * - 并发写入：id 在 INSERT 时分配、提交可能乱序，游标已越过的位置之前若有晚提交的行，本次翻页 / 导出
+ *   看不到它（回首页重查可见），与 export-pagination 的「开始时刻集合」契约一致。同一批次的流水在批次行锁
+ *   （FOR UPDATE）内写入，id 序 = 提交序 = 结存链序，单批次的前后结存链不会断。
  */
 
-export const INVENTORY_MOVEMENT_PAGE_SIZES = [20, 50, 100] as const
 const DEFAULT_PAGE_SIZE = 20
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/
 const CURSOR_PATTERN = /^[1-9]\d{0,17}$/
@@ -43,20 +47,11 @@ function optionalText(value: unknown, label: string): string | undefined {
   return text
 }
 
-/** 严格日历校验：'2026-02-31' 这类假日期直传 PG 会变成 22008 服务器错误。 */
 function optionalDate(value: unknown, label: string): string | undefined {
   const text = optionalText(value, label)
   if (!text) return undefined
-  const year = Number(text.slice(0, 4))
-  const parsed = new Date(`${text}T00:00:00Z`)
-  if (
-    !DATE_PATTERN.test(text)
-    || year < 1
-    || Number.isNaN(parsed.getTime())
-    || parsed.toISOString().slice(0, 10) !== text
-  ) {
-    throw new ApiError('INVALID_PARAMS', `${label}不是有效的日历日期`)
-  }
+  if (!DATE_PATTERN.test(text)) throw new ApiError('INVALID_PARAMS', `${label}不是有效的日历日期`)
+  assertRealCalendarDate(text, label)
   return text
 }
 
@@ -96,7 +91,10 @@ export function normalizeInventoryMovementFilters(filters: InventoryMovementFilt
   return { locationId, skuCode, batchNo, startDate, endDate }
 }
 
-/** 查询条件（不含翻页键）：计数、列表、导出三处共用同一份，保证「导出行数 = 页面总数」。 */
+/**
+ * 查询条件（不含翻页键）：计数、列表、导出三处共用同一份，同一时刻下三者条数一致。
+ * （计数与列表是两条独立语句、导出异步执行，期间新写入的流水会造成个位数差异。）
+ */
 export function inventoryMovementWhereSql(filters: NormalizedMovementFilters): SQL {
   const conditions: SQL[] = [sql`m.location_id = ${filters.locationId}`]
   if (filters.skuCode) {
@@ -144,6 +142,8 @@ export function inventoryMovementSelectSql(
            m.quantity_delta,
            m.quantity_before,
            m.quantity_after,
+           -- 对方主体：组织端点优先；非组织对象回落名称快照。employee_name 是单据的「相关员工」
+           -- （员工购出库里是购买员工），不是经办人 —— 经办人另取 m.created_by
            CASE
              WHEN doc.id IS NULL THEN NULL
              WHEN doc.source_org_node_id IS NOT NULL AND doc.source_org_node_id <> loc.org_node_id THEN src.name
@@ -224,10 +224,6 @@ async function queryMovementRows(query: SQL): Promise<InventoryMovementRow[]> {
   return (rows as unknown as RawMovementRow[]).map(movementRow)
 }
 
-function assertScope(session: AuthSession, filters: NormalizedMovementFilters): void {
-  assertInventoryLocationInScope(session, filters.locationId)
-}
-
 export async function listInventoryMovementsForSession(
   session: AuthSession,
   params: InventoryMovementFilters & { after?: unknown; before?: unknown; pageSize?: unknown },
@@ -242,7 +238,7 @@ export async function listInventoryMovementsForSession(
   const pageSize = (INVENTORY_MOVEMENT_PAGE_SIZES as readonly number[]).includes(requestedSize)
     ? requestedSize
     : DEFAULT_PAGE_SIZE
-  assertScope(session, filters)
+  assertInventoryLocationInScope(session, filters.locationId)
 
   const bound: KeysetBound = after !== undefined ? { after } : before !== undefined ? { before } : null
   const [countResult, fetched] = await Promise.all([
@@ -253,10 +249,12 @@ export async function listInventoryMovementsForSession(
   const probed = fetched.length > pageSize
   const pageRows = probed ? fetched.slice(0, pageSize) : fetched
   if (bound && 'before' in bound) {
-    // 倒序取回：多出的探测行在更早一侧 → 还有上一页；游标本身之后必有行（从那一页翻回来的）
+    // 倒序取回：多出的探测行在更早一侧 → 还有上一页。界面生成的 before 是下一页首行 id，
+    // 游标之后必有行；手改 URL 取到空页时不再给「下一页」
     pageRows.reverse()
-    return { rows: pageRows, total, hasPrev: probed, hasNext: true }
+    return { rows: pageRows, total, hasPrev: probed, hasNext: pageRows.length > 0 }
   }
+  // after 游标由界面取自上一页末行，游标之前必有行（手改 URL 的偏小游标只会得到一个空的上一页）
   return { rows: pageRows, total, hasPrev: bound !== null, hasNext: probed }
 }
 
@@ -275,16 +273,17 @@ export async function exportInventoryMovementsForSession(
   options?: ExportBatchOptions<number>,
 ): Promise<ExportBatchResult<InventoryMovementRow>> {
   const filters = normalizeInventoryMovementFilters({
-    locationId: params.locationId ?? params.location,
-    skuCode: params.skuCode ?? params.sku,
-    batchNo: params.batchNo ?? params.batch,
-    startDate: params.startDate ?? params.start,
-    endDate: params.endDate ?? params.end,
+    // 与页面 URL / 导出载荷同名的短键
+    locationId: params.location,
+    skuCode: params.sku,
+    batchNo: params.batch,
+    startDate: params.start,
+    endDate: params.end,
   })
   if (options?.cursor !== undefined && (!Number.isSafeInteger(options.cursor) || options.cursor < 1)) {
     throw new ApiError('INVALID_STATE', '导出分页游标不合法')
   }
-  assertScope(session, filters)
+  assertInventoryLocationInScope(session, filters.locationId)
 
   const limit = resolveExportBatchLimit(options?.limit)
   if (limit == null) {

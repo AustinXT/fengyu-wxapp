@@ -24,6 +24,7 @@ test.setTimeout(900_000)
 /** 库存域全部列表/报表页 */
 const LIST_PAGES = [
   '/inventory/stocks',
+  '/inventory/movements',
   '/inventory/docs',
   '/inventory/settlements',
   '/inventory/skus',

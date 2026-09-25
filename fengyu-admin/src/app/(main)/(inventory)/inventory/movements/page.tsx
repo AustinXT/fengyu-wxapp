@@ -50,6 +50,8 @@ export default async function Page({
     <div className="p-6">
       <Suspense>
         <InventoryMovementsPage
+          // 输入框 / 查询方式是本地 state：前进后退、菜单软导航改了 sku|batch 时重挂载，别让输入框与表格对不上
+          key={`${params.sku ?? ''}|${params.batch ?? ''}`}
           page={result}
           hasQuery={hasQuery}
           errorMessage={errorMessage}

@@ -176,3 +176,21 @@ describe('InventoryMovementsPage 批次结存可读性（#360 口径 A）', () =
     expect(screen.getByText('22')).toBeInTheDocument()
   })
 })
+
+describe('InventoryMovementsPage 边界（#360 pr-ready）', () => {
+  it('切换查询方式清空输入框：商品编号不会被当成批号静默查空', () => {
+    urlState.params = new URLSearchParams('location=S1&sku=SKU-1')
+    renderPage()
+    const input = screen.getByPlaceholderText('输入完整商品编号') as HTMLInputElement
+    expect(input.value).toBe('SKU-1')
+    fireEvent.change(screen.getByRole('combobox', { name: '查询方式' }), { target: { value: 'batch' } })
+    const batchInput = screen.getByPlaceholderText('输入完整批号（无批号请按商品编号查）') as HTMLInputElement
+    expect(batchInput.value).toBe('')
+  })
+
+  it('没有可查询的库存主体时给出对应空态，而不是「暂无流水」', () => {
+    renderPage({ page: page([]), selectedLocationId: null })
+    expect(screen.getByText('当前账号没有可查询的库存主体')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '导出' })).toBeDisabled()
+  })
+})
