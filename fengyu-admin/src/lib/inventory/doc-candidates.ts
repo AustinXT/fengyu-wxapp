@@ -85,6 +85,7 @@ export const INVENTORY_DOC_CANDIDATES: Record<InventoryDocCandidatePurpose, Inve
     remainingToggle: true,
   },
   // createStoreAllocation：`request.status === '已取消'` 拒；配货市场 = request.target 且可写。
+  // 报货单可选（#337），表单选了收货门店后按 sourceOrgNodeId 收窄到该门店的单。
   'store-allocation-source': {
     rules: [{ docType: '门店报货' }],
     scopeRole: 'target',
@@ -187,8 +188,20 @@ export interface InventoryDocCandidateFilters {
   endDate?: string
   /** 只看某一收 / 发端（采购订单表单选了供应链主体后收窄到该总部） */
   targetOrgNodeId?: string
+  /** 只看某一发起端（分院配货表单选了收货门店后收窄到该门店的报货单，#337） */
+  sourceOrgNodeId?: string
   /** 建单类来源：true = 连已无剩余量的也列出 */
   includeExhausted?: boolean
   page?: number
   pageSize?: number
+}
+
+/**
+ * 门店仍有未配报货的 SKU（#337 拍板 A）：分院配货自选行命中时提示「建议引用报货单」，不拦截。
+ * 口径与 `store-allocation-source` 候选的 `allocated` 进度逐字同源。
+ */
+export interface StoreUnallocatedRequestSku {
+  skuId: string
+  remainingQuantity: number
+  docIds: string[]
 }

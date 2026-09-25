@@ -78,6 +78,7 @@ export function InventoryDocCandidatePicker({
   required = false,
   disabled = false,
   targetOrgNodeId,
+  sourceOrgNodeId,
 }: {
   label: string
   purpose: InventoryDocCandidatePurpose
@@ -86,6 +87,8 @@ export function InventoryDocCandidatePicker({
   disabled?: boolean
   /** 收窄到某个接收端（采购订单表单选了供应链主体后） */
   targetOrgNodeId?: string
+  /** 收窄到某个发起端（分院配货表单选了收货门店后，#337） */
+  sourceOrgNodeId?: string
 }) {
   const definition = INVENTORY_DOC_CANDIDATES[purpose]
   const showDocType = definition.rules.length > 1
@@ -119,6 +122,7 @@ export function InventoryDocCandidatePicker({
     startDate,
     endDate,
     targetOrgNodeId ?? '',
+    sourceOrgNodeId ?? '',
     selection.mode === 'multi' ? selection.values : [],
   ])
   const latestBulkKeyRef = useRef(bulkKey)
@@ -135,7 +139,7 @@ export function InventoryDocCandidatePicker({
    * state 里、渲染期直接判定，而不是另起一个 effect 去 setPage(1) —— 那样每次换条件都会先按
    * 旧页码发一次注定作废的请求。
    */
-  const filterKey = JSON.stringify([purpose, debouncedKeyword, startDate, endDate, includeExhausted, targetOrgNodeId ?? ''])
+  const filterKey = JSON.stringify([purpose, debouncedKeyword, startDate, endDate, includeExhausted, targetOrgNodeId ?? '', sourceOrgNodeId ?? ''])
   const [pageState, setPageState] = useState({ key: filterKey, page: 1 })
   const page = pageState.key === filterKey ? pageState.page : 1
   const setPage = useCallback((next: number) => setPageState({ key: filterKey, page: next }), [filterKey])
@@ -150,6 +154,7 @@ export function InventoryDocCandidatePicker({
       startDate: startDate || undefined,
       endDate: endDate || undefined,
       targetOrgNodeId: targetOrgNodeId || undefined,
+      sourceOrgNodeId: sourceOrgNodeId || undefined,
       includeExhausted: definition.remainingToggle ? includeExhausted : undefined,
       page,
       pageSize: DOC_CANDIDATE_PAGE_SIZE,
@@ -210,6 +215,7 @@ export function InventoryDocCandidatePicker({
         startDate: startDate || undefined,
         endDate: endDate || undefined,
         targetOrgNodeId: targetOrgNodeId || undefined,
+      sourceOrgNodeId: sourceOrgNodeId || undefined,
       })
       // 在途时改了日期 / 关键字 / 主体，或已选被清除 / 改勾选：旧结果不能再覆盖当前选择
       if (!isCurrent()) return
