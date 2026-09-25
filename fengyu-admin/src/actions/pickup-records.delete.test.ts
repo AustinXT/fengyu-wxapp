@@ -12,6 +12,8 @@ vi.mock('@db/pickup', () => ({
     storeId: 'store_id',
     clientUserId: 'client_user_id',
     confirmedBy: 'confirmed_by',
+    pickupUnitPrice: 'pickup_unit_price',
+    pickupAmount: 'pickup_amount',
   },
 }))
 
@@ -115,6 +117,9 @@ describe('deletePickupRecord — 删除 + 回退已提数量', () => {
     }])
     setupTx(1, () => {})
     await deletePickupRecord(1)
+    // 投影把两列绑到各自的 DB 列（互换即红，#341 评审 round-7）
+    const projection = (db.select as any).mock.calls[0][0]
+    expect(projection).toMatchObject({ pickupUnitPrice: 'pickup_unit_price', pickupAmount: 'pickup_amount' })
     expect(logOperation).toHaveBeenCalledWith(
       mockSession, 'pickup_record.delete', 'pickup_record', '1',
       { snapshot: expect.objectContaining({ pickupUnitPrice: '88.50', pickupAmount: '177.00' }) },

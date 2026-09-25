@@ -223,6 +223,15 @@ const PROBES: Probe[] = [
     exactCountsInModule: true,
   },
   {
+    label: '提货 GCK 明细批次价格快照列（#341，锁批次 SELECT + 明细 INSERT 各一组）',
+    file: 'src/actions/pickup-records.ts',
+    // 只取多列组合行：单列 `store_actual_unit_price` 也出现在 TS 类型声明里，按「包含」计数会失真
+    pattern: /^(lot\.)?(supply_chain_unit_cost, |market_actual_unit_price, )/,
+    minLines: 4,
+    uniqueLines: 4,
+    exactCountsInModule: true,
+  },
+  {
     label: '提成明细 · 平均提成点公式（#375）',
     file: 'src/actions/data-center/commission.ts',
     pattern: /^const averageRate = /,
@@ -231,6 +240,35 @@ const PROBES: Probe[] = [
     exactCountsInModule: true,
   },
 ]
+
+/**
+ * #341 提货记录导出的 JS 接线（类型登记 / registry 分支与列 / action keyset 与金额投影）。
+ * bun 会重写 JS（单引号→双引号、import 别名），所以这里按**产物里的写法**在对应模块区段内找固定片段；
+ * 区段限定避免别处残留同名字面量造成假绿。改了这些源码记得重建产物并同步片段。
+ */
+describe('dist/export-worker.mjs 新鲜度 · 提货记录导出接线（#341）', () => {
+  const SEGMENT_FRAGMENTS: Array<[string, string[]]> = [
+    ['src/lib/export-job-types.ts', ['"pickup-records",', '"pickup-records": ["pickup_record:list"],', '"pickup-records": "提货记录",']],
+    ['src/export-worker/registry.ts', [
+      'case "pickup-records":',
+      'sheetName: "提货记录",',
+      '{ header: "顾客实际单价", width: 14, key: "pickupUnitPrice", map: (row) => numberOrEmpty(row, "pickupUnitPrice") },',
+      '{ header: "出库金额", width: 14, key: "pickupAmount", map: (row) => numberOrEmpty(row, "pickupAmount") }',
+    ]],
+    ['src/actions/pickup-records.ts', [
+      'var exportPickupRecords = withPermission("pickup_record:list",',
+      'lt(pickupRecords.id, cursor)]);',
+      'pickupUnitPrice: pickupRecords.pickupUnitPrice,',
+      'pickupAmount: pickupRecords.pickupAmount,',
+    ]],
+  ]
+  it.each(SEGMENT_FRAGMENTS)('%s 的 #341 片段在产物模块区段内', (file, fragments) => {
+    const segment = moduleSegments(fs.readFileSync(DIST, 'utf-8'), file).join('\n')
+    expect(segment.length, `产物里找不到 // ${file} 模块区段${REBUILD_HINT}`).toBeGreaterThan(0)
+    const missing = fragments.filter((fragment) => !segment.includes(fragment))
+    expect(missing, `产物 // ${file} 区段缺少以下 #341 片段（产物不是按当前源码构建的）${REBUILD_HINT}`).toEqual([])
+  })
+})
 
 describe('dist/export-worker.mjs 新鲜度（改了 data-center SQL 口径必须重建产物）', () => {
   let dist: string
