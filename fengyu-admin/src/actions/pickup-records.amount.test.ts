@@ -190,8 +190,11 @@ describe('#341 exportPickupRecords keyset 分页', () => {
     await exportPickupRecords({ market: 'M-1', store: 'store-1', q: '顾客', from: '2026-09-01', to: '2026-09-30' }, { limit: 2 })
 
     const where = chain.where.mock.calls[0][0]
-    const types = where.args.filter(Boolean).map((condition: any) => condition.type)
-    expect(types).toEqual(['scope', 'market', 'eq', 'or', 'gte', 'lte'])
+    const conditions = where.args.filter(Boolean)
+    expect(conditions.map((condition: any) => condition.type)).toEqual(['scope', 'market', 'eq', 'or', 'gte', 'lt'])
+    // 结束日走半开区间「< 次日零点」，不是 `<= 23:59:59`（会漏最后一秒）
+    expect(conditions[5].b.__sqlText).toContain('::date + 1')
+    expect(conditions[5].b.values).toEqual(['2026-09-30'])
   })
 
   it.each([0, -1, 1.5, Number.NaN, '20' as unknown as number])('畸形游标 %s 直接拒绝，不静默从头重扫', async (cursor) => {

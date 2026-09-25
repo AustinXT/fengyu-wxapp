@@ -19,7 +19,7 @@ describe('#341 pickupAmountSnapshot（与 staffApi 副本同一组用例）', ()
   })
 
   it('单价缺失或数量非法直接拒绝', () => {
-    for (const price of [null, undefined, '', 'abc']) {
+    for (const price of [null, undefined, '', '  ', 'abc']) {
       expect(() => pickupAmountSnapshot(price, 1)).toThrow(/INVALID_STATE/)
     }
     for (const qty of [0, -1, 1.5, '2' as unknown as number]) {

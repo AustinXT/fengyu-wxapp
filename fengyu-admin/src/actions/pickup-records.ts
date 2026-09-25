@@ -8,8 +8,8 @@ import { stores } from '@db/org'
 import { clientWechatUsers, staffWechatUsers } from '@db/user'
 import { productSkus } from '@db/product'
 import { inventorySkus } from '@db/inventory'
-import { and, desc, eq, gte, ilike, lt, lte, or, sql } from 'drizzle-orm'
-import { beijingBoundaryTs } from '@/lib/db-time'
+import { and, desc, eq, gte, ilike, lt, or, sql } from 'drizzle-orm'
+import { beijingBoundaryTs, beijingNextDayBoundaryTs } from '@/lib/db-time'
 import { shanghaiToday, shanghaiYmd } from '@/lib/datetime'
 import type { SQL } from 'drizzle-orm'
 import type { AuthSession } from '@/lib/types'
@@ -396,7 +396,9 @@ function pickupRecordConditions(session: AuthSession, filters: PickupRecordFilte
     conditions.push(gte(pickupRecords.createdAt, beijingBoundaryTs(filters.dateFrom, '00:00:00')))
   }
   if (filters.dateTo) {
-    conditions.push(lte(pickupRecords.createdAt, beijingBoundaryTs(filters.dateTo, '23:59:59')))
+    // 半开区间 [from, nextDay(to))：`<= 23:59:59` 会漏掉结束日最后一秒（timestamptz 存到微秒），
+    // 出库金额是提成数据源，一条都不能漏（#341）。
+    conditions.push(lt(pickupRecords.createdAt, beijingNextDayBoundaryTs(filters.dateTo)))
   }
 
   return conditions
@@ -1431,6 +1433,8 @@ export const deletePickupRecord = withPermission(
         storeId: pickupRecords.storeId,
         clientUserId: pickupRecords.clientUserId,
         confirmedBy: pickupRecords.confirmedBy,
+        pickupUnitPrice: pickupRecords.pickupUnitPrice,
+        pickupAmount: pickupRecords.pickupAmount,
       })
       .from(pickupRecords)
       .where(and(eq(pickupRecords.id, id), scopeCondition(session, pickupRecords.storeId)))
@@ -1478,6 +1482,9 @@ export const deletePickupRecord = withPermission(
         storeId: rec.storeId,
         clientUserId: rec.clientUserId,
         confirmedBy: rec.confirmedBy,
+        // #341：冻结金额是店长提成的数据来源，删除后只剩审计日志可追溯
+        pickupUnitPrice: rec.pickupUnitPrice,
+        pickupAmount: rec.pickupAmount,
       },
     })
 

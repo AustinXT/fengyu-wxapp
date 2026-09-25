@@ -20,7 +20,7 @@ export interface PickupAmountSnapshot {
 export function pickupAmountSnapshot(unitRealPrice: unknown, pickupQuantity: number): PickupAmountSnapshot {
   const unitCents = Math.round(Number(unitRealPrice) * 100)
   const amountCents = unitCents * pickupQuantity
-  if (unitRealPrice === null || unitRealPrice === undefined || unitRealPrice === '' || !Number.isFinite(unitCents) || !Number.isInteger(pickupQuantity) || pickupQuantity <= 0) {
+  if (unitRealPrice === null || unitRealPrice === undefined || String(unitRealPrice).trim() === '' || !Number.isFinite(unitCents) || !Number.isInteger(pickupQuantity) || pickupQuantity <= 0) {
     throw new ApiError('INVALID_STATE', '销售明细缺少顾客实际单价，无法计算出库金额')
   }
   return {

@@ -108,6 +108,19 @@ describe('deletePickupRecord — 删除 + 回退已提数量', () => {
     expect(db.transaction).not.toHaveBeenCalled()
   })
 
+  it('#341 审计快照留存冻结单价与出库金额（删除后唯一可追溯处）', async () => {
+    mockSelect([{
+      saleItemId: 'SI-1', pickupQuantity: 2, storeId: 'S1', clientUserId: 'U1', confirmedBy: 'E1',
+      pickupUnitPrice: '88.50', pickupAmount: '177.00',
+    }])
+    setupTx(1, () => {})
+    await deletePickupRecord(1)
+    expect(logOperation).toHaveBeenCalledWith(
+      mockSession, 'pickup_record.delete', 'pickup_record', '1',
+      { snapshot: expect.objectContaining({ pickupUnitPrice: '88.50', pickupAmount: '177.00' }) },
+    )
+  })
+
   it('记录存在 → 删除 + 回退计数 + 审计', async () => {
     mockSelect([{ saleItemId: 'SI-1', pickupQuantity: 2, storeId: 'S1', clientUserId: 'U1', confirmedBy: 'E1' }])
     let executed = false
