@@ -372,6 +372,34 @@ describe('dist/export-worker.mjs 新鲜度 · 提货记录导出接线（#341）
   })
 })
 
+/**
+ * #308 自定义区间日历校验与服务端复检的 JS 接线。与 #341 同法：按**产物里的写法**在模块区段内找固定片段。
+ * 漏重建产物时，导出会继续把非法日期静默回落本月（源码单测只加载 src，发现不了）。
+ */
+describe('dist/export-worker.mjs 新鲜度 · 自定义区间校验接线（#308）', () => {
+  const SEGMENT_FRAGMENTS: Array<[string, string[]]> = [
+    ['src/lib/calendar-date.ts', [
+      'var CALENDAR_MIN_YEAR = 1900;',
+      'var CALENDAR_MAX_YEAR = 2100;',
+      'if (year < CALENDAR_MIN_YEAR || year > CALENDAR_MAX_YEAR)',
+    ]],
+    ['src/lib/data-center/params.ts', [
+      'return isValidCalendarDate(start) && isValidCalendarDate(end) && start <= end;',
+      'if (typeof preset !== "string" || !Object.hasOwn(TIME_RANGE_PRESETS, preset))',
+      'return preset !== "custom" || isValidCustomRange(start, end);',
+      'if (p === "custom" && start && end && isValidCustomRange(start, end)) {',
+    ]],
+    ['src/lib/data-center/context.ts', ['if (!isValidTimeRangeInput(params.timeRange)) {']],
+    ['src/export-worker/registry.ts', ['if (raw.preset === "custom" && !isValidCustomRange(raw.start, raw.end)) {']],
+  ]
+  it.each(SEGMENT_FRAGMENTS)('%s 的 #308 片段在产物模块区段内', (file, fragments) => {
+    const segment = moduleSegments(fs.readFileSync(DIST, 'utf-8'), file).join('\n')
+    expect(segment.length, `产物里找不到 // ${file} 模块区段${REBUILD_HINT}`).toBeGreaterThan(0)
+    const missing = fragments.filter((fragment) => !segment.includes(fragment))
+    expect(missing, `产物 // ${file} 区段缺少以下 #308 片段（产物不是按当前源码构建的）${REBUILD_HINT}`).toEqual([])
+  })
+})
+
 describe('dist/export-worker.mjs 新鲜度（改了 data-center SQL 口径必须重建产物）', () => {
   let dist: string
 

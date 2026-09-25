@@ -1,6 +1,4 @@
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
 import {
   DATA_CENTER_BOARD_LABELS,
   DATA_CENTER_TABS,
@@ -130,12 +128,6 @@ describe('parseTimeRange', () => {
     })
   })
 
-  it('#308：日历校验复用 @/lib/calendar-date，params.ts 不再自带日期正则', () => {
-    const src = readFileSync(resolve(__dirname, 'params.ts'), 'utf8')
-    expect(src).toContain("import { isValidCalendarDate } from '@/lib/calendar-date'")
-    expect(src).not.toContain('DATE_RE')
-    expect(src).not.toMatch(/\\d\{4\}-\\d\{2\}-\\d\{2\}/)
-  })
 })
 
 describe('isValidTimeRangeInput（#308 服务端复检）', () => {

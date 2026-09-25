@@ -171,5 +171,7 @@ describe('#308 看板导出：非法自定义区间 → INVALID_PARAMS（不回�
     )
     expect(err).toBeNull()
     expectSaneParams()
+    // 导出的是请求的区间，不是被静默改写的本月
+    expect(queries.some((q) => q.params.includes('1900-01-01') && q.params.includes('1900-01-31'))).toBe(true)
   })
 })
