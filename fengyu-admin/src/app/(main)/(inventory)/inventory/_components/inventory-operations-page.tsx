@@ -3222,7 +3222,7 @@ function CompanyShipmentForm({
       // 超量等 CONFLICT 文案由服务端给出（含「本次最多可发 N」），原样展示
       toast.error(actionErrorMessage(error, '创建品项公司发货失败'))
       // 失败多为库存或未发量被并发改动：批次可用量与报货单未发量都按最新重取，
-      // 已填的批次与数量保留（成功路径由 clearSelection 作废）
+      // 已填数量保留；批次按重取结果保留，已不可用或重取失败时由 LotPicker 清空（成功路径由 clearSelection 作废）
       invalidateLots()
       void refreshReports()
     } finally {
