@@ -1,7 +1,5 @@
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
-import { spawnSync } from 'node:child_process'
 import { describe, it, expect, beforeAll } from 'vitest'
 
 /**
@@ -54,6 +52,9 @@ const REBUILD_HINT =
   '     未设 6636632 字节 / NODE_ENV=test 6622668 / NODE_ENV=production 6598292，三份互不相同。\n' +
   '     已提交的这份是「未设」那一档；Docker 构建阶段是 production（Dockerfile.admin:41），\n' +
   '     但它自己会重建，不读这份 —— 这份服务的是 package.json 的 `export-worker` 直跑路径。\n' +
+  '   ⚠ **merge 冲突时绝不能手工/自动文本合并这个文件** —— 它是 bundle，文本合并出来的是\n' +
+  '     一份谁都构建不出来的产物（#414 实测：git 自动合并得到 6643958 字节，正确的是 6647513，\n' +
+  '     而当时全部指纹探针照绿）。一律 `git checkout --ours/--theirs` 任取一侧后**重建**。\n' +
   '   然后单独成一个 build(admin): 提交（照 7d695743 / c88ed9bf 先例）。'
 
 interface Probe {
@@ -593,118 +594,20 @@ describe('dist/export-worker.mjs 客量明细 SQL 整段逐字进入产物（#41
 })
 
 /**
- * #414：**完整性兜底 —— 重建产物并逐字节比对。**
+ * ## 曾经试过、又撤掉的一条：`bun build` 重建后与已提交产物比对
  *
- * ## 为什么最后还是回到这一条
+ * #414 期间加过一条「重建一次、比对自有 `// src/…` 模块段」的完整性兜底。
+ * 它在本地**确实立过功**：merge dev 时 git 对本 bundle 做了文本自动合并，合出一份
+ * **谁都构建不出来的产物**（6643958 字节 vs 正确的 6647513），而上面全部指纹探针照绿。
  *
- * 上面所有探针都是「挑几条口径指纹去产物里找」，本质是**开放集合**：
- * 漏掉任何一行，就有一条「源码正确、产物由另一个真实源码状态构建」的路径全绿。
- * 双谱系评审在 #414 上连着**九轮**指出这类缺口（投影追加同名列 / 守卫位置 / 分母生产式 /
- * JS 结果映射 / `${…}` 插值遮罩 / `const end = range.end` 生产者 …），
- * 每补一条它就换下一条 —— 这正是本仓在 #286/#287 上反复验证过的「逐条禁写法必被绕过」。
+ * **但它不可移植，已撤除**：CI（ubuntu + `npm ci` + bun latest）与本地（macOS + bun 1.3.3）
+ * 重建出的产物里**全部 137 个源模块段都不相同** —— bun 版本与依赖安装方式都会改变 JS 变换结果
+ * （标识符编号、格式），与口径无关。把它当 CI 闸门等于永久红。
  *
- * 而这条守护要回答的问题其实只有一个：**产物是不是按当前源码构建的**。
- * 那就直接构建一次比对 —— 这是该问题的**完整**答案，不需要预先知道哪行重要。
+ * 所以守护回到「**源码文本 → 已提交产物**」这个方向，它对 bun 的 JS 变换免疫：
+ * `bun build` 原样保留模板串，因此上面那条「整段 SQL 模板逐字进入产物」才是这一类的闭集，
+ * 逐行指纹探针则负责给出「是哪条口径漂了」的诊断信息。
  *
- * ## 比对范围：**只比我们自己的 `// src/…` 模块区段**，不比整份文件
- *
- * 整份文件逐字节相等只在**同一台机器同一套依赖**下成立：bun 版本、
- * `npm ci` 与 `bun install` 解析出的依赖树都会改变 `node_modules` 段的字节，
- * CI 与本地必然对不上（CI 是 ubuntu + npm，本地是 macOS + bun）。
- * 而本守护要防的东西**全在我们自己的源码段里** —— 双谱系那九轮攻击无一例外。
- * 所以按模块区段比，且把 bun 生成的 `import_drizzle_orm65` 这类标识符归一
- * （它的数字后缀随整个模块图变，与口径无关）。
- *
- * ## 可行性（实测，2026-09-25）
- *
- * - `bun build` 对同一份源码**确定性输出**：连跑两次逐字节相同
- * - 耗时约 **0.17s**，放在单测里不影响跑测体感
- *
- * ## 与上面那些探针的分工
- *
- * 探针**不删**：它们更快，且失败信息会指名道姓说「是哪条口径漂了」（如「客活分子会员守卫」），
- * 而本条只会说「产物与源码不一致」。探针是**诊断**，本条是**完备性兜底**。
+ * ⚠ 想重新引入重建比对的话，先解决可移植性（锁定 bun 版本 + 统一安装方式），
+ * 否则只是把一条守护换成一条噪音。手工排查时可直接跑 REBUILD_HINT 里的命令再 `cmp`。
  */
-describe('dist/export-worker.mjs 与当前源码逐字节一致（完整性兜底）', () => {
-  /** 复刻 REBUILD_HINT 的构建环境：NODE_ENV 必须不设（见下方 it 里的说明） */
-  const buildEnv = (): NodeJS.ProcessEnv => {
-    // 用解构摘掉而不是 `delete` —— 本仓把 NODE_ENV 声明成了必填，`delete` 会 TS2790
-    const { NODE_ENV: _dropped, ...rest } = process.env
-    void _dropped
-    // 本仓把 NODE_ENV 声明成必填，摘掉后类型对不上；断言回去（运行时确实没有这个键，
-    // 下面的逐字节比对通过本身就是它真被摘掉的证据 —— 没摘掉会 6622668 vs 6636632 直接红）
-    return rest as NodeJS.ProcessEnv
-  }
-
-  it('重新构建一次，产物与已提交的完全相同', () => {
-    const tmp = path.join(os.tmpdir(), `fy-export-worker-freshness-${process.pid}.mjs`)
-    try {
-      // 命令与 docker/Dockerfile.admin:99-106 及 REBUILD_HINT 逐字一致，只改 --outfile
-      const r = spawnSync(
-        'bun',
-        [
-          'build',
-          'src/export-worker/index.ts',
-          '--target=node',
-          '--format=esm',
-          `--outfile=${tmp}`,
-          '--external',
-          'pg-native',
-          '--external',
-          '@opentelemetry/api',
-          '--external',
-          'server-only',
-          '--define',
-          'process.env.FENGYU_EXPORT_WORKER="1"',
-        ],
-        // ⚠ **必须把 NODE_ENV 摘掉**：vitest 会设成 `test`，而 bun 的输出随它变
-        // （未设 6636632 / test 6622668 / production 6598292 字节，三份互不相同）。
-        // 已提交的产物是「未设」那一档，比对环境必须对齐，否则这条恒红。
-        { cwd: ADMIN_ROOT, encoding: 'utf-8', env: buildEnv() },
-      )
-      // fail-closed：bun 缺失 / 构建失败一律红，**不跳过** ——
-      // 「工具不在就静默放行」正是本仓记过的 fail-open 形态（守护存在 ≠ 生效）
-      expect(
-        r.error ? `${r.error}` : r.status,
-        `重建产物失败（bun 是本项目的包管理器，应当可用）：\n${r.stderr ?? ''}`,
-      ).toBe(0)
-
-      const rebuilt = fs.readFileSync(tmp, 'utf-8')
-      const committed = fs.readFileSync(DIST, 'utf-8')
-
-      /** 取全部 `// src/…` 模块区段；bun 生成的 `import_xxx` 标识符归一（数字后缀随模块图变） */
-      const ownModules = (bundle: string): Record<string, string> => {
-        const out: Record<string, string> = {}
-        let current: string | null = null
-        for (const line of bundle.split('\n')) {
-          const header = /^\/\/ ((?:src|node_modules|\.\.)\/.*)$/.exec(line)
-          if (header) {
-            current = header[1].startsWith('src/') ? header[1] : null
-            if (current) out[current] ??= ''
-            continue
-          }
-          if (current) out[current] += line.replace(/\bimport_[A-Za-z0-9_$]+\b/g, 'IMPORT_REF') + '\n'
-        }
-        return out
-      }
-
-      const a = ownModules(committed)
-      const b = ownModules(rebuilt)
-      // fail-closed：一个 src 模块都没切出来说明 bun 换了注释格式，不能静默通过
-      expect(Object.keys(b).length, `重建产物里切不出任何 // src/ 模块区段${REBUILD_HINT}`).toBeGreaterThan(20)
-
-      const drifted = Object.keys(b).filter((k) => a[k] !== b[k])
-      const missing = Object.keys(b).filter((k) => !(k in a))
-      expect(
-        [...new Set([...drifted, ...missing])],
-        '`dist/export-worker.mjs` 里下列源文件的编译结果与当前源码**对不上** —— 产物没跟着源码重建。\n' +
-          '（只比对 `// src/…` 自有模块段，已归一 bun 的 import 标识符；node_modules 段不参与，' +
-          '因为它随 bun 版本与依赖安装方式变）\n' +
-          '上面那些按口径指纹的探针可能全绿：它们只挑了几行去找，看不出整段差异。' +
-          REBUILD_HINT,
-      ).toEqual([])
-    } finally {
-      fs.rmSync(tmp, { force: true })
-    }
-  })
-})

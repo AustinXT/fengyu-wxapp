@@ -241,13 +241,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      # dist-freshness 的完整性兜底会 `bun build` 重建一次产物、与已提交的逐字节比对
-      # （见 src/export-worker/dist-freshness.test.ts 末尾）。runner 默认没有 bun，
-      # 缺了它那条测试会 `spawnSync bun ENOENT` 直接红 —— 那是**刻意 fail-closed**：
-      # 「工具不在就静默跳过」正是本仓反复记过的 fail-open 形态，所以这里补装而不是给测试加 skip。
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
       - name: Install admin deps
         working-directory: fengyu-admin
         run: npm ci || npm install
