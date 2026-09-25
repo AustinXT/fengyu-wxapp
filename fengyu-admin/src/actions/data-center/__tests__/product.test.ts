@@ -16,10 +16,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
  * mock @/db.execute —— 按 SQL 文本内容路由：
  *   - filterOptions（含 'DISTINCT pc.product_kind' 特征）→ filterRows
  *   - 骨架（含 o_store + market_id，无 group/CTE）→ skeletonRows
- *   - 持卡按店（含 paid_sessions > 0 + GROUP BY so.store_id）→ cardByStoreRows
+ *   - 持卡按店（含 paid_sessions > 0 + GROUP BY c.bound_store_id）→ cardByStoreRows
  *   - 会员按店（含 bound_store_id + GROUP BY）→ memberByStoreRows
  *   - cycle 按店（含 store_ids 并集 + trial_store/new_store/repurchase_store）→ cycleByStoreRows
- *   - 持卡总量（含 paid_sessions > 0，无 GROUP BY store）→ scalarCard
+ *   - 持卡总量（含 paid_sessions > 0，无 GROUP BY）→ scalarCard
  *   - 会员总量（含 became_member_at，无 GROUP BY）→ scalarMember
  *   - cycle 标量（含 WITH daily_agg + cohort）→ scalarCycle
  */
@@ -72,27 +72,39 @@ vi.mock('@/db', () => ({
       if (/store_ids/.test(t) && /trial_store/.test(t)) {
         return responder.cycleByStoreRows
       }
-      // 持卡按店（paid_sessions > 0 + GROUP BY store_id）
-      if (/paid_sessions/.test(t) && /GROUP BY so\.store_id/.test(t)) {
-        return responder.cardByStoreRows
-      }
-      // 会员按店（bound_store_id + GROUP BY）
-      if (/became_member_at/.test(t) && /GROUP BY c\.bound_store_id/.test(t)) {
-        return responder.memberByStoreRows
-      }
       // cycle 标量（WITH daily_agg + cohort）
       if (/WITH daily_agg/.test(t) && /cohort/.test(t)) {
         return [responder.scalarCycle]
       }
-      // 持卡总量（paid_sessions > 0，无 GROUP BY store）
+      /**
+       * ⚠️ **持卡必须先于会员判定**（#287）。
+       *
+       * 同源改造后，持卡查询与会员查询共用同一个
+       * `FROM client_wechat_users c WHERE <scope on bound_store_id> AND became_member_at IS NOT NULL`
+       * 前缀，byStore 侧连 `GROUP BY c.bound_store_id` 都一样 —— 唯一的区别是持卡多了
+       * `paid_sessions`（在 `EXISTS` 子查询里）。
+       *
+       * 旧路由按「`paid_sessions` + `GROUP BY so.store_id`」认持卡，改造后前者还在、
+       * 后者没了，于是**持卡查询被错路由成会员查询**，两者返回同一批行、占比恒等于 1。
+       * 本轮实测踩到过。所以这里改成 `paid_sessions` 优先分流。
+       */
       if (/paid_sessions/.test(t)) {
-        return [responder.scalarCard]
+        return /GROUP BY c\.bound_store_id/.test(t)
+          ? responder.cardByStoreRows
+          : [responder.scalarCard]
       }
-      // 会员总量
       if (/became_member_at/.test(t)) {
-        return [responder.scalarMember]
+        return /GROUP BY c\.bound_store_id/.test(t)
+          ? responder.memberByStoreRows
+          : [responder.scalarMember]
       }
-      return [{ v: 0 }]
+      /**
+       * ⚠️ **兜底必须抛错，不能返回零值** —— 本轮实测教训：
+       * 同源改造后持卡 SQL 与会员 SQL 高度相似，路由一旦混淆就会静默取到错误的行；
+       * 若兜底再把「没命中任何分支」伪装成合法的 `[{ v: 0 }]`，
+       * 两类失效都变成「数字看起来只是变了」而不是「测试红」。
+       */
+      throw new Error('mock 未路由到任何分支，SQL 片段：' + t.slice(0, 200))
     }),
   },
 }))
@@ -295,6 +307,54 @@ describe('getProductBoard 装配', () => {
     expect(s.marketName).toBe('市场A')
     expect(s.metrics.cardHolders).toBe(6)
     expect(s.metrics.trialCount).toBe(2)
+  })
+
+  /**
+   * #287：持卡占比曾经分子分母不同源，集团恒 253%、单店最高 2600%。
+   *
+   * ⚠️ **本文件 mock 掉了 SQL，证不了「SQL 层面不会再出 >100%」** —— 那由
+   * `consistency.product.test.ts` 的结构守护 + 生产实测（40 家门店 0 家 >100%）背书。
+   * 这里只能守住装配层的两件事，而**旧夹具（6 / 24）两件都守不住**：
+   *
+   *   1. **两条查询不得被路由混淆** —— 同源改造后持卡与会员查询共用同一个前缀、
+   *      连 `GROUP BY c.bound_store_id` 都一样，极易被按文本路由的 mock 混为一谈。
+   *      一旦混淆，两者返回同一批行、占比恒等于 **1** —— 而旧夹具（6/24）下这看起来只是"数变了"。
+   *      分子分母取**互质且都非零**的值（30/24），混淆时占比会变成 1 ≠ 1.25，
+   *      下面 `toBeCloseTo(1.25)` 那一条就是探测器（再写一条 `not.toBe(1)` 是装饰，被它蕴含）。
+   *   2. **装配层不得偷偷夹紧到 100%** —— 若 SQL 层将来回归出 >100%，看板必须**如实显示**，
+   *      让读数人看见异常；夹紧会把 SQL 缺陷伪装成正常数字（#287 能被审计发现正是因为它没夹紧）。
+   */
+  it('持卡占比：分子分母不混淆，>100% 如实透传不夹紧（#287）', async () => {
+    responder.skeletonRows = [
+      { store_id: 's1', store_name: '门店1', market_id: 'm1', market_name: '市场A' },
+    ]
+    // 30 / 24 = 1.25：两值互质且非零 —— 若两条查询被路由混淆，结果会精确等于 1
+    responder.cardByStoreRows = [{ store_id: 's1', v: 30 }]
+    responder.memberByStoreRows = [{ store_id: 's1', v: 24 }]
+    responder.scalarCard = { v: 30 }
+    responder.scalarMember = { v: 24 }
+    responder.cycleByStoreRows = [
+      {
+        store_id: 's1',
+        trial_count: 0,
+        new_count: 0,
+        new_revenue: 0,
+        repurchase_count: 0,
+        repurchase_revenue: 0,
+      },
+    ]
+
+    const res = await getProductBoard(PARAMS)
+    const s = res.byStore[0]
+
+    expect(s.metrics.cardHolders, '持卡数被会员数顶替 —— 两条查询在 mock 路由里被混淆了').toBe(30)
+    expect(
+      s.metrics.cardHolderRate,
+      '持卡占比被夹紧到 100% —— SQL 层若回归出 >100%，看板必须如实显示，否则缺陷会被伪装成正常数字',
+    ).toBeCloseTo(1.25, 6)
+    // KPI 大卡同理
+    expect(res.kpis.cardHolders.value).toBe(30)
+    expect(res.kpis.cardHolderRate.value).toBeCloseTo(1.25, 6)
   })
 
   it('明细派生防除零：分母 0 → null', async () => {
