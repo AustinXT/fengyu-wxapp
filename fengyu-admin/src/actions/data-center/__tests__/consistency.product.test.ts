@@ -54,9 +54,59 @@ function stripComments(src: string): string {
  * #287 把它从 `queryCycleByStore` 专用**提为通用**，两个 describe 共用一份。
  */
 function functionBody(src: string, name: string): string {
-const decl = new RegExp(`async function ${name}\\s*\\(`).exec(src)
-    if (!decl) return ''
-    let i = decl.index + decl[0].length
+    /**
+     * ⚠️ **声明定位也必须跳过注释与字符串**（#287 闸门 2 round-4 codex）。
+     *
+     * 原来直接在**原文**上 `new RegExp('async function <name>\\s*\\(').exec(src)` ——
+     * 于是在真函数之前放一段块注释里的伪声明（注释里写一份完全符合快照的安全壳与 SQL），
+     * 切片就取到诱饵：函数壳快照 / `db.execute` 计数 / scope 列 / 逐字派生**全在检查诱饵**。
+     * 而「注释里不得祈使 so.store_id」那条只看以 `*` 或 `//` 开头的行，单行块注释诱饵漏网。
+     *
+     * 所以从文件头做一次词法扫描，只在**注释外、字符串外**匹配声明。
+     */
+    const declRe = new RegExp(`^async function ${name}\\s*\\(`)
+    let scan = 0
+    let declIdx = -1
+    let declLen = 0
+    while (scan < src.length) {
+      if (src[scan] === '/' && src[scan + 1] === '/') {
+        while (scan < src.length && src[scan] !== '\n') scan++
+        continue
+      }
+      if (src[scan] === '/' && src[scan + 1] === '*') {
+        scan += 2
+        while (scan < src.length && !(src[scan] === '*' && src[scan + 1] === '/')) scan++
+        scan += 2
+        continue
+      }
+      if (src[scan] === "'" || src[scan] === '"' || src[scan] === '`') {
+        const q = src[scan]
+        scan++
+        while (scan < src.length) {
+          if (src[scan] === '\\') {
+            scan += 2
+            continue
+          }
+          if (src[scan] === q) {
+            scan++
+            break
+          }
+          scan++
+        }
+        continue
+      }
+      if (src[scan] === 'a') {
+        const m = declRe.exec(src.slice(scan, scan + 120))
+        if (m) {
+          declIdx = scan
+          declLen = m[0].length
+          break
+        }
+      }
+      scan++
+    }
+    if (declIdx < 0) return ''
+    let i = declIdx + declLen
     for (let paren = 1; i < src.length && paren > 0; i++) {
       if (src[i] === '(') paren++
       else if (src[i] === ')') paren--
@@ -368,18 +418,55 @@ describe('品项板块两端口径一致性守护', () => {
          * `AND` 链上追加的 `OR` 不改变字符串派生关系，却把整个谓词变成析取。
          * 这四条 SQL 目前没有任何合法的 `OR` 需求，一刀切禁掉（fail-closed）。
          */
-        for (const fn of [
+        const FOUR = [
           'queryCardHolders',
           'queryCardHoldersByStore',
           'queryMemberCount',
           'queryMemberCountByStore',
-        ]) {
+        ]
+        for (const fn of FOUR) {
           expect(
             adminCardSql(fn),
             `${fn} 的 SQL 出现 OR —— AND 链上追加 OR 不破坏逐字派生等式，` +
               '却会把整个 WHERE 变成析取（(scope AND member) OR (…)），占比可恒 100%',
           ).not.toMatch(/\bOR\b/i)
+
+          /**
+           * ⑤ **禁 SQL 注释**（round-4 codex）—— 逐字派生比的是 `normalize()` **压平空白后**的
+           * 文本，而 SQL 的 `--` 注释是**靠换行终止**的，换行恰好被压掉了。于是：
+           *
+           *   分母：  … AND c.became_member_at IS NOT NULL -- marker
+           *   分子：  … AND c.became_member_at IS NOT NULL -- marker AND EXISTS ( … )
+           *                                                ↑ 同一物理行
+           *
+           * 归一化后分子**精确等于**「分母 + EXISTS」，而 PostgreSQL 把整个 EXISTS
+           * 连同后面的内容**全部注释掉** ⇒ 分子退化为全部会员、占比恒 100%。
+           * 没有 `OR`、`${sc}` 仍一次、形状断言在注释里命中、函数壳快照又忽略整个 SQL。
+           *
+           * 这四条 SQL 不需要任何注释（口径说明写在函数 JSDoc 里），一刀切禁掉。
+           */
+          expect(
+            adminCardSql(fn),
+            `${fn} 的 SQL 出现 -- 或 /* 注释 —— normalize() 压掉换行后，` +
+              '`-- x AND EXISTS (…)` 能让逐字等式成立而 PG 把 EXISTS 整段注释掉（占比恒 100%）',
+          ).not.toMatch(/--|\/\*/)
         }
+
+        /**
+         * ⑥ **投影必须钉死**（round-4 codex）。派生等式只证明「分子行集 ⊆ 分母行集」，
+         * 没说投影是什么 —— 两边同步改成 `SELECT 1000000 - COUNT(*) AS v` 时子集关系仍成立，
+         * 但比值完全失真。所以把两条分母的投影逐字钉住（分子的投影由派生等式跟着锁）。
+         */
+        expect(
+          adminCardSql('queryMemberCount'),
+          '集团分母的投影不是裸 COUNT(*) —— 包一层运算会让占比失真而子集关系仍成立',
+        ).toMatch(/^SELECT COUNT\(\*\) AS v FROM client_wechat_users c WHERE /)
+        expect(
+          adminCardSql('queryMemberCountByStore'),
+          'byStore 分母的投影不是「归店键 + 裸 COUNT(*)」',
+        ).toMatch(
+          /^SELECT c\.bound_store_id AS store_id, COUNT\(\*\) AS v FROM client_wechat_users c WHERE /,
+        )
       })
 
       it('admin 两个持卡查询都以「分母的壳 + EXISTS」为形状', () => {
