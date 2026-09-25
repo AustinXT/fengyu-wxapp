@@ -579,6 +579,10 @@ export interface InventorySupplyChainPurchaseReceiptProgressItem {
   purchasedQuantity: number
   receivedQuantity: number
   outstandingQuantity: number
+  /** 已入库金额 = Σ各入库明细金额（按入库实际进价，#346）；价格不可见时不返回 */
+  receivedAmount?: number
+  /** 入库后实际金额 = 已入库金额 +（仍待收货时）未入库数量 × 下单价；价格不可见时不返回 */
+  actualAmount?: number
 }
 
 export interface InventorySupplyChainPurchaseReceiptProgress {

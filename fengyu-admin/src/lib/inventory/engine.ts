@@ -3321,6 +3321,12 @@ async function loadItemCompanyRequestFulfillmentProgress(
   }
 }
 
+/** 取到分、.5 远离 0（与 PG numeric ROUND 一致；先 toFixed(4) 吸收浮点残差）。与 business.ts roundCents 同口径。 */
+function roundCentsHalfUp(value: number): number {
+  const scaled = Number(value.toFixed(4)) * 100
+  return Math.sign(scaled) * Math.round(Math.abs(scaled) + 1e-9) / 100
+}
+
 async function loadSupplyChainPurchaseReceiptProgress(
   docId: string,
   scoped: string[] | null,
@@ -3328,20 +3334,23 @@ async function loadSupplyChainPurchaseReceiptProgress(
   const rows = await db.execute(sql`
     WITH visible_docs AS (${visibleInventoryDocsSql(scoped)}),
     purchase_items AS (
-      SELECT item.id AS item_id, item.quantity, purchase_doc.status AS purchase_status
+      SELECT item.id AS item_id, item.quantity, item.actual_unit_price, purchase_doc.status AS purchase_status
         FROM inventory_doc_items item
         JOIN inventory_docs purchase_doc ON purchase_doc.id = item.doc_id
         JOIN visible_docs visible_purchase ON visible_purchase.id = purchase_doc.id
        WHERE item.doc_id = ${docId}
     ),
     receipt_totals AS (
+      -- 已入库金额取各入库明细的 amount（#346：入库时可填单价优惠，按实际进价计），不是按下单价推算
       SELECT
         doc_link.from_item_id AS purchase_item_id,
-        SUM(COALESCE(doc_link.quantity, 0)) AS received_quantity
+        SUM(COALESCE(doc_link.quantity, 0)) AS received_quantity,
+        SUM(COALESCE(receipt_item.amount, 0)) AS received_amount
         FROM inventory_doc_links doc_link
         JOIN purchase_items purchase_item ON purchase_item.item_id = doc_link.from_item_id
         JOIN inventory_docs receipt_doc ON receipt_doc.id = doc_link.to_doc_id
         JOIN visible_docs visible_receipt ON visible_receipt.id = receipt_doc.id
+        JOIN inventory_doc_items receipt_item ON receipt_item.id = doc_link.to_item_id
        WHERE doc_link.from_doc_id = ${docId}
          AND doc_link.relation_type = '采购订单供应链采购入库'
          AND receipt_doc.status = '已完成'
@@ -3350,7 +3359,9 @@ async function loadSupplyChainPurchaseReceiptProgress(
     SELECT
       purchase_item.item_id,
       purchase_item.quantity AS purchased_quantity,
+      purchase_item.actual_unit_price AS order_unit_price,
       COALESCE(receipt_total.received_quantity, 0) AS received_quantity,
+      COALESCE(receipt_total.received_amount, 0) AS received_amount,
       purchase_item.purchase_status
       FROM purchase_items purchase_item
       LEFT JOIN receipt_totals receipt_total ON receipt_total.purchase_item_id = purchase_item.item_id
@@ -3363,18 +3374,27 @@ async function loadSupplyChainPurchaseReceiptProgress(
     items: (rows as unknown as Array<{
       item_id: number | string
       purchased_quantity: string | number | null
+      order_unit_price: string | number | null
       received_quantity: string | number | null
+      received_amount: string | number | null
       purchase_status: InventoryCoreDocStatus
     }>).map((row) => {
       const purchasedQuantity = numberOrNull(row.purchased_quantity) ?? 0
       const receivedQuantity = numberOrNull(row.received_quantity) ?? 0
+      const outstandingQuantity = row.purchase_status === '待收货'
+        ? Math.max(0, purchasedQuantity - receivedQuantity)
+        : 0
+      const receivedAmount = numberOrNull(row.received_amount) ?? 0
+      const orderUnitPrice = numberOrNull(row.order_unit_price)
       return {
         itemId: Number(row.item_id),
         purchasedQuantity,
         receivedQuantity,
-        outstandingQuantity: row.purchase_status === '待收货'
-          ? Math.max(0, purchasedQuantity - receivedQuantity)
-          : 0,
+        outstandingQuantity,
+        receivedAmount,
+        // 入库后实际金额（#346）：已入库部分按各次入库的实际进价；仍待收货时未入库部分按下单价；
+        // 已完成 / 已关闭（已取消）只算已入库部分（口径 A，outstanding 已是 0）。
+        actualAmount: Number((receivedAmount + roundCentsHalfUp(outstandingQuantity * (orderUnitPrice ?? 0))).toFixed(2)),
       }
     }),
   }
@@ -3586,7 +3606,13 @@ export const getInventoryCoreDocById = withPermission(
         createdAt: item.createdAt.toISOString(),
       })),
       lineage,
-      fulfillmentProgress,
+      // 采购收货进度里的金额（#346）与明细金额同一价格档：看不到明细金额就不返回
+      fulfillmentProgress: fulfillmentProgress?.kind === '供应链采购收货' && !includeItemAmount
+        ? {
+            ...fulfillmentProgress,
+            items: fulfillmentProgress.items.map(({ receivedAmount: _received, actualAmount: _actual, ...item }) => item),
+          }
+        : fulfillmentProgress,
     }
   },
 )

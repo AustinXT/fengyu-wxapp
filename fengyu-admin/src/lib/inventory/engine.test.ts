@@ -2059,14 +2059,20 @@ describe('库存单据详情履约进度', () => {
     expect(fulfillmentSql).toContain("receipt_doc.status = '已完成'")
   })
 
-  it('采购订单所有行按关联入库单聚合已收与待收数量；发货直连报货单后不再带发货量（#336）', async () => {
+  it.each([
+    // #346：已入库部分按各入库明细金额（入库时填了优惠：4 件 × 80 = 320），未入库部分仍按下单价 100
+    ['待收货', 6, 920],
+    // 口径 A：关闭（已取消）后只按已入库部分计
+    ['已取消', 0, 320],
+    ['已完成', 0, 320],
+  ] as const)('采购订单所有行按关联入库单聚合已收与待收数量与入库后实际金额（%s）；发货直连报货单后不再带发货量（#336 #346）', async (status, outstandingQuantity, actualAmount) => {
     const now = new Date('2026-08-10T09:00:00.000Z')
     mockDb.select
       .mockReturnValueOnce(detailHeadSelect([{
         doc: {
           id: 'PCG-260810-0001',
           docType: '采购订单',
-          status: '待收货',
+          status,
           sourceOrgNodeId: null,
           targetOrgNodeId: 'HQ',
           marketId: null,
@@ -2140,9 +2146,11 @@ describe('库存单据详情履约进度', () => {
       .mockResolvedValueOnce([{
         item_id: 201,
         purchased_quantity: '10',
+        order_unit_price: '100',
         received_quantity: '4',
+        received_amount: '320',
         shipped_quantity: '2',
-        purchase_status: '待收货',
+        purchase_status: status,
       }])
 
     const detail = await getInventoryCoreDocById('PCG-260810-0001')
@@ -2158,13 +2166,17 @@ describe('库存单据详情履约进度', () => {
         itemId: 201,
         purchasedQuantity: 10,
         receivedQuantity: 4,
-        outstandingQuantity: 6,
+        outstandingQuantity,
+        receivedAmount: 320,
+        actualAmount,
       }],
     })
 
     const [, fulfillmentQuery] = mockDb.execute.mock.calls.map(([query]) => query)
     expect(sqlContains(fulfillmentQuery, '采购订单供应链采购入库')).toBe(true)
     expect(sqlContains(fulfillmentQuery, "receipt_doc.status = '已完成'")).toBe(true)
+    // 已入库金额取入库明细实际金额，不按下单价推算（#346）
+    expect(sqlContains(fulfillmentQuery, 'SUM(COALESCE(receipt_item.amount, 0))')).toBe(true)
     // 市场行同样经供应链采购入库（#335），不能再按 market_id 只统计自用行
     expect(sqlContains(fulfillmentQuery, 'market_id IS NULL')).toBe(false)
     expect(sqlContains(fulfillmentQuery, '采购订单发货')).toBe(false)
@@ -2716,6 +2728,39 @@ describe('§9.5 单据详情价格档位逐字段遮蔽', () => {
       (session, action) => (session.permissions.actions ?? []).includes(action),
     )
     mockDb.execute.mockResolvedValue([] as never)
+  })
+
+  it('none 档：采购订单收货进度不带「已入库金额 / 入库后实际金额」（#346，与明细金额同档遮蔽）', async () => {
+    mockGetSession.mockResolvedValue(sessionWithActions(['inventory:list'], ['HQ']) as never)
+    const now = new Date('2026-09-25T09:00:00.000Z')
+    mockDb.select
+      .mockReturnValueOnce(detailHeadSelect([{
+        doc: {
+          id: 'CGD-346', docType: '采购订单', status: '待收货', sourceOrgNodeId: null, targetOrgNodeId: 'HQ',
+          marketId: null, supplierId: null, docDate: '2026-09-25', relatedSaleOrderId: null, customerName: null,
+          employeeName: null, supplierName: null, externalPartyName: null, logisticsCompany: null, trackingNo: null,
+          receiptAttachmentUrl: null, totalQuantity: '10', totalAmount: '1000', remark: null, auditRemark: null,
+          createdBy: 'E001', confirmedAt: now, approvedAt: null, rejectedAt: null, cancellationReason: null,
+          cancelledAt: null, createdAt: now, updatedAt: now,
+        },
+        sourceOrgNodeName: null, sourceOrgNodeType: null, targetOrgNodeName: '总部', targetOrgNodeType: '总部',
+      }]))
+      .mockReturnValueOnce(detailItemsSelect([]))
+    mockDb.execute
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{
+        item_id: 201, purchased_quantity: '10', order_unit_price: '100', received_quantity: '4',
+        received_amount: '320', purchase_status: '待收货',
+      }])
+
+    const detail = await getInventoryCoreDocById('CGD-346')
+
+    expect(detail!.totalAmount).toBeUndefined()
+    expect(detail!.fulfillmentProgress).toEqual({
+      kind: '供应链采购收货',
+      items: [{ itemId: 201, purchasedQuantity: 10, receivedQuantity: 4, outstandingQuantity: 6 }],
+    })
+    expect(JSON.stringify(detail!.fulfillmentProgress)).not.toMatch(/Amount/)
   })
 
   it('none 档（门店）：单头与明细逐字段无任何金额，序列化后不出现金额键', async () => {
