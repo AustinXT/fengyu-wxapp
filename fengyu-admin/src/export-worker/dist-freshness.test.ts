@@ -75,6 +75,19 @@ interface Probe {
  * 前提：模块头是 bun 写的行首 `// src/…` / `// node_modules/…` / `// ../…` 注释；被守护的源文件自己不要写这种行首注释
  * （会被误当模块头截断区段，表现为误红，方向是 fail-closed）。bun 升级改了注释格式时这里要跟着改。
  */
+/**
+ * 去掉 SQL 行注释再比对 —— 否则把产物里的某行 `--` 掉，**子串与出现次数都不变**，
+ * `exactCountsInModule` 与 `missing` 双双照绿，而那行 SQL 实际已失效（codex round-5 P2）。
+ * 这是全部探针共用的通病，不只 #414 那两条。
+ *
+ * 两侧（源码 / 产物）都要过这一道，否则源码里带尾注释的指纹会在产物侧找不到而误红。
+ * 只切第一个 `--`：本文件全部 pattern 都不含 `--`，不存在把指纹自身切断的情况。
+ */
+function uncomment(line: string): string {
+  const i = line.indexOf('--')
+  return (i >= 0 ? line.slice(0, i) : line).trim()
+}
+
 function moduleSegments(dist: string, file: string): string[] {
   const lines = dist.split('\n')
   const out: string[] = []
@@ -301,8 +314,9 @@ describe('dist/export-worker.mjs 新鲜度（改了 data-center SQL 口径必须
           .map((line) => ({
             line,
             // 两侧同一计数口径（按「包含」）：一条指纹可能是另一行的前缀（如 SELECT COUNT(*)::int AS count,）
-            src: srcLines.filter((l) => l.includes(line)).length,
-            dist: segment.filter((l) => l.includes(line)).length,
+            // 两侧都先剥 SQL 行注释：`-- <指纹>` 的子串与次数都不变，不剥就是恒绿
+            src: srcLines.filter((l) => uncomment(l).includes(uncomment(line))).length,
+            dist: segment.filter((l) => uncomment(l).includes(uncomment(line))).length,
           }))
           .filter((item) => item.src !== item.dist)
         expect(
@@ -313,7 +327,12 @@ describe('dist/export-worker.mjs 新鲜度（改了 data-center SQL 口径必须
         ).toEqual([])
       }
 
-      const missing = [...new Set(lines)].filter((l) => !dist.includes(l))
+      // 逐行比对（而不是对整份产物 `dist.includes`）：唯有按行才能剥掉 SQL 行注释，
+      // 否则 `-- <指纹>` 里的子串照样命中整份文本 ⇒ 恒绿（codex round-5 P2）
+      const distLines = dist.split('\n').map((l) => l.trim())
+      const missing = [...new Set(lines)].filter(
+        (line) => !distLines.some((l) => uncomment(l).includes(uncomment(line))),
+      )
       expect(
         missing,
         `${probe.label}：以下口径指纹存在于 ${probe.file} 但**不在** dist/export-worker.mjs 中，` +
