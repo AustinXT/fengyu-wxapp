@@ -40,9 +40,10 @@
  *
  * 回滚文件生命周期：COMMIT 前写 <out>.pending（status=pending）；COMMIT 成功后写 <out>
  *   （status=committed）并删除 .pending。两者都以 wx 创建，不覆盖已有文件。
+ *   两份文件都记录写入事务号 xid（pg_current_xact_id()）。
  *   ⚠ 残留 .pending 表示「提交状态未知」（COMMIT 与改名之间进程可能被杀），**不要手工删除**：
- *   直接拿它跑 --rollback —— 按 CAS 判定，库中全部行都不是回填值则判为未提交、不做任何改动；
- *   否则按已提交处理并回滚。
+ *   直接拿它跑 --rollback —— 先用 pg_xact_status(xid) 查该事务真实状态：committed 则按 CAS 回滚；
+ *   aborted 则判为未提交、不做任何改动（此时 .pending 可删）；查不到（事务号过旧）则拒绝自动处理。
  *
  * 目标库：一律经 _lib/assert-db-target 白名单（dev 101.34.242.103 / prod 118.178.196.26，
  *   5433/fengyu_wxapp，拒绝 query 覆盖）；写入另需 --confirm-target 逐字确认。
@@ -220,11 +221,12 @@ async function runRollback(pool, opts, target) {
     throw new Error(`回滚文件无效：issue=${file.issue} status=${file.status}（只接受 #378 的 committed / pending 文件）`)
   }
   const pending = file.status === 'pending'
+  if (!file.xid) throw new Error('回滚文件缺少写入事务号 xid（旧格式文件），请人工核对后处理')
   if (!sameTarget(file.target, target)) {
     throw new Error(`回滚文件目标 ${targetLabel(file.target)} 与当前连接 ${targetLabel(target)} 不一致，已拒绝`)
   }
   const entries = file.rows
-  log(`回滚文件 ${opts.rollback}：${entries.length} 行（${pending ? '提交状态未知，按 CAS 判定' : `提交于 ${file.committedAt}`}）`)
+  log(`回滚文件 ${opts.rollback}：${entries.length} 行（${pending ? '提交状态未知，按事务号判定' : `提交于 ${file.committedAt}`}）`)
   const ids = entries.map((e) => e.service_item_id)
   const oldVals = entries.map((e) => (e.old_value === null ? null : String(e.old_value)))
   const newVals = entries.map((e) => (e.new_value === null ? null : String(e.new_value)))
@@ -233,6 +235,19 @@ async function runRollback(pool, opts, target) {
   try {
     await client.query('BEGIN')
     await client.query(`SET LOCAL lock_timeout = '5s'`)
+    if (pending) {
+      // 值相等不能证明来自该事务（可能是后来另一次回填写的），只认事务号的真实状态
+      const { rows: [x] } = await client.query('SELECT pg_xact_status($1::xid8) AS status', [file.xid])
+      log(`pending 文件写入事务 xid=${file.xid} 状态: ${x.status ?? '(查不到)'}`)
+      if (x.status === 'aborted') {
+        await client.query('ROLLBACK')
+        log('该次写入未提交，未做任何改动；该 .pending 文件可删除')
+        return
+      }
+      if (x.status !== 'committed') {
+        throw new Error(`无法确认 xid=${file.xid} 的提交状态（${x.status ?? '查不到'}），拒绝自动回滚，请人工核对`)
+      }
+    }
     // 先锁住文件内仍存在的行，再按 CAS 分类：命中 / 值已漂移 / 已不存在
     const { rows: present } = await client.query(
       `SELECT sit.service_item_id,
@@ -246,12 +261,6 @@ async function runRollback(pool, opts, target) {
     const missing = ids.filter((id) => !presentIds.has(id))
     const drifted = present.filter((r) => r.drifted).map((r) => r.service_item_id)
     if (missing.length) log(`已不存在（跳过）${missing.length} 行：${preview(missing)}`)
-    if (pending && present.length > 0 && drifted.length === present.length) {
-      // 库中没有任何一行是回填写入值 → 该次写入未提交（或已被完整回滚），无需改动
-      await client.query('ROLLBACK')
-      log('pending 文件对应的写入未生效（库中无一行等于回填值），未做任何改动；该 .pending 文件可删除')
-      return
-    }
     if (drifted.length) {
       log(`值已漂移 ${drifted.length} 行：${preview(drifted)}`)
       if (!opts.allowDrift) throw new Error('存在值已漂移的行，未回滚；确认跳过这些行后加 --allow-drift 重跑')
@@ -340,9 +349,11 @@ async function runBackfill(pool, opts, target) {
       throw new Error(`UPDATE 命中 ${res.rowCount} 行 ≠ 预览 ${candidates.length} 行（期间有并发改动？重跑即可），已回退事务`)
     }
     const written = new Map(res.rows.map((r) => [r.service_item_id, r.new_value]))
+    const { rows: [{ xid }] } = await client.query('SELECT pg_current_xact_id()::text AS xid')
     const payload = {
       issue: 378,
       status: 'pending',
+      xid,
       target,
       generatedAt: new Date().toISOString(),
       rows: candidates.map((r) => ({
@@ -356,13 +367,18 @@ async function runBackfill(pool, opts, target) {
     committed = true
     try {
       writeJsonExclusive(rollbackOut, { ...payload, status: 'committed', committedAt: new Date().toISOString() })
-      fs.unlinkSync(pendingOut)
     } catch (err) {
-      // 数据已提交：此时 .pending 是唯一的原值记录，绝不能当成「未提交」删掉
+      // 数据已提交：.pending 是唯一原值记录，可直接用于 --rollback（按 xid 判定已提交）
       log(`⚠ 数据已提交，但写 committed 回滚文件失败: ${err.message}`)
-      log(`⚠ 原值保存在 ${pendingOut}，回滚前需手工把其中 status 改为 committed 并补 committedAt`)
+      log(`⚠ 原值保存在 ${pendingOut}（xid=${xid}），需要回滚时直接 --rollback=${pendingOut}；切勿删除`)
       process.exitCode = 2
       return
+    }
+    try {
+      fs.unlinkSync(pendingOut)
+    } catch (err) {
+      log(`⚠ committed 回滚文件已写出，但删除 ${pendingOut} 失败: ${err.message}（内容与 committed 文件相同，可手工删除）`)
+      process.exitCode = 2
     }
     log(`✓ 已回填 ${res.rowCount} 行；回滚文件: ${rollbackOut}`)
 
