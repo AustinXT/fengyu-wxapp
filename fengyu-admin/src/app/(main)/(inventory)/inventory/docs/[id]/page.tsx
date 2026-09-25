@@ -57,7 +57,11 @@ export default async function Page({
   if (!doc) notFound()
 
   const showPrice = doc.totalAmount !== undefined && doc.docType !== '品项公司发货'
-  const showStoreAllocationPrice = showPrice && doc.docType === '分院配货'
+  // 标准价 / 优惠 / 实际价三列：分院配货（门店货款）与供应链采购入库（#346 入库单价优惠）
+  const showStoreAllocationPrice = showPrice && (doc.docType === '分院配货' || doc.docType === '供应链采购入库')
+  const discountPriceHeaders = doc.docType === '供应链采购入库'
+    ? ['标准进价', '单价优惠', '实际进价', '金额']
+    : ['门店标准单价', '单价优惠', '优惠后实际单价', '应付货款']
   const reportFulfillment = doc.fulfillmentProgress?.kind === '报货履约'
     ? doc.fulfillmentProgress
     : null
@@ -90,7 +94,13 @@ export default async function Page({
   // 采购订单的市场行（#335）：同样经供应链采购入库，另列市场结算价（参考）。
   // 发货自 #336 起直连市场报货单，采购单上不再有「已发货」列。
   const hasPurchaseMarketLine = doc.docType === '采购订单' && doc.items.some((item) => item.marketId)
-  const supplyChainPurchaseColumnCount = supplyChainPurchaseFulfillment ? 2 : 0
+  // #346：入库可填单价优惠，采购单「入库后实际金额」按各次入库的实际进价算（不是下单价），价格可见时才有
+  // 进度被价格档遮蔽时不带金额；单头合计要求每一行都算得出（历史按发货完结的单、缺下单价的行服务端不给 actualAmount）
+  const purchaseAmountVisible = showPrice && Boolean(supplyChainPurchaseFulfillment?.items.some((item) => item.receivedAmount !== undefined))
+  const purchaseActualAmount = purchaseAmountVisible && supplyChainPurchaseFulfillment!.items.every((item) => item.actualAmount !== undefined)
+    ? Number(supplyChainPurchaseFulfillment!.items.reduce((sum, item) => sum + item.actualAmount!, 0).toFixed(2))
+    : null
+  const supplyChainPurchaseColumnCount = supplyChainPurchaseFulfillment ? (purchaseAmountVisible ? 3 : 2) : 0
   // 盘点单：把「数量」当实盘数，额外并排展示账面数与差异。
   // 差异是纯派生值（实盘 − 账面），**前端算、不落库** —— 落库就多一个会漂的数（issue #131 Q2）。
   const isStocktake = isStocktakeDocType(doc.docType)
@@ -114,6 +124,22 @@ export default async function Page({
   const itemColumnCount = 9 + lineOwnershipColumnCount + priceColumnCount + reportColumnCount + shipmentColumnCount +
     itemCompanyRequestColumnCount + supplyChainPurchaseColumnCount + promotionColumnCount +
     stocktakeColumnCount
+  // 市场报货单的整单履约（#336）：已发 / 已收都按「市场报货发货」直连血缘累计，只算正常量（赠送不占报货量），
+  // 用来判断「是否已全部发出 / 全部入库」。
+  const marketReportSummary = doc.docType === '市场报货' && reportFulfillment && reportFulfillment.items.length > 0
+    ? ((items) => {
+      const sum = (pick: (item: (typeof items)[number]) => number) =>
+        Number(items.reduce((total, item) => total + pick(item), 0).toFixed(2))
+      const demand = sum((item) => item.normalDemandQuantity)
+      const shipped = sum((item) => item.normalFulfilledQuantity)
+      const received = sum((item) => item.normalReceivedQuantity)
+      const allReceived = items.every((item) => item.normalReceivedQuantity >= item.normalDemandQuantity - 0.000001)
+      return {
+        shipping: `已发 ${shipped} / 报货 ${demand}（未发 ${Math.max(0, Number((demand - shipped).toFixed(2)))}）`,
+        receiving: allReceived ? `已全部入库（已收 ${received}）` : `未全部入库（已收 ${received} / 报货 ${demand}）`,
+      }
+    })(reportFulfillment.items)
+    : null
   const fields = [
     ['单据号', doc.id],
     ['类型', doc.docType],
@@ -123,7 +149,11 @@ export default async function Page({
     ['单据日期', doc.docDate?.slice(0, 10)],
     ['总数量', doc.totalQuantity],
     ...(isStocktake ? ([['盘点结论', stocktakeSummary(doc.items)]] as const) : []),
+    ...(marketReportSummary
+      ? ([['发货进度', marketReportSummary.shipping], ['入库进度', marketReportSummary.receiving]] as const)
+      : []),
     ...(showPrice ? ([['金额', doc.totalAmount]] as const) : []),
+    ...(purchaseActualAmount !== null ? ([['入库后实际金额', purchaseActualAmount]] as const) : []),
     ['顾客', doc.customerName],
     // #350：顾客出库（GCK）由提货服务产生，related_sale_order_id 记着是哪张销售单的货
     ['关联销售单', doc.relatedSaleOrderId],
@@ -265,10 +295,7 @@ export default async function Page({
               {lineSupplierColumnCount > 0 && <th className="px-3 py-2 text-left">供应商</th>}
               {lineMarketColumnCount > 0 && <th className="px-3 py-2 text-left">市场</th>}
               {showStoreAllocationPrice ? <>
-                <th className="px-3 py-2 text-right">门店标准单价</th>
-                <th className="px-3 py-2 text-right">单价优惠</th>
-                <th className="px-3 py-2 text-right">优惠后实际单价</th>
-                <th className="px-3 py-2 text-right">应付货款</th>
+                {discountPriceHeaders.map((header) => <th key={header} className="px-3 py-2 text-right">{header}</th>)}
               </> : showPrice && <>
                 <th className="px-3 py-2 text-right">实际单价</th>
                 <th className="px-3 py-2 text-right">金额</th>
@@ -295,6 +322,7 @@ export default async function Page({
               {supplyChainPurchaseFulfillment && <>
                 <th className="px-3 py-2 text-right">已入库</th>
                 <th className="px-3 py-2 text-right">待入库</th>
+                {purchaseAmountVisible && <th className="px-3 py-2 text-right">已入库金额</th>}
               </>}
               <th className="px-3 py-2 text-left">原因</th>
             </tr>
@@ -369,6 +397,7 @@ export default async function Page({
                   {supplyChainPurchaseFulfillment && <>
                     <td className="px-3 py-2 text-right">{fmt(supplyChainPurchaseProgress?.receivedQuantity)}</td>
                     <td className="px-3 py-2 text-right">{fmt(supplyChainPurchaseProgress?.outstandingQuantity)}</td>
+                    {purchaseAmountVisible && <td className="px-3 py-2 text-right">{fmt(supplyChainPurchaseProgress?.receivedAmount)}</td>}
                   </>}
                   <td className="px-3 py-2">{fmt(item.reason)}</td>
                 </tr>

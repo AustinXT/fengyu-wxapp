@@ -173,6 +173,11 @@ export interface ScopeOptionMarket {
   id: string
   name: string
   stores: ScopeOptionStore[]
+  /**
+   * 账号角色范围直接覆盖该市场（总部全开恒 true）；门店级账号补进来的祖先市场为 false（#399）。
+   * 只影响「无在营门店的市场」能否作为默认范围 / 计入可切换范围，缺省视为 false。
+   */
+  granted?: boolean
 }
 /**
  * 账号权限内、组织节点已停用的门店：不进下拉，仅用于识别 URL 里的停用门店（#293）。

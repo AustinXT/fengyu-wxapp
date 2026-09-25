@@ -15,6 +15,18 @@ const { createCtx, createManagerCtx } = require('../helpers')
 const { cardHolders, cycleStats } = require('../../routes/mgmt-product')
 
 /**
+ * #401：scope 构造器叠加了在营口径 helper（utils/store-status.js activeStoreCondition）。
+ * 把那段固定子查询替换成 `<ACTIVE>` 占位，再断言其余形态 —— 既不让它误伤「单店不得出现
+ * store_id IN (」这类断言，又能钉住「启用门店过滤确实叠上了」。
+ */
+const ACTIVE_STORE_RE =
+  /\S+ IN \(\s*SELECT active_store\.store_id\s+FROM stores active_store\s+JOIN org_nodes active_node ON active_store\.org_node_id = active_node\.id\s+WHERE active_node\.type = '门店'\s+AND active_node\.is_active = TRUE\s*\)/g
+function withoutActive(sql) {
+  return sql.replace(ACTIVE_STORE_RE, '<ACTIVE>')
+}
+
+
+/**
  * ★ 运行时核对**两条查询的绑定参数**（#287 闸门 2 round-3 codex）。
  *
  * 三档 scope 用例此前只检查 SQL 文本，没有检查 `pg.query` 的第二参数 ——
@@ -232,8 +244,8 @@ describe('mgmtProduct.cardHolders SQL 形态', () => {
         // 排除持卡 SQL —— 同源改造后它同样以会员表为驱动表（#287）
         !/JOIN\s+product_categories\s+pc/.test(s),
     )
-    expect(cardSql).toMatch(/WHERE\s+TRUE/)
-    expect(memberSql).toMatch(/WHERE\s+TRUE/)
+    expect(withoutActive(cardSql)).toMatch(/WHERE\s+\(TRUE\)\s+AND\s+<ACTIVE>/)
+    expect(withoutActive(memberSql)).toMatch(/WHERE\s+\(TRUE\)\s+AND\s+<ACTIVE>/)
     expect(cardSql).not.toMatch(/store_id\s*=\s*\$/)
     expect(memberSql).not.toMatch(/bound_store_id\s*=\s*\$/)
     expectSharedScopeParams([])
@@ -283,7 +295,8 @@ describe('mgmtProduct.cardHolders SQL 形态', () => {
     //    那正是 #287 的缺陷（归店键不同源），守护把它当成正确行为钉死了。
     expect(cardSql).toMatch(/c\.bound_store_id\s*=\s*\$1/)
     expect(cardSql).not.toMatch(/so\.store_id\s*=\s*\$1/)
-    expect(cardSql).not.toMatch(/store_id\s+IN\s*\(/)
+    expect(withoutActive(cardSql)).not.toMatch(/store_id\s+IN\s*\(/)
+    expect(withoutActive(cardSql)).toMatch(/<ACTIVE>/)
     expect(memberSql).toMatch(/c\.bound_store_id\s*=\s*\$1/)
     expectSharedScopeParams(['store-001'])
   })
@@ -545,7 +558,7 @@ describe('mgmtProduct.cycleStats scope 三档 SQL 形态', () => {
 
     const sql = getCycleSql()
     // daily_agg 紧跟一段 WHERE，包含 TRUE
-    expect(sql).toMatch(/daily_agg\s+AS\s*\(\s*SELECT[\s\S]*?WHERE\s+TRUE/)
+    expect(withoutActive(sql)).toMatch(/daily_agg\s+AS\s*\(\s*SELECT[\s\S]*?WHERE\s+\(TRUE\)\s+AND\s+<ACTIVE>/)
 
     const cycleCall = pg.query.mock.calls.find((c) => /WITH\s+daily_agg\s+AS/.test(c[0]))
     // params: [startDate, endDate, threshold]
@@ -572,7 +585,8 @@ describe('mgmtProduct.cycleStats scope 三档 SQL 形态', () => {
 
     const sql = getCycleSql()
     expect(sql).toMatch(/so\.store_id\s*=\s*\$4/)
-    expect(sql).not.toMatch(/store_id\s+IN\s*\(/)
+    expect(withoutActive(sql)).not.toMatch(/store_id\s+IN\s*\(/)
+    expect(withoutActive(sql)).toMatch(/<ACTIVE>/)
 
     const cycleCall = pg.query.mock.calls.find((c) => /WITH\s+daily_agg\s+AS/.test(c[0]))
     expect(cycleCall[1][3]).toBe('store-001')

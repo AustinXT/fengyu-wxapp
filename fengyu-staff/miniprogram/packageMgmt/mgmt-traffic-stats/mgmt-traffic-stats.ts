@@ -2,6 +2,7 @@
 // scope 由 hub（mgmt-dashboard）通过路由参数透传，本页不再出 scope-picker
 import { isManagementMode } from '../../utils/role'
 import { callStaffApi } from '../../utils/cloud'
+import { isInactiveScopeQuery } from '../../utils/mgmt-scope'
 import { formatAmount, formatCount, formatPercent } from '../../utils/number'
 
 type Period = 'month' | 'lastMonth' | 'year'
@@ -106,13 +107,15 @@ Page({
     scopeType: 'all' as ScopeType,
     scopeId: null as string | null,
     scopeName: '',
+    // 门店组织节点已停用（#400）：本页接口不滤停用门店、照常出数，只在范围标签上标注
+    scopeInactive: false,
     loading: false,
     state: 'loading' as 'loading' | 'empty' | 'error' | 'content',
     summary: null as TrafficData | null,
     display: null as DisplayData | null,
   },
 
-  onLoad(query: { scopeType?: string; scopeId?: string; scopeName?: string }) {
+  onLoad(query: { scopeType?: string; scopeId?: string; scopeName?: string; scopeInactive?: string }) {
     if (!isManagementMode()) {
       wx.reLaunch({ url: '/pages/workbench/workbench' })
       return
@@ -124,6 +127,7 @@ Page({
       scopeType,
       scopeId,
       scopeName: scopeName || (scopeType === 'all' ? '全部市场' : ''),
+      scopeInactive: isInactiveScopeQuery(query),
     })
     this.loadSummary()
   },

@@ -5,6 +5,7 @@ import { sql } from 'drizzle-orm'
 import type { DashboardStats } from '@/lib/types'
 import { hasRole } from '@/lib/auth'
 import { withPermission } from '@/lib/with-permission'
+import { activeStoreCondition } from '@/lib/store-status'
 
 /**
  * 业务角色看板（manager/finance）零默认值。
@@ -36,16 +37,20 @@ const ZERO_BUSINESS: Pick<DashboardStats,
   totalPaidAmount: 0,
 }
 
-/** 查询系统概览指标（admin/hr/product 共用） */
+/**
+ * 查询系统概览指标（admin/hr/product 共用）
+ *
+ * 门店数 = 统计范围（lib/store-status，只看节点 is_active）∩ 当前未关店；is_closed 只作时点条件、
+ * 不作范围（#401）。⚠️ 不看 opening_date：筹备中未开业的门店也计入，与数据中心门店数
+ * （opening_date / closed_at 历史化）存在口径差，对数时注意。
+ */
 async function getAdminStats() {
   const rows = await db.execute(sql`
     SELECT
       (SELECT COUNT(*)
          FROM stores s
-         JOIN org_nodes o ON s.org_node_id = o.id
-        WHERE s.is_closed = false
-          AND o.type = '门店'
-          AND o.is_active = true) AS total_stores,
+        WHERE ${activeStoreCondition(sql`s.store_id`)}
+          AND s.is_closed = false) AS total_stores,
       (SELECT COUNT(*) FROM staff_wechat_users WHERE is_resigned = false) AS total_employees,
       (SELECT COUNT(*) FROM products WHERE deleted_at IS NULL) AS total_products,
       (SELECT COUNT(*) FROM client_wechat_users) AS total_customers

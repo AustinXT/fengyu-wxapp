@@ -3,6 +3,7 @@
 import { canSwitchLoginLevel, isManagementMode } from '../../utils/role'
 import { callStaffApi } from '../../utils/cloud'
 import { formatAmount, formatCount, formatPercent } from '../../utils/number'
+import { SCOPE_INACTIVE_QUERY_KEY, inactiveScopeHint, inactiveScopeText } from '../../utils/mgmt-scope'
 
 const app = getApp<IAppOption>()
 
@@ -83,13 +84,26 @@ interface ScopeValue {
   scopeType: 'all' | 'market' | 'store'
   scopeId: string | null
   scopeName: string
+  /** picker 回传的所属市场；写回 defaultScope 供 picker 重建时定位弹窗里的市场 */
+  marketId?: string
+  /** 门店组织节点已停用（#400）：整段出「已停用」空态，子页经 query 继承 */
+  inactive?: boolean
 }
 
 interface SummaryData {
-  storeRevenue: { today: number; month: number; monthlyAvgPerStore: number }
-  shengmeiRevenue: { today: number; month: number; monthlyAvgPerStore: number }
-  storeConsume: { today: number; month: number; monthlyAvgPerStore: number }
-  shengmeiConsume: { today: number; month: number; monthlyAvgPerStore: number }
+  scope: {
+    type: ScopeValue['scopeType']
+    id: string | null
+    name: string
+    /** #400：门店组织节点已停用 */
+    inactive?: boolean
+    /** #400：inactive 时账号还有没有别的在营门店可切（后端按范围下拉同口径判）；null = 未知 */
+    hasActiveAlternative?: boolean | null
+  }
+  storeRevenue: { today: number; month: number; monthlyAvgPerStore: number | null }
+  shengmeiRevenue: { today: number; month: number; monthlyAvgPerStore: number | null }
+  storeConsume: { today: number; month: number; monthlyAvgPerStore: number | null }
+  shengmeiConsume: { today: number; month: number; monthlyAvgPerStore: number | null }
   footfall: { today: number; month: number }
   headcount: { today: number; month: number }
   newMembers: { today: number; month: number }
@@ -147,6 +161,9 @@ interface DisplayData {
 
 const DEFAULT_SCOPE: ScopeValue = { scopeType: 'all', scopeId: null, scopeName: '全部市场' }
 
+// summary 请求序号：只采纳最后一次请求的响应（#400）
+let summarySeq = 0
+
 // 日历历史起点：业务系统 2019 年才上线，2015 年留足缓冲
 const CALENDAR_MIN_YEAR = 2015
 
@@ -185,7 +202,14 @@ Page({
     summary: null as SummaryData | null,
     loading: false,
     display: null as DisplayData | null,
+    /** display 对应的 scope + 日期（scopeType|scopeId|date） */
+    displayKey: '',
     summaryState: 'content' as 'loading' | 'empty' | 'error' | 'content',
+    // 仅 summaryState='empty'（scope 落在停用门店，#400）时使用
+    summaryEmptyText: '',
+    // 默认范围落在停用门店时允许 picker 自动换到在营门店；用户显式选过后关掉
+    scopeAutoCorrect: true,
+    summaryEmptyHint: '',
 
     // 门店排行榜
     storeRanking: {
@@ -288,38 +312,33 @@ Page({
     }
     const marketBinding = (roleBindings || []).find((b: any) => b.scopeType === '市场')
     if (marketBinding) {
-      // scopeName 留空，由 mgmt-scope-picker 加载 scopeOptions 后回填真实市场名
+      // scopeName 先用绑定上的市场名；缺省时由 mgmt-scope-picker 加载 scopeOptions 后回填。
+      // 不能留空：市场下门店全停用时它会被下拉剔除、回填不到，触发器会误显示「全部市场」
       return {
         scopeType: 'market',
         scopeId: marketBinding.scopeId,
-        scopeName: '',
+        scopeName: marketBinding.scopeName || '',
       }
     }
-    // 店长能力角色绑定优先匹配门店，确保默认 scope 落在可执行店长写操作的门店。
-    const managerStoreBinding = (roleBindings || []).find(
-      (b: any) => (b.isStoreManager ?? b.role === 'manager') && b.scopeType === '门店',
-    )
-    if (managerStoreBinding?.scopeId) {
-      const matched = (scopedStores || []).find(
-        (s: any) => s.storeId === managerStoreBinding.scopeId,
-      )
-      if (matched) {
-        return {
-          scopeType: 'store',
-          scopeId: matched.storeId,
-          scopeName: matched.storeName,
-        }
-      }
-    }
+    // 默认范围跳过已停用门店（#400）：停用门店的数据被取数 SQL 全部滤掉，落上去只会满屏 0。
+    // isActive 缺省（旧缓存）按在营处理，scope-picker 拿到服务端 inactiveStores 后再纠正。
+    const stores = (scopedStores || []) as ScopedStore[]
+    const toScope = (store: ScopedStore, inactive: boolean): ScopeValue => ({
+      scopeType: 'store',
+      scopeId: store.storeId,
+      scopeName: store.storeName,
+      ...(inactive ? { inactive: true } : {}),
+    })
+    // 店长能力角色管辖的门店优先，确保默认 scope 落在可执行店长写操作的门店。
+    // ⚠️ 用 managerStoreIds（store_id）匹配：roleBindings.scopeId 是组织节点 id，与 storeId 永不相等。
+    const managerIds = new Set(app.globalData.managerStoreIds || [])
+    const isActive = (s: ScopedStore) => s.isActive !== false
+    const pick = stores.find((s) => managerIds.has(s.storeId) && isActive(s)) || stores.find(isActive)
+    if (pick) return toScope(pick, false)
 
-    const firstStore = (scopedStores || [])[0]
-    if (firstStore) {
-      return {
-        scopeType: 'store',
-        scopeId: firstStore.storeId,
-        scopeName: firstStore.storeName,
-      }
-    }
+    // 权限内全部门店都已停用：照旧落到（店长管辖 / 第一家）门店，由空态告知已停用
+    const fallback = stores.find((s) => managerIds.has(s.storeId)) || stores[0]
+    if (fallback) return toScope(fallback, true)
     return { scopeType: 'store', scopeId: '', scopeName: '' }
   },
 
@@ -343,16 +362,26 @@ Page({
     this.loadSummary()
   },
 
-  onScopeChange(e: WechatMiniprogram.CustomEvent<ScopeValue>) {
-    this.setData({ scope: e.detail })
+  onScopeChange(e: WechatMiniprogram.CustomEvent<ScopeValue & { userPicked?: boolean }>) {
+    const { userPicked, ...scope } = e.detail
+    // defaultScope 同步成当前选择：picker 在 wx:if 切 tab 后会重建，重建时须回到当前 scope 而非初始默认值。
+    // 用户显式选过范围后关掉自动纠正：重建的 picker 不能把用户选的（后来被停用的）门店换成别家
+    this.setData({ scope, defaultScope: scope, ...(userPicked ? { scopeAutoCorrect: false } : {}) })
     this.loadSummary()
   },
 
   async loadSummary() {
     if (!this.data.selectedDate) return
+    // 只认最后一次请求：切 scope / 日期后，迟到的旧响应（含失败）一律丢弃
+    const seq = ++summarySeq
+    // 旧内容只在「同一 scope + 同一日期」的刷新里保留；换了 scope / 日期还挂着旧数字，
+    // 请求一失败就成了「B 店（已停用）」配 A 店指标（#400 评审发现）
+    const key = `${this.data.scope.scopeType}|${this.data.scope.scopeId || ''}|${this.data.selectedDate}`
+    const keep = !!this.data.display && this.data.displayKey === key
     this.setData({
       loading: true,
-      summaryState: this.data.display ? 'content' : 'loading',
+      summaryState: keep ? 'content' : 'loading',
+      ...(keep ? {} : { display: null, displayKey: '' }),
     })
     try {
       const summary = await callStaffApi<SummaryData>('mgmtDashboard.summary', {
@@ -360,16 +389,38 @@ Page({
         scopeType: this.data.scope.scopeType,
         scopeId: this.data.scope.scopeId,
       })
+      if (seq !== summarySeq) return
+      // 停用判定以服务端为准（#400）：同一 scope 可能被启停，本地默认值只是初判
+      const inactive = summary.scope?.inactive === true
+      if (inactive) {
+        this.setData({
+          summary,
+          display: null,
+          loading: false,
+          'scope.inactive': true,
+          'defaultScope.inactive': true,
+          summaryState: 'empty',
+          summaryEmptyText: inactiveScopeText(summary.scope.name || this.data.scope.scopeName),
+          summaryEmptyHint: inactiveScopeHint(summary.scope.hasActiveAlternative),
+        })
+        return
+      }
       this.setData({
         summary,
         display: this.buildDisplay(summary),
+        displayKey: key,
         loading: false,
+        'scope.inactive': false,
+        // 这家店的真实数字已经展示过：之后它在会话中被停用，picker 重建时也不能自动换到别家（#400 评审发现）
+        scopeAutoCorrect: false,
+        'defaultScope.inactive': false,
         summaryState: 'content',
       })
     } catch {
+      if (seq !== summarySeq) return
       this.setData({
         loading: false,
-        summaryState: this.data.display ? 'content' : 'error',
+        summaryState: keep ? 'content' : 'error',
       })
       wx.showToast({ icon: 'none', title: '加载失败，请重试' })
     }
@@ -457,46 +508,31 @@ Page({
     }
   },
 
+  /**
+   * 子页 query：继承 scope；停用门店带 scopeInactive=1（#400）。
+   * 客量 / 品项 / 顾客的接口不滤停用门店，只拿它标注范围、照常取数（别藏掉真实历史数据）；
+   * 销售数据以 salesData 回包的 scope.inactive 出空态。
+   */
+  buildScopeQuery(): string {
+    const { scope } = this.data
+    return [
+      `scopeType=${scope.scopeType}`,
+      scope.scopeId ? `scopeId=${encodeURIComponent(scope.scopeId)}` : '',
+      `scopeName=${encodeURIComponent(scope.scopeName || '')}`,
+      scope.inactive ? `${SCOPE_INACTIVE_QUERY_KEY}=1` : '',
+    ].filter(Boolean).join('&')
+  },
+
   onEntryTap(e: WechatMiniprogram.BaseEvent) {
     const entry = (e.currentTarget.dataset as { entry?: string }).entry
-    if (entry === 'traffic') {
-      const { scope } = this.data
-      const params = [
-        `scopeType=${scope.scopeType}`,
-        scope.scopeId ? `scopeId=${encodeURIComponent(scope.scopeId)}` : '',
-        `scopeName=${encodeURIComponent(scope.scopeName || '')}`,
-      ].filter(Boolean).join('&')
-      wx.navigateTo({ url: `/packageMgmt/mgmt-traffic-stats/mgmt-traffic-stats?${params}` })
-      return
+    const pages: Record<string, string> = {
+      traffic: '/packageMgmt/mgmt-traffic-stats/mgmt-traffic-stats',
+      products: '/packageMgmt/mgmt-product-cycle/mgmt-product-cycle',
+      customers: '/packageMgmt/mgmt-customer-list/mgmt-customer-list',
+      sales: '/pages/sales-data/sales-data',
     }
-    if (entry === 'products') {
-      const { scope } = this.data
-      const params = [
-        `scopeType=${scope.scopeType}`,
-        scope.scopeId ? `scopeId=${encodeURIComponent(scope.scopeId)}` : '',
-        `scopeName=${encodeURIComponent(scope.scopeName || '')}`,
-      ].filter(Boolean).join('&')
-      wx.navigateTo({ url: `/packageMgmt/mgmt-product-cycle/mgmt-product-cycle?${params}` })
-      return
-    }
-    if (entry === 'customers') {
-      const { scope } = this.data
-      const params = [
-        `scopeType=${scope.scopeType}`,
-        scope.scopeId ? `scopeId=${encodeURIComponent(scope.scopeId)}` : '',
-        `scopeName=${encodeURIComponent(scope.scopeName || '')}`,
-      ].filter(Boolean).join('&')
-      wx.navigateTo({ url: `/packageMgmt/mgmt-customer-list/mgmt-customer-list?${params}` })
-      return
-    }
-    if (entry === 'sales') {
-      const { scope } = this.data
-      const params = [
-        `scopeType=${scope.scopeType}`,
-        scope.scopeId ? `scopeId=${encodeURIComponent(scope.scopeId)}` : '',
-        `scopeName=${encodeURIComponent(scope.scopeName || '')}`,
-      ].filter(Boolean).join('&')
-      wx.navigateTo({ url: `/pages/sales-data/sales-data?${params}` })
+    if (entry && pages[entry]) {
+      wx.navigateTo({ url: `${pages[entry]}?${this.buildScopeQuery()}` })
       return
     }
     const labelMap: Record<string, string> = {}

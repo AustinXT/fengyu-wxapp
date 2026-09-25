@@ -176941,11 +176941,13 @@ function lotRow(row, priceTiers) {
     updatedAt: row.lot.updatedAt.toISOString()
   };
 }
-var listInventoryMarketTransferTargets = withAnyPermission([...inventoryDelegatableOperateActions("market")], async () => {
+var listInventoryMarketTransferTargets = withAnyPermission([...inventoryDelegatableOperateActions("market")], async () => activeMarketTargets());
+async function activeMarketTargets() {
   await syncInventoryLocations();
   const rows = await db2.select({ orgNodeId: inventoryLocations.orgNodeId, name: inventoryLocations.name }).from(inventoryLocations).where(import_drizzle_orm58.and(import_drizzle_orm58.eq(inventoryLocations.isActive, true), import_drizzle_orm58.eq(inventoryLocations.locationType, "市场"), import_drizzle_orm58.isNotNull(inventoryLocations.orgNodeId))).orderBy(import_drizzle_orm58.asc(inventoryLocations.name));
   return rows.flatMap((row) => row.orgNodeId ? [{ orgNodeId: row.orgNodeId, name: row.name }] : []);
-});
+}
+var listInventoryShipmentMarketTargets = withPermission("inventory:supply_chain_operate", async () => activeMarketTargets());
 var PROMOTION_READ_SCOPE = { scopeActions: ["inventory:stock_list", INVENTORY_PROMOTION_MAINTAIN_ACTION] };
 async function promotionVisibleLocationIds(session4) {
   if (isInventoryPromotionMaintainer(session4))
@@ -182218,10 +182220,19 @@ function listMonthDays(month) {
 }
 
 // src/lib/data-center/operating-master.ts
+init_time_range();
 var OPERATING_MASTER_METRIC_KEYS = [
   "beauticianCount",
+  "retainedMembers",
+  "returnOnceHeads",
+  "returnTwiceHeads",
+  "managedYearCustomers",
+  "managedMonthCustomers",
   "monthRevenue",
   "ytdRevenue",
+  "monthFootfall",
+  "preSaleFootfall",
+  "afterSaleFootfall",
   "shengmeiProjectCount",
   "monthConsume",
   "shengmeiConsume"
@@ -182231,7 +182242,7 @@ var BLANK_GROUP = { key: "blank", header: "" };
 var RETAINED_GROUP = {
   key: "retained",
   header: `保有会员（售前不算）
-会员标准：单笔订单≥1990元(购买疗程有余卡顾客)
+会员标准：近90天有到店的会员（到店状态为保有会员）
 当月回店1次的人头目标：80%
 当月回店人头到店2次的目标：60%`,
   color: "#EAF2FB"
@@ -182280,12 +182291,12 @@ function pendingColumn(letter, key, header, group, unit, pending) {
     pending,
     align: "right",
     width: headerWidth(header, 96),
-    hint: pending === "#374" ? "目标列：本期不取数（#374）" : "口径待确认，本期不取数（#373）",
+    hint: "目标列：本期不取数（#374）",
     exportValue: () => "—",
     exportWidth: headerExportWidth(header, 12)
   };
 }
-function metricColumn(letter, key, header, group, unit, hint) {
+function numberColumn(letter, key, header, group, unit, hint) {
   return {
     letter,
     key,
@@ -182295,9 +182306,24 @@ function metricColumn(letter, key, header, group, unit, hint) {
     align: "right",
     width: headerWidth(header, unit === "amount" ? 120 : 96),
     hint,
-    value: metric(key),
-    aggregate: { kind: "sum" },
     exportWidth: headerExportWidth(header, unit === "amount" ? 16 : 12)
+  };
+}
+function metricColumn(letter, key, header, group, unit, hint) {
+  return { ...numberColumn(letter, key, header, group, unit, hint), value: metric(key), aggregate: { kind: "sum" } };
+}
+function ratioOf(numerator, denominator) {
+  if (numerator == null || denominator == null || !Number.isFinite(numerator) || !Number.isFinite(denominator))
+    return null;
+  return denominator > 0 ? numerator / denominator : null;
+}
+function ratioColumn(letter, key, header, group, unit, numerator, denominator, hint) {
+  const top = metric(numerator);
+  const bottom = metric(denominator);
+  return {
+    ...numberColumn(letter, key, header, group, unit, hint),
+    value: (row) => ratioOf(top(row), bottom(row)),
+    aggregate: { kind: "ratio", numerator: top, denominator: bottom }
   };
 }
 var OPERATING_MASTER_COLUMNS = [
@@ -182323,24 +182349,24 @@ var OPERATING_MASTER_COLUMNS = [
   },
   metricColumn("D", "beauticianCount", `美容师
 人数`, BLANK_GROUP, "count", "统计月末在职、技能含「美容师」的员工，按当前归属门店计（调店不做历史化）；直挂市场 / 部门的员工不属于任何门店，不计入"),
-  pendingColumn("E", "retainedMembers", `保有会员
-前三月有回店1次人头数`, RETAINED_GROUP, "count", "#373"),
-  pendingColumn("F", "returnOnceHeads", `回店1次
-当月人头`, RETAINED_GROUP, "count", "#373"),
-  pendingColumn("G", "returnOnceRate", `回店1次
-达成率`, RETAINED_GROUP, "percent", "#373"),
-  pendingColumn("H", "returnTwiceHeads", `回店≥2次
-当月人头`, RETAINED_GROUP, "count", "#373"),
-  pendingColumn("I", "returnTwiceRate", `回店≥2次
-达成率`, RETAINED_GROUP, "percent", "#373"),
+  metricColumn("E", "retainedMembers", `保有会员
+近90天到店人头`, RETAINED_GROUP, "count", "截至统计时点（所选月末；当月为今天）前 90 天内有已完成服务单、且已成为会员的顾客，按顾客绑定门店计。" + "与客量板「有效保有会员」同口径（即顾客状态「保有会员-稳定 / 有效」按时点还原）"),
+  metricColumn("F", "returnOnceHeads", `回店1次
+当月人头`, RETAINED_GROUP, "count", "保有会员（E）中当月到店天数 ≥1 的人头：到店天数按服务日期去重（同日多单算 1 天），不限到店门店"),
+  ratioColumn("G", "returnOnceRate", `回店1次
+达成率`, RETAINED_GROUP, "percent", "returnOnceHeads", "retainedMembers", "回店1次当月人头 ÷ 保有会员（F / E）"),
+  metricColumn("H", "returnTwiceHeads", `回店≥2次
+当月人头`, RETAINED_GROUP, "count", "保有会员（E）中当月到店天数 ≥2 的人头（H ⊆ F）"),
+  ratioColumn("I", "returnTwiceRate", `回店≥2次
+达成率`, RETAINED_GROUP, "percent", "returnTwiceHeads", "returnOnceHeads", "回店≥2次当月人头 ÷ 回店1次当月人头（H / F）"),
   pendingColumn("J", "managedYearTarget", `被经营顾客
 年度目标`, MANAGED_GROUP, "count", "#374"),
-  pendingColumn("K", "managedYearCustomers", `被经营顾客
-年度消费人数`, MANAGED_GROUP, "count", "#373"),
-  pendingColumn("L", "managedMonthCustomers", `被经营顾客
-当月消费人数`, MANAGED_GROUP, "count", "#373"),
-  pendingColumn("M", "managedRate", `被经营率
-年度标准60%`, MANAGED_GROUP, "percent", "#373"),
+  metricColumn("K", "managedYearCustomers", `被经营顾客
+年度消费人数`, MANAGED_GROUP, "count", "当年 1 月 1 日至统计时点，在本店的消费（销售单 + 转换单款项，含退款冲减；不含充值、储值卡抵扣、寄存单）累计 ≥ 会员门槛（系统设置）的顾客数，按下单门店计。" + "不含 WorkFine 历史单；跨店消费的顾客可能在多家店各计一次，合计为逐店相加"),
+  metricColumn("L", "managedMonthCustomers", `被经营顾客
+当月消费人数`, MANAGED_GROUP, "count", "当月在本店的消费（同 K 的款项口径）累计 ≥ 会员门槛的顾客数，按下单门店计"),
+  ratioColumn("M", "managedRate", `被经营率
+年度标准60%`, MANAGED_GROUP, "percent", "managedYearCustomers", "retainedMembers", "被经营顾客年度消费人数 ÷ 保有会员（K / E）"),
   pendingColumn("N", "salesYearTarget", `年度销售
 业绩目标`, SALES_GROUP, "amount", "#374"),
   pendingColumn("O", "salesMonthTarget", `当月业绩
@@ -182351,23 +182377,27 @@ var OPERATING_MASTER_COLUMNS = [
 完成率`, SALES_GROUP, "percent", "#374"),
   metricColumn("R", "ytdRevenue", `年度
 累计达成`, SALES_GROUP, "amount", "当年 1 月至所选月份各月「当月完成」之和。只含新系统上线后的数据，不含 WorkFine 历史单"),
-  pendingColumn("S", "monthFootfall", `当月
-客流`, FOOTFALL_GROUP, "count", "#373"),
-  pendingColumn("T", "preSaleFootfall", `当月
-售前客流`, FOOTFALL_GROUP, "count", "#373"),
-  pendingColumn("U", "afterSaleFootfall", `当月
-售后客流`, FOOTFALL_GROUP, "count", "#373"),
+  metricColumn("S", "monthFootfall", `当月服务
+到店天数`, FOOTFALL_GROUP, "count", "当月在本店有已完成服务单的「顾客 × 服务日期」数（同一顾客同一天多单只算 1 天）。" + "与客量板「客流量（次）」按单数计不同"),
+  metricColumn("T", "preSaleFootfall", `当月售前
+到店天数`, FOOTFALL_GROUP, "count", "当天在本店的服务单核销过体验项目的到店天数（查询时判定，不读服务单开单时的售前 / 售后标记）"),
+  metricColumn("U", "afterSaleFootfall", `当月售后
+到店天数`, FOOTFALL_GROUP, "count", "服务到店天数 − 售前到店天数（S − T）"),
   metricColumn("V", "shengmeiProjectCount", `当月
 生美项目数`, FOOTFALL_GROUP, "count", "已完成服务单中生美项目的核销次数之和（剔除寄存单退款专用单）。与人效板、门店榜的「项目数」（按经营类型统计）口径不同"),
   metricColumn("W", "monthConsume", `当月
 总实耗`, FOOTFALL_GROUP, "amount", "与销售板「门店」明细的「总实耗」同口径"),
   metricColumn("X", "shengmeiConsume", `当月
 生美实耗`, FOOTFALL_GROUP, "amount", "与销售板「门店」明细的「生美实耗」同口径（按服务项目的「是否生美」标记）"),
-  pendingColumn("Y", "shengmeiConsumePerVisit", `单次
-生美客耗`, FOOTFALL_GROUP, "amount", "#373")
+  ratioColumn("Y", "shengmeiConsumePerVisit", `单次
+生美客耗`, FOOTFALL_GROUP, "amount", "shengmeiConsume", "afterSaleFootfall", "当月生美实耗 ÷ 当月售后到店天数（X / U）")
 ];
 function ytdRange(month) {
   return { start: `${month.slice(0, 4)}-01-01`, end: monthRange(month).end };
+}
+function retainedAsOf(month, today = shanghaiToday()) {
+  const end = monthRange(month).end;
+  return end < today ? end : today;
 }
 var METRIC_COLUMNS = OPERATING_MASTER_COLUMNS.filter((column2) => column2.value);
 var metricColumnKeys = METRIC_COLUMNS.map((column2) => column2.key);
@@ -182387,7 +182417,7 @@ function buildOperatingMasterTable(stores3, metrics) {
   });
   const marketIds = Array.from(new Set(storeRows.map((row) => row.marketId)));
   const multiMarket = marketIds.length > 1;
-  const totalsOf = (rows2) => pickMetricTotals(computeMatrixTotals(METRIC_COLUMNS, rows2, { paginated: false }));
+  const totalsOf = (rows2) => computeMatrixTotals(METRIC_COLUMNS, rows2, { paginated: false });
   const rows = [];
   if (multiMarket) {
     for (const marketId of marketIds) {
@@ -182399,16 +182429,22 @@ function buildOperatingMasterTable(stores3, metrics) {
         marketName: marketRows[0].marketName,
         storeId: null,
         storeName: "小计",
-        values: totalsOf(marketRows)
+        values: pickAdditive(totalsOf(marketRows))
       });
     }
   } else {
     rows.push(...storeRows);
   }
-  return { rows, totals: totalsOf(storeRows), storeCount: storeRows.length, multiMarket };
+  const totals = totalsOf(storeRows);
+  return {
+    rows,
+    totals: Object.fromEntries(metricColumnKeys.map((key) => [key, totals[key] ?? null])),
+    storeCount: storeRows.length,
+    multiMarket
+  };
 }
-function pickMetricTotals(totals) {
-  return Object.fromEntries(metricColumnKeys.map((key) => [key, totals[key] ?? null]));
+function pickAdditive(totals) {
+  return Object.fromEntries(OPERATING_MASTER_METRIC_KEYS.map((key) => [key, totals[key] ?? null]));
 }
 function isOperatingMasterSubtotal(row) {
   return row.kind === "subtotal";
@@ -182454,6 +182490,29 @@ function revenueByStoreSql(session4, scope, range) {
         GROUP BY spe.store_id
       `;
 }
+function managedByStoreSql(session4, scope, ytd, month, threshold) {
+  return import_drizzle_orm68.sql`
+        SELECT t.store_id,
+               COUNT(*) FILTER (WHERE t.year_amount >= ${threshold}) AS year_v,
+               COUNT(*) FILTER (WHERE t.month_amount >= ${threshold}) AS month_v
+        FROM (
+          SELECT spe.store_id, so.client_user_id,
+                 SUM(spe.amount::numeric) AS year_amount,
+                 SUM(spe.amount::numeric) FILTER (WHERE spe.performance_date >= ${month.start}) AS month_amount
+          FROM sale_order_performance_events spe
+          JOIN sale_orders so ON so.sale_order_id = spe.sale_order_id
+          WHERE ${scopeFilterSql(session4, scope, "spe.store_id")}
+            AND spe.status = '已支付'
+            AND spe.change_type IN ('首次支付', '回款', '退款')
+            AND spe.sale_order_type IN ('销售单', '转换单')
+            AND spe.legacy_source IS DISTINCT FROM 'workfine'
+            AND spe.performance_date BETWEEN ${ytd.start} AND ${ytd.end}
+            AND so.client_user_id IS NOT NULL
+          GROUP BY spe.store_id, so.client_user_id
+        ) t
+        GROUP BY t.store_id
+      `;
+}
 var getOperatingMaster = withPermission(DATA_CENTER_DASHBOARD_ACTION, async (session4, params) => {
   if (!isValidMonth(params.month))
     throw new Error("INVALID_PARAMS: 月份格式应为 YYYY-MM");
@@ -182463,7 +182522,21 @@ var getOperatingMaster = withPermission(DATA_CENTER_DASHBOARD_ACTION, async (ses
   const { scope, month } = params;
   const cur = monthRange(month);
   const ytd = ytdRange(month);
-  const [scopeName, skelRows, beauticianRows, revRows, ytdRevRows, projectRows, consRows, shengmeiConsRows] = await Promise.all([
+  const asOf = retainedAsOf(month);
+  const threshold = await getMemberThreshold();
+  const [
+    scopeName,
+    skelRows,
+    beauticianRows,
+    revRows,
+    ytdRevRows,
+    projectRows,
+    consRows,
+    shengmeiConsRows,
+    retainedRows,
+    managedRows,
+    footfallRows
+  ] = await Promise.all([
     resolveScopeName(scope),
     db2.execute(import_drizzle_orm68.sql`
           SELECT sk.store_id, sk.store_name, sk.market_id, sk.market_name
@@ -182509,13 +182582,64 @@ var getOperatingMaster = withPermission(DATA_CENTER_DASHBOARD_ACTION, async (ses
             AND so.service_date BETWEEN ${cur.start} AND ${cur.end}
             AND ${excludeDepositRefundSql("so")}
           GROUP BY so.store_id
+        `),
+    db2.execute(import_drizzle_orm68.sql`
+          WITH retained AS (
+            SELECT DISTINCT c.bound_store_id AS store_id, so.client_user_id
+            FROM service_orders so
+            JOIN client_wechat_users c ON c.user_id = so.client_user_id
+            WHERE ${scopeFilterSql(session4, scope, "c.bound_store_id")}
+              AND so.status = '已完成'
+              AND so.client_user_id IS NOT NULL
+              AND so.service_date BETWEEN (${asOf}::date - INTERVAL '90 days')::date AND ${asOf}
+              AND c.became_member_at IS NOT NULL
+              AND c.became_member_at::date <= ${asOf}
+          ),
+          month_visits AS (
+            SELECT vd.client_user_id, COUNT(*) AS days
+            FROM (${visitDaysSql({ axis: "service_date", scope: import_drizzle_orm68.sql`TRUE`, range: cur })}) vd
+            GROUP BY vd.client_user_id
+          )
+          SELECT r.store_id,
+                 COUNT(*) AS retained,
+                 COUNT(*) FILTER (WHERE mv.days >= 1) AS once,
+                 COUNT(*) FILTER (WHERE mv.days >= 2) AS twice
+          FROM retained r
+          LEFT JOIN month_visits mv ON mv.client_user_id = r.client_user_id
+          GROUP BY r.store_id
+        `),
+    db2.execute(managedByStoreSql(session4, scope, ytd, cur, threshold)),
+    db2.execute(import_drizzle_orm68.sql`
+          WITH visit_days AS (
+            SELECT so.store_id, so.client_user_id, so.service_date,
+                   BOOL_OR(EXISTS (
+                     SELECT 1
+                     FROM service_items sit
+                     JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
+                     WHERE sit.service_order_id = so.service_order_id
+                       AND si.is_experience = TRUE
+                   )) AS pre_sale
+            FROM service_orders so
+            WHERE ${scopeFilterSql(session4, scope, "so.store_id")}
+              AND so.status = '已完成'
+              AND so.client_user_id IS NOT NULL
+              AND so.service_date BETWEEN ${cur.start} AND ${cur.end}
+            GROUP BY so.store_id, so.client_user_id, so.service_date
+          )
+          SELECT store_id, COUNT(*) AS footfall, COUNT(*) FILTER (WHERE pre_sale) AS pre_sale
+          FROM visit_days
+          GROUP BY store_id
         `)
   ]);
   const metrics = new Map;
-  const collect = (rows, key) => {
+  const collect = (rows, target) => {
+    const fields = typeof target === "string" ? { v: target } : target;
     for (const row of rows) {
       const id = String(row.store_id);
-      metrics.set(id, { ...metrics.get(id), [key]: Number(row.v ?? 0) });
+      const next = { ...metrics.get(id) };
+      for (const [column2, metricKey] of Object.entries(fields))
+        next[metricKey] = Number(row[column2] ?? 0);
+      metrics.set(id, next);
     }
   };
   collect(beauticianRows, "beauticianCount");
@@ -182524,13 +182648,19 @@ var getOperatingMaster = withPermission(DATA_CENTER_DASHBOARD_ACTION, async (ses
   collect(projectRows, "shengmeiProjectCount");
   collect(consRows, "monthConsume");
   collect(shengmeiConsRows, "shengmeiConsume");
+  collect(retainedRows, { retained: "retainedMembers", once: "returnOnceHeads", twice: "returnTwiceHeads" });
+  collect(managedRows, { year_v: "managedYearCustomers", month_v: "managedMonthCustomers" });
+  collect(footfallRows, { footfall: "monthFootfall", pre_sale: "preSaleFootfall" });
+  for (const [id, values2] of metrics) {
+    metrics.set(id, { ...values2, afterSaleFootfall: (values2.monthFootfall ?? 0) - (values2.preSaleFootfall ?? 0) });
+  }
   const stores3 = skelRows.map((row) => ({
     storeId: String(row.store_id),
     storeName: String(row.store_name ?? ""),
     marketId: String(row.market_id ?? ""),
     marketName: String(row.market_name ?? "")
   }));
-  return { month, range: cur, ytd, scopeName, ...buildOperatingMasterTable(stores3, metrics) };
+  return { month, range: cur, ytd, asOf, scopeName, ...buildOperatingMasterTable(stores3, metrics) };
 });
 
 // src/actions/data-center/daily-overview.ts
@@ -185643,8 +185773,9 @@ async function operatingMasterContent(raw) {
       period: `${result.range.start} ~ ${result.range.end}`,
       scope: operatingMasterScopeMeta(scope, result.scopeName),
       extra: [
-        { label: "年度累计区间", value: `${result.ytd.start} ~ ${result.ytd.end}（不含 WorkFine 历史单）` },
-        { label: "说明", value: "显示「—」的列口径待定或目标未设，本期不取数" }
+        { label: "统计时点", value: `${result.asOf}（保有会员截至这一天近 90 天到店）` },
+        { label: "年度累计区间", value: `${result.ytd.start} ~ ${result.ytd.end}（R、K 列；不含 WorkFine 历史单）` },
+        { label: "说明", value: "显示「—」的是目标列（J、N、O、Q），本期未设目标、不取数" }
       ]
     }
   };

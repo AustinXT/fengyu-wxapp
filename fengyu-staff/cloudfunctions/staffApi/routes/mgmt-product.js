@@ -26,6 +26,8 @@
 const pg = require('../db/pg')
 const { requireManagementLevel } = require('../middleware/auth')
 const { validateManagementScope, buildManagementStoreScope } = require('../utils/scope')
+// 在营口径单源（#401）：只看门店组织节点 is_active，与 mgmt-dashboard.js / admin scopeFilterSql 同源
+const { activeStoreCondition } = require('../utils/store-status')
 const { getMemberThreshold } = require('../utils/config')
 
 // scope 校验已统一抽取到 utils/scope.js::validateManagementScope（4 路由共用，避免拷贝漂移）
@@ -34,12 +36,16 @@ const { getMemberThreshold } = require('../utils/config')
  * 构造 sale/service 表的 store_id scope 过滤片段
  */
 function buildSaleScope(scopeType, scopeId, alias, startIdx) {
-  return buildManagementStoreScope(scopeType, scopeId, `${alias}.store_id`, startIdx)
+  const column = `${alias}.store_id`
+  const scope = buildManagementStoreScope(scopeType, scopeId, column, startIdx)
+  return { sql: `(${scope.sql}) AND ${activeStoreCondition(column)}`, params: scope.params }
 }
 
 /** client_wechat_users.bound_store_id scope */
 function buildClientScope(scopeType, scopeId, alias, startIdx) {
-  return buildManagementStoreScope(scopeType, scopeId, `${alias}.bound_store_id`, startIdx)
+  const column = `${alias}.bound_store_id`
+  const scope = buildManagementStoreScope(scopeType, scopeId, column, startIdx)
+  return { sql: `(${scope.sql}) AND ${activeStoreCondition(column)}`, params: scope.params }
 }
 
 /**

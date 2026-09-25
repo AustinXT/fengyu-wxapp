@@ -16,8 +16,9 @@ import { orgNodes, stores } from '@db/org'
 import { eq, and, asc, inArray } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import { withAllPermissions, withPermission } from '@/lib/with-permission'
-import { isAdminScope, expandVisibleMarketIds } from '@/lib/permissions'
+import { isAdminScope, expandMarketVisibility } from '@/lib/permissions'
 import { getScopeTopLevel } from '@/lib/data-center/context'
+import { isDataCenterActiveStore } from '@/lib/store-status'
 import { loadStoreDataStarts } from '@/lib/data-center/data-start-query'
 import {
   DATA_CENTER_CUSTOMER_DETAIL_ACTIONS,
@@ -67,8 +68,11 @@ export const getDataStartDates = withPermission(
 
 async function loadScopeOptions(session: AuthSession): Promise<DataCenterScopeOptions> {
   const topLevel = getScopeTopLevel(session)
-  const visibleMarketIds = await expandVisibleMarketIds(session) // null=总部全开
+  const marketVisibility = await expandMarketVisibility(session) // null=总部全开
+  const visibleMarketIds = marketVisibility?.visible ?? null
   const seeAll = isAdminScope(session) || visibleMarketIds === null
+  // 直接授权的市场（非门店级账号的祖先市场）：无门店时才能作为默认范围（#399）
+  const grantedMarketIds = new Set(marketVisibility?.granted ?? [])
 
   // 非总部且无可见市场 → 空
   if (!seeAll && (visibleMarketIds?.length ?? 0) === 0) {
@@ -85,8 +89,9 @@ async function loadScopeOptions(session: AuthSession): Promise<DataCenterScopeOp
         seeAll ? undefined : inArray(orgNodes.id, visibleMarketIds as string[]),
       ),
     )
-    // 例外：sortOrder 手工排序权重
-    .orderBy(asc(orgNodes.sortOrder))
+    // 例外：sortOrder 手工排序权重；name / id 兜底——sortOrder 默认 0 会并列，无门店市场账号的默认范围
+    // 取「第一个」直接授权的空市场，顺序不确定会让每次请求落到不同市场（#399）
+    .orderBy(asc(orgNodes.sortOrder), asc(orgNodes.name), asc(orgNodes.id))
 
   // 门店列表（JOIN 门店节点拿所属市场 = 节点 parent_id）。
   // 在营与停用一次查出、内存分流：两份列表出自同一快照，查出的同一家门店不会同时进两份列表。
@@ -96,7 +101,6 @@ async function loadScopeOptions(session: AuthSession): Promise<DataCenterScopeOp
       storeId: stores.storeId,
       storeName: stores.storeName,
       marketId: orgStore.parentId,
-      isClosed: stores.isClosed,
       isActive: orgStore.isActive,
     })
     .from(stores)
@@ -114,17 +118,17 @@ async function loadScopeOptions(session: AuthSession): Promise<DataCenterScopeOp
       ),
     )
     .orderBy(asc(stores.storeName))
-  const storeRows = allStoreRows.filter((s) => !s.isClosed && s.isActive)
-  // 「已停用」只看组织节点，与取数 SQL 的 activeStoreCondition（scope-sql.ts）同一口径。
-  // ⚠️ 不能把 is_closed 算进来：只关店、节点仍在营的门店，取数 SQL 照样返回它的历史数据，
-  // 判成停用会用「无可展示数据」藏掉真实数字（它仍不进下拉，维持改动前的行为）。
+  // 在营 / 停用只看组织节点（#401 口径单源 lib/store-status，与取数 SQL 的 activeStoreCondition 同源）。
+  // 只关店、节点仍启用的门店照样进下拉：取数 SQL 仍返回它关店前的历史数据，要能选到它看。
+  const storeRows = allStoreRows.filter(isDataCenterActiveStore)
   const inactiveStores = allStoreRows
-    .filter((s) => !s.isActive)
+    .filter((s) => !isDataCenterActiveStore(s))
     .map((s) => ({ storeId: s.storeId, storeName: s.storeName, marketId: s.marketId }))
 
   const markets = marketRows.map((m) => ({
     id: m.id,
     name: m.name,
+    granted: seeAll || grantedMarketIds.has(m.id),
     stores: storeRows
       .filter((s) => s.marketId === m.id)
       .map((s) => ({ storeId: s.storeId, storeName: s.storeName })),

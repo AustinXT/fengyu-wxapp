@@ -459,8 +459,10 @@ describe('数据中心导出 · 经营数据主表', () => {
     { storeId: 'S3', storeName: '蓝莱店', marketId: 'M2', marketName: '南昌凤御' },
   ]
   const metrics = new Map([
-    ['S1', { beauticianCount: 4, monthRevenue: 91182, ytdRevenue: 156152, shengmeiProjectCount: 298, monthConsume: 100.5, shengmeiConsume: 60.25 }],
-    ['S2', { beauticianCount: 3, monthRevenue: 1000, ytdRevenue: 2000, shengmeiProjectCount: 2, monthConsume: 10, shengmeiConsume: 5 }],
+    ['S1', { beauticianCount: 4, monthRevenue: 91182, ytdRevenue: 156152, shengmeiProjectCount: 298, monthConsume: 100.5, shengmeiConsume: 60.25,
+      retainedMembers: 100, returnOnceHeads: 80, managedYearCustomers: 30 }],
+    ['S2', { beauticianCount: 3, monthRevenue: 1000, ytdRevenue: 2000, shengmeiProjectCount: 2, monthConsume: 10, shengmeiConsume: 5,
+      retainedMembers: 60, returnOnceHeads: 12, managedYearCustomers: 10 }],
     ['S3', { beauticianCount: 5, monthRevenue: -20, ytdRevenue: 30, shengmeiProjectCount: 0, monthConsume: 0, shengmeiConsume: 0 }],
   ])
 
@@ -469,6 +471,7 @@ describe('数据中心导出 · 经营数据主表', () => {
       month: '2026-08',
       range: { start: '2026-08-01', end: '2026-08-31' },
       ytd: { start: '2026-01-01', end: '2026-08-31' },
+      asOf: '2026-08-31',
       scopeName: '全部',
       ...buildOperatingMasterTable(stores, metrics),
     } as never)
@@ -538,10 +541,21 @@ describe('数据中心导出 · 经营数据主表', () => {
     expect(revenue.total).toBe(92162)
     expect(header('美容师\n人数').total).toBe(12)
 
-    const pending = header('被经营率\n年度标准60%')
+    // 比率列：导出写百分数，小计 / 总计用合计后的分子分母重算（(80 + 12) / (100 + 60) = 57.5%）
+    const managedRate = header('被经营率\n年度标准60%(%)')
+    expect(rows.map((row) => managedRate.value(row))).toEqual([30, 16.67, 25, '', ''])
+    expect(managedRate.total).toBe(25)
+    const returnOnceRate = header('回店1次\n达成率(%)')
+    expect(returnOnceRate.total).toBe(57.5)
+    expect(header('保有会员\n近90天到店人头').total).toBe(160)
+
+    const pending = header('被经营顾客\n年度目标')
     expect(rows.map((row) => pending.value(row))).toEqual(['—', '—', '—', '—', '—'])
     expect(pending.total).toBe('—')
     expect(header('年度销售\n业绩目标').total).toBe('—')
+    expect(content.meta?.extra).toEqual(expect.arrayContaining([
+      { label: '统计时点', value: '2026-08-31（保有会员截至这一天近 90 天到店）' },
+    ]))
   })
 })
 

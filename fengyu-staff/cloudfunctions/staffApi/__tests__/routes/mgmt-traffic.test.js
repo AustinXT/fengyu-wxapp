@@ -14,6 +14,18 @@ const pg = globalThis.__mocks__.pg
 const { createCtx, createManagerCtx } = require('../helpers')
 const { summary } = require('../../routes/mgmt-traffic')
 
+/**
+ * #401：scope 构造器叠加了在营口径 helper（utils/store-status.js activeStoreCondition）。
+ * 把那段固定子查询替换成 `<ACTIVE>` 占位，再断言其余形态 —— 既不让它误伤「单店不得出现
+ * store_id IN (」这类断言，又能钉住「启用门店过滤确实叠上了」。
+ */
+const ACTIVE_STORE_RE =
+  /\S+ IN \(\s*SELECT active_store\.store_id\s+FROM stores active_store\s+JOIN org_nodes active_node ON active_store\.org_node_id = active_node\.id\s+WHERE active_node\.type = '门店'\s+AND active_node\.is_active = TRUE\s*\)/g
+function withoutActive(sql) {
+  return sql.replace(ACTIVE_STORE_RE, '<ACTIVE>')
+}
+
+
 // ---- ctx 构造 ----
 function makeHqCtx(payload = {}) {
   return createCtx({
@@ -599,7 +611,7 @@ describe('mgmtTraffic.summary scope 三档 SQL 拼接', () => {
     )
     expect(metricSqls.length).toBeGreaterThan(0)
     for (const s of metricSqls) {
-      expect(s).toMatch(/WHERE\s+TRUE/)
+      expect(withoutActive(s)).toMatch(/WHERE\s+\(TRUE\)\s+AND\s+<ACTIVE>/)
       expect(s).not.toMatch(/store_id\s*=\s*\$/)
       expect(s).not.toMatch(/bound_store_id\s*=\s*\$/)
     }
@@ -652,7 +664,8 @@ describe('mgmtTraffic.summary scope 三档 SQL 拼接', () => {
     )
     for (const s of saleServiceSqls) {
       expect(s).toMatch(/(so|o)\.store_id\s*=\s*\$\d/)
-      expect(s).not.toMatch(/store_id\s+IN\s*\(/)
+      expect(withoutActive(s)).not.toMatch(/store_id\s+IN\s*\(/)
+      expect(withoutActive(s)).toMatch(/<ACTIVE>/)
     }
 
     const pureClientSqls = sqlList.filter(

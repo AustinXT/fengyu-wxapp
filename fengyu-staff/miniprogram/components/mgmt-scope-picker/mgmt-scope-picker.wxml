@@ -2,7 +2,7 @@
 <view class="scope-picker">
   <view class="scope-trigger" bindtap="onOpen">
     <van-icon name="shop-o" size="32rpx" color="#C0322A" />
-    <text class="scope-trigger-text">{{ applied.scopeName || '全部市场' }}</text>
+    <text class="scope-trigger-text">{{ applied.scopeName || '全部市场' }}{{ applied.inactive ? '（已停用）' : '' }}</text>
     <van-icon name="arrow-down" size="24rpx" color="#C0322A" />
   </view>
 
@@ -15,6 +15,8 @@
     <view class="scope-popup">
       <view class="scope-cols">
         <scroll-view class="scope-col scope-col--left" scroll-y>
+          <!-- 权限内没有可选门店时两列都空（全部停用，或只关店而节点在营，#400）：给句中性说明，不留空白弹窗 -->
+          <view wx:if="{{ optionsLoaded && !allowAll && marketList.length === 0 }}" class="scope-row scope-row--hint">暂无可切换的门店</view>
           <view
             wx:if="{{ allowAll }}"
             class="scope-row {{ current.scopeType === 'all' ? 'scope-row--active' : '' }}"

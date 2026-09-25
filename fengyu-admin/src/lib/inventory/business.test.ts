@@ -1447,6 +1447,7 @@ describe('批号自动生成（#345）', () => {
     const lotInserts: unknown[][] = []
     const itemInserts: unknown[][] = []
     let lastLotBatchNo = ''
+    let lastLotCost: string | null = null
     const executor = vi.fn(async (query: unknown) => {
       const rendered = renderSql(query)
       if (rendered.includes('INSERT INTO inventory_stock_lots')) {
@@ -1454,10 +1455,11 @@ describe('批号自动生成（#345）', () => {
         lotInserts.push(params)
         // upsertLot 的 VALUES 顺序：location_id, sku_id, lot_key, sku_name, spec_name, supplier, supplier_id, product_series, batch_no
         lastLotBatchNo = String(params[8])
+        lastLotCost = params[12] as string | null
         return [{ id: '7' }]
       }
       if (rendered.includes('FROM inventory_stock_lots')) {
-        return [{ ...shipmentSourceLotRow(), id: '7', batch_no: lastLotBatchNo, source_doc_id: null }]
+        return [{ ...shipmentSourceLotRow(), id: '7', batch_no: lastLotBatchNo, supply_chain_unit_cost: lastLotCost, source_doc_id: null }]
       }
       if (rendered.includes('INSERT INTO inventory_doc_items')) {
         itemInserts.push(sqlParams(query))
@@ -1485,7 +1487,7 @@ describe('批号自动生成（#345）', () => {
     vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
       execute: initializedCutoverExecutor(executor),
     } as never))
-    return { lotInserts, itemInserts }
+    return { lotInserts, itemInserts, executor }
   }
 
   it('供应链采购入库批号留空：批次与入库明细写入「入库单号-01」，不再写空串', async () => {
@@ -1513,6 +1515,131 @@ describe('批号自动生成（#345）', () => {
     expect(lotInserts[0][8]).toBe('B-MANUAL')
     expect(lotInserts[0]).not.toContain(`${result.id}-01`)
     expect(itemInserts[0]).toContain('B-MANUAL')
+  })
+
+  // ── #346 入库单价优惠 ──
+  // insertDocItem VALUES 序：… quantity[12], stock_snapshot[13], request_quantity[14], fulfilled_quantity[15],
+  // standard_unit_price[16], unit_discount[17], actual_unit_price[18], amount[19], supply_chain_unit_cost[20]
+  // upsertLot VALUES 序：… is_gift[11], supply_chain_unit_cost[12]
+  it('#346 填优惠 20（标准进价 80）：明细 标准 80 / 优惠 20 / 实际 60、批次成本 60', async () => {
+    const { lotInserts, itemInserts } = mockSupplyChainReceipt()
+    await receiveSupplyChainPurchaseOrder(SESSION, {
+      purchaseOrderId: 'CGD-1', supplyChainLocationId: 'HQ',
+      items: [{ purchaseOrderItemId: 1, quantity: 2, unitDiscount: 20 }],
+    })
+    expect(lotInserts[0][12]).toBe('60')
+    expect(itemInserts[0].slice(16, 21)).toEqual(['80', '20', '60', '120', '60'])
+  })
+
+  it('#346 不填优惠：与原来一致（实际 = 标准，优惠记 0）', async () => {
+    const { lotInserts, itemInserts } = mockSupplyChainReceipt()
+    await receiveSupplyChainPurchaseOrder(SESSION, {
+      purchaseOrderId: 'CGD-1', supplyChainLocationId: 'HQ',
+      items: [{ purchaseOrderItemId: 1, quantity: 1 }],
+    })
+    expect(lotInserts[0][12]).toBe('80')
+    expect(itemInserts[0].slice(16, 19)).toEqual(['80', '0', '80'])
+  })
+
+  it('#346 优惠等于标准进价放行（实际进价 0）', async () => {
+    const { lotInserts } = mockSupplyChainReceipt()
+    await receiveSupplyChainPurchaseOrder(SESSION, {
+      purchaseOrderId: 'CGD-1', supplyChainLocationId: 'HQ',
+      items: [{ purchaseOrderItemId: 1, quantity: 1, unitDiscount: 80 }],
+    })
+    expect(lotInserts[0][12]).toBe('0')
+  })
+
+  it.each([
+    ['为负', -1, '单价优惠不能小于 0'],
+    ['大于标准进价', 80.01, '单价优惠不能大于标准进价'],
+    ['超两位小数', 1.005, '单价优惠最多保留两位小数'],
+    ['十六进制串', '0x10', '单价优惠不是有效数字'],
+    ['布尔', true, '单价优惠不是有效数字'],
+  ])('#346 优惠%s被拒', async (_label, unitDiscount, message) => {
+    const { lotInserts } = mockSupplyChainReceipt()
+    await expect(receiveSupplyChainPurchaseOrder(SESSION, {
+      purchaseOrderId: 'CGD-1', supplyChainLocationId: 'HQ',
+      items: [{ purchaseOrderItemId: 1, quantity: 1, unitDiscount: unitDiscount as never }],
+    })).rejects.toThrow(message)
+    expect(lotInserts).toHaveLength(0)
+  })
+
+  it('#346 办理权与价格权分在同一主体的两条绑定上不能拼接：填优惠被拒；同一绑定两权兼具放行', async () => {
+    const binding = (actions: string[]) => ({
+      role: `custom_${actions.length}`, scopeId: 'HQ', scopeType: '总部', actions, scopeStoreIds: [], scopeOrgNodeIds: ['HQ'],
+    })
+    const split = {
+      employeeId: 'E-SC4', name: '拆分绑定', phone: '13800000015',
+      roles: [binding(['inventory:supply_chain_operate']), binding(['inventory:stock_list', 'inventory:supply_chain_price_view'])],
+      permissions: { actions: ['inventory:supply_chain_operate', 'inventory:supply_chain_price_view'], scopeStoreIds: [] },
+    } as never
+    const { executor } = mockSupplyChainReceipt()
+    await expect(receiveSupplyChainPurchaseOrder(split, {
+      purchaseOrderId: 'CGD-1', supplyChainLocationId: 'HQ',
+      items: [{ purchaseOrderItemId: 1, quantity: 1, unitDiscount: 10 }],
+    })).rejects.toThrow('PERMISSION_DENIED')
+    expect(executor.mock.calls.some(([query]) => renderSql(query).includes('FROM inventory_doc_items'))).toBe(false)
+
+    const single = { ...(split as object), roles: [binding(['inventory:supply_chain_operate', 'inventory:supply_chain_price_view'])] } as never
+    const { lotInserts } = mockSupplyChainReceipt()
+    await receiveSupplyChainPurchaseOrder(single, {
+      purchaseOrderId: 'CGD-1', supplyChainLocationId: 'HQ',
+      items: [{ purchaseOrderItemId: 1, quantity: 1, unitDiscount: 10 }],
+    })
+    expect(lotInserts[0][12]).toBe('70')
+  })
+
+  it('#346 采购行缺下单价快照时不能填优惠（否则会扣在商品档案现价上）', async () => {
+    const lotInserts: unknown[][] = []
+    const executor = vi.fn(async (query: unknown) => {
+      const rendered = renderSql(query)
+      if (rendered.includes('INSERT INTO inventory_stock_lots')) { lotInserts.push(sqlParams(query)); return [{ id: '7' }] }
+      if (rendered.includes('FROM inventory_doc_links')) return [{ quantity: '0' }]
+      if (rendered.includes('FROM inventory_doc_items')) {
+        return [{ ...storeRequestItemRow(), doc_id: 'CGD-1', market_id: null, supply_chain_unit_cost: null }]
+      }
+      if (rendered.includes('FROM inventory_skus')) return [supplierBoundSkuRow()]
+      if (rendered.includes('FROM inventory_locations')) {
+        return [{ location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null }]
+      }
+      if (rendered.includes('FROM inventory_docs') && rendered.includes('FOR UPDATE')) {
+        return [{ id: 'CGD-1', doc_type: '采购订单', status: '待收货', source_org_node_id: null, target_org_node_id: 'HQ', market_id: null, supplier_id: null, supplier_name: null }]
+      }
+      return []
+    })
+    mockSyncLocationsShortCircuit()
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({ execute: initializedCutoverExecutor(executor) } as never))
+    await expect(receiveSupplyChainPurchaseOrder(SESSION, {
+      purchaseOrderId: 'CGD-1', supplyChainLocationId: 'HQ',
+      items: [{ purchaseOrderItemId: 1, quantity: 1, unitDiscount: 10 }],
+    })).rejects.toThrow('采购行缺少下单价快照，不能填单价优惠')
+    expect(lotInserts).toHaveLength(0)
+  })
+
+  it('#346 看不到供应链价格的办理人填优惠：读采购行之前 PERMISSION_DENIED（防探测进价）；不填优惠照常入库', async () => {
+    const operatorOnly = {
+      employeeId: 'E-SC2', name: '供应链办理员', phone: '13800000013',
+      roles: [{
+        role: 'custom_supply_chain_operator', scopeId: 'HQ', scopeType: '总部',
+        actions: ['inventory:supply_chain_operate'], scopeStoreIds: [], scopeOrgNodeIds: ['HQ'],
+      }],
+      permissions: { actions: ['inventory:supply_chain_operate'], scopeStoreIds: [] },
+    } as never
+    const { executor } = mockSupplyChainReceipt()
+    await expect(receiveSupplyChainPurchaseOrder(operatorOnly, {
+      purchaseOrderId: 'CGD-1', supplyChainLocationId: 'HQ',
+      items: [{ purchaseOrderItemId: 1, quantity: 1, unitDiscount: 100 }],
+    })).rejects.toThrow(/PERMISSION_DENIED.*单价优惠/)
+    expect(executor.mock.calls.some(([query]) => renderSql(query).includes('FROM inventory_doc_items'))).toBe(false)
+
+    const { lotInserts } = mockSupplyChainReceipt()
+    await receiveSupplyChainPurchaseOrder(operatorOnly, {
+      purchaseOrderId: 'CGD-1', supplyChainLocationId: 'HQ',
+      items: [{ purchaseOrderItemId: 1, quantity: 1 }],
+    })
+    expect(lotInserts[0][12]).toBe('80')
   })
 })
 

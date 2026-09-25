@@ -1315,6 +1315,19 @@ function skuRow(row: {
  */
 const AMOUNTLESS_DOC_TYPES = new Set<InventoryDocType>(['品项公司发货'])
 
+/**
+ * 价格全是供应链成本的单据类型（#346）：供应链采购入库的标准进价 / 单价优惠 / 实际进价 / 金额
+ * 都能直接还原批次成本，市场价格档不该看到 —— 只认 all / supply_chain 档，market 档按 none 处理。
+ */
+const SUPPLY_CHAIN_COST_DOC_TYPES = new Set<InventoryDocType>(['供应链采购入库'])
+
+function docTypePriceVisibility(
+  docType: string,
+  visibility: import('./types').InventoryPriceVisibility,
+): import('./types').InventoryPriceVisibility {
+  return SUPPLY_CHAIN_COST_DOC_TYPES.has(docType as InventoryDocType) && visibility === 'market' ? 'none' : visibility
+}
+
 function docRow(row: {
   doc: typeof inventoryDocs.$inferSelect
   sourceOrgNodeName: string | null
@@ -1449,19 +1462,37 @@ function lotRow(
  */
 export const listInventoryMarketTransferTargets = withAnyPermission(
   [...inventoryDelegatableOperateActions('market')],
-  async (): Promise<InventoryMarketTransferTarget[]> => {
-    await syncInventoryLocations()
-    const rows = await db
-      .select({ orgNodeId: inventoryLocations.orgNodeId, name: inventoryLocations.name })
-      .from(inventoryLocations)
-      .where(and(
-        eq(inventoryLocations.isActive, true),
-        eq(inventoryLocations.locationType, '市场'),
-        isNotNull(inventoryLocations.orgNodeId),
-      ))
-      .orderBy(asc(inventoryLocations.name))
-    return rows.flatMap((row) => (row.orgNodeId ? [{ orgNodeId: row.orgNodeId, name: row.name }] : []))
-  },
+  async (): Promise<InventoryMarketTransferTarget[]> => activeMarketTargets(),
+)
+
+/** 全部启用市场，只取名称与 orgNodeId（越过 scope 的两个候选源共用，见各自注释）。 */
+async function activeMarketTargets(): Promise<InventoryMarketTransferTarget[]> {
+  await syncInventoryLocations()
+  const rows = await db
+    .select({ orgNodeId: inventoryLocations.orgNodeId, name: inventoryLocations.name })
+    .from(inventoryLocations)
+    .where(and(
+      eq(inventoryLocations.isActive, true),
+      eq(inventoryLocations.locationType, '市场'),
+      isNotNull(inventoryLocations.orgNodeId),
+    ))
+    .orderBy(asc(inventoryLocations.name))
+  return rows.flatMap((row) => (row.orgNodeId ? [{ orgNodeId: row.orgNodeId, name: row.name }] : []))
+}
+
+/**
+ * 品项公司发货的「收货市场」候选（#336b）：全部启用的市场，**不按操作人 scope 过滤**。
+ *
+ * 总部库存 scope 不向下展开市场，供应链操作员按 `listInventoryLocations` 只拿得到总部 ——
+ * 发货表单第一步「选收货市场」就是空的。服务端 `createItemCompanyShipment` 对收货市场
+ * 同样不做 scope 鉴权（只断发货总部可写，市场由所引报货单的发起方钉死），两边口径一致。
+ *
+ * 权限与发货 action 同源：只认 `inventory:supply_chain_operate`。别放宽成 stock_list ——
+ * 否则发不了货的账号也能直调拿到本不在自己 scope 内的全部市场名单。字段同样收到最少。
+ */
+export const listInventoryShipmentMarketTargets = withPermission(
+  'inventory:supply_chain_operate',
+  async (): Promise<InventoryMarketTransferTarget[]> => activeMarketTargets(),
 )
 
 /**
@@ -2525,10 +2556,10 @@ export const listInventoryCoreDocs = withPermission(
     return {
       data: rows.map((row) => docRow({
         ...row,
-        includePrice: inventoryPriceVisibilityForOrgNodes(
+        includePrice: docTypePriceVisibility(row.doc.docType, inventoryPriceVisibilityForOrgNodes(
           priceTiers,
           [row.doc.sourceOrgNodeId, row.doc.targetOrgNodeId],
-        ) !== 'none',
+        )) !== 'none',
       })),
       total: countRow?.count ?? 0,
       // 回传**夹过白名单后**的实际页长：调用方若传了非白名单值（如 30），这里按 20 取数，
@@ -3321,6 +3352,12 @@ async function loadItemCompanyRequestFulfillmentProgress(
   }
 }
 
+/** 取到分、.5 远离 0（与 PG numeric ROUND 一致；先 toFixed(4) 吸收浮点残差）。与 business.ts roundCents 同口径。 */
+function roundCentsHalfUp(value: number): number {
+  const scaled = Number(value.toFixed(4)) * 100
+  return Math.sign(scaled) * Math.round(Math.abs(scaled) + 1e-9) / 100
+}
+
 async function loadSupplyChainPurchaseReceiptProgress(
   docId: string,
   scoped: string[] | null,
@@ -3328,29 +3365,43 @@ async function loadSupplyChainPurchaseReceiptProgress(
   const rows = await db.execute(sql`
     WITH visible_docs AS (${visibleInventoryDocsSql(scoped)}),
     purchase_items AS (
-      SELECT item.id AS item_id, item.quantity, purchase_doc.status AS purchase_status
+      SELECT item.id AS item_id, item.quantity, item.fulfilled_quantity,
+             -- 未入库部分按供应链采购价（下单价快照）计，与入库侧优惠的基准同源
+             COALESCE(item.supply_chain_unit_cost, item.actual_unit_price) AS order_unit_price,
+             purchase_doc.status AS purchase_status
         FROM inventory_doc_items item
         JOIN inventory_docs purchase_doc ON purchase_doc.id = item.doc_id
         JOIN visible_docs visible_purchase ON visible_purchase.id = purchase_doc.id
        WHERE item.doc_id = ${docId}
     ),
     receipt_totals AS (
+      -- 已入库金额取各入库明细的 amount（#346：入库时可填单价优惠，按实际进价计），不是按下单价推算
       SELECT
         doc_link.from_item_id AS purchase_item_id,
-        SUM(COALESCE(doc_link.quantity, 0)) AS received_quantity
+        SUM(COALESCE(doc_link.quantity, 0)) AS received_quantity,
+        SUM(COALESCE(receipt_item.amount, 0)) AS received_amount,
+        -- 入库明细金额为空的存量行：金额算不准，整行不给金额（别把 NULL 当 0 静默低估）
+        BOOL_OR(receipt_item.amount IS NULL) AS has_unpriced_receipt
         FROM inventory_doc_links doc_link
         JOIN purchase_items purchase_item ON purchase_item.item_id = doc_link.from_item_id
         JOIN inventory_docs receipt_doc ON receipt_doc.id = doc_link.to_doc_id
         JOIN visible_docs visible_receipt ON visible_receipt.id = receipt_doc.id
+        JOIN inventory_doc_items receipt_item ON receipt_item.id = doc_link.to_item_id
        WHERE doc_link.from_doc_id = ${docId}
          AND doc_link.relation_type = '采购订单供应链采购入库'
+         -- 「有效入库」口径：供应链采购入库只有「已完成」一种落库状态，与 business.ts linkedQuantity 的
+         -- status <> 已取消 当前等价；将来给入库单加草稿 / 作废态时两处必须一起改
          AND receipt_doc.status = '已完成'
        GROUP BY doc_link.from_item_id
     )
     SELECT
       purchase_item.item_id,
       purchase_item.quantity AS purchased_quantity,
+      purchase_item.order_unit_price,
+      purchase_item.fulfilled_quantity,
       COALESCE(receipt_total.received_quantity, 0) AS received_quantity,
+      COALESCE(receipt_total.received_amount, 0) AS received_amount,
+      COALESCE(receipt_total.has_unpriced_receipt, false) AS has_unpriced_receipt,
       purchase_item.purchase_status
       FROM purchase_items purchase_item
       LEFT JOIN receipt_totals receipt_total ON receipt_total.purchase_item_id = purchase_item.item_id
@@ -3363,18 +3414,44 @@ async function loadSupplyChainPurchaseReceiptProgress(
     items: (rows as unknown as Array<{
       item_id: number | string
       purchased_quantity: string | number | null
+      order_unit_price: string | number | null
+      fulfilled_quantity: string | number | null
       received_quantity: string | number | null
+      received_amount: string | number | null
+      has_unpriced_receipt: boolean | null
       purchase_status: InventoryCoreDocStatus
     }>).map((row) => {
       const purchasedQuantity = numberOrNull(row.purchased_quantity) ?? 0
       const receivedQuantity = numberOrNull(row.received_quantity) ?? 0
+      const outstandingQuantity = row.purchase_status === '待收货'
+        ? Math.max(0, Number((purchasedQuantity - receivedQuantity).toFixed(4)))
+        : 0
+      const receivedAmount = numberOrNull(row.received_amount) ?? 0
+      const orderUnitPrice = numberOrNull(row.order_unit_price)
+      // 算不准就不给（返回 undefined，详情页不展示），别给一个看似真实的错数：
+      //  · 历史单：#335 之前市场行按发货完结，fulfilled_quantity 记的是发货量、没有入库血缘 ——
+      //    非待收货状态下 fulfilled > 入库量即此类，入库后金额无从谈起；
+      //    fulfilled_quantity 为空也按历史单处理；已完成却没收满（新模型只有入库收满才完结）同理；
+      //  · 还有未入库量却没有下单价（成本快照为空的存量行）；
+      //  · 关联的入库明细金额为空。
+      const fulfilledQuantity = numberOrNull(row.fulfilled_quantity)
+      const legacy = row.purchase_status !== '待收货' && (
+        fulfilledQuantity === null
+        || fulfilledQuantity - receivedQuantity > 0.000001
+        || (row.purchase_status === '已完成' && purchasedQuantity - receivedQuantity > 0.000001)
+      )
+      const unpriced = (outstandingQuantity > 0 && orderUnitPrice === null) || row.has_unpriced_receipt === true
       return {
         itemId: Number(row.item_id),
         purchasedQuantity,
         receivedQuantity,
-        outstandingQuantity: row.purchase_status === '待收货'
-          ? Math.max(0, purchasedQuantity - receivedQuantity)
-          : 0,
+        outstandingQuantity,
+        receivedAmount: row.has_unpriced_receipt === true ? undefined : receivedAmount,
+        // 入库后实际金额（#346）：已入库部分按各次入库的实际进价；仍待收货时未入库部分按下单价；
+        // 已完成 / 已关闭（已取消）只算已入库部分（口径 A，outstanding 已是 0）。
+        actualAmount: legacy || unpriced
+          ? undefined
+          : Number((receivedAmount + roundCentsHalfUp(outstandingQuantity * (orderUnitPrice ?? 0))).toFixed(2)),
       }
     }),
   }
@@ -3514,10 +3591,10 @@ export const getInventoryCoreDocById = withPermission(
     if (!headRow) return null
     // 行级档位（§9.3/§9.5）：金额可见性按单据 source/target 端点命中该档位绑定的
     // org 集合判定（与单据可见性同构），防混合绑定会话跨绑定借权看价。
-    const priceVisibility = inventoryPriceVisibilityForOrgNodes(
+    const priceVisibility = docTypePriceVisibility(headRow.doc.docType, inventoryPriceVisibilityForOrgNodes(
       priceTiers,
       [headRow.doc.sourceOrgNodeId, headRow.doc.targetOrgNodeId],
-    )
+    ))
     const head = docRow({ ...headRow, includePrice: priceVisibility !== 'none' })
     // 无金额单据类型（§5.3/§10.4）所有价格/折扣/成本/金额字段一律遮蔽（含 admin）：
     // 明细可能残留历史价格快照（DB 保留供入库/退货/审计追溯），业务响应统一不返回。
@@ -3586,7 +3663,15 @@ export const getInventoryCoreDocById = withPermission(
         createdAt: item.createdAt.toISOString(),
       })),
       lineage,
-      fulfillmentProgress,
+      // 采购收货进度里的金额（#346）是供应链成本口径（已入库金额 ÷ 数量 = 实际进价），按供应链价格档遮蔽，
+      // 与 supplyChainUnitCost、与写入侧「填优惠须有供应链价格权」同档 —— 不能借明细金额的宽档
+      fulfillmentProgress: fulfillmentProgress?.kind === '供应链采购收货'
+        && itemPriceVisibility !== 'all' && itemPriceVisibility !== 'supply_chain'
+        ? {
+            ...fulfillmentProgress,
+            items: fulfillmentProgress.items.map(({ receivedAmount: _received, actualAmount: _actual, ...item }) => item),
+          }
+        : fulfillmentProgress,
     }
   },
 )

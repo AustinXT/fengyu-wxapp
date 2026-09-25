@@ -193,6 +193,11 @@ const noStoreOptions: DataCenterScopeOptions = {
   topLevel: 'store', inactiveStores: [],
   markets: [{ id: 'M1', name: '南昌凤御', stores: [] }],
 }
+/** #399：只授权到无门店市场（品项公司）的账号——直接授权（granted），默认落到该市场 */
+const noStoreMarketOptions: DataCenterScopeOptions = {
+  topLevel: 'market', inactiveStores: [],
+  markets: [{ id: 'PX', name: '品项公司', stores: [], granted: true }],
+}
 
 /** 绿湖店 08-08 才上线、易大师 08-23：默认上月（2026-08）两家都早于起点 */
 const starts = {
@@ -317,6 +322,29 @@ describe.each(KEYS)('报表页 %s · 入口控制流', (key) => {
       expect(actions[loader], loader).toHaveBeenCalledTimes(loader === PAGES[key].loader ? 1 : 0)
     }
     expect(actions.getDataStartDates).toHaveBeenCalledTimes(PAGES[key].needsStarts ? 1 : 0)
+  })
+
+  it('只授权无门店市场（#399）：补 scope 落到该市场，不再整屏「暂无可查看范围」', async () => {
+    mockScope(noStoreMarketOptions)
+    await expect(call(key)).rejects.toThrow(`REDIRECT:${path}?scope=market&scopeId=PX`)
+  })
+
+  it('只授权无门店市场（#399）：第二跳经 ReportLayout 正常渲染，取数 action 收到 market/PX', async () => {
+    mockScope(noStoreMarketOptions)
+    await renderPage(key, { scope: 'market', scopeId: 'PX' })
+    expect(screen.queryByText('当前账号暂无可查看的数据范围')).not.toBeInTheDocument()
+    const dataMocks = [
+      dailyOverview.getDailyOverview, operatingMaster.getOperatingMaster,
+      commission.getCommissionDaily, commission.getCommissionDetail,
+      reportActions.getRemainingCardsReport, frequencyActions.getCustomerFrequencyReport,
+    ]
+    const calls = dataMocks.flatMap((m) => m.mock.calls)
+    expect(calls.length, '本页没有调用任何取数 action').toBeGreaterThan(0)
+    for (const args of calls) {
+      const payload = JSON.stringify(args[0])
+      expect(payload).toContain('"market"')
+      expect(payload).toContain('"PX"')
+    }
   })
 
   it('闸门抛 PERMISSION_DENIED 时原样上抛（error.tsx 渲染 403，不是 500）', async () => {
@@ -563,16 +591,21 @@ describe('报表页 · 骨架渲染', () => {
 })
 
 describe('经营数据主表（#372）', () => {
-  it('所选月份完整时仍按业绩轴提示 R 列年度累计的数据起点（2026 年内必早于上线日）', async () => {
+  it('所选月份完整时仍提示：E 列近 90 天窗口按服务轴、R / K 列年度累计按业绩轴（2026 年内必早于上线日）', async () => {
     mockScope(singleStoreOptions)
     await renderPage('operatingMaster', { scope: 'store', scopeId: 'S1' })
 
-    const notice = screen.getByRole('note', { name: '数据起点提示' })
-    expect(notice).toHaveTextContent('年度累计（R 列）（2026-01-01 ~ 2026-08-31）早于部分门店的数据起点')
-    expect(notice).toHaveTextContent('业绩 · 南昌凤御 1 家（2026-07-08 起）')
-    // 所选月份本身完整：不出「所选月份」那条，服务轴也不出现在年度累计里
-    expect(notice).not.toHaveTextContent('所选月份')
-    expect(notice).not.toHaveTextContent('服务 ·')
+    const notices = screen.getByRole('note', { name: '数据起点提示' }).querySelectorAll(':scope > div > div')
+    const text = Array.from(notices, (item) => item.textContent ?? '')
+    const retained = text.find((line) => line.startsWith('保有会员近 90 天（E 列）'))
+    const ytd = text.find((line) => line.startsWith('年度累计（R、K 列）'))
+    expect(retained).toContain('（2026-06-02 ~ 2026-08-31）早于部分门店的数据起点')
+    expect(retained).toContain('服务 · 南昌凤御 1 家（2026-07-08 起）')
+    expect(retained).not.toContain('业绩 ·')
+    // 第二条起只给概述（DataStartNotice 约定：同一批门店不刷两遍）
+    expect(ytd).toContain('（2026-01-01 ~ 2026-08-31）同样早于数据起点（涉及 1 家门店）')
+    // 所选月份本身完整：不出「所选月份」那条
+    expect(text.some((line) => line.includes('所选月份'))).toBe(false)
   })
 
   it('1 月：年度累计区间即所选月份，不重复出年度累计那条提示', async () => {
