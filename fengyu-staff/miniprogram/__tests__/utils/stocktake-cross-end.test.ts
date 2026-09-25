@@ -63,12 +63,22 @@ describe('盘点类型集合与可建类型（#352）', () => {
 
   test('小程序 STOCKTAKE_DOC_TYPES 与 staffApi、admin 逐项一致', () => {
     const staffSrc = fs.readFileSync(STAFF_PATH, 'utf8')
-    const m = staffSrc.match(/const STOCKTAKE_DOC_TYPES = \[([^\]]*)\]/)
+    const m = staffSrc.match(/const STOCKTAKE_DOC_TYPES = new Set<string>\(\[([^\]]*)\]\)/)
     if (!m) throw new Error('没找到小程序 STOCKTAKE_DOC_TYPES')
     const mini = [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]).sort()
     expect(mini).toEqual(setItems(fs.readFileSync(STAFF_API_PATH, 'utf8'), 'STOCKTAKE_DOC_TYPES'))
     expect(mini).toEqual(setItems(fs.readFileSync(ADMIN_PATH, 'utf8'), 'STOCKTAKE_DOC_TYPES'))
     expect(mini).toHaveLength(2)
+  })
+
+  test('isStocktakeDocType 函数体与 admin 逐字相同（签名类型不同，只比函数体）', () => {
+    const body = (file: string) => {
+      const m = fs.readFileSync(file, 'utf8').match(/export function isStocktakeDocType\([^)]*\)[^{]*\{([\s\S]*?)\n\}/)
+      if (!m) throw new Error(`没在 ${file} 里找到 isStocktakeDocType`)
+      return m[1].replace(/\s+/g, ' ').trim()
+    }
+    expect(body(STAFF_PATH)).toBe(body(ADMIN_PATH))
+    expect(body(ADMIN_PATH)).toBe('return STOCKTAKE_DOC_TYPES.has(docType)')
   })
 
   test('表单 FORM_CONFIG 的类型都是 staffApi 允许 staff 新建的类型', () => {
@@ -111,11 +121,41 @@ describe('盘点差异派生', () => {
 })
 
 describe('实盘数输入校验（与 staffApi isValidDocItemQuantity 盘点口径一致，#351）', () => {
-  test.each(['0', '0.00', '5', '1.25', '9999999999.99'])('%j 合法', (input) => {
+  // 1e2 / 0x10 看着怪，但后端 isValidDocItemQuantity 同样放行（#351 口径）；前端单端收紧会与后端分叉
+  test.each(['0', '0.00', '5', '1.25', '9999999999.99', '1e2', '0x10'])('%j 合法', (input) => {
     expect(isValidStocktakeQuantity(input)).toBe(true)
   })
 
   test.each(['', '   ', '-1', '1.234', 'abc', '10000000000', 'Infinity'])('%j 不合法', (input) => {
     expect(isValidStocktakeQuantity(input)).toBe(false)
+  })
+})
+
+describe('差异展示与实盘校验的跨端一致（#352 评审补）', () => {
+  const ADMIN_PAGE_PATH = path.resolve(__dirname, '../../../../fengyu-admin/src/app/(main)/(inventory)/inventory/docs/[id]/page.tsx')
+  const STAFF_API_PATH = path.resolve(__dirname, '../../../cloudfunctions/staffApi/routes/inventory.js')
+
+  test('差异文本表达式与 admin StocktakeDiffCell 逐字相同', () => {
+    const expr = 'diff > 0 ? `+${diff}` : String(diff)'
+    const adminCell = fs.readFileSync(ADMIN_PAGE_PATH, 'utf8').match(/function StocktakeDiffCell[\s\S]*?\n\}/)
+    if (!adminCell) throw new Error('没找到 admin StocktakeDiffCell')
+    expect(adminCell[0]).toContain(expr)
+    expect(adminCell[0]).toMatch(/diff === null\) return <td[^>]*>—<\/td>/)
+    expect(normalizedFunction(STAFF_PATH, 'stocktakeDiffDisplay')).toContain(expr)
+  })
+
+  test('isValidStocktakeQuantity 与 staffApi isValidDocItemQuantity 在盘点类型上逐值同判', () => {
+    const src = fs.readFileSync(STAFF_API_PATH, 'utf8')
+    const m = src.match(/function isValidDocItemQuantity\(docType, quantity\) \{([\s\S]*?)\n\}/)
+    if (!m) throw new Error('没找到 staffApi isValidDocItemQuantity')
+    // eslint-disable-next-line no-new-func
+    const backend = new Function('STOCKTAKE_DOC_TYPES', 'docType', 'quantity', m[1]) as
+      (types: Set<string>, docType: string, quantity: unknown) => boolean
+    const types = new Set(['市场库存盘点', '分院库存盘点'])
+    const inputs = ['', ' ', '0', '-0', '0.00', '1', '1.5', '1.25', '1.234', '-1', '1e2', '0x10', '.5', '+3',
+      'abc', 'Infinity', 'NaN', '9999999999.99', '10000000000', ' 7 ', '1,5', '０']
+    for (const input of inputs) {
+      expect(isValidStocktakeQuantity(input), JSON.stringify(input)).toBe(backend(types, '分院库存盘点', input))
+    }
   })
 })

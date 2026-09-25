@@ -6,10 +6,10 @@
 // 由 `__tests__/utils/stocktake-cross-end.test.ts` 整段比对；改一端必须同步另一端。
 
 /** 与 staffApi / admin 的 STOCKTAKE_DOC_TYPES 同集合；staff 端可见、可建的只有「分院库存盘点」 */
-const STOCKTAKE_DOC_TYPES = ['市场库存盘点', '分院库存盘点']
+const STOCKTAKE_DOC_TYPES = new Set<string>(['市场库存盘点', '分院库存盘点'])
 
 export function isStocktakeDocType(docType: string): boolean {
-  return STOCKTAKE_DOC_TYPES.indexOf(docType) >= 0
+  return STOCKTAKE_DOC_TYPES.has(docType)
 }
 
 export type StocktakeItem = { quantity: number; stockSnapshot: number | null }
@@ -61,13 +61,15 @@ export function stocktakeSummary(items: readonly StocktakeItem[]): string {
 
 export type StocktakeDiffKey = 'surplus' | 'shortage' | 'matched' | 'unknown'
 
-/** WXML 不能调函数：把差异预先格式化成展示文本 + 样式键（盘盈带「+」，历史单无账面显示「—」） */
+/**
+ * WXML 不能调函数：把差异预先格式化成展示文本 + 样式键（盘盈带「+」，历史单无账面显示「—」）。
+ * ⚠️ diffText 的表达式与 admin 单据详情 `StocktakeDiffCell` 逐字相同（stocktake-cross-end.test.ts 钉住）。
+ */
 export function stocktakeDiffDisplay(item: StocktakeItem): { diffText: string; diffKey: StocktakeDiffKey } {
   const diff = stocktakeDiff(item)
   if (diff === null) return { diffText: '—', diffKey: 'unknown' }
-  if (diff > 0) return { diffText: `+${diff}`, diffKey: 'surplus' }
-  if (diff < 0) return { diffText: String(diff), diffKey: 'shortage' }
-  return { diffText: '0', diffKey: 'matched' }
+  const diffText = diff > 0 ? `+${diff}` : String(diff)
+  return { diffText, diffKey: diff > 0 ? 'surplus' : diff < 0 ? 'shortage' : 'matched' }
 }
 
 /**

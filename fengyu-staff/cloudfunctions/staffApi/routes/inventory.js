@@ -805,12 +805,16 @@ async function lockInventoryLotById(client, lotId, locationId) {
 /**
  * 不带批次的明细（门店报货 / 门店盘点）取 SKU 快照。
  *
- * #352：同时校验 SKU 归属——非供应链 SKU 只能在归属市场（及其门店）使用，与 admin
- * `createDoc` 的 `assertSkuIdAvailableAtLocation` 同一道闸。候选接口虽已按归属过滤，
- * 但抓包直传别的市场自采 SKU 时，盘点单会按账面 0 记一笔凭空的盘盈。
+ * #352：传了 `locationId` 时同时校验 SKU 归属——非供应链 SKU 只能在归属市场（及其门店）使用，
+ * 与 admin `createDoc` 的 `assertSkuIdAvailableAtLocation` 同一道闸。盘点候选
+ * （stocktakeSkuOptions）与这道闸同谓词，但抓包直传别的市场自采 SKU 时，盘点单会按账面 0
+ * 记一笔凭空的盘盈，所以建单再拦一次。
+ * ⚠️ 目前只有盘点传 `locationId`：门店报货的候选 reportableSkuOptions 是存量谓词
+ * `owner_market_id IS NULL OR = 本店市场`，比这道闸宽（非供应链 + 归属 NULL 的 SKU 能选到），
+ * 直接给报货加闸会把「候选能选、提交被拒」带进报货；两者要一起对齐，留作单独改动。
  * `locationId` 契约同 `assertSkuAvailableAtLocation`：必须是 inventory_locations.location_id。
  */
-async function inventorySkuSnapshot(client, skuId, locationId) {
+async function inventorySkuSnapshot(client, skuId, locationId = null) {
   const res = await client.query(
     `SELECT sku_id, product_name, spec_name, supplier, product_series, source_type, owner_market_id
        FROM inventory_skus
@@ -820,7 +824,7 @@ async function inventorySkuSnapshot(client, skuId, locationId) {
   )
   const r = res.rows[0]
   if (!r) throw new Error('NOT_FOUND: 库存 SKU 不存在或已停用')
-  await assertSkuAvailableAtLocation(client, r, locationId)
+  if (locationId) await assertSkuAvailableAtLocation(client, r, locationId)
   return {
     skuId: r.sku_id,
     skuName: r.product_name,
@@ -1764,7 +1768,11 @@ async function createDoc(ctx) {
         snapshot = lot
       } else {
         if (!item.skuId) throw new Error('INVALID_PARAMS: 明细缺少库存 SKU')
-        snapshot = await inventorySkuSnapshot(client, item.skuId, actingLocationId)
+        snapshot = await inventorySkuSnapshot(
+          client,
+          item.skuId,
+          STOCKTAKE_DOC_TYPES.has(docType) ? actingLocationId : null,
+        )
       }
       // 盘点单没有批次选择器，lot 恒为 null —— 账面数只能来自上面的汇总。
       // 一个批次都没有时 GROUP BY 不出行，落 0（不是 NULL）：账上就是 0，实盘有货即盘盈。

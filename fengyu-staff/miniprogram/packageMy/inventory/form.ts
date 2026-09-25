@@ -496,6 +496,10 @@ Page({
       setTimeout(() => {
         wx.redirectTo({
           url: `/packageMy/inventory/detail?id=${encodeURIComponent(result.id)}`,
+          // 跳转失败（页面栈满等）时单据已建成，恢复按钮只会引出重复建单；提示去列表查看
+          fail: () => {
+            wx.showToast({ title: `已提交（${result.id}），请返回库存记录查看`, icon: 'none' })
+          },
         })
       }, 700)
     } catch (err: any) {

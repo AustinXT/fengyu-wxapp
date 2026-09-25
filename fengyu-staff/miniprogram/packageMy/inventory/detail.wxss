@@ -152,7 +152,8 @@
 }
 
 .diff-shortage {
-  color: var(--color-primary);
+  /* 与 admin 盘点详情同色：盘亏走错误态红，不用品牌主色 */
+  color: #D94040;
 }
 
 .diff-unknown {

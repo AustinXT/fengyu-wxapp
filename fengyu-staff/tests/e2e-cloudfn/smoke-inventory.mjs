@@ -274,6 +274,18 @@ async function stocktakeFlow(errors) {
     role: 'inventory_store_operator',
     scopeId: TEST_STORE_ORG_ID,
   })
+  // createDoc 要求 WorkFine 期初已核验。只补缺失行、不改已有状态：共享 dev 库上这是真实业务状态，
+  // 覆盖成「已初始化」会绕过真实的期初核验闸门。
+  await pgQuery(
+    `INSERT INTO inventory_cutover_states (cutover_key, status)
+     VALUES ('workfine_inventory', '已初始化')
+     ON CONFLICT (cutover_key) DO NOTHING`,
+  )
+  const cutover = await pgQuery(`SELECT status FROM inventory_cutover_states WHERE cutover_key = 'workfine_inventory'`)
+  if (cutover[0]?.status !== '已初始化') {
+    errors.push(`目标库 WorkFine 库存期初状态为「${cutover[0]?.status}」，盘点建单会被拒；请在已核验的库上跑`)
+    return
+  }
   const seeded = await seedStocktakeBook()
   const bookOf = async (skuId) => {
     const rows = await pgQuery(
@@ -332,7 +344,11 @@ async function stocktakeFlow(errors) {
        FROM inventory_doc_items WHERE doc_id = $1 ORDER BY sku_id`,
     [docId],
   )
-  const snapshotBySku = Object.fromEntries(itemRows.map((row) => [row.sku_id, Number(row.stock_snapshot)]))
+  // 先严格判 NULL：Number(null) 是 0，账面 0 的夹具上「stock_snapshot 恒 NULL」的回归会被当成 0 放过
+  for (const row of itemRows) {
+    if (row.stock_snapshot === null) errors.push(`${row.sku_id} 的 stock_snapshot 是 NULL（账面没记）`)
+  }
+  const snapshotBySku = Object.fromEntries(itemRows.map((row) => [row.sku_id, row.stock_snapshot === null ? null : Number(row.stock_snapshot)]))
   if (itemRows.length !== 2) errors.push(`盘点明细应 2 行，实际 ${itemRows.length}`)
   if (snapshotBySku[INV_SKU_ID] !== book1) errors.push(`${INV_SKU_ID} 账面=${snapshotBySku[INV_SKU_ID]}，期望在手汇总 ${book1}`)
   if (snapshotBySku[INV_SKU_ID_2] !== book2) errors.push(`${INV_SKU_ID_2} 账面=${snapshotBySku[INV_SKU_ID_2]}，期望在手汇总 ${book2}`)

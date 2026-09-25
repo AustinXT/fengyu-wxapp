@@ -169,7 +169,7 @@ describe('门店盘点表单', () => {
     } finally {
       vi.useRealTimers()
     }
-    expect((globalThis as any).wx.redirectTo).toHaveBeenCalledWith({ url: '/packageMy/inventory/detail?id=YPD-1' })
+    expect((globalThis as any).wx.redirectTo).toHaveBeenCalledWith(expect.objectContaining({ url: '/packageMy/inventory/detail?id=YPD-1' }))
     const [action, payload] = mockedCall.mock.calls.at(-1) as [string, any]
     expect(action).toBe('inventory.createDoc')
     expect(payload).toMatchObject({ docType: '分院库存盘点', storeId: 'store-001' })

@@ -615,10 +615,10 @@ describe('inventory.createDoc 权限与状态', () => {
   // 与 admin 端分叉（同一种单据，admin 建的有账面数、staff 建的没有）。
 
   /** 建一张 staff 侧分院盘点单，返回事务 client 以便断言发出的 SQL。 */
-  function mockStoreStocktake({ bookRows, items, skuRow = {} }) {
+  function mockStoreStocktake({ bookRows, items, skuRow = {}, docType = '分院库存盘点' }) {
     const ctx = createCtx({
       payload: {
-        docType: '分院库存盘点',
+        docType,
         sourceOrgNodeId: 'store-A',
         items,
       },
@@ -633,9 +633,9 @@ describe('inventory.createDoc 权限与状态', () => {
       const sql = String(query)
       if (sql.includes('WITH RECURSIVE descendants')) return [{ store_id: 'store-A' }]
       if (sql.includes('FROM inventory_locations') && sql.includes('WHERE location_id = $1')) {
-        return [{
-          location_id: params[0], location_type: '门店', parent_location_id: 'market-A', is_active: true,
-        }]
+        return [params[0] === 'market-A'
+          ? { location_id: 'market-A', org_node_id: 'market-A', location_type: '市场', parent_location_id: null, is_active: true }
+          : { location_id: params[0], location_type: '门店', parent_location_id: 'market-A', is_active: true }]
       }
       return []
     })
@@ -694,6 +694,23 @@ describe('inventory.createDoc 权限与状态', () => {
     ))
     expect(locationCall[1]).toEqual(['store-A'])
     expect(client.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO inventory_doc_items'))).toBe(false)
+  })
+
+  test('门店报货本 PR 不加归属闸（候选谓词未对齐前不能「能选却提交被拒」）', async () => {
+    const { ctx, getClient } = mockStoreStocktake({
+      docType: '门店报货',
+      bookRows: [],
+      items: [{ skuId: 'sku-null-owner', quantity: 1 }],
+      skuRow: { product_name: '归属缺失自采', source_type: '市场自采', owner_market_id: null },
+    })
+
+    await inventoryRoutes.createDoc(ctx)
+
+    const client = getClient()
+    expect(client.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO inventory_doc_items'))).toBe(true)
+    expect(client.query.mock.calls.some(([sql]) => (
+      String(sql).includes('FROM inventory_locations') && String(sql).includes('WHERE location_id = $1')
+    ))).toBe(false)
   })
 
   test('分院库存盘点接受本市场的自采 SKU', async () => {
