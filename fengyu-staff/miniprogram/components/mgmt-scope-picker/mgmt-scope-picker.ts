@@ -50,6 +50,9 @@ Component({
     storeListByMarket: {} as Record<string, StoreMini[]>,
     current: { ...DEFAULT_ALL } as Scope,
     applied: { ...DEFAULT_ALL } as Scope,
+    inactiveStoreIds: [] as string[],
+    optionsLoaded: false,
+    userPicked: false,
   },
 
   lifetimes: {
@@ -57,6 +60,19 @@ Component({
       const def = (this.properties.defaultScope as Scope) || DEFAULT_ALL
       this.setData({ applied: def, current: def })
       this.loadOptions()
+    },
+  },
+
+  observers: {
+    // 组件 attached 早于页面 onLoad/onShow：页面在 onShow 里算出的默认范围只能靠 observer 接住，
+    // 否则 applied 停在 attached 时的初值（全部市场），纠正 / 回填全都不生效（#400 评审发现）。
+    // 用户显式选过后不再被默认值覆盖。
+    defaultScope(def: Scope) {
+      if (!def || this.data.userPicked) return
+      const applied = this.data.applied as Scope
+      if (def.scopeType === applied.scopeType && def.scopeId === applied.scopeId && !!def.inactive === !!applied.inactive) return
+      this.setData({ applied: def, current: def })
+      if (this.data.optionsLoaded) this._normalizeApplied()
     },
   },
 
@@ -71,70 +87,80 @@ Component({
         ;(res.markets || []).forEach(m => {
           storeListByMarket[m.id] = m.stores || []
         })
-
-        // 若调用方传入的 defaultScope 是 market 维度但 scopeName 缺失（页面层占位），
-        // 按返回数据回填真实市场名，并广播一次 change 同步页面显示。
-        const applied = this.data.applied as Scope
-        let nextApplied = applied
-        if (applied.scopeType === 'market' && !applied.scopeName && applied.scopeId) {
-          const m = marketList.find(x => x.id === applied.scopeId)
-          if (m) nextApplied = { ...applied, marketId: m.id, scopeName: m.name }
-        }
-        if (nextApplied.scopeType === 'store' && !nextApplied.marketId && nextApplied.scopeId) {
-          const market = (res.markets || []).find((m) =>
-            (m.stores || []).some((store) => store.storeId === nextApplied.scopeId),
-          )
-          if (market) {
-            const store = (market.stores || []).find((item) => item.storeId === nextApplied.scopeId)
-            nextApplied = {
-              ...nextApplied,
-              marketId: market.id,
-              scopeName: nextApplied.scopeName || `${market.name} · ${store?.storeName || ''}`,
-            }
-          }
-        }
-        // 默认门店落在已停用门店（#400）：取数会滤掉它的全部数据（满屏 0）。
-        // 有在营门店可选就纠正到第一家在营门店；没有就保留，标「已停用」由页面出空态。
-        // 只纠正停用门店 —— 只关店、节点仍在营的门店不在下拉里但照样有历史数据，不动它。
-        const inactiveIds = new Set((res.inactiveStores || []).map((store) => store.storeId))
-        if (nextApplied.scopeType === 'store' && nextApplied.scopeId && inactiveIds.has(nextApplied.scopeId)) {
-          const market = (res.markets || []).find((m) => (m.stores || []).length > 0)
-          const firstActive = market?.stores[0]
-          nextApplied = market && firstActive
-            ? {
-              scopeType: 'store',
-              marketId: market.id,
-              scopeId: firstActive.storeId,
-              scopeName: `${market.name} · ${firstActive.storeName}`,
-            }
-            : nextApplied.inactive ? nextApplied : { ...nextApplied, inactive: true }
-        } else if (nextApplied.inactive) {
-          // 页面初判停用（旧缓存 / 期间已启用），服务端说在营 → 撤掉标记
-          nextApplied = { ...nextApplied, inactive: false }
-        }
-        const currentAllowsMarket = !!nextApplied.marketId
-          && allowedMarketIds.includes(nextApplied.marketId)
-
         this.setData({
           allowAll,
           allowedMarketIds,
-          currentAllowsMarket,
           marketList,
           storeListByMarket,
-          applied: nextApplied,
-          current: nextApplied,
+          inactiveStoreIds: (res.inactiveStores || []).map((store) => store.storeId),
+          optionsLoaded: true,
         })
-
-        if (nextApplied !== applied) {
-          this.triggerEvent('change', {
-            scopeType: nextApplied.scopeType,
-            scopeId: nextApplied.scopeId,
-            scopeName: nextApplied.scopeName,
-            inactive: nextApplied.inactive === true,
-          })
-        }
+        this._normalizeApplied()
       } catch (err) {
         wx.showToast({ title: '加载范围失败', icon: 'none' })
+      }
+    },
+
+    /** 按已加载的范围数据校正 applied（回填名称 / 纠正停用门店），有变化才广播 change */
+    _normalizeApplied() {
+      const marketList = this.data.marketList as MarketMini[]
+      const storeListByMarket = this.data.storeListByMarket as Record<string, StoreMini[]>
+      const allowedMarketIds = this.data.allowedMarketIds as string[]
+
+      // 若调用方传入的 defaultScope 是 market 维度但 scopeName 缺失（页面层占位），
+      // 按返回数据回填真实市场名，并广播一次 change 同步页面显示。
+      const applied = this.data.applied as Scope
+      let nextApplied = applied
+      if (applied.scopeType === 'market' && !applied.scopeName && applied.scopeId) {
+        const m = marketList.find(x => x.id === applied.scopeId)
+        if (m) nextApplied = { ...applied, marketId: m.id, scopeName: m.name }
+      }
+      if (nextApplied.scopeType === 'store' && !nextApplied.marketId && nextApplied.scopeId) {
+        const market = marketList.find((m) =>
+          (storeListByMarket[m.id] || []).some((store) => store.storeId === nextApplied.scopeId),
+        )
+        if (market) {
+          const store = (storeListByMarket[market.id] || []).find((item) => item.storeId === nextApplied.scopeId)
+          nextApplied = {
+            ...nextApplied,
+            marketId: market.id,
+            scopeName: nextApplied.scopeName || `${market.name} · ${store?.storeName || ''}`,
+          }
+        }
+      }
+      // 默认门店落在已停用门店（#400）：取数会滤掉它的全部数据（满屏 0）。
+      // 有在营门店可选就纠正到第一家在营门店；没有就保留，标「已停用」由页面出空态。
+      // 只纠正停用门店 —— 只关店、节点仍在营的门店不在下拉里但照样有历史数据，不动它。
+      const inactiveIds = new Set(this.data.inactiveStoreIds as string[])
+      if (nextApplied.scopeType === 'store' && nextApplied.scopeId && inactiveIds.has(nextApplied.scopeId)) {
+        const market = marketList.find((m) => (storeListByMarket[m.id] || []).length > 0)
+        const firstActive = market ? storeListByMarket[market.id][0] : undefined
+        nextApplied = market && firstActive
+          ? {
+            scopeType: 'store',
+            marketId: market.id,
+            scopeId: firstActive.storeId,
+            scopeName: `${market.name} · ${firstActive.storeName}`,
+          }
+          : nextApplied.inactive ? nextApplied : { ...nextApplied, inactive: true }
+      } else if (nextApplied.inactive) {
+        // 页面初判停用（旧缓存 / 期间已启用），服务端说在营 → 撤掉标记
+        nextApplied = { ...nextApplied, inactive: false }
+      }
+
+      this.setData({
+        currentAllowsMarket: !!nextApplied.marketId && allowedMarketIds.includes(nextApplied.marketId),
+        applied: nextApplied,
+        current: nextApplied,
+      })
+
+      if (nextApplied !== applied) {
+        this.triggerEvent('change', {
+          scopeType: nextApplied.scopeType,
+          scopeId: nextApplied.scopeId,
+          scopeName: nextApplied.scopeName,
+          inactive: nextApplied.inactive === true,
+        })
       }
     },
 
@@ -222,6 +248,7 @@ Component({
     // 同步写入 applied + current，避免 loadOptions 异步回填时读到陈旧 current 覆盖选择
     _confirmAndEmit(scope: Scope) {
       this.setData({
+        userPicked: true,
         applied: scope,
         current: scope,
         currentAllowsMarket: this._allowsMarket(scope.marketId),

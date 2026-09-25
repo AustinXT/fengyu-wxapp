@@ -5,7 +5,8 @@
  * 全部滤掉，照常取数只会满屏 0。所以：
  *   - 默认范围跳过停用门店；权限内全部停用才落上去
  *   - 落在停用门店 → 「「XX」已停用，无可展示数据」空态；在营门店本期无业绩照常显示 0
- *   - 客量 / 销售 / 品项 / 顾客子页经 query（scopeInactive=1）继承，出同一空态、不取数
+ *   - 销售数据页的取数同样被滤光 → 以 salesData 回包 scope.inactive 出同一空态
+ *   - 客量 / 品项 / 顾客子页的接口不滤停用门店（有真实历史数据）→ 照常取数，只在范围标签标「（已停用）」
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest'
 import { callStaffApi } from '../../utils/cloud'
@@ -52,7 +53,7 @@ function instantiate(name: string, extra: Record<string, unknown> = {}) {
 const mocked = vi.mocked(callStaffApi)
 
 /** summary 最小返回：全 0 指标 + scope */
-function summaryResp(scope: { type: string; id: string | null; name: string; inactive: boolean }) {
+function summaryResp(scope: { type: string; id: string | null; name: string; inactive: boolean; hasActiveAlternative?: boolean }) {
   const pair = { today: 0, month: 0 }
   const triple = { today: 0, month: 0, monthlyAvgPerStore: 0 }
   return {
@@ -106,12 +107,14 @@ beforeEach(() => {
   setGlobalData({})
 })
 
+// roleBindings.scopeId 是组织节点 id（生产形如 org-门店-<ts>），与 storeId 不同；店长管辖门店走 managerStoreIds
 const managerOf = (storeNodeId: string) => ({ role: 'manager', isStoreManager: true, scopeType: '门店', scopeId: storeNodeId })
 
 describe('hub · computeDefaultScope 跳过停用门店', () => {
   test('店长绑定门店已停用、另有在营门店 → 落到第一家在营门店', () => {
     setGlobalData({
-      roleBindings: [managerOf('store-zh')],
+      roleBindings: [managerOf('org-门店-zh')],
+      managerStoreIds: ['store-zh'],
       scopedStores: [
         { storeId: 'store-zh', storeName: '九江中辉店', isActive: false },
         { storeId: 'store-lw', storeName: '九江蓝湾店', isActive: true },
@@ -135,7 +138,8 @@ describe('hub · computeDefaultScope 跳过停用门店', () => {
 
   test('权限内全部停用 → 仍落到店长绑定门店，标 inactive', () => {
     setGlobalData({
-      roleBindings: [managerOf('store-zg')],
+      roleBindings: [managerOf('org-门店-zg')],
+      managerStoreIds: ['store-zg'],
       scopedStores: [
         { storeId: 'store-a', storeName: 'A 店', isActive: false },
         { storeId: 'store-zg', storeName: '自贡旭阳店', isActive: false },
@@ -146,9 +150,22 @@ describe('hub · computeDefaultScope 跳过停用门店', () => {
     })
   })
 
+  test('店长管辖门店在营 → 优先它而不是店名排第一的门店（按 managerStoreIds 匹配，非组织节点 id）', () => {
+    setGlobalData({
+      roleBindings: [managerOf('org-门店-lw')],
+      managerStoreIds: ['store-lw'],
+      scopedStores: [
+        { storeId: 'store-ld', storeName: '九江丽都店', isActive: true },
+        { storeId: 'store-lw', storeName: '九江蓝湾店', isActive: true },
+      ],
+    })
+    expect(instantiate('hub').computeDefaultScope().scopeId).toBe('store-lw')
+  })
+
   test('旧缓存无 isActive 字段 → 按在营处理（行为同改动前）', () => {
     setGlobalData({
-      roleBindings: [managerOf('store-b')],
+      roleBindings: [managerOf('org-门店-b')],
+      managerStoreIds: ['store-b'],
       scopedStores: [{ storeId: 'store-a', storeName: 'A 店' }, { storeId: 'store-b', storeName: 'B 店' }],
     })
     expect(instantiate('hub').computeDefaultScope().scopeId).toBe('store-b')
@@ -164,8 +181,7 @@ describe('hub · summary 空态以服务端 scope.inactive 为准', () => {
   }
 
   test('停用门店 → empty 空态 + 文案对齐 #293；无其它在营门店时给出说明', async () => {
-    setGlobalData({ roleBindings: [managerOf('store-zg')], scopedStores: [{ storeId: 'store-zg', storeName: '自贡旭阳店', isActive: false }] })
-    mocked.mockResolvedValueOnce(summaryResp({ type: 'store', id: 'store-zg', name: '自贡旭阳店', inactive: true }))
+    mocked.mockResolvedValueOnce(summaryResp({ type: 'store', id: 'store-zg', name: '自贡旭阳店', inactive: true, hasActiveAlternative: false }))
     const hub = hubAt({ scopeType: 'store', scopeId: 'store-zg', scopeName: '自贡旭阳店', inactive: true })
     await hub.loadSummary()
 
@@ -175,14 +191,8 @@ describe('hub · summary 空态以服务端 scope.inactive 为准', () => {
     expect(hub.data.display).toBeNull()
   })
 
-  test('有其它在营门店 → 提示去上方切换', async () => {
-    setGlobalData({
-      scopedStores: [
-        { storeId: 'store-zh', storeName: '九江中辉店', isActive: false },
-        { storeId: 'store-lw', storeName: '九江蓝湾店', isActive: true },
-      ],
-    })
-    mocked.mockResolvedValueOnce(summaryResp({ type: 'store', id: 'store-zh', name: '九江中辉店', inactive: true }))
+  test('后端说有其它在营门店 → 提示去上方切换（判据后端下发，不在前端复算）', async () => {
+    mocked.mockResolvedValueOnce(summaryResp({ type: 'store', id: 'store-zh', name: '九江中辉店', inactive: true, hasActiveAlternative: true }))
     const hub = hubAt({ scopeType: 'store', scopeId: 'store-zh', scopeName: '九江中辉店' })
     await hub.loadSummary()
 
@@ -200,17 +210,35 @@ describe('hub · summary 空态以服务端 scope.inactive 为准', () => {
     expect(hub.data.scope.inactive).toBe(false)
   })
 
+  test('只切日期、scope 不变 → 旧日期的迟到响应（含失败）同样丢弃', async () => {
+    let rejectOld!: (e: unknown) => void
+    mocked
+      .mockReturnValueOnce(new Promise((_r, j) => { rejectOld = j }) as any)
+      .mockResolvedValueOnce(summaryResp({ type: 'store', id: 'store-zh', name: '九江中辉店', inactive: true, hasActiveAlternative: false }))
+    const hub = hubAt({ scopeType: 'store', scopeId: 'store-zh', scopeName: '九江中辉店' })
+    const first = hub.loadSummary()
+    hub.data.selectedDate = '2026-09-24'
+    await hub.loadSummary()
+    rejectOld(new Error('timeout'))
+    await first
+
+    expect(hub.data.summaryState).toBe('empty')
+    expect((globalThis as any).wx.showToast).not.toHaveBeenCalled()
+  })
+
   test('响应回来前已切 scope → 丢弃迟到响应，不把停用标记盖到新 scope', async () => {
     let resolve!: (v: unknown) => void
     mocked.mockReturnValueOnce(new Promise((r) => { resolve = r }) as any)
     const hub = hubAt({ scopeType: 'store', scopeId: 'store-zh', scopeName: '九江中辉店' })
     const pending = hub.loadSummary()
     hub.data.scope = { scopeType: 'store', scopeId: 'store-lw', scopeName: '九江蓝湾店' }
+    mocked.mockResolvedValueOnce(summaryResp({ type: 'store', id: 'store-lw', name: '九江蓝湾店', inactive: false }))
+    await hub.loadSummary()
     resolve(summaryResp({ type: 'store', id: 'store-zh', name: '九江中辉店', inactive: true }))
     await pending
 
-    expect(hub.data.scope.inactive).toBeUndefined()
-    expect(hub.data.summaryState).not.toBe('empty')
+    expect(hub.data.scope.inactive).toBe(false)
+    expect(hub.data.summaryState).toBe('content')
   })
 
   test('子页入口透传 scopeInactive=1（客量 / 销售 / 品项 / 顾客）', () => {
@@ -276,6 +304,30 @@ describe('scope-picker · 纠正落在停用门店的默认范围', () => {
     expect(picker.events[0].detail).toMatchObject({ scopeId: 'store-lw', inactive: false })
   })
 
+  test('组件 attached 早于页面 onShow：页面随后下发的默认范围经 observer 接住并纠正', async () => {
+    mocked.mockResolvedValueOnce(options())
+    const picker = pickerWith({ scopeType: 'all', scopeId: null, scopeName: '全部市场' })
+    await picker.loadOptions()
+    expect(picker.events).toEqual([])
+
+    picker.observers.defaultScope.call(picker, { scopeType: 'store', scopeId: 'store-zh', scopeName: '九江中辉店' })
+    expect(picker.data.applied).toMatchObject({ scopeId: 'store-lw' })
+    expect(picker.events[0].detail).toMatchObject({ scopeId: 'store-lw', inactive: false })
+  })
+
+  test('选项未加载时 observer 只记下默认值，加载后再校正；用户显式选过后不被默认值覆盖', async () => {
+    const picker = pickerWith({ scopeType: 'all', scopeId: null, scopeName: '全部市场' })
+    picker.observers.defaultScope.call(picker, { scopeType: 'store', scopeId: 'store-zh', scopeName: '九江中辉店' })
+    expect(picker.data.applied.scopeId).toBe('store-zh')
+    mocked.mockResolvedValueOnce(options({ markets: [] }))
+    await picker.loadOptions()
+    expect(picker.data.applied).toMatchObject({ scopeId: 'store-zh', inactive: true })
+
+    picker._confirmAndEmit({ scopeType: 'store', marketId: 'mkt-jj', scopeId: 'store-lw', scopeName: '九江凤御 · 九江蓝湾店' })
+    picker.observers.defaultScope.call(picker, { scopeType: 'store', scopeId: 'store-zh', scopeName: '九江中辉店' })
+    expect(picker.data.applied.scopeId).toBe('store-lw')
+  })
+
   test('只关店、节点在营（不在下拉也不在 inactiveStores）→ 不纠正，保留其历史数据', async () => {
     mocked.mockResolvedValueOnce(options())
     const applied = { scopeType: 'store', scopeId: 'store-closed', scopeName: '只关店' }
@@ -286,35 +338,62 @@ describe('scope-picker · 纠正落在停用门店的默认范围', () => {
   })
 })
 
-describe('子页经 query 继承停用标记：出空态、不取数', () => {
-  const query = {
+describe('子页：销售数据以回包出空态；客量 / 品项 / 顾客照常取数只标注', () => {
+  const inactiveQuery = {
     scopeType: 'store',
     scopeId: 'store-ld',
     scopeName: encodeURIComponent('南昌龙大店'),
     scopeInactive: '1',
   }
 
-  test.each(['traffic', 'sales', 'products'])('%s：onLoad 不调云函数', (name) => {
+  test('sales：回包 scope.inactive=true → 空态，文案对齐 #293', async () => {
+    mocked.mockResolvedValueOnce({ scope: { type: 'store', id: 'store-ld', name: '南昌龙大店', inactive: true } })
+    const page = instantiate('sales')
+    page.onLoad(inactiveQuery)
+    await vi.waitFor(() => expect(page.data.state).toBe('empty'))
+    expect(page.data.inactiveText).toBe('「南昌龙大店」已停用，无可展示数据')
+    expect(page.data.scopeInactive).toBe(true)
+  })
+
+  test('sales：query 带停用标记但回包说在营（期间已启用）→ 以回包为准照常渲染', async () => {
+    mocked.mockResolvedValueOnce({ totalRevenue: '0.00', scope: { type: 'store', id: 'store-ld', name: '南昌龙大店', inactive: false } })
+    const page = instantiate('sales')
+    page.onLoad(inactiveQuery)
+    await vi.waitFor(() => expect(page.data.state).toBe('content'))
+    expect(page.data.scopeInactive).toBe(false)
+    expect(page.data.totalRevenue).toBe('0.00')
+  })
+
+  test('sales：旧云函数回包无 scope → 照常渲染 0（向后兼容）', async () => {
+    mocked.mockResolvedValueOnce({ totalRevenue: '0.00' })
+    const page = instantiate('sales')
+    page.onLoad({ scopeType: 'store', scopeId: 'store-lw', scopeName: encodeURIComponent('九江蓝湾店') })
+    await vi.waitFor(() => expect(page.data.state).toBe('content'))
+  })
+
+  // 这三页的接口（mgmt-traffic / mgmt-product / mgmt-customer）不叠加启停过滤：
+  // 南昌龙大店在 prod 有 1 个顾客、25 张销售单，整页空态会把真实数据藏掉。
+  test.each(['traffic', 'products'])('%s：照常调云函数，范围标签标已停用', (name) => {
+    mocked.mockResolvedValue({})
     const page = instantiate(name)
-    page.onLoad(query)
-    expect(page.data.inactiveText).toBe('「南昌龙大店」已停用，无可展示数据')
-    expect(callStaffApi).not.toHaveBeenCalled()
+    page.onLoad(inactiveQuery)
+    expect(page.data.scopeInactive).toBe(true)
+    expect(callStaffApi).toHaveBeenCalled()
   })
 
-  test('customers：onShow 拉首页也被拦下', async () => {
+  test('customers：onShow 照常拉首页，范围标签标已停用', () => {
+    mocked.mockResolvedValue({ customers: [], page: 1, pageSize: 50, hasMore: false })
     const page = instantiate('customers')
-    page.onLoad(query)
+    page.onLoad(inactiveQuery)
     page.onShow()
-    await Promise.resolve()
-    expect(page.data.inactiveText).toBe('「南昌龙大店」已停用，无可展示数据')
-    expect(callStaffApi).not.toHaveBeenCalled()
+    expect(page.data.scopeInactive).toBe(true)
+    expect(callStaffApi).toHaveBeenCalledWith('mgmtCustomer.search', expect.anything())
   })
 
-  test('无停用标记 → 照常取数', () => {
+  test('无停用标记 → 不标注', () => {
     mocked.mockResolvedValue({})
     const page = instantiate('traffic')
     page.onLoad({ scopeType: 'store', scopeId: 'store-lw', scopeName: encodeURIComponent('九江蓝湾店') })
-    expect(page.data.inactiveText).toBe('')
-    expect(callStaffApi).toHaveBeenCalled()
+    expect(page.data.scopeInactive).toBe(false)
   })
 })

@@ -3,7 +3,7 @@
 // 持卡人数为截面快照，不随 period 变化（仅 onLoad 时拉一次）
 import { isManagementMode } from '../../utils/role'
 import { callStaffApi } from '../../utils/cloud'
-import { inactiveTextFromQuery } from '../../utils/mgmt-scope'
+import { isInactiveScopeQuery } from '../../utils/mgmt-scope'
 import { formatAmount, formatCount, formatPercent } from '../../utils/number'
 
 type Period = 'month' | 'lastMonth' | 'year' | 'custom'
@@ -95,7 +95,8 @@ Page({
     scopeType: 'all' as ScopeType,
     scopeId: null as string | null,
     scopeName: '' as string,
-    inactiveText: '',
+    // 门店组织节点已停用（#400）：本页接口不滤停用门店、照常出数，只在范围标签上标注
+    scopeInactive: false,
 
     cardLoading: false,
     cardError: false,
@@ -118,7 +119,7 @@ Page({
     const scopeType = (query?.scopeType as ScopeType) || 'all'
     const scopeId = query?.scopeId ? query.scopeId : null
     const scopeName = query?.scopeName ? decodeURIComponent(query.scopeName) : ''
-    this.setData({ scopeType, scopeId, scopeName, inactiveText: inactiveTextFromQuery(query, scopeName) })
+    this.setData({ scopeType, scopeId, scopeName, scopeInactive: isInactiveScopeQuery(query) })
     // 并行触发持卡人数 + 周期数据
     this.loadCardHolders()
     this.loadCycleStats()
@@ -153,8 +154,6 @@ Page({
   },
 
   async loadCardHolders() {
-    // scope 落在已停用门店（#400）：整页空态，不取数
-    if (this.data.inactiveText) return
     this.setData({ cardLoading: true, cardError: false })
     try {
       const resp = await callStaffApi<CardHoldersResp>('mgmtProduct.cardHolders', {
@@ -180,8 +179,6 @@ Page({
   },
 
   async loadCycleStats() {
-    // scope 落在已停用门店（#400）：整页空态，不取数
-    if (this.data.inactiveText) return
     this.setData({ loading: true, cycleError: false })
     try {
       const payload: Record<string, unknown> = {

@@ -7,11 +7,11 @@
   />
   <view class="mgmt-scope-tag">
     <text>范围：</text>
-    <text class="mgmt-scope-tag-value">{{scopeName || (scopeType === 'all' ? '全部市场' : '')}}{{inactiveText ? '（已停用）' : ''}}</text>
+    <text class="mgmt-scope-tag-value">{{scopeName || (scopeType === 'all' ? '全部市场' : '')}}{{scopeInactive ? '（已停用）' : ''}}</text>
   </view>
 </view>
 
-<view wx:if="{{period === 'custom' && !inactiveText}}" class="pc-date-bar">
+<view wx:if="{{period === 'custom'}}" class="pc-date-bar">
   <picker mode="date" value="{{startDate}}" end="{{endDate}}" bindchange="onStartDateChange">
     <view class="pc-date-field">
       <text class="pc-date-label">开始</text>
@@ -27,9 +27,7 @@
   </picker>
 </view>
 
-<!-- scope 落在已停用门店（#400）：整页空态，不取数 -->
-<mgmt-data-state wx:if="{{ inactiveText }}" state="empty" empty-text="{{ inactiveText }}" />
-<view wx:else class="pc-page">
+<view class="pc-page">
 
   <!-- Section 标题 -->
   <view class="pc-section-title">品项-顾客周期</view>

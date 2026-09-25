@@ -10,7 +10,7 @@
  *    缺节点按停用 —— 与取数 SQL 的 activeStoreCondition 同口径（取数滤掉的门店 = 判停用的门店）。
  * 2. 取数口径两端整段等值：staff `activeStoreCondition` ≡ admin `activeStoreCondition`。
  *    判定片段是照着它写的，它一变，判定就会和「满屏 0」错位。
- * 3. staff 三个使用点（fetchScopedStores / loadInactiveStores / resolveScope）的 SQL 整段等值，
+ * 3. staff 四个使用点（fetchScopedStores / loadInactiveStores / resolveScope / hasActiveAlternative）的 SQL 整段等值，
  *    都经由 1 的常量拼出，不内联另一套判定（比如混进 is_closed）。
  * 4. admin 侧判定仍是「只看 isActive」且 isActive 取自门店组织节点，不含 isClosed。
  */
@@ -67,7 +67,7 @@ describe('门店在营判定跨端字面量守护（#400）', () => {
     expect(inner(adminBody)).toBe(expected)
   })
 
-  test('3. staff 三个使用点 SQL 整段等值（经常量拼出，不内联别的判定）', () => {
+  test('3. staff 四个使用点 SQL 整段等值（经常量拼出，不内联别的判定）', () => {
     const auth = read(path.join(STAFF, 'routes/auth.js'))
     const dash = read(path.join(STAFF, 'routes/mgmt-dashboard.js'))
 
@@ -79,6 +79,10 @@ describe('门店在营判定跨端字面量守护（#400）', () => {
     )
     expect(onlySqlTemplate(extractSection(dash, 'async function resolveScope(', '\n}\n'))).toBe(
       'SELECT s.store_name, ${STORE_IS_ACTIVE} AS is_active FROM stores s ${STORE_NODE_JOIN} WHERE s.store_id = $1',
+    )
+    // 空态第二行「有没有别的门店可切」：在营判定同源 + 与范围下拉同口径排除关店
+    expect(onlySqlTemplate(extractSection(dash, 'async function hasActiveAlternative(', '\n}\n'))).toBe(
+      'SELECT EXISTS ( SELECT 1 FROM stores s ${STORE_NODE_JOIN} WHERE ${STORE_IS_ACTIVE} AND s.is_closed = false AND s.store_id <> $1 AND ($2::boolean OR s.store_id = ANY($3::text[])) ) AS has_alternative',
     )
     // 两文件的常量都来自同一个 staff 工具（不在路由里另写一份）
     for (const src of [auth, dash]) {

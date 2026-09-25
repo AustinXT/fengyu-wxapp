@@ -3,7 +3,7 @@
 import { canSwitchLoginLevel, isManagementMode } from '../../utils/role'
 import { callStaffApi } from '../../utils/cloud'
 import { formatAmount, formatCount, formatPercent } from '../../utils/number'
-import { SCOPE_INACTIVE_QUERY_KEY, inactiveScopeText } from '../../utils/mgmt-scope'
+import { SCOPE_INACTIVE_QUERY_KEY, inactiveScopeHint, inactiveScopeText } from '../../utils/mgmt-scope'
 
 const app = getApp<IAppOption>()
 
@@ -89,7 +89,15 @@ interface ScopeValue {
 }
 
 interface SummaryData {
-  scope: { type: ScopeValue['scopeType']; id: string | null; name: string; inactive?: boolean }
+  scope: {
+    type: ScopeValue['scopeType']
+    id: string | null
+    name: string
+    /** #400：门店组织节点已停用 */
+    inactive?: boolean
+    /** #400：inactive 时账号还有没有别的在营门店可切（后端按范围下拉同口径判） */
+    hasActiveAlternative?: boolean
+  }
   storeRevenue: { today: number; month: number; monthlyAvgPerStore: number }
   shengmeiRevenue: { today: number; month: number; monthlyAvgPerStore: number }
   storeConsume: { today: number; month: number; monthlyAvgPerStore: number }
@@ -150,6 +158,9 @@ interface DisplayData {
 }
 
 const DEFAULT_SCOPE: ScopeValue = { scopeType: 'all', scopeId: null, scopeName: '全部市场' }
+
+// summary 请求序号：只采纳最后一次请求的响应（#400）
+let summarySeq = 0
 
 // 日历历史起点：业务系统 2019 年才上线，2015 年留足缓冲
 const CALENDAR_MIN_YEAR = 2015
@@ -305,25 +316,21 @@ Page({
     // 默认范围跳过已停用门店（#400）：停用门店的数据被取数 SQL 全部滤掉，落上去只会满屏 0。
     // isActive 缺省（旧缓存）按在营处理，scope-picker 拿到服务端 inactiveStores 后再纠正。
     const stores = (scopedStores || []) as ScopedStore[]
-    const activeStores = stores.filter((s) => s.isActive !== false)
     const toScope = (store: ScopedStore, inactive: boolean): ScopeValue => ({
       scopeType: 'store',
       scopeId: store.storeId,
       scopeName: store.storeName,
       ...(inactive ? { inactive: true } : {}),
     })
-    // 店长能力角色绑定优先匹配门店，确保默认 scope 落在可执行店长写操作的门店。
-    const managerStoreBinding = (roleBindings || []).find(
-      (b: any) => (b.isStoreManager ?? b.role === 'manager') && b.scopeType === '门店',
-    )
-    const managerStore = managerStoreBinding?.scopeId
-      ? stores.find((s) => s.storeId === managerStoreBinding.scopeId)
-      : undefined
-    if (managerStore && managerStore.isActive !== false) return toScope(managerStore, false)
-    if (activeStores[0]) return toScope(activeStores[0], false)
+    // 店长能力角色管辖的门店优先，确保默认 scope 落在可执行店长写操作的门店。
+    // ⚠️ 用 managerStoreIds（store_id）匹配：roleBindings.scopeId 是组织节点 id，与 storeId 永不相等。
+    const managerIds = new Set(app.globalData.managerStoreIds || [])
+    const isActive = (s: ScopedStore) => s.isActive !== false
+    const pick = stores.find((s) => managerIds.has(s.storeId) && isActive(s)) || stores.find(isActive)
+    if (pick) return toScope(pick, false)
 
-    // 权限内全部门店都已停用：照旧落到（店长绑定 / 第一家）门店，由空态告知已停用
-    const fallback = managerStore || stores[0]
+    // 权限内全部门店都已停用：照旧落到（店长管辖 / 第一家）门店，由空态告知已停用
+    const fallback = stores.find((s) => managerIds.has(s.storeId)) || stores[0]
     if (fallback) return toScope(fallback, true)
     return { scopeType: 'store', scopeId: '', scopeName: '' }
   },
@@ -355,7 +362,8 @@ Page({
 
   async loadSummary() {
     if (!this.data.selectedDate) return
-    const requested = this.data.scope
+    // 只认最后一次请求：切 scope / 日期后，迟到的旧响应（含失败）一律丢弃
+    const seq = ++summarySeq
     this.setData({
       loading: true,
       summaryState: this.data.display ? 'content' : 'loading',
@@ -363,12 +371,10 @@ Page({
     try {
       const summary = await callStaffApi<SummaryData>('mgmtDashboard.summary', {
         date: this.data.selectedDate,
-        scopeType: requested.scopeType,
-        scopeId: requested.scopeId,
+        scopeType: this.data.scope.scopeType,
+        scopeId: this.data.scope.scopeId,
       })
-      // 期间已切换 scope：丢弃迟到响应，别把旧 scope 的停用标记 / 数字盖到新 scope 上
-      const current = this.data.scope
-      if (current.scopeType !== requested.scopeType || current.scopeId !== requested.scopeId) return
+      if (seq !== summarySeq) return
       // 停用判定以服务端为准（#400）：同一 scope 可能被启停，本地默认值只是初判
       const inactive = summary.scope?.inactive === true
       if (inactive) {
@@ -378,10 +384,8 @@ Page({
           loading: false,
           'scope.inactive': true,
           summaryState: 'empty',
-          summaryEmptyText: inactiveScopeText(summary.scope.name || current.scopeName),
-          summaryEmptyHint: this.hasOtherActiveStore(current.scopeId)
-            ? '请点击上方范围切换到在营门店'
-            : '当前账号没有其它在营门店可查看',
+          summaryEmptyText: inactiveScopeText(summary.scope.name || this.data.scope.scopeName),
+          summaryEmptyHint: inactiveScopeHint(summary.scope.hasActiveAlternative !== false),
         })
         return
       }
@@ -393,19 +397,13 @@ Page({
         summaryState: 'content',
       })
     } catch {
+      if (seq !== summarySeq) return
       this.setData({
         loading: false,
         summaryState: this.data.display ? 'content' : 'error',
       })
       wx.showToast({ icon: 'none', title: '加载失败，请重试' })
     }
-  },
-
-  /** 除当前门店外，账号还有没有在营门店可切（市场 / 总部账号恒有范围可切） */
-  hasOtherActiveStore(scopeId: string | null): boolean {
-    const { roleBindings, scopedStores } = app.globalData
-    if ((roleBindings || []).some((b) => b.scopeType === '总部' || b.scopeType === '市场')) return true
-    return ((scopedStores || []) as ScopedStore[]).some((s) => s.isActive !== false && s.storeId !== scopeId)
   },
 
   onSummaryRetry() {

@@ -137,7 +137,11 @@ async function scopeOptions(ctx) {
       }))
       .filter((market) => market.stores.length > 0)
 
-  const inactiveStores = await loadInactiveStores(allowAll, scopeStoreIds || [])
+  // 停用门店只用于纠正默认范围，查失败不能拖垮整个范围下拉（空态仍由 summary.scope.inactive 兜住）
+  const inactiveStores = await loadInactiveStores(allowAll, scopeStoreIds || []).catch((err) => {
+    console.error('[mgmtDashboard.scopeOptions] loadInactiveStores failed:', err)
+    return []
+  })
 
   ctx.result = {
     staffLevel,
@@ -623,6 +627,29 @@ async function resolveScope(scopeType, scopeId) {
 }
 
 /**
+ * 落在停用门店时，账号还有没有别的门店可切（#400 空态第二行文案用）。
+ * 与范围下拉 loadAllMarkets 同口径：节点在营且未关店；总部看全部，其余限 scopeStoreIds。
+ */
+async function hasActiveAlternative(auth, scopeId) {
+  const allowAll = hasHeadquartersScope(auth.roleBindings)
+  const scopeStoreIds = auth.scopeStoreIds || []
+  if (!allowAll && scopeStoreIds.length === 0) return false
+  const rows = await pg.query(
+    `SELECT EXISTS (
+       SELECT 1
+         FROM stores s
+         ${STORE_NODE_JOIN}
+        WHERE ${STORE_IS_ACTIVE}
+          AND s.is_closed = false
+          AND s.store_id <> $1
+          AND ($2::boolean OR s.store_id = ANY($3::text[]))
+     ) AS has_alternative`,
+    [scopeId, allowAll, scopeStoreIds],
+  )
+  return rows[0]?.has_alternative === true
+}
+
+/**
  * mgmtDashboard.summary
  * 入参：{ date: 'YYYY-MM-DD', scopeType: 'all'|'market'|'store', scopeId? }
  * 出参：见 ticket §1.2
@@ -692,6 +719,9 @@ async function summary(ctx) {
     resolveScope(scopeType, scopeId),
   ])
   const elapsed = Date.now() - t0
+  const scopeHasAlternative = resolvedScope.inactive
+    ? await hasActiveAlternative(ctx.auth, scopeId)
+    : true
 
   const round2 = (v) => Math.round(Number(v) * 100) / 100
   // monthlyAvgPerStore：分母用月末口径，与"月度业绩 = 整月在营"语义对齐
@@ -704,6 +734,8 @@ async function summary(ctx) {
       id: scopeId || null,
       name: resolvedScope.name,
       inactive: resolvedScope.inactive,
+      // 仅 inactive 时有意义：false → 空态提示「当前账号没有其它在营门店可查看」
+      hasActiveAlternative: scopeHasAlternative,
     },
     storeRevenue: {
       today: round2(storeRevToday),
@@ -1532,7 +1564,7 @@ async function salesData(ctx) {
   const svcP = [startDate, endDate, ...scSvc.params]
 
   const t0 = Date.now()
-  const [revRows, custRevRows, consRows, custConsRows, prodOutRows, catRows, kindRows, nameRows, skeletonRows] =
+  const [revRows, custRevRows, consRows, custConsRows, prodOutRows, catRows, kindRows, nameRows, skeletonRows, resolvedScope] =
     await Promise.all([
       // SQL 1: 总业绩（一律按款项业绩归属日期 spe.performance_date；
       //        原注释「后续回款/退款按真实发生日」自 #137 收敛后已失效，见文件头）
@@ -1698,6 +1730,8 @@ async function salesData(ctx) {
           ORDER BY product_kind, category_name`,
         [],
       ),
+      // #400：门店 scope 的组织节点已停用 → 上面取数全被 activeStoreCondition 滤光，前端据此出空态
+      resolveScope(scopeType, scopeId),
     ])
 
   const elapsed = Date.now() - t0
@@ -1773,6 +1807,7 @@ async function salesData(ctx) {
     oldMemberProductOut: fmt(prodOutRows[0]?.old_member),
     bySalesCategory,
     byProductKind,
+    scope: { type: scopeType, id: scopeId, name: resolvedScope.name, inactive: resolvedScope.inactive },
   }
 
   if (elapsed > 800) {
