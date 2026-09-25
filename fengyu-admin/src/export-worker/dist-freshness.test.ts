@@ -396,13 +396,6 @@ describe('dist/export-worker.mjs 新鲜度 · 自定义区间校验接线（#308
     ['src/lib/calendar-date.ts', [
       // 年份上下界与日期正则从源码动态提取：源码改了值而没重建，产物里找不到新值 → 红
       ...calendarDateSourceFragments(),
-      'if (typeof value !== "string")',
-      'const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];',
-      'if (year < CALENDAR_MIN_YEAR || year > CALENDAR_MAX_YEAR)',
-      // UTC 往返比对（bun 会给局部变量改名，只钉比较部分）
-      '.getUTCFullYear() === year && ',
-      '.getUTCMonth() === month - 1 && ',
-      '.getUTCDate() === day;',
     ]],
     ['src/lib/data-center/params.ts', [
       'return isValidCalendarDate(start) && isValidCalendarDate(end) && start <= end;',
@@ -413,6 +406,24 @@ describe('dist/export-worker.mjs 新鲜度 · 自定义区间校验接线（#308
     ['src/lib/data-center/context.ts', ['if (!isValidTimeRangeInput(params.timeRange)) {']],
     ['src/export-worker/registry.ts', ['if (raw.preset === "custom" && !isValidCustomRange(raw.start, raw.end)) {']],
   ]
+  it('calendar-date 区段的年份判断与 UTC 往返结构完整（局部变量名按捕获比对，不依赖 bun 的改名）', () => {
+    const segment = moduleSegments(fs.readFileSync(DIST, 'utf-8'), 'src/lib/calendar-date.ts').join('\n')
+    const STRUCTURE = new RegExp([
+      String.raw`function isValidCalendarDate\((?<v>\w+)\) \{`,
+      String.raw`if \(typeof \k<v> !== "string"\)`,
+      String.raw`return false;`,
+      String.raw`const (?<m>\w+) = \k<v>\.match\(\w+\);`,
+      String.raw`if \(!\k<m>\)`,
+      String.raw`return false;`,
+      String.raw`const \[(?<y>\w+), (?<mo>\w+), (?<d>\w+)\] = \[Number\(\k<m>\[1\]\), Number\(\k<m>\[2\]\), Number\(\k<m>\[3\]\)\];`,
+      String.raw`if \(\k<y> < CALENDAR_MIN_YEAR \|\| \k<y> > CALENDAR_MAX_YEAR\)`,
+      String.raw`return false;`,
+      String.raw`const (?<dt>\w+) = new Date\(Date\.UTC\(\k<y>, \k<mo> - 1, \k<d>\)\);`,
+      String.raw`return \k<dt>\.getUTCFullYear\(\) === \k<y> && \k<dt>\.getUTCMonth\(\) === \k<mo> - 1 && \k<dt>\.getUTCDate\(\) === \k<d>;`,
+    ].join(String.raw`\n`))
+    expect(STRUCTURE.test(segment), `产物 calendar-date 区段的校验结构与源码不符${REBUILD_HINT}`).toBe(true)
+  })
+
   it.each(SEGMENT_FRAGMENTS)('%s 的 #308 片段在产物模块区段内', (file, fragments) => {
     const segment = moduleSegments(fs.readFileSync(DIST, 'utf-8'), file).join('\n')
     expect(segment.length, `产物里找不到 // ${file} 模块区段${REBUILD_HINT}`).toBeGreaterThan(0)
