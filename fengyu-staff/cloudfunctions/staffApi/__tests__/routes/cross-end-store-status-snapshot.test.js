@@ -18,6 +18,7 @@
 
 const fs = require('node:fs')
 const path = require('node:path')
+const { parse: babelParse } = require('@babel/parser')
 
 const ADMIN_SRC = path.resolve(__dirname, '../../../../../fengyu-admin/src')
 const STAFF_ROOT = path.resolve(__dirname, '../..')
@@ -29,14 +30,22 @@ function readFile(filePath) {
 }
 
 /**
- * 剥注释但保留行号（#422 闸门 2 GLM R4）：块注释按**整份源码**匹配、跨行也能正确闭合，
- * 注释内容换成空格、换行保留，块注释结束符后面同行的代码留下；`//` 只剥行首的（避免误伤字符串里的 URL）。
- * 按行首星号 / 双斜线跳过整行的旧写法，会被「跨行块注释结束行后面接代码」绕过。已知窗口：字符串字面量里含块注释起始符时会误剥。
+ * 剥注释但保留行号（#422 闸门 2 GLM R4 / codex R5）：用真解析器 @babel/parser 拿到**真正的注释**位置，
+ * 只把注释内容换成空格（换行保留，行号不变），字符串 / 模板 / 正则字面量 / JSX 文本原样保留。
+ * 正则剥注释的两种旧写法都能被绕过：按行首星号 / 双斜线跳过整行，会被「跨行块注释结束行后面接代码」绕过；
+ * 整份源码正则匹配块注释，会被「字符串里写块注释起止符、把中间真代码一起抹掉」绕过。
+ * 解析失败直接抛错（守护变红），不静默回落。
  */
-function stripCommentsKeepLines(src) {
-  return src
-    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
-    .replace(/^[ \t]*\/\/.*$/gm, '')
+function stripCommentsKeepLines(src, filePath = 'x.ts') {
+  const plugins = []
+  if (/\.tsx?$/.test(filePath)) plugins.push('typescript')
+  if (/\.(tsx|jsx)$/.test(filePath)) plugins.push('jsx')
+  const ast = babelParse(src, { sourceType: 'unambiguous', plugins, errorRecovery: false })
+  let out = src
+  for (const c of ast.comments) {
+    out = out.slice(0, c.start) + out.slice(c.start, c.end).replace(/[^\n]/g, ' ') + out.slice(c.end)
+  }
+  return out
 }
 
 function isTestFile(filePath) {
@@ -123,7 +132,7 @@ describe('#401 数据中心在营口径 · helper 本体', () => {
     const offenders = []
     let codeLines = 0
     for (const file of helpers) {
-      stripCommentsKeepLines(readFile(file)).split('\n').forEach((line, i) => {
+      stripCommentsKeepLines(readFile(file), file).split('\n').forEach((line, i) => {
         const t = line.trim()
         if (!t) return
         codeLines++
@@ -149,7 +158,7 @@ describe('#401 数据中心在营口径 · closed_at 白名单', () => {
     const offenders = []
     let seen = 0
     for (const file of CONSUMER_FILES) {
-      stripCommentsKeepLines(readFile(file)).split('\n').forEach((line, i) => {
+      stripCommentsKeepLines(readFile(file), file).split('\n').forEach((line, i) => {
         const t = line.trim()
         if (!/closed_?at/i.test(t)) return
         seen++
@@ -164,13 +173,32 @@ describe('#401 数据中心在营口径 · closed_at 白名单', () => {
 
 describe('#422 stripCommentsKeepLines', () => {
   it('跨行 / 行内块注释后面的代码保留，注释内容剥掉，行号不变', () => {
-    const src = 'a\n/* 说明\n */ const v = s.closed_at\n/* x */ const w = s.closedAt\n// const z = s.closed_at\n * 注释里的 closed_at'
-    const out = stripCommentsKeepLines(src).split('\n')
+    const src = 'const a = 1\n/* 说明\n */ const v = s.closed_at\n/* x */ const w = s.closedAt\n// const z = s.closed_at\nconst q = 2'
+    const out = stripCommentsKeepLines(src, 'x.js').split('\n')
     expect(out).toHaveLength(6)
     expect(out[2].trim()).toBe('const v = s.closed_at')
     expect(out[3].trim()).toBe('const w = s.closedAt')
     expect(out[4].trim()).toBe('')
-    expect(out[5].trim()).toBe('* 注释里的 closed_at') // 不在块注释里的裸 `*` 行是代码，照常被检查
+  })
+
+  it('字符串里的块注释起止符不会把中间真代码抹掉（codex R5）', () => {
+    const src = "const a = '/*'\nconst v = stores.closedAt\nconst b = '*/'\nconst re = /\\s*[\\/]\\s*/"
+    const out = stripCommentsKeepLines(src, 'x.ts').split('\n')
+    expect(out[1].trim()).toBe('const v = stores.closedAt')
+    expect(out[3]).toContain('/\\s*[\\/]\\s*/')
+  })
+
+  it('字符串里的 // 与 URL 原样保留', () => {
+    const out = stripCommentsKeepLines("const u = 'https://x//y' // 尾注释 closed_at", 'x.js')
+    expect(out).toContain("'https://x//y'")
+    expect(out).not.toContain('closed_at')
+  })
+
+  it('JSX 注释剥掉、模板字符串原样保留', () => {
+    const src = 'const x = <div>{/* 注释 closed_at */}</div>\nconst sql = `/* 不是注释 */ s.closed_at`'
+    const out = stripCommentsKeepLines(src, 'x.tsx').split('\n')
+    expect(out[0]).not.toContain('closed_at')
+    expect(out[1]).toContain('/* 不是注释 */ s.closed_at')
   })
 })
 
