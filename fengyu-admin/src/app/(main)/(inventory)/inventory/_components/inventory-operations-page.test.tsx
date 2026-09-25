@@ -841,6 +841,7 @@ function renderPage(options: {
   operation?: InventoryAnyOperationId
   candidates?: InventoryDocRow[]
   locations?: InventoryLocationRow[]
+  shipmentMarketTargets?: Array<{ orgNodeId: string; name: string }>
   canSelfPurchase?: boolean
   canCreatePickupRecord?: boolean
 }) {
@@ -849,6 +850,7 @@ function renderPage(options: {
     <InventoryOperationsPage
       level={options.level}
       locations={options.locations ?? []}
+      shipmentMarketTargets={options.shipmentMarketTargets}
       suppliers={[]}
       canCreate
       canApprove
@@ -1992,8 +1994,9 @@ describe('采购订单来源多选与一键带出（#338）', () => {
  */
 describe('品项公司发货引用市场报货单（#336b）', () => {
   const HQ: InventoryLocationRow = { locationId: 'HQ', locationType: '总部', name: '品牌总部', orgNodeId: 'HQ', storeId: null, parentLocationId: null, isActive: true }
-  const M1: InventoryLocationRow = { locationId: 'M1', locationType: '市场', name: '市场一部', orgNodeId: 'M1', storeId: null, parentLocationId: 'HQ', isActive: true }
-  const M2: InventoryLocationRow = { locationId: 'M2', locationType: '市场', name: '市场二部', orgNodeId: 'M2', storeId: null, parentLocationId: 'HQ', isActive: true }
+  // 收货市场候选走服务端越过 scope 的市场清单；locations 里只有总部（总部库存 scope 不展开市场，真实形状）
+  const M1 = { orgNodeId: 'M1', name: '市场一部' }
+  const M2 = { orgNodeId: 'M2', name: '市场二部' }
 
   function report(id: string, marketId = 'M1') {
     return docRow({ id, docType: '市场报货', status: '已完成', sourceOrgNodeId: marketId, targetOrgNodeId: 'HQ', marketId })
@@ -2031,7 +2034,7 @@ describe('品项公司发货引用市场报货单（#336b）', () => {
   it('单市场只读；候选按收货市场 + 发货总部收窄；带出未发量并按行提交正常 / 赠送两组', async () => {
     const row = report('SBH-1')
     vi.mocked(getInventoryCoreDocById).mockResolvedValue(reportDetail(row))
-    renderPage({ level: 'supply-chain', operation: 'company-shipment', locations: [HQ, M1], candidates: [row] })
+    renderPage({ level: 'supply-chain', operation: 'company-shipment', locations: [HQ], shipmentMarketTargets: [M1], candidates: [row] })
 
     // 唯一市场 / 唯一总部都降级成只读文本
     await waitFor(() => expect(document.querySelector('[data-fixed-subject="M1"]')).not.toBeNull())
@@ -2077,7 +2080,7 @@ describe('品项公司发货引用市场报货单（#336b）', () => {
   it('正常发货超过未发量先在前端拦下并给出可发上限；删掉的行不提交', async () => {
     const row = report('SBH-1')
     vi.mocked(getInventoryCoreDocById).mockResolvedValue(reportDetail(row))
-    renderPage({ level: 'supply-chain', operation: 'company-shipment', locations: [HQ, M1], candidates: [row] })
+    renderPage({ level: 'supply-chain', operation: 'company-shipment', locations: [HQ], shipmentMarketTargets: [M1], candidates: [row] })
     fireEvent.click(await screen.findByRole('checkbox', { name: '选择 SBH-1' }))
     const normal = await screen.findByLabelText(/^正常发货/)
     fireEvent.change(normal, { target: { value: '21' } })
@@ -2095,7 +2098,7 @@ describe('品项公司发货引用市场报货单（#336b）', () => {
     const row = report('SBH-1')
     let resolveDoc: (value: InventoryDocDetail) => void = () => {}
     vi.mocked(getInventoryCoreDocById).mockImplementationOnce(() => new Promise((resolve) => { resolveDoc = resolve }))
-    renderPage({ level: 'supply-chain', operation: 'company-shipment', locations: [HQ, M1, M2], candidates: [row] })
+    renderPage({ level: 'supply-chain', operation: 'company-shipment', locations: [HQ], shipmentMarketTargets: [M1, M2], candidates: [row] })
     expect(await screen.findByText('请先选择收货市场和发货总部')).toBeInTheDocument()
     expect(listInventoryDocCandidates).not.toHaveBeenCalled()
 
@@ -2116,7 +2119,7 @@ describe('品项公司发货引用市场报货单（#336b）', () => {
     vi.mocked(getInventoryCoreDocById)
       .mockImplementationOnce(() => new Promise((resolve) => { resolveFirst = resolve }))
       .mockResolvedValueOnce(reportDetail(row))
-    renderPage({ level: 'supply-chain', operation: 'company-shipment', locations: [HQ, M1], candidates: [row] })
+    renderPage({ level: 'supply-chain', operation: 'company-shipment', locations: [HQ], shipmentMarketTargets: [M1], candidates: [row] })
     const checkbox = await screen.findByRole('checkbox', { name: '选择 SBH-1' })
     fireEvent.click(checkbox)
     fireEvent.click(checkbox)
@@ -2131,7 +2134,7 @@ describe('品项公司发货引用市场报货单（#336b）', () => {
     const row = report('SBH-9', 'M2')
     vi.mocked(getInventoryCoreDocById).mockResolvedValue(reportDetail(row, 91, 5, 0))
     mockDocs({ inbox: segment([row]) })
-    renderPage({ level: 'supply-chain', operation: 'company-shipment', locations: [HQ, M1, M2], candidates: [row] })
+    renderPage({ level: 'supply-chain', operation: 'company-shipment', locations: [HQ], shipmentMarketTargets: [M1, M2], candidates: [row] })
 
     await openDocsTab()
     expect(screen.getByText('待发货：仍有未发量的市场报货单')).toBeInTheDocument()

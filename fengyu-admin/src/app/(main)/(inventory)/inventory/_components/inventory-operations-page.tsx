@@ -602,6 +602,7 @@ export default function InventoryOperationsPage({
   level,
   locations,
   marketTransferTargets,
+  shipmentMarketTargets,
   suppliers,
   canCreate,
   canApprove,
@@ -616,6 +617,8 @@ export default function InventoryOperationsPage({
   locations: InventoryLocationRow[]
   /** 市场间调货出库的接收主体候选（#340），只喂给通用建单表单，见其同名 prop */
   marketTransferTargets?: readonly InventoryMarketTransferTarget[]
+  /** 品项公司发货的收货市场候选（#336b，不按 scope 的全部启用市场），只喂给发货表单 */
+  shipmentMarketTargets?: readonly InventoryMarketTransferTarget[]
   suppliers: InventorySupplierRow[]
   canCreate: boolean
   canApprove: boolean
@@ -853,6 +856,7 @@ export default function InventoryOperationsPage({
               onBusyChange={setWorkspaceBusy}
               locations={locations}
               marketTransferTargets={marketTransferTargets}
+              shipmentMarketTargets={shipmentMarketTargets}
               suppliers={suppliers}
               canViewPrice={canViewPrice}
               onClose={() => { setPendingDocsTabFor(null); setActiveOperation(null) }}
@@ -874,6 +878,7 @@ function OperationWorkspace({
   onBusyChange,
   locations,
   marketTransferTargets,
+  shipmentMarketTargets,
   suppliers,
   canViewPrice,
   onClose,
@@ -895,6 +900,7 @@ function OperationWorkspace({
   onBusyChange: (busy: boolean) => void
   locations: InventoryLocationRow[]
   marketTransferTargets?: readonly InventoryMarketTransferTarget[]
+  shipmentMarketTargets?: readonly InventoryMarketTransferTarget[]
   suppliers: InventorySupplierRow[]
   canViewPrice: boolean
   onClose: () => void
@@ -1016,7 +1022,7 @@ function OperationWorkspace({
           {operation === 'item-company-request' && <ItemCompanyReplenishmentForm locations={locations} onSuccess={handleSuccess} />}
           {operation === 'purchase-order' && <PurchaseOrderForm locations={locations} canViewPrice={canViewPrice} onSuccess={handleSuccess} />}
           {operation === 'market-report-summary' && <MarketReportSummaryForm locations={locations} onSuccess={handleSuccess} />}
-          {operation === 'company-shipment' && <CompanyShipmentForm locations={locations} prefill={prefill} onSuccess={handleSuccess} />}
+          {operation === 'company-shipment' && <CompanyShipmentForm locations={locations} markets={shipmentMarketTargets ?? []} prefill={prefill} onSuccess={handleSuccess} />}
           {operation === 'market-receipt' && <ShipmentReceiptForm kind="market" prefill={prefill} onSuccess={handleSuccess} />}
           {operation === 'supply-chain-receipt' && <SupplyChainPurchaseReceiptForm locations={locations} canViewPrice={canViewPrice} prefill={prefill} onSuccess={handleSuccess} />}
           {operation === 'supply-chain-purchase-cancel' && <SupplyChainPurchaseCancelForm prefill={prefill} onSuccess={handleSuccess} />}
@@ -2831,16 +2837,21 @@ function shipmentReportItems(doc: InventoryDocDetail): ShipmentReportItem[] {
  */
 function CompanyShipmentForm({
   locations,
+  markets,
   prefill,
   onSuccess,
 }: {
   locations: InventoryLocationRow[]
+  /**
+   * 收货市场候选：不按 scope 的全部启用市场（服务端 listInventoryShipmentMarketTargets）。
+   * 不能取 `locations` —— 总部库存 scope 不向下展开市场，供应链操作员的 locations 里只有总部。
+   */
+  markets: readonly InventoryMarketTransferTarget[]
   /** 待办区「去发货」带来的报货单预选券 */
   prefill?: OperationFormPrefill | null
   onSuccess: (message: string) => void
 }) {
   // 两端都用 org_node_id：总部 / 市场的 location_id 与之同值，候选收窄与服务端入参都认它
-  const markets = locations.filter((location) => location.locationType === '市场' && location.isActive && location.orgNodeId)
   const headquarters = locations.filter((location) => location.locationType === '总部' && location.isActive && location.orgNodeId)
   const [marketId, setMarketId] = useState('')
   const [sourceOrgNodeId, setSourceOrgNodeId] = useState('')
@@ -3082,7 +3093,7 @@ function CompanyShipmentForm({
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
         <FormField label="收货市场" required>
           <InventorySubjectSelect
-            options={markets.map((location) => ({ value: location.orgNodeId!, label: location.name }))}
+            options={markets.map((market) => ({ value: market.orgNodeId, label: market.name }))}
             value={marketId}
             onChange={selectMarket}
             placeholder="请选择市场"
