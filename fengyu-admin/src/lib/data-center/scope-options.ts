@@ -64,6 +64,7 @@ export function scopeStores(scopeOptions: DataCenterScopeOptions, scope: DataCen
     if (scope.type === 'market' && market.id !== scope.id) continue
     for (const store of market.stores) {
       if (scope.type === 'store' && store.storeId !== scope.id) continue
+      if (scope.type === 'stores' && !scope.ids.includes(store.storeId)) continue
       if (seen.has(store.storeId)) continue
       seen.add(store.storeId)
       result.push({ storeId: store.storeId, storeName: store.storeName, marketId: market.id, marketName: market.name })
@@ -82,6 +83,7 @@ export function scopeLabel(scopeOptions: DataCenterScopeOptions, scope: DataCent
   if (scope.type === 'all') return '全部'
   if (scope.type === 'authorized') return '全部授权门店'
   if (scope.type === 'market') return scopeOptions.markets.find((m) => m.id === scope.id)?.name ?? '未知市场'
+  if (scope.type === 'stores') return multiStoreName(scope.ids.map((id) => storeNameIn(scopeOptions, id)))
   for (const market of scopeOptions.markets) {
     const store = market.stores.find((s) => s.storeId === scope.id)
     if (store) return store.storeName
@@ -101,7 +103,75 @@ export function findInactiveScopeStore(
   scopeOptions: DataCenterScopeOptions,
   scope: DataCenterScope,
 ): ScopeOptionInactiveStore | null {
+  if (scope.type === 'stores') {
+    // 多店（#376 拍板）：所选门店**全部**停用才走空态；部分停用照常取数（SQL 只算在营部分），由下拉提示
+    const inactive = scope.ids.map((id) => findInactiveStore(scopeOptions, id))
+    if (inactive.some((store) => store === null)) return null
+    const stores = inactive as ScopeOptionInactiveStore[]
+    return {
+      storeId: scope.ids.join(','),
+      storeName: multiStoreName(stores.map((store) => store.storeName)),
+      marketId: null,
+    }
+  }
   if (scope.type !== 'store') return null
-  if (visibleScopeStores(scopeOptions).some((store) => store.storeId === scope.id)) return null
-  return scopeOptions.inactiveStores.find((store) => store.storeId === scope.id) ?? null
+  return findInactiveStore(scopeOptions, scope.id)
+}
+
+/** 单个门店 id 是否权限内已停用（在营列表优先，见 findInactiveScopeStore 注释） */
+function findInactiveStore(scopeOptions: DataCenterScopeOptions, storeId: string): ScopeOptionInactiveStore | null {
+  if (visibleScopeStores(scopeOptions).some((store) => store.storeId === storeId)) return null
+  return scopeOptions.inactiveStores.find((store) => store.storeId === storeId) ?? null
+}
+
+/**
+ * 多店范围里已停用的那部分（#376）：有在营门店时才返回（全部停用走 findInactiveScopeStore 的空态）。
+ * 这些门店的数据被取数 SQL 的在营过滤滤掉，下拉据此提示「N 家已停用，不计入统计」。
+ */
+export function inactiveStoresInScope(
+  scopeOptions: DataCenterScopeOptions,
+  scope: DataCenterScope,
+): ScopeOptionInactiveStore[] {
+  if (scope.type !== 'stores') return []
+  const inactive = scope.ids
+    .map((id) => findInactiveStore(scopeOptions, id))
+    .filter((store): store is ScopeOptionInactiveStore => store !== null)
+  return inactive.length < scope.ids.length ? inactive : []
+}
+
+/** 多店展示名（#376）：≤3 家列全名，更多时列前 3 家 + 「等 N 家门店」。信息条、空态与导出元信息共用。 */
+export function multiStoreName(names: readonly string[]): string {
+  if (names.length <= 3) return names.join('、')
+  return `${names.slice(0, 3).join('、')} 等 ${names.length} 家门店`
+}
+
+function storeNameIn(scopeOptions: DataCenterScopeOptions, storeId: string): string {
+  for (const market of scopeOptions.markets) {
+    const store = market.stores.find((s) => s.storeId === storeId)
+    if (store) return store.storeName
+  }
+  return scopeOptions.inactiveStores.find((s) => s.storeId === storeId)?.storeName ?? '未知门店'
+}
+
+/**
+ * 范围规范化（#376）：前端写 URL 与服务端入口共用，保证同一选择只有一种编码。
+ *   - 多店恰好等于账号全部可见在营门店 → 总部 'all'、非总部 'authorized'（沿用现有编码）
+ *   - 多店恰好等于某一市场下全部可见在营门店（且未勾别的）→ 折叠成 'market'。
+ *     与 stores 语义等价：scopeFilterSql 两边都是「该市场的可见在营门店」；orgAnchorScopeSql 两边都是
+ *     「锚定 = 该市场」且该市场下有可见在营门店（祖先市场走同一条可见性，#399）。
+ *     同时勾满两个及以上市场不折叠（没有「多市场」形态），保持 stores。
+ *   - 含停用 / 数据源外门店 → 原样返回：停用要保留「N 家已停用」提示，数据源外由入口跳默认范围 / validateScope 拒。
+ * 其余范围原样返回。
+ */
+export function canonicalizeScope(scopeOptions: DataCenterScopeOptions, scope: DataCenterScope): DataCenterScope {
+  if (scope.type !== 'stores') return scope
+  const visible = new Set(visibleScopeStores(scopeOptions).map((store) => store.storeId))
+  if (!scope.ids.every((id) => visible.has(id))) return scope
+  if (scope.ids.length === visible.size) {
+    return scopeOptions.topLevel === 'all' ? { type: 'all' } : { type: 'authorized' }
+  }
+  const market = scopeOptions.markets.find(
+    (m) => m.stores.length === scope.ids.length && m.stores.every((store) => scope.ids.includes(store.storeId)),
+  )
+  return market ? { type: 'market', id: market.id } : scope
 }

@@ -5,13 +5,14 @@
  *   1. 非总部账号 + URL 无有效 scope → 重定向补上权限默认 scope（非总部绝不以 'all' 取数）
  *   2. 重复 query key → 规范化成单值（服务端按首值判定、客户端按末值取数，两边必须看同一份 query）
  *   3. 非总部却没有可用默认 scope（连无门店市场都没有，#399）→ 不跳转，交给页面渲染空态（不进入无限重定向）
- *   4. URL 选中权限内的已停用门店 → 不跳转，交给页面渲染「已停用」空态（#293）
+ *   4. 多店 URL 不是规范编码（全选 / 勾满单市场 / 乱序 / 非法串）→ 重定向到规范编码（#376）
+ *   5. URL 选中权限内的已停用门店（多店则全部停用）→ 不跳转，交给页面渲染「已停用」空态（#293）
  *
  * 背景见 memory `project-data-center-default-scope-non-hq`：scope='all' 抵达取数 action 会抛
  * PERMISSION_DENIED，生产脱敏后表现为「数据加载失败」。
  */
-import { collapseQuery, firstQueryValue, hasRepeatedQueryKey, parseScope } from './params'
-import { findInactiveScopeStore, resolveDefaultDataCenterScope, visibleScopeStores } from './scope-options'
+import { collapseQuery, firstQueryValue, hasRepeatedQueryKey, parseScope, scopeToParams } from './params'
+import { canonicalizeScope, findInactiveScopeStore, resolveDefaultDataCenterScope, visibleScopeStores } from './scope-options'
 import type { DataCenterScope, DataCenterScopeOptions, ScopeOptionInactiveStore } from './types'
 
 export type SearchQuery = Record<string, string | string[] | undefined>
@@ -44,6 +45,7 @@ type ConcreteScope = Exclude<DataCenterScope, { type: 'all' }>
  */
 function isUsableDefaultScope(scope: DataCenterScope | null): scope is ConcreteScope {
   if (scope === null || scope.type === 'all') return false
+  if (scope.type === 'stores') return scope.ids.length > 0
   return scope.type === 'authorized' || Boolean(scope.id)
 }
 
@@ -55,7 +57,7 @@ export function defaultScopeParams(scopeOptions: DataCenterScopeOptions): Record
   if (scopeOptions.topLevel === 'all') return {}
   const scope = resolveDefaultDataCenterScope(scopeOptions)
   if (!isUsableDefaultScope(scope)) return null
-  return scope.type === 'authorized' ? { scope: 'authorized' } : { scope: scope.type, scopeId: scope.id }
+  return scopeToParams(scope) as Record<string, string>
 }
 
 /**
@@ -93,6 +95,19 @@ export function resolveDataCenterEntry(
   if (hasRepeatedQueryKey(query)) {
     const qs = collapseQuery(query, legacyKeys).toString()
     return { kind: 'redirect', url: `${path}${qs ? `?${qs}` : ''}` }
+  }
+
+  // 多店（#376）：同一选择只认一种编码——全选折叠成 all / authorized、勾满单市场折叠成 market、
+  // id 去重升序；非法串（空段 / 非法字符 / 超上限）parseScope 已回落 'all'，这里连同 scope 参数一起剥掉。
+  // 规范化后 scopeToParams(canonical) 与 URL 一致，不会二次进入本分支。
+  if (firstQueryValue(query.scope) === 'stores') {
+    const canonical = scopeToParams(canonicalizeScope(scopeOptions, rawScope))
+    if (canonical.scope !== 'stores' || canonical.scopeId !== firstQueryValue(query.scopeId)) {
+      const next = collapseQuery(query, [...legacyKeys, 'scope', 'scopeId'])
+      for (const [key, value] of Object.entries(canonical)) if (value) next.set(key, value)
+      const qs = next.toString()
+      return { kind: 'redirect', url: `${path}${qs ? `?${qs}` : ''}` }
+    }
   }
 
   // 两者可同时成立：店长唯一的门店被停用、URL 又指向它。此时仍带出 inactiveStore，

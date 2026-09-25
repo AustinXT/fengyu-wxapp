@@ -594,7 +594,7 @@ async function operatingMasterContent(raw: Record<string, string>): Promise<Expo
 
 function scopeMetaLabel(scope: { type: string; name: string }): string {
   if (scope.type === 'market') return `市场 · ${scope.name}`
-  if (scope.type === 'store') return `门店 · ${scope.name}`
+  if (scope.type === 'store' || scope.type === 'stores') return `门店 · ${scope.name}`
   return scope.name
 }
 

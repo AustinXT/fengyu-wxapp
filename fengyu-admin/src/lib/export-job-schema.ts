@@ -9,8 +9,9 @@ import {
 } from '@/lib/export-job-types'
 import type { AuthSession } from '@/lib/types'
 
+// 单值上限按数据中心多店范围（#376）定：scopeId 为逗号串，最多 MAX_SCOPE_STORES(200) 家 × store_id(实测 ≤19 字符)
 const queryPayloadSchema = z
-  .record(z.string().max(240, '筛选条件过长'))
+  .record(z.string().max(4096, '筛选条件过长'))
   .refine((value) => Object.keys(value).length <= 40, '筛选条件过多')
 
 const dataCenterPayloadSchema = z.object({

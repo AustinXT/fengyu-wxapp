@@ -8,7 +8,7 @@
  * 过滤 = (账号权限范围) AND (UI 选中的 scope)。
  *   - 账号权限：admin 无限制；其他角色用 scopeStoreIds 扁平列表
  *   - UI 选中：authorized → 不再收窄（使用上述账号权限并集）；
- *     market → 子查询展开该市场下门店；store → 直接等值
+ *     market → 子查询展开该市场下门店；store → 直接等值；stores → 所选子集 IN（#376）
  * UI 越权（选了权限外的 market/store）由 actions 层 validateScope 提前拦截，SQL 层再兜底。
  *
  * 提成两表（sale_payment_item_allocations / service_commissions）无 store_id，
@@ -49,6 +49,9 @@ export function scopeFilterSql(
     parts.push(
       sql`${col} IN ${orgNodeStoreIdsSubquery(scope.id)}`,
     )
+  } else if (scope.type === 'stores') {
+    // 多店（#376）：所选子集；越权 id 已被 validateScope 拒掉，上面的权限 IN 再兜底
+    parts.push(sql`${col} IN (${sql.join(scope.ids.map((i) => sql`${i}`), sql`, `)})`)
   }
 
   return sql.join(parts, sql` AND `)
@@ -67,6 +70,7 @@ export function scopeFilterSql(
  *                       另须「锚定市场下有本账号可见的在营门店」——与 authorized 同一条可见性（#399），
  *                       即选祖先市场看到的直挂员工 ⊆ 汇总范围看到的，不会更多
  *   - all / authorized → admin 全可见；其他角色按「锚定市场下是否有本账号可见门店」判定
+ *   - 多店（#376）     → 锚定市场下至少有一家**所选**在营门店（非超管再与授权门店取交集）才出现
  * 品项公司是总部直属市场节点、其下无门店：admin/总部，以及直接授权到品项公司的账号（以市场范围，#399）可见；
  * 汇总范围（all / authorized）下非超管看不到它（锚定市场下没有可见门店）。
  * 养生部锚到南昌凤御，该市场范围的账号可见。
@@ -91,6 +95,14 @@ export function orgAnchorScopeSql(
     return sql`${col} = ${scope.id} AND ${visibleActiveAnchorSql(session, col)}`
   }
 
+  // 多店（#376）：锚定市场下至少有一家所选的在营门店才出现——authorized 的同一条可见性按所选子集收窄
+  if (scope.type === 'stores') {
+    const ids = isAdminScope(session)
+      ? scope.ids
+      : scope.ids.filter((id) => session.permissions.scopeStoreIds.includes(id))
+    return activeAnchorAmongSql(ids, col)
+  }
+
   // all / authorized：admin 全开；其他角色按锚定市场下的可见门店判定
   if (isAdminScope(session)) return sql`TRUE`
   return visibleActiveAnchorSql(session, col)
@@ -110,7 +122,11 @@ function isGrantedMarketScope(session: AuthSession, marketId: string): boolean {
  * 无授权门店时恒 FALSE。
  */
 function visibleActiveAnchorSql(session: AuthSession, col: SQL): SQL {
-  const ids = session.permissions.scopeStoreIds
+  return activeAnchorAmongSql(session.permissions.scopeStoreIds, col)
+}
+
+/** 锚定市场下存在 `ids` 中的**在营**门店；空集恒 FALSE。 */
+function activeAnchorAmongSql(ids: readonly string[], col: SQL): SQL {
   if (ids.length === 0) return sql`FALSE`
   return sql`EXISTS (
     SELECT 1

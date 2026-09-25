@@ -21,7 +21,7 @@ type Row = Record<string, unknown>
 async function scopeMetaLabel(scope: DataCenterScope): Promise<string> {
   const name = await resolveScopeName(scope)
   if (scope.type === 'market') return `市场 · ${name}`
-  if (scope.type === 'store') return `门店 · ${name}`
+  if (scope.type === 'store' || scope.type === 'stores') return `门店 · ${name}`
   return name
 }
 
