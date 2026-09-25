@@ -57,6 +57,13 @@ export interface ScopeStoreEntry {
   storeName: string
   marketId: string
   marketName: string
+  /** 只关店、节点仍启用（#422，透传筛选器数据源的展示标记）：门店下拉标「（已关店）」 */
+  closed?: boolean
+}
+
+/** 门店下拉项的展示名：只关店、节点仍启用的门店加「（已关店）」后缀（#422，写法同 legacy-orders 拉单弹层） */
+export function storeOptionLabel(store: { storeName: string; closed?: boolean }): string {
+  return store.closed ? `${store.storeName}（已关店）` : store.storeName
 }
 
 /** 当前 scope 覆盖的在营门店（按筛选器数据源展开，与页面取数同一范围），带出所属市场。 */
@@ -70,7 +77,13 @@ export function scopeStores(scopeOptions: DataCenterScopeOptions, scope: DataCen
       if (scope.type === 'stores' && !scope.ids.includes(store.storeId)) continue
       if (seen.has(store.storeId)) continue
       seen.add(store.storeId)
-      result.push({ storeId: store.storeId, storeName: store.storeName, marketId: market.id, marketName: market.name })
+      result.push({
+        storeId: store.storeId,
+        storeName: store.storeName,
+        marketId: market.id,
+        marketName: market.name,
+        ...(store.closed ? { closed: true } : {}),
+      })
     }
   }
   return result

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canonicalizeScope, scopeFromSelection, findInactiveScopeStore, inactiveStoresInScope, isScopeLocked, multiStoreName, resolveDefaultDataCenterScope, scopeLabel, scopeStores, selectableScopeCount, visibleScopeStores } from './scope-options'
+import { canonicalizeScope, scopeFromSelection, findInactiveScopeStore, inactiveStoresInScope, isScopeLocked, multiStoreName, resolveDefaultDataCenterScope, scopeLabel, scopeStores, selectableScopeCount, storeOptionLabel, visibleScopeStores } from './scope-options'
 import type { DataCenterScopeOptions } from './types'
 
 const multiStoreOptions: DataCenterScopeOptions = {
@@ -244,5 +244,25 @@ describe('scopeFromSelection（面板勾选 → 范围）', () => {
     expect(scopeFromSelection(three, ['S4', 'S1', 'S4'])).toEqual(stores('S1', 'S4'))
     expect(scopeFromSelection(three, ['S2', 'S1'])).toEqual({ type: 'market', id: 'M1' })
     expect(scopeFromSelection(three, ['S1', 'S2', 'S3', 'S4', 'S5'])).toEqual({ type: 'authorized' })
+  })
+})
+
+describe('已关店门店展示标记（#422）', () => {
+  const options: DataCenterScopeOptions = {
+    topLevel: 'market', inactiveStores: [],
+    markets: [{ id: 'M1', name: '南昌', stores: [{ storeId: 'S1', storeName: '蓝莱店', closed: true }, { storeId: 'S2', storeName: '绿湖店' }] }],
+  }
+
+  it('storeOptionLabel：closed 加「（已关店）」后缀，否则原样', () => {
+    expect(storeOptionLabel({ storeName: '蓝莱店', closed: true })).toBe('蓝莱店（已关店）')
+    expect(storeOptionLabel({ storeName: '绿湖店' })).toBe('绿湖店')
+    expect(storeOptionLabel({ storeName: '绿湖店', closed: false })).toBe('绿湖店')
+  })
+
+  it('scopeStores 透传 closed（提成明细门店下拉用），未关店不带该字段；店名本身不带后缀', () => {
+    expect(scopeStores(options, { type: 'market', id: 'M1' })).toEqual([
+      { storeId: 'S1', storeName: '蓝莱店', marketId: 'M1', marketName: '南昌', closed: true },
+      { storeId: 'S2', storeName: '绿湖店', marketId: 'M1', marketName: '南昌' },
+    ])
   })
 })

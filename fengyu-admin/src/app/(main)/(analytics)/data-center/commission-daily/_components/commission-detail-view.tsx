@@ -21,7 +21,7 @@ import {
   productLabel,
   type CommissionDetailRow,
 } from "@/lib/data-center/commission-columns"
-import type { ScopeStoreEntry } from "@/lib/data-center/scope-options"
+import { storeOptionLabel, type ScopeStoreEntry } from "@/lib/data-center/scope-options"
 import type { CommissionDetailResult } from "@/actions/data-center/commission"
 import { KpiCard } from "../../_components/kpi-card"
 import { MatrixTable, type MatrixColumn } from "../../_components/matrix-table"
@@ -117,7 +117,7 @@ export function CommissionDetailView({
             <SelectOption value="">全部门店</SelectOption>
             {!storeKnown && <SelectOption value={data.filters.storeId!}>{data.filters.storeId}（不在当前范围）</SelectOption>}
             {stores.map((store) => (
-              <SelectOption key={store.storeId} value={store.storeId}>{store.storeName}</SelectOption>
+              <SelectOption key={store.storeId} value={store.storeId}>{storeOptionLabel(store)}</SelectOption>
             ))}
           </Select>
           <DatePicker

@@ -14,6 +14,7 @@ import {
   scopeLabel,
   scopeStores,
   visibleScopeStores,
+  storeOptionLabel,
 } from "@/lib/data-center/scope-options"
 
 /**
@@ -253,7 +254,7 @@ function ScopePicker({
                   {market.stores.map((store) => (
                     <CheckRow
                       key={store.storeId}
-                      label={store.storeName}
+                      label={storeOptionLabel(store)}
                       state={draft.has(store.storeId) ? "checked" : "unchecked"}
                       onChange={(checked) => toggleIds([store.storeId], checked)}
                       indent
