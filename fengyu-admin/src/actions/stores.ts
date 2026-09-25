@@ -417,6 +417,10 @@ export const updateStore = withPermission(
   }
   // 审计的 after：闭店日期是 SQL 表达式时换成落库后的真实值，别把表达式对象写进日志
   let auditAfter: Record<string, unknown> = storeFields
+  // 白名单过滤后没有可写字段（如只传了已不受理的 closedAt）：Drizzle `.set({})` 会直接抛错成 500，这里友好拒绝
+  if (Object.keys(storeFields).length === 0) {
+    return { success: false, message: '没有可更新的字段' }
+  }
   let result: any
   try {
     result = await db.transaction(async (tx) => {

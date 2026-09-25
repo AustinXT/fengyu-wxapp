@@ -327,8 +327,17 @@ describe('#422 范围下拉「（已关店）」展示标记 · 两端 helper', 
    * `filter(!closedIds.has(...))` 收窄统计范围都不会变红（#422 pr-ready boundary P2）。
    * 换变量名 / 换 import 写法同样会让行对不上而变红——改动须在这里登记并说明为何仍是纯展示。
    */
-  it('消费方里关店标记的用法闭集：只在两份下拉数据源里、只用于打 closed 标', () => {
+  it('消费方里关店标记的用法闭集：只在两份下拉数据源里打 closed 标、只在下拉展示里读它', () => {
     const EXPECTED = {
+      'fengyu-admin/src/lib/data-center/types.ts': [
+        'closed?: boolean',
+      ],
+      'fengyu-admin/src/lib/data-center/scope-options.ts': [
+        'closed?: boolean',
+        'export function storeOptionLabel(store: { storeName: string; closed?: boolean }): string {',
+        'return store.closed ? `${store.storeName}（已关店）` : store.storeName',
+        '...(store.closed ? { closed: true } : {}),',
+      ],
       'fengyu-staff/cloudfunctions/staffApi/routes/mgmt-dashboard.js': [
         "const { loadClosedStoreIds } = require('../utils/store-closed-label')",
         'const closedIds = await loadClosedStoreIds(pg, visible.flatMap((market) => market.stores.map((store) => store.storeId)))',
@@ -348,7 +357,9 @@ describe('#422 范围下拉「（已关店）」展示标记 · 两端 helper', 
       const hits = readFile(file).split('\n')
         .map((line) => line.trim())
         .filter((t) => t && !/^(\*|\/\*|\/\/)/.test(t))
-        .filter((t) => /closedIds|loadClosedStoreIds|store-closed-label/.test(t))
+        // 结果 Set / helper 名 / 引入路径，以及 closed 字段的读写（`.closed`、`closed:`、`closed?:`）——
+        // 后者防止消费方拿 `filter((s) => !s.closed)` 之类把关店店排除出取数范围（#422 闸门 2 codex P2）
+        .filter((t) => /closedIds|loadClosedStoreIds|store-closed-label|\.closed\b|\bclosed\??:/.test(t))
       if (hits.length > 0) actual[rel(file)] = hits
     }
     expect(actual).toEqual(EXPECTED)

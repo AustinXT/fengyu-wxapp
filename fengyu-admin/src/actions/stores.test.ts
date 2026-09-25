@@ -658,6 +658,17 @@ describe('updateStore — 关店时 closedAt 推导', () => {
     expect(set.mock.calls[0][0]).toEqual({ bedCount: 6 })
   })
 
+  it.each([
+    ['只传 closedAt', { closedAt: '2026-03-01' }],
+    ['只传非白名单字段', { orgNodeId: 'node-x' }],
+    ['空对象', {}],
+  ])('白名单过滤后无可写字段（%s）→ 友好拒绝，不开事务', async (_label, data) => {
+    setupTx(1, null)
+    const result = await updateStore('STORE-001', data as any)
+    expect(result).toEqual({ success: false, message: '没有可更新的字段' })
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
   it('isClosed 传非布尔值（字符串 "false"）→ 按未关店处理', async () => {
     const { set } = setupTx(1, null)
     await updateStore('STORE-001', { isClosed: 'false' } as any)
