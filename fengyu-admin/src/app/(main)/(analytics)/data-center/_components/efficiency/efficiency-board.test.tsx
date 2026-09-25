@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { EfficiencyBoardResult } from '@/lib/data-center/types'
 import { getDataCenterRankingConfig } from '@/lib/data-center/columns'
@@ -38,9 +38,15 @@ beforeEach(() => {
   board.getEfficiencyBoard.mockResolvedValue(data)
 })
 
-async function openTab(name: string) {
+async function renderLoaded() {
   render(<EfficiencyBoard />)
-  await screen.findByRole('tab', { name })
+  // 等取数结束（导出按钮 loading 时 disabled），断言跑在数据到达后
+  await waitFor(() => expect(board.getEfficiencyBoard).toHaveBeenCalled())
+  await waitFor(() => expect(screen.getByRole('button', { name: /导出/ })).toBeEnabled())
+}
+
+async function openTab(name: string) {
+  await renderLoaded()
   await userEvent.click(screen.getByRole('tab', { name }))
 }
 
@@ -76,8 +82,9 @@ describe('EfficiencyBoard 员工维度口径说明（#299）', () => {
   })
 
   it('按市场人效（默认 Tab）：不显示说明', async () => {
-    render(<EfficiencyBoard />)
-    await screen.findByRole('tab', { name: '按市场人效' })
+    await renderLoaded()
+    expect(screen.getByRole('tab', { name: '按市场人效' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByTestId('efficiency-staff-output-note')).toBeNull()
     expect(screen.queryByText(STAFF_OUTPUT_SCOPE_NOTE)).toBeNull()
   })
 })

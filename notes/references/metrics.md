@@ -109,9 +109,11 @@
 
 > ⚠️ **scope 决定谁出现、归属决定数字（#299，2026-09-23 拍板：不是缺陷，不改 SQL）**：scope 只作用于产能员工池
 > （staff `producerEmployeesCte` / admin `producerCte`），决定哪些员工上榜；金额 / 计数类 CTE（staff 6 个 `staffRanking*`、
-> admin `revenue_by_emp` 等 Part D、Part E `revenue_by_emp_cat` / `consume_by_emp_cat`）**不按 scope 过滤**，
+> admin Part D `revenue_by_emp` 等、Part E `revenue_by_emp_cat` / `consume_by_emp_cat` 等全部员工级 CTE）**不按 scope 过滤**，
 > 数值为员工个人全域产出（含在其他门店、停用门店的业绩 / 服务）。因此**员工榜合计 ≠ 所选范围的门店合计，属预期**。
 > 同样适用于 admin「按技师人效」明细，以及 #423 无门店市场场景（如 hr@品项公司 看到品项老师在所有门店的分配额）。
+> 下方变更记录 2026-08-08「员工排行榜……同步过滤、停用门店返回零数据」指的是**产能员工池**（谁上榜）按在营门店过滤，
+> 不是金额按门店过滤；提成日报页脚（#375「员工排行榜展示的是个人全域产出」）与本条同义。
 > 页面说明文案两端逐字一致：「数值为员工个人全域产出」——admin `STAFF_OUTPUT_SCOPE_NOTE`
 > （`src/lib/data-center/staff-output-note.ts`，员工排名榜 + 按技师人效）与 staff `mgmt-dashboard.wxml` 员工排行榜，
 > 由 staffApi `cross-end-staff-output-note.test.js` 守护；导出件「导出说明」随 #296 复用同一常量。
