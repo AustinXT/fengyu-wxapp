@@ -272,7 +272,8 @@ jobs:
         run: npx vitest run src/lib/__tests__/action-error.test.ts
 
       # 客量板会员门槛单源（#292）：分桶 / 经营人数门槛读 system_configs、固定档位 SPEND_BUCKET_FLOORS
-      # 的两端整段快照 + 「改配置值后客量板与品项板同步变化」行为测试 + 导出产物新鲜度。
+      # 的两端整段快照 + 「改配置值后客量板与品项板同步变化」行为测试 + 导出产物新鲜度
+      # + 无 Next 缓存上下文（导出进程）下读门槛不抛（真实 unstable_cache，不 mock）。
       # 不进 CI 的话，把 1990 写回 SQL 或让两端档位漂移，GitHub 检查照样全绿。
       - name: Run customer board member-threshold guards (#292)
         working-directory: fengyu-admin
@@ -280,6 +281,7 @@ jobs:
           npx vitest run \
             src/actions/data-center/__tests__/consistency.customer.test.ts \
             src/actions/data-center/__tests__/member-threshold-sync.test.ts \
+            src/lib/member-threshold.no-next-cache.test.ts \
             src/actions/data-center/__tests__/customer.test.ts \
             src/export-worker/dist-freshness.test.ts
 
