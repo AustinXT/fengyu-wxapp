@@ -396,6 +396,7 @@ export interface InventoryDocItemInput {
   isGift?: boolean
   quantity: number
   requestQuantity?: number | null
+  /** @deprecated #358 起服务端忽略（已收 / 已履约量只由收货路径回写），传了也不落库 */
   fulfilledQuantity?: number | null
   standardUnitPrice?: number | null
   unitDiscount?: number | null

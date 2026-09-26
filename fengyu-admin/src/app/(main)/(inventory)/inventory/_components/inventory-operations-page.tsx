@@ -622,7 +622,7 @@ interface OperationFormPrefill {
  * 把预选券兑现成一次 `selectDocument`。
  *
  * 覆盖语义是**直接切换 + toast 告知**，不做二次确认：收货表单输入量小
- * （实收数量默认预填待收数），代价低。注意 `selectDocument` 会重置明细行 ——
+ * （实收数量只读 = 待收数，#358），代价低。注意 `selectDocument` 会重置明细行 ——
  * 在填报表单里填到一半再从待办区跳过来，填的内容会丢，这点在 PR 里单列说明。
  */
 function useDocumentPrefill(
@@ -1186,7 +1186,7 @@ const OPERATION_DOCS_PAGE_SIZE = 20
  *
  * 供应链采购入库要逐行核对效期（批号留空已由服务端按入库单号+行号生成（#345），效期推断不出来），
  * 所以它只有跳转版、没有一键版；市场 / 门店收货两条既有一键版也留跳转版，
- * 部分收货与差异登记仍得回表单。「去发货」（#336）要逐行选总部批次，同样只能回表单。
+ * 表单里可填收货日期与逐行备注（数量自 #358 起只读、整单收）。「去发货」（#336）要逐行选总部批次，同样只能回表单。
  * 「继续编辑」（#348）要重新汇总门店需求、重新取价，也只能回表单。
  */
 const INBOX_GOTO_ACTION_KINDS = ['shipment-receive-goto', 'purchase-receive-goto', 'report-ship-goto', 'draft-edit-goto'] as const
@@ -1314,7 +1314,7 @@ function buildInboxActionConfig(
       label: '收货备注',
       placeholder: '选填，将记录在入库单上',
       remarkRequired: false,
-      consequence: '将按各明细的待收数量整单收货并生成入库单。需要部分收货或登记差异请用「去收货」。',
+      consequence: '将按各明细的待收数量整单收货并生成入库单。收货数量须与发货一致，实物短少请先不要收货，联系发货方处理。',
       confirmText: '确认整单收货',
       // 收货产出一张新入库单，单号是用户下一步要找的东西，别丢
       successMessage: (result) => {
@@ -3659,7 +3659,6 @@ interface ReceiptProgressLine {
   shippedQuantity: number
   receivedQuantity: number
   outstandingQuantity: number
-  receivedInput: string
   remark: string
 }
 
@@ -3699,7 +3698,6 @@ function ShipmentReceiptForm({
             shippedQuantity: item.shippedQuantity,
             receivedQuantity: item.receivedQuantity,
             outstandingQuantity: item.outstandingQuantity,
-            receivedInput: String(item.outstandingQuantity),
             remark: '',
           })))
         }
@@ -3723,13 +3721,14 @@ function ShipmentReceiptForm({
       toast.error('请选择待收货发货单')
       return
     }
+    // #358：整单按待收数量收货，数量不可改（服务端同样逐行校验实收 = 待收）
     const items = lines.map((line) => ({
       shipmentItemId: line.shipmentItemId,
-      receivedQuantity: positiveNumber(line.receivedInput),
+      receivedQuantity: line.outstandingQuantity,
       remark: optionalText(line.remark),
-    })).filter((line) => line.receivedQuantity !== null)
+    }))
     if (items.length === 0) {
-      toast.error('请填写至少一条实收数量')
+      toast.error('该发货单没有待收数量')
       return
     }
     setSaving(true)
@@ -3738,7 +3737,7 @@ function ShipmentReceiptForm({
         shipmentId: doc.id,
         docDate: optionalText(docDate),
         remark: optionalText(remark),
-        items: items.map((item) => ({ ...item, receivedQuantity: item.receivedQuantity! })),
+        items,
       }
       const result = kind === 'market'
         ? await receiveItemCompanyShipment(input)
@@ -3776,13 +3775,14 @@ function ShipmentReceiptForm({
                * 打补丁，序号在这张单据的加载期内是稳定的。
                */
               const rowName = `${line.skuName} 第${index + 1}行`
-              return <tr key={line.shipmentItemId} className="border-t border-[var(--border)]"><td className="px-3 py-2"><div className="font-medium">{line.skuName}</div>{line.isGift && <Badge variant="outline" className="mt-1 text-[10px]">赠送</Badge>}</td><td className="px-3 py-2">{line.shippedQuantity}</td><td className="px-3 py-2">{line.receivedQuantity}</td><td className="px-3 py-2">{line.outstandingQuantity}</td><td className="px-3 py-2"><Input className="w-24" aria-label={`本次实收 ${rowName}`} type="number" min="0" step="0.01" max="9999999999.99" value={line.receivedInput} onChange={(event) => updateLine(index, { receivedInput: event.target.value })} /></td><td className="px-3 py-2"><Input aria-label={`明细备注 ${rowName}`} value={line.remark} onChange={(event) => updateLine(index, { remark: event.target.value })} /></td></tr>
+              return <tr key={line.shipmentItemId} className="border-t border-[var(--border)]"><td className="px-3 py-2"><div className="font-medium">{line.skuName}</div>{line.isGift && <Badge variant="outline" className="mt-1 text-[10px]">赠送</Badge>}</td><td className="px-3 py-2">{line.shippedQuantity}</td><td className="px-3 py-2">{line.receivedQuantity}</td><td className="px-3 py-2">{line.outstandingQuantity}</td><td className="px-3 py-2"><Input className="w-24 bg-[var(--muted)] text-[var(--muted-foreground)]" aria-label={`本次实收 ${rowName}`} readOnly value={String(line.outstandingQuantity)} /></td><td className="px-3 py-2"><Input aria-label={`明细备注 ${rowName}`} value={line.remark} onChange={(event) => updateLine(index, { remark: event.target.value })} /></td></tr>
             })}</tbody>
           </table>
         </div>
       )}
+      {lines.length > 0 && <p className="text-xs text-[#666666]">收货数量须与发货一致，按待收数量整单确认；实物短少请先不要收货，联系发货方处理。</p>}
       <RemarkField value={remark} onChange={setRemark} />
-      <div className="flex justify-end"><Button type="submit" loading={saving} disabled={!doc || lines.length === 0}>登记本次实收</Button></div>
+      <div className="flex justify-end"><Button type="submit" loading={saving} disabled={!doc || lines.length === 0}>确认整单收货</Button></div>
     </form>
   )
 }

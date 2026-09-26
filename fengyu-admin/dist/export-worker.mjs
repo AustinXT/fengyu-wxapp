@@ -178614,7 +178614,7 @@ var createInventoryCoreDoc = withAnyPermission(["inventory:supply_chain_operate"
         quantity: String(quantity),
         stockSnapshot: lot ? String(lot.quantityOnHand) : numString(bookQuantity),
         requestQuantity: numString(serverItem.requestQuantity),
-        fulfilledQuantity: numString(serverItem.fulfilledQuantity),
+        fulfilledQuantity: null,
         standardUnitPrice: numString(standardUnitPrice),
         unitDiscount: numString(unitDiscount),
         actualUnitPrice: numString(actualUnitPrice),
@@ -178801,7 +178801,7 @@ var confirmInventoryCoreReceive = withAnyPermission([...INVENTORY_CORE_RECEIVE_A
     });
     const itemRows = await tx.execute(import_drizzle_orm58.sql`
         SELECT item.id AS source_item_id, item.sku_id, item.batch_no, item.expiry_date, item.is_gift, item.quantity,
-               item.standard_unit_price, item.unit_discount, item.actual_unit_price, item.amount,
+               item.fulfilled_quantity, item.standard_unit_price, item.unit_discount, item.actual_unit_price, item.amount,
                item.supply_chain_unit_cost, item.market_standard_unit_price, item.market_unit_discount,
                item.market_actual_unit_price, item.store_standard_unit_price, item.store_unit_discount,
                item.store_actual_unit_price, item.reason, item.remark,
@@ -178814,6 +178814,9 @@ var confirmInventoryCoreReceive = withAnyPermission([...INVENTORY_CORE_RECEIVE_A
          ORDER BY item.id
       `);
     for (const item of itemRows) {
+      if (Number(item.fulfilled_quantity ?? 0) > 0) {
+        throw new ApiError("CONFLICT", head.doc_type === "分院调货出库" ? "该调货单已有收货记录，剩余数量请在员工小程序确认收货" : "该调货单已有收货记录，不能再整单收货，请联系管理员核对");
+      }
       const lot = await ensureLotFromSku(tx, targetLocationId, {
         skuId: item.sku_id,
         batchNo: item.batch_no,
@@ -178883,6 +178886,11 @@ var confirmInventoryCoreReceive = withAnyPermission([...INVENTORY_CORE_RECEIVE_A
         toItemId: createdItem.id,
         quantity: String(item.quantity)
       });
+      await tx.execute(import_drizzle_orm58.sql`
+          UPDATE inventory_doc_items
+             SET fulfilled_quantity = COALESCE(fulfilled_quantity, 0) + ${String(item.quantity)}
+           WHERE id = ${Number(item.source_item_id)}
+        `);
     }
     await tx.update(inventoryDocs).set({
       status: "已完成",
