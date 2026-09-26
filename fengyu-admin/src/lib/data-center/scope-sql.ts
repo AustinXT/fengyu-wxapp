@@ -32,7 +32,15 @@ export function scopeFilterSql(
   storeCol = 'so.store_id',
 ): SQL {
   const col = sql.raw(storeCol)
-  // 经营统计始终排除当前已停用的门店；即使直接构造停用门店 URL 也只能得到零数据。
+  // 经营统计始终排除当前已停用的门店；即使直接构造停用门店 URL 也只能得到零数据（#401）。
+  //
+  // ⚠️ **已登记的唯一例外：新客客单价的分子**（#439，用户 2026-09-26 拍板方案 A）。
+  // 它按 `c.bound_store_id` 过滤而**不再约束订单门店**，于是「绑定在营店的新会员在**已停用**门店消费」
+  // 的钱会进分子。这在方案 A 下是**正确的** —— 分母只按绑定店数人、不看订单，这个人本来就在分母里，
+  // 「钱跟着人走」就该含他在任何门店的消费；把它改回按订单店过滤会重新制造分子分母不同源。
+  // 实测当前金额为 0（全库 3 家停用门店一条款项事件都没有）。
+  // 口径详见 notes/references/metrics.md 的 D-newMemberAvgTicket-store。
+  // **看到这里想"修"它之前先读那一节** —— 这条注释就是为了拦住那次改动才写的。
   const parts: SQL[] = [activeStoreCondition(col)]
 
   // 账号权限范围：admin 全开短路，其他角色用扁平 scopeStoreIds

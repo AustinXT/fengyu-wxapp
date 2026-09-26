@@ -639,8 +639,11 @@ describe('mgmtTraffic.summary scope 三档 SQL 拼接', () => {
     const newMemberSpendSqls = sqlList.filter(isNewMemberSpendSql)
     expect(newMemberSpendSqls, '新会员消费查询应恰好 1 条（#439 例外的定位前提）').toHaveLength(1)
     for (const s of newMemberSpendSqls) {
-      expect(s).toMatch(/c\.bound_store_id\s+IN\s*\(/)
-      expect(s).not.toMatch(/(so|o)\.store_id\s+IN\s*\(/)
+      // ⚠ 必须在**剥掉 active 段之后**再比：`activeStoreCondition('c.bound_store_id')` 展开本身就是
+      // `c.bound_store_id IN ( SELECT active_store.store_id …`，直接对原文 match 的话
+      // 不论 scope 段用哪个 producer 都绿（pr-ready boundary P2-3）。
+      expect(withoutActive(s)).toMatch(/c\.bound_store_id\s+IN\s*\(/)
+      expect(withoutActive(s)).not.toMatch(/(so|o)\.store_id\s+IN\s*\(/)
       expectRecursiveDescendantScope(s)
     }
 
@@ -680,8 +683,8 @@ describe('mgmtTraffic.summary scope 三档 SQL 拼接', () => {
     const newMemberSpendSqls = sqlList.filter(isNewMemberSpendSql)
     expect(newMemberSpendSqls, '新会员消费查询应恰好 1 条（#439 例外的定位前提）').toHaveLength(1)
     for (const s of newMemberSpendSqls) {
-      expect(s).toMatch(/c\.bound_store_id\s*=\s*\$\d/)
-      expect(s).not.toMatch(/(so|o)\.store_id\s*=\s*\$\d/)
+      expect(withoutActive(s)).toMatch(/c\.bound_store_id\s*=\s*\$\d/)
+      expect(withoutActive(s)).not.toMatch(/(so|o)\.store_id\s*=\s*\$\d/)
     }
 
     const saleServiceSqls = sqlList.filter(
@@ -690,6 +693,8 @@ describe('mgmtTraffic.summary scope 三档 SQL 拼接', () => {
         !/SELECT store_name FROM stores\b/.test(s) &&
         !isNewMemberSpendSql(s),
     )
+    // fail-closed：filter 将来被放宽/收窄而把这组排空时，for 会一次都不跑 ⇒ 整组守护静默通过
+    expect(saleServiceSqls.length, 'sale/service 类查询不应为空').toBeGreaterThan(0)
     for (const s of saleServiceSqls) {
       expect(s).toMatch(/(so|o)\.store_id\s*=\s*\$\d/)
       expect(withoutActive(s)).not.toMatch(/store_id\s+IN\s*\(/)
@@ -702,8 +707,9 @@ describe('mgmtTraffic.summary scope 三档 SQL 拼接', () => {
         !/FROM\s+(sale_orders|service_orders)/.test(s) &&
         !/JOIN\s+(sale_orders|service_orders)/.test(s),
     )
+    expect(pureClientSqls.length, '纯 client 类查询不应为空').toBeGreaterThan(0)
     for (const s of pureClientSqls) {
-      expect(s).toMatch(/c\.bound_store_id\s*=\s*\$\d/)
+      expect(withoutActive(s)).toMatch(/c\.bound_store_id\s*=\s*\$\d/)
     }
   })
 })

@@ -632,20 +632,47 @@ describe('dist/export-worker.mjs 客量明细 SQL 整段逐字进入产物（#41
     }
     expect(starts, '源码里「WITH skel AS (${skeleton})」应恰好 2 处（注册客活 + 消费经营）').toHaveLength(2)
 
+    // 切到**模板真正的收尾反引号**，覆盖 100%。
+    //
+    // ⚠ 早先两版都把终点取在 `GROUP BY ${groupId}` 上，两次都出问题（pr-ready boundary P1）：
+    //   ① 取**第一处** → 撞上 queryOpsBreakdown 的内层 CTE，模板被截成 175 字
+    //   ② 取**最后一处** → 末尾 1384 字（最终 SELECT 的 18 行投影 + 8 个 LEFT JOIN，
+    //      含 `COALESCE(newmem_spend.new_spend, 0) AS new_spend` 与
+    //      `LEFT JOIN newmem_spend ON …`）在射程之外，而 `it` 名却叫"整段模板"；
+    //      且它依赖"后面的 CTE 都还用 `GROUP BY ${groupId}`"——把末四个 CTE 改成
+    //      `GROUP BY group_id`（traffic_cust 已经就是这写法），终点会静默退回 ≈2900，
+    //      覆盖面丢 46% 而长度门限看不出来。
+    // 反引号做边界是安全的：模板内多一个反引号会直接让 tsc 编译失败（本轮实测踩过两次）。
     const templates = starts.map((from) => {
-      // ⚠ 终点必须取**模板内最后一处** `GROUP BY ${groupId}`：queryOpsBreakdown 的内层 CTE
-      // （newmem / member_spend …）自己也 `GROUP BY ${groupId}`，取第一处会把模板截成 175 字
-      // 而 minLength 之外的断言全部照绿（本轮实测）。模板边界 = from 之后第一个 `` `) ``。
       const tplEnd = src.indexOf('`)', from)
       expect(tplEnd, '源码里找不到 SQL 模板的收尾反引号').toBeGreaterThan(from)
-      const to = src.lastIndexOf('GROUP BY ${groupId}', tplEnd)
-      expect(to, '源码里找不到明细 SQL 模板终点').toBeGreaterThan(from)
-      return normalizeInterpolations(
-        src.slice(from, to + 'GROUP BY ${groupId}'.length).replace(/\s+/g, ' ').trim(),
-      )
+      return normalizeInterpolations(src.slice(from, tplEnd).replace(/\s+/g, ' ').trim())
     })
-    // fail-closed：模板短得离谱说明锚点漂了，不能让这条守护静默通过
-    for (const t of templates) expect(t.length).toBeGreaterThan(2000)
+
+    /**
+     * fail-closed **哨兵**：光靠长度门限没用 —— 上一版写 `> 2000` 而实际模板 4556 / 6811 字，
+     * 中间有两千多字的余量可以让载荷整段脱出比对还照绿（boundary P1-1）。
+     * 这里钉住每段**必须包含自己最末尾的那一行**，切片提前收尾立刻红。
+     */
+    const TAILS = [
+      'LEFT JOIN react ON react.store_id = sk.store_id GROUP BY ${groupId}',
+      'LEFT JOIN svc_all ON svc_all.group_id = gs.group_id',
+    ]
+    // 载荷哨兵：#439 的归店口径与它的输出投影都必须在射程内
+    const PAYLOADS = [
+      'reg AS (',
+      'newmem_spend AS (',
+    ]
+    templates.forEach((t, i) => {
+      expect(t, `第 ${i + 1} 段模板没切到尾（切片提前收尾，覆盖面静默缩小）`).toContain(TAILS[i])
+      expect(t, `第 ${i + 1} 段模板里找不到载荷 ${PAYLOADS[i]}`).toContain(PAYLOADS[i])
+    })
+    expect(templates[1], 'ops 段必须含 new_spend 的输出投影（它在最终 SELECT 里，曾在射程外）').toContain(
+      'COALESCE(newmem_spend.new_spend, 0) AS new_spend',
+    )
+    expect(templates[1], 'ops 段必须含 newmem_spend 的 LEFT JOIN（同上）').toContain(
+      'LEFT JOIN newmem_spend ON newmem_spend.group_id = gs.group_id',
+    )
 
     const dist = fs.readFileSync(DIST, 'utf-8')
     const segment = normalizeInterpolations(
