@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from 'vitest'
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import ts from 'typescript'
 import { dirname, join, relative, resolve } from 'node:path'
@@ -358,25 +358,28 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
   }
 
   /**
-   * 「产出」方向（冷路径专用：断言目标、声明、泛型实例化比较）：在 carriesBrand 的结构边之外，再沿调用 / 构造签名的
-   * **返回值**走——`interface Factory { mint(): CalendarDate }` 这类类型本身不带 brand，但调用它能得到 brand。
-   * 热路径（每个上下文位置）不用它：对全体类型遍历签名实测 OOM。
+   * 「产出」方向：在 carriesBrand 的结构边之外，再沿调用 / 构造签名的**返回值**走——`interface Factory { mint(): CalendarDate }`
+   * 这类类型本身不带 brand，但调用它能得到 brand。用于断言目标、声明、泛型比较，也用作上下文位置洗白判定的 ctx 门槛
+   * （只对 ctx 类型调用、expr 侧不遍历签名；库类型只看类型实参 + 原始类型为叶，实测整条扫描十余秒，不会 OOM）。
    */
   const producesRoot = new Map<ts.Type, boolean>()
+  const producesTrue = new Set<ts.Type>() // 中间命中跨根复用（产出方向的真值，不混进 carriesBrand 的 brandTrue）
   function producesBrand(root: ts.Type): boolean {
     const cached = producesRoot.get(root)
     if (cached !== undefined) return cached
     const visited = new Set<ts.Type>()
     const stack: ts.Type[] = []
     const dfs = (type: ts.Type, depth: number): boolean => {
-      if (brandTrue.has(type)) return true
+      if (brandTrue.has(type) || producesTrue.has(type)) return true
       if (visited.has(type)) return false
       if (depth > DEPTH_CAP) throw new Error(`类型结构深度超过 ${DEPTH_CAP}，守护无法判定（fail-closed）：${checker.typeToString(root)}\n最后几层：\n${stack.slice(-8).map((t) => checker.typeToString(t).slice(0, 160)).join('\n')}`)
       visited.add(type)
       stack.push(type)
       try {
       const returns = type.flags & LEAF || type.isUnionOrIntersection() || isLibType(type) ? [] : [...type.getCallSignatures(), ...type.getConstructSignatures()].map((sig) => sig.getReturnType())
-      return hasBrandKey(type) || [...structuralChildren(type), ...returns].some((t) => dfs(t, depth + 1))
+      const hit = hasBrandKey(type) || [...structuralChildren(type), ...returns].some((t) => dfs(t, depth + 1))
+      if (hit) producesTrue.add(type)
+      return hit
       } finally {
         stack.pop()
       }
@@ -490,6 +493,36 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
     return false
   }
 
+  /**
+   * 泛型调用的输入（实参、方法调用的接收者）里已经带着 brand：输出里的 brand 是传递来的（`new SafeBox(d)`、`identity(d)`、
+   * `box.get()`），不是凭空产出；只有「无 brand 输入却产出 brand」（`mintG<CD>(s)`、`new Box<CD>()`）才算逃逸。
+   */
+  /**
+   * 已知安全的库泛型（白名单，fail-closed：不在表里的泛型一律按规则判）：React 的 state 容器只经受检的初始值与 setter 写入 T，
+   * `useState<TimeRangeInput>({ preset: 'month' })` 读出的 TR 不可能凭空带 brand。新增条目须说明「T 的值只能从受检入口进入」。
+   */
+  const SOUND_LIB_GENERICS: Record<string, readonly string[]> = {
+    react: ['useState', 'useReducer', 'useRef', 'createContext', 'useContext', 'useMemo', 'useCallback'],
+  }
+  function isSoundLibGeneric(decl: ts.Declaration): boolean {
+    const name = ts.getNameOfDeclaration(decl)?.getText()
+    const file = decl.getSourceFile().fileName
+    return Object.entries(SOUND_LIB_GENERICS).some(([pkg, names]) =>
+      (file.includes(`/node_modules/${pkg}/`) || file.includes(`/node_modules/@types/${pkg}/`)) && !!name && names.includes(name))
+  }
+
+  function brandFromInputs(node: ts.Node): boolean {
+    const inputs: ts.Expression[] = []
+    if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
+      inputs.push(...(node.arguments ?? []))
+      const callee = node.expression
+      if (ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee)) inputs.push(callee.expression)
+    } else if (ts.isTaggedTemplateExpression(node) && ts.isTemplateExpression(node.template)) {
+      inputs.push(...node.template.templateSpans.map((span) => span.expression))
+    }
+    return inputs.some((e) => producesBrand(checker.getTypeAtLocation(e)))
+  }
+
   /** 自身或任一祖先带 `declare` 修饰（`declare namespace N { const d: … }` 的内层声明自身没有修饰，靠祖先判） */
   function inAmbientContext(node: ts.Node): boolean {
     for (let n: ts.Node | undefined = node; n; n = n.parent) {
@@ -518,10 +551,19 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
       out.push({ file: relative(SRC, sf.fileName), line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1, kind, text })
     }
     // ⑥ 抑制注释：@ts-ignore / @ts-expect-error / @ts-nocheck 能让任意值落进 branded 位置而 tsc 不报
+    // 逐字镜像 TS 编译器的判定（typescript.js 的 commentDirectiveRegExSingleLine / MultiLine：前缀匹配、**无尾部边界**，
+    // 所以 `// @ts-ignorex` 同样生效）：`//` 注释整段匹配；块注释只取最后一行；@ts-nocheck 是精确词，且只在首条语句之前生效
+    const firstStatement = sf.statements[0]?.getStart(sf) ?? sf.text.length
     for (const r of commentRanges(sf)) {
-      // 只认 TS 实际生效的形态：指令位于注释某一行的行首（去掉 `//` `/*` `*` 与空白后）；句中提及不算
-      const m = /^(?:\/\/\/?|\/\*+|\*+)?\s*(@ts-(?:ignore|expect-error|nocheck))\b/m.exec(sf.text.slice(r.pos, r.end))
-      if (m) out.push({ file: relative(SRC, sf.fileName), line: sf.getLineAndCharacterOfPosition(r.pos).line + 1, kind: '类型检查抑制注释', text: m[1] })
+      const raw = sf.text.slice(r.pos, r.end)
+      let m: RegExpExecArray | null = null
+      if (r.kind === ts.SyntaxKind.SingleLineCommentTrivia) {
+        m = /^\/\/\/?\s*@(ts-expect-error|ts-ignore)/.exec(raw) ?? (r.pos < firstStatement ? /^\/\/\/?\s*@(ts-nocheck)\b/.exec(raw) : null)
+      } else {
+        m = /^(?:\/|\*)*\s*@(ts-expect-error|ts-ignore)/.exec(raw.slice(raw.lastIndexOf('\n') + 1))
+        if (!m && r.pos < firstStatement) m = /@(ts-nocheck)\b/.exec(raw)
+      }
+      if (m) out.push({ file: relative(SRC, sf.fileName), line: sf.getLineAndCharacterOfPosition(r.pos).line + 1, kind: '类型检查抑制注释', text: `@${m[1]}` })
     }
     const declaredTypeCarries = (node: ts.Node) => {
       const name = ts.getNameOfDeclaration(node as ts.Declaration)
@@ -549,7 +591,8 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
         const sig = checker.getResolvedSignature(node as ts.CallLikeExpression)
         const decl = sig?.getDeclaration()
         const declared = decl && checker.getSignatureFromDeclaration(decl)
-        if (sig && declared && sig !== declared && producesBrand(sig.getReturnType()) && !producesBrand(declared.getReturnType())) {
+        if (sig && declared && sig !== declared && producesBrand(sig.getReturnType()) && !producesBrand(declared.getReturnType()) &&
+          !brandFromInputs(node) && !isSoundLibGeneric(decl)) {
           at(node, '泛型实例化带出 brand')
         }
       }
@@ -579,7 +622,7 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
    * 一个文件要接触到这类类型，必须沿 import / re-export / import type / 动态 import 链传递地引用到它。
    * 所以只查它的**反向依赖闭包**（当前约 400 个文件）。
    */
-  function reverseClosure(p: ts.Program, rootFile: string): Set<string> | 'ALL' {
+  function reverseClosure(p: ts.Program, rootFile: string): Set<string> | { all: string[] } {
     const c = p.getTypeChecker()
     const importers = new Map<string, string[]>()
     const addEdge = (target: string, from: string) => {
@@ -606,20 +649,23 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
     for (const queue = [rootFile]; queue.length; ) {
       for (const f of importers.get(queue.pop()!) ?? []) if (!seen.has(f)) (seen.add(f), queue.push(f))
     }
-    // 闭包里若有全局增强（`declare global`）或全局脚本（非模块文件），brand 可能经全局名暴露给不 import 任何东西的文件，
+    // 闭包里若有全局增强（`declare global`）、模块增强（`declare module 'x'`）或全局脚本（非模块文件），
+    // brand 可能经全局名 / 被增强的模块暴露给不 import calendar-date 链上任何文件的消费者，
     // 反向闭包的前提失效 → 退回全量扫描
-    const leaksGlobally = [...seen].some((f) => {
+    const leaksGlobally = [...seen].filter((f) => {
       const sf = p.getSourceFile(f)
-      return !!sf && (!ts.isExternalModule(sf) || sf.statements.some((st) => ts.isModuleDeclaration(st) && !!(st.flags & ts.NodeFlags.GlobalAugmentation)))
+      // 全局脚本、`declare global`、字符串名模块增强（`declare module 'pkg'` 可把 brand 合并进第三方模块类型）
+      return !!sf && (!ts.isExternalModule(sf) || sf.statements.some((st) => ts.isModuleDeclaration(st) &&
+        (!!(st.flags & ts.NodeFlags.GlobalAugmentation) || ts.isStringLiteral(st.name))))
     })
-    return leaksGlobally ? 'ALL' : seen
+    return leaksGlobally.length ? { all: leaksGlobally } : seen
   }
 
   it('全 src 非测试源码里，能产出 CalendarDate 的只有 calendar-date.ts 那一个类型谓词', () => {
     const files = scanned(program, SRC)
     expect(files.length, '扫描范围异常缩小').toBeGreaterThan(500)
     const closure = reverseClosure(program, join(SRC, 'lib/calendar-date.ts'))
-    const checkedFiles = closure === 'ALL' ? files : files.filter((f) => closure.has(f.fileName))
+    const checkedFiles = closure instanceof Set ? files.filter((f) => closure.has(f.fileName)) : files
     expect(checkedFiles.map((f) => relative(SRC, f.fileName))).toEqual(expect.arrayContaining([
       'lib/data-center/params.ts', 'lib/data-center/context.ts', 'export-worker/registry.ts', 'lib/calendar-date.ts',
       'actions/data-center/sales.ts', 'app/(main)/(analytics)/data-center/_components/sales/sales-board.tsx',
@@ -632,23 +678,37 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
         throw new Error(`${relative(SRC, sf.fileName)}: ${(e as Error).message}`)
       }
     })
-    expect(offenders.map(({ file, kind, text }) => ({ file, kind, text })), JSON.stringify(offenders, null, 2)).toEqual([
+    const why = closure instanceof Set ? '' : `\n（已退回全量扫描，触发文件：${closure.all.map((f) => relative(SRC, f)).join(', ')}）`
+    expect(offenders.map(({ file, kind, text }) => ({ file, kind, text })), JSON.stringify(offenders, null, 2) + why).toEqual([
       { file: 'lib/calendar-date.ts', kind: '产出 brand 的类型谓词', text: 'value is CalendarDate' },
     ])
   }, 180_000)
 
-  it('自检：闭包里出现全局增强（declare global）时退回全量扫描', () => {
+  it('自检：闭包里出现全局增强 / 模块增强时退回全量扫描；三斜线引用进闭包', () => {
     const dir = mkdtempSync(join(tmpdir(), 'calendar-date-global-'))
     try {
       writeFileSync(join(dir, 'brand.ts'), `declare const b: unique symbol\nexport type CalendarDate = string & { readonly [b]: true }`)
       writeFileSync(join(dir, 'glob.d.ts'), `import type { CalendarDate } from './brand'\ndeclare global { type GlobalDate = CalendarDate }\nexport {}`)
       writeFileSync(join(dir, 'consumer.ts'), `declare const g: GlobalDate\nexport const x = g`)
       const p = ts.createProgram([join(dir, 'brand.ts'), join(dir, 'glob.d.ts'), join(dir, 'consumer.ts')], { strict: true, noEmit: true, skipLibCheck: true })
-      expect(reverseClosure(p, join(dir, 'brand.ts'))).toBe('ALL')
+      expect(reverseClosure(p, join(dir, 'brand.ts'))).toEqual({ all: [join(dir, 'glob.d.ts')] })
+
+      // 模块增强：增强文件 import brand，把 CalendarDate 合并进 './lib' 的接口；消费者只 import './lib'
+      writeFileSync(join(dir, 'lib.ts'), `export interface Opts { x?: number }`)
+      writeFileSync(join(dir, 'aug.ts'), `import type { CalendarDate } from './brand'\ndeclare module './lib' { interface Opts { d: CalendarDate } }\nexport {}`)
+      writeFileSync(join(dir, 'user.ts'), `import type { Opts } from './lib'\nexport const o = {} as Opts`)
+      const p2 = ts.createProgram([join(dir, 'brand.ts'), join(dir, 'lib.ts'), join(dir, 'aug.ts'), join(dir, 'user.ts')], { strict: true, noEmit: true, skipLibCheck: true })
+      expect(reverseClosure(p2, join(dir, 'brand.ts'))).toEqual({ all: [join(dir, 'aug.ts')] })
+
+      // 三斜线引用也是依赖边：只靠 `/// <reference path>` 接触 brand 的文件必须进闭包
+      writeFileSync(join(dir, 'ref.ts'), `/// <reference path="./brand.ts" />\nexport const r = 1`)
+      const p3 = ts.createProgram([join(dir, 'brand.ts'), join(dir, 'ref.ts')], { strict: true, noEmit: true, skipLibCheck: true })
+      const c3 = reverseClosure(p3, join(dir, 'brand.ts'))
+      expect(c3 instanceof Set ? [...c3].map((f) => relative(dir, f)).sort() : c3).toEqual(['brand.ts', 'ref.ts'])
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
-  })
+  }, 60_000)
 
   it('自检：各类逃逸写法（别名 / 派生 / 泛型铸造含别名与元素访问 / 洗白含中间对象 / 重载与环境声明 / 中性 re-export / 抑制注释）都能识别，正路不误报', () => {
     const dir = mkdtempSync(join(tmpdir(), 'calendar-date-guard-'))
@@ -663,6 +723,7 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
       'bad.ts': [
         `import { type CalendarDate as CD, type TR as Alias, use, ok } from './brand'`,
         `import { run } from './neutral'`,
+        `import { useState } from 'react'`,
         `type Derived = Parameters<typeof use>[0]`,
         `declare const s: string`,
         `declare const j: any`,
@@ -704,15 +765,34 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
         `export const pImpl: P = new Impl() // @impl-any`,
         `export const pLit: P = { get() { return JSON.parse('x') } } // @literal-any`,
         `declare class DC { d: CD } // @declare-class`,
+        `class SafeBox<T> { constructor(public v: T) {} get(): T { return this.v } }`,
+        `const identity = <T,>(v: T): T => v`,
+        `export const safe = ok(s) ? [new SafeBox(s), new SafeBox(s).get(), identity(s)] : [] // @safe-generic`,
+        `export const st8 = useState<Alias>({ preset: 'month' }) // @sound-lib`,
+        `// 文件中部的 @ts-nocheck 不生效`,
+        `export const mid = 1 // @ts-nocheck @mid-nocheck`,
+        `// @ts-ignorex`,
+        `export const sfx = use({ preset: 'custom', start: 5, end: 6 }) // @after-suffix`,
+        `/* @ts-ignore 在块注释非末行不生效`,
+        `   说明 */ export const blk = 1 // @block-nonlast`,
+        `/* 块注释末行才生效`,
+        `   @ts-ignore */`,
+        `export const blk2 = use({ preset: 'custom', start: 3, end: 4 }) // @block-last`,
         `export const good = ok(s) ? use({ preset: 'custom', start: s, end: s }) : use({ preset: 'month' }) // @good`,
       ].join('\n'),
     }
     for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text)
-    const p = ts.createProgram([join(dir, 'brand.ts'), join(dir, 'neutral.ts'), join(dir, 'decl.d.ts'), join(dir, 'bad.ts')], { strict: true, target: ts.ScriptTarget.ES2022, noEmit: true, skipLibCheck: true })
+    // 仿 react 类型包：验证白名单按「包 + 名字」放行
+    mkdirSync(join(dir, 'node_modules/react'), { recursive: true })
+    writeFileSync(join(dir, 'node_modules/react/package.json'), '{"name":"react","types":"index.d.ts"}')
+    writeFileSync(join(dir, 'node_modules/react/index.d.ts'), 'export declare function useState<S>(initial: S): [S, (v: S) => void]')
+    const p = ts.createProgram([join(dir, 'brand.ts'), join(dir, 'neutral.ts'), join(dir, 'decl.d.ts'), join(dir, 'bad.ts')], {
+      strict: true, target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext, moduleResolution: ts.ModuleResolutionKind.Bundler, noEmit: true, skipLibCheck: true,
+    })
     expect(p.getSemanticDiagnostics(p.getSourceFile(join(dir, 'bad.ts'))!).map((d: ts.Diagnostic) => ts.flattenDiagnosticMessageText(d.messageText, '\n'))).toEqual([])
     // 中性 re-export 也必须进反向闭包（守护的预筛环节）
     const closure = reverseClosure(p, join(dir, 'brand.ts'))
-    expect(closure === 'ALL' ? closure : [...closure].map((f) => relative(dir, f)).sort()).toEqual(['bad.ts', 'brand.ts', 'decl.d.ts', 'neutral.ts'])
+    expect(closure instanceof Set ? [...closure].map((f) => relative(dir, f)).sort() : closure).toEqual(['bad.ts', 'brand.ts', 'decl.d.ts', 'neutral.ts'])
     // .d.ts 进入 scanned（守护的扫描集）
     expect(scanned(p, dir).map((f) => relative(dir, f.fileName))).toContain('decl.d.ts')
     const saved = checker
@@ -721,17 +801,59 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
       const found = escapes(p.getSourceFile(join(dir, 'bad.ts'))!)
       const text = files['bad.ts'].split('\n')
       const lineOf = (mark: string) => text.findIndex((l) => l.includes(`// @${mark}`)) + 1
-      const marks = (kind: string) => found.filter((e) => e.kind === kind).map((e) => text[e.line - 1].match(/\/\/ @([\w-]+)/)?.[1] ?? `L${e.line}`)
-      expect(marks('断言成携带 brand 的类型')).toEqual(['alias-assert', 'alias-assert2', 'derived', 'assert-factory', 'returntype', 'mapped'])
-      expect(new Set(marks('宽松断言落在要求 brand 的上下文'))).toEqual(new Set(['derived', 'loose', 'reexport']))
-      expect(new Set(marks('any / never 值落在要求 brand 的上下文'))).toEqual(new Set(['loose', 'any-arg', 'never-flow', 'reexport', 'via-object', 'impl-any', 'literal-any']))
-      expect(marks('产出 brand 的类型谓词')).toEqual(['predicate'])
-      expect(new Set(marks('泛型实例化带出 brand'))).toEqual(new Set(['generic', 'generic-alias', 'generic-elem', 'generic-arrow', 'class-generic', 'class-generic2']))
-      expect(found.filter((e) => e.kind === '类型检查抑制注释').map((e) => e.line)).toEqual([lineOf('after-suppress') - 1])
-      expect(marks('断言剥掉 brand 要求')).toEqual(['strip'])
-      expect(new Set(marks('无实现检查的声明携带 brand'))).toEqual(new Set(['overload', 'ambient', 'definite', 'ambient-factory', 'namespace', 'declare-class']))
-      // 字符串 / JSDoc 句中提及的同形文本、正路都不误报
-      expect(found.filter((e) => [lineOf('string'), lineOf('doc-mention'), lineOf('good')].includes(e.line))).toEqual([])
+      const markOf = (e: Escape) => text[e.line - 1].match(/\/\/ @([\w-]+)/)?.[1] ?? `L${e.line}`
+      // 精确多重集（种类|标记 → 次数）：同一行多个逃逸点任一失效都会让计数变化
+      // 注：`class-generic2` 只命中内层 `new Box<CD>()`——外层 `.get()` 的接收者已带 brand，属传递不算产出；
+      //     `loose` / `never-flow` / `reexport` / `literal-any` 行的对象字面量整体另计一次（镜像判出其中含 any/never）
+      const tally = found.filter((e) => e.kind !== '类型检查抑制注释').map((e) => `${e.kind}|${markOf(e)}`).sort()
+      expect(tally).toEqual([
+        "any / never 值落在要求 brand 的上下文|any-arg",
+        "any / never 值落在要求 brand 的上下文|impl-any",
+        "any / never 值落在要求 brand 的上下文|literal-any",
+        "any / never 值落在要求 brand 的上下文|literal-any",
+        "any / never 值落在要求 brand 的上下文|loose",
+        "any / never 值落在要求 brand 的上下文|never-flow",
+        "any / never 值落在要求 brand 的上下文|never-flow",
+        "any / never 值落在要求 brand 的上下文|never-flow",
+        "any / never 值落在要求 brand 的上下文|reexport",
+        "any / never 值落在要求 brand 的上下文|via-object",
+        "产出 brand 的类型谓词|predicate",
+        "宽松断言落在要求 brand 的上下文|derived",
+        "宽松断言落在要求 brand 的上下文|loose",
+        "宽松断言落在要求 brand 的上下文|loose",
+        "宽松断言落在要求 brand 的上下文|reexport",
+        "宽松断言落在要求 brand 的上下文|reexport",
+        "断言剥掉 brand 要求|strip",
+        "断言成携带 brand 的类型|alias-assert",
+        "断言成携带 brand 的类型|alias-assert2",
+        "断言成携带 brand 的类型|assert-factory",
+        "断言成携带 brand 的类型|derived",
+        "断言成携带 brand 的类型|mapped",
+        "断言成携带 brand 的类型|returntype",
+        "无实现检查的声明携带 brand|ambient",
+        "无实现检查的声明携带 brand|ambient-factory",
+        "无实现检查的声明携带 brand|declare-class",
+        "无实现检查的声明携带 brand|declare-class",
+        "无实现检查的声明携带 brand|definite",
+        "无实现检查的声明携带 brand|namespace",
+        "无实现检查的声明携带 brand|overload",
+        "泛型实例化带出 brand|class-generic",
+        "泛型实例化带出 brand|class-generic2",
+        "泛型实例化带出 brand|generic",
+        "泛型实例化带出 brand|generic",
+        "泛型实例化带出 brand|generic-alias",
+        "泛型实例化带出 brand|generic-alias",
+        "泛型实例化带出 brand|generic-arrow",
+        "泛型实例化带出 brand|generic-arrow",
+        "泛型实例化带出 brand|generic-elem",
+        "泛型实例化带出 brand|generic-elem"
+      ])
+      // 抑制注释：`//` 行首的 @ts-expect-error、块注释末行的 @ts-ignore；文件中部 @ts-nocheck、块注释非末行不算
+      expect(found.filter((e) => e.kind === '类型检查抑制注释').map((e) => e.line)).toEqual([
+        lineOf('after-suppress') - 1, lineOf('after-suffix') - 1, lineOf('block-last') - 2,
+      ])
+      // 安全泛型传递、字符串 / JSDoc 句中提及、正路都不误报
+      expect(found.filter((e) => ['safe-generic', 'sound-lib', 'string', 'doc-mention', 'good', 'mid-nocheck', 'block-nonlast'].some((m) => e.line === lineOf(m)))).toEqual([])
       // .d.ts 里的值声明
       const inDecl = escapes(p.getSourceFile(join(dir, 'decl.d.ts'))!)
       expect(inDecl.map((e) => e.kind)).toEqual(['无实现检查的声明携带 brand'])
@@ -739,5 +861,5 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
       checker = saved
       rmSync(dir, { recursive: true, force: true })
     }
-  })
+  }, 60_000)
 })
