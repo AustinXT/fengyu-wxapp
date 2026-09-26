@@ -26,7 +26,8 @@
  * 已知取舍（均为误红方向，fail-closed）：模板字面量按原文比较，等价转义改写（\u0041 → A）也算不等；
  * 用户代码若恰好写出与打包样板同形的语句（顶层零参 init_x() 调用、var import_x = __toESM(…)）会被当样板处理；
  * 源码同时存在 a 与 a1 这类名字时，bun 的后缀改名可能与「原名 + 数字」规则交叉配对而误红；
- * 内部模块的默认导入 / 命名空间导入、带来源的再导出尚未建模，遇到时直接抛错说明。only 模式只比指定声明，不核对样板序列。
+ * 尚未建模、遇到直接抛错说明的形态：内部模块的默认导入 / 命名空间导入、带来源的再导出、export default、
+ * 动态 import()、slug 相同的两个第三方包。only 模式只比指定声明，不核对样板序列。
  * `void 0` 与 `undefined` 未做归一（当前 bun 产物不使用 void 0；若将来出现会误红而不是漏报）。
  * 不守护模块的导出面：只改导出名单（增删 export { … }）而实现不变时检测不到 —— 产物的导出信息在 bundle
  * 尾部的 export 语句里，不在模块区段内，属架构性留白；导出名单的正确性由 tsc 与调用方的类型检查保证。
@@ -187,8 +188,11 @@ class Comparator {
   importSegment(specifier: string): { names: Set<string>; inits: Set<string> } | null {
     if (!this.segmentCache.has(specifier)) {
       const segment = this.distSegmentOfImport(specifier)
-      if (segment == null || segment.trim() === '') {
+      if (segment == null) {
         this.segmentCache.set(specifier, null)
+      } else if (segment.trim() === '') {
+        // 区段存在但为空（空模块在产物里无痕）：没有任何声明、也没有 init
+        this.segmentCache.set(specifier, { names: new Set(), inits: new Set() })
       } else {
         const all = topLevelDeclaredNames(segment)
         const inits = new Set([...all].filter((name) => /^init_/.test(name)))
@@ -535,6 +539,11 @@ export function compareModuleRuntime(sides: ModuleSides): string[] {
     if (ts.isExportDeclaration(statement) && statement.moduleSpecifier) {
       throw new Error(`暂不支持带来源的再导出（${statement.getText()}）：请先扩展比较器的依赖 / init 核对`)
     }
+    // export default（表达式 / 函数 / 类）：导出登记在 bundle 尾部，模块区段里没有对位形态，尚未建模
+    const isDefaultExport = ts.isExportAssignment(statement)
+      || ((ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement))
+        && !!statement.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword))
+    if (isDefaultExport) throw new Error('暂不支持 export default：请改用具名导出，或先扩展比较器')
     if (!ts.isImportDeclaration(statement) || !statement.importClause) continue
     const specifier = (statement.moduleSpecifier as ts.StringLiteral).text
     if (isBareSpecifier(specifier)) continue
@@ -543,6 +552,21 @@ export function compareModuleRuntime(sides: ModuleSides): string[] {
     if (clause.namedBindings && ts.isNamespaceImport(clause.namedBindings)) {
       throw new Error(`暂不支持内部模块的命名空间导入（* as ${clause.namedBindings.name.text} from ${specifier}）：请改用具名导入，或先扩展比较器`)
     }
+  }
+
+  // 动态 import()：bun 会改写成 Promise / require 形态，尚未建模
+  const findImportCall = (node: ts.Node): boolean =>
+    (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) || !!ts.forEachChild(node, findImportCall)
+  if (findImportCall(src.sourceFile)) throw new Error('暂不支持动态 import()：请先扩展比较器')
+  // 两个不同包的 slug 相同（@scope/pkg 与 scope_pkg）时命名空间声明可能交叉配对，尚未建模
+  const slugOwners = new Map<string, string>()
+  for (const statement of src.sourceFile.statements) {
+    if (!ts.isImportDeclaration(statement)) continue
+    const specifier = (statement.moduleSpecifier as ts.StringLiteral).text
+    if (!isBareSpecifier(specifier)) continue
+    const owner = slugOwners.get(packageSlug(specifier))
+    if (owner && owner !== specifier) throw new Error(`暂不支持 slug 相同的两个包（${owner} / ${specifier}）：命名空间声明无法无歧义配对`)
+    slugOwners.set(packageSlug(specifier), specifier)
   }
 
   const distNamespaces = new Map<string, string>()
@@ -596,7 +620,7 @@ export function compareModuleRuntime(sides: ModuleSides): string[] {
     }
     const pick = (statements: readonly ts.Statement[], allowSuffix: boolean, side: string) => sides.only!.map((name) => {
       const found = statements.filter((statement) => declares(statement, name, allowSuffix))
-      if (found.length !== 1) throw new Error(`${side}里 ${name} 的顶层声明找到 ${found.length} 处（应恰为 1；only 只支持 var / let / const / function / class 声明）`)
+      if (found.length !== 1) throw new Error(`${side}里 ${name} 的顶层声明找到 ${found.length} 处（应恰为 1；only 只支持 var / let / const / function / class 声明，不含解构声明）`)
       return found[0]
     })
     srcStatements = pick(srcStatements, false, '源码')

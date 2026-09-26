@@ -12,6 +12,7 @@ const SEGMENTS: Record<string, string> = {
   './other': 'function X2() {}',
   './fx': 'var init_fx = __esm(() => {});',
   './destructured': 'var { alpha, beta: renamed } = source, [gamma] = list;',
+  './empty': '',
 }
 const compare = (sourceCode: string, distCode: string) => compareModuleRuntime({
   sourceCode,
@@ -119,6 +120,11 @@ describe('dist-equivalence：bun 的合法改写判为等价', () => {
 
   it('顶层 const / let ≡ var 无条件等价（bun 固定转换，TDZ 语义差异不在守护的威胁模型内，见比较器文件头）', () => {
     expect(compare('export function f() { return A }\nconst probe = f()\nconst A = 1', 'function f() { return A; }\nvar probe = f();\nvar A = 1;')).toEqual([])
+  })
+
+  it('空模块（区段存在但为空）的副作用导入：没有 init、也不报「找不到区段」', () => {
+    expect(compare('import "./empty"\nexport const a = 1', 'var a = 1;')).toEqual([])
+    expect(compare('import "./missing"\nexport const a = 1', 'var a = 1;').join('\n')).toMatch(/找不到 \.\/missing 在产物里的模块区段/)
   })
 
   it('被导入模块以解构形态声明导出名；纯转导出 export { … } 两侧都不参与比较', () => {
@@ -318,6 +324,10 @@ describe('dist-equivalence：真实漂移判为不等', () => {
     // 带来源的再导出会加载依赖，不能当纯转导出滤掉
     expect(() => compare('export { helper } from "./helpers"\nexport const a = 1', 'var a = 1;')).toThrow(/暂不支持带来源的再导出/)
     expect(() => compare('export * from "./helpers"\nexport const a = 1', 'var a = 1;')).toThrow(/暂不支持带来源的再导出/)
+    expect(() => compare('export default function f() { return 1 }', 'function f() { return 1; }')).toThrow(/暂不支持 export default/)
+    expect(() => compare('const a = 1\nexport default a', 'var a = 1;')).toThrow(/暂不支持 export default/)
+    expect(() => compare('export async function f() { return import("./helpers") }', 'async function f() { return Promise.resolve(); }')).toThrow(/暂不支持动态 import/)
+    expect(() => compare('import { a } from "@scope/pkg"\nimport { b } from "scope_pkg"\nexport const q = [a, b]', 'var q = 1;')).toThrow(/暂不支持 slug 相同的两个包/)
     // 产物侧出现带来源的 export … from（bun 不会这样产出）同样不能被滤掉
     differs('export const a = 1', 'export { x } from "./dep";\nvar a = 1;')
   })
