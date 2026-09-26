@@ -122,8 +122,8 @@ describe('dist-equivalence：bun 的合法改写判为等价', () => {
     expect(compare('export function f() { return A }\nconst probe = f()\nconst A = 1', 'function f() { return A; }\nvar probe = f();\nvar A = 1;')).toEqual([])
   })
 
-  it('空模块（区段存在但为空）的副作用导入：没有 init、也不报「找不到区段」', () => {
-    expect(compare('import "./empty"\nexport const a = 1', 'var a = 1;')).toEqual([])
+  it('空区段与缺失区段一律按「找不到区段」fail-closed（调用方在模块缺失时也可能给空串）', () => {
+    expect(compare('import "./empty"\nexport const a = 1', 'var a = 1;').join('\n')).toMatch(/找不到 \.\/empty 在产物里的模块区段/)
     expect(compare('import "./missing"\nexport const a = 1', 'var a = 1;').join('\n')).toMatch(/找不到 \.\/missing 在产物里的模块区段/)
   })
 

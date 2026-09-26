@@ -27,7 +27,8 @@
  * 用户代码若恰好写出与打包样板同形的语句（顶层零参 init_x() 调用、var import_x = __toESM(…)）会被当样板处理；
  * 源码同时存在 a 与 a1 这类名字时，bun 的后缀改名可能与「原名 + 数字」规则交叉配对而误红；
  * 尚未建模、遇到直接抛错说明的形态：内部模块的默认导入 / 命名空间导入、带来源的再导出、export default、
- * 动态 import()、slug 相同的两个第三方包。only 模式只比指定声明，不核对样板序列。
+ * 动态 import()、slug 相同的两个第三方包。
+ * 被导入模块在产物里的区段为空（真正的空模块）也按「找不到区段」报错 —— 与「区段缺失」无法可靠区分，宁可误红。only 模式只比指定声明，不核对样板序列。
  * `void 0` 与 `undefined` 未做归一（当前 bun 产物不使用 void 0；若将来出现会误红而不是漏报）。
  * 不守护模块的导出面：只改导出名单（增删 export { … }）而实现不变时检测不到 —— 产物的导出信息在 bundle
  * 尾部的 export 语句里，不在模块区段内，属架构性留白；导出名单的正确性由 tsc 与调用方的类型检查保证。
@@ -188,11 +189,10 @@ class Comparator {
   importSegment(specifier: string): { names: Set<string>; inits: Set<string> } | null {
     if (!this.segmentCache.has(specifier)) {
       const segment = this.distSegmentOfImport(specifier)
-      if (segment == null) {
+      // 空区段与缺失一律按「找不到」处理（fail-closed）：调用方在产物完全没有该模块时也可能给出空串，
+      // 若把空串当作「空模块」放行，源码新增的依赖在旧产物里缺失就会被误判等价
+      if (segment == null || segment.trim() === '') {
         this.segmentCache.set(specifier, null)
-      } else if (segment.trim() === '') {
-        // 区段存在但为空（空模块在产物里无痕）：没有任何声明、也没有 init
-        this.segmentCache.set(specifier, { names: new Set(), inits: new Set() })
       } else {
         const all = topLevelDeclaredNames(segment)
         const inits = new Set([...all].filter((name) => /^init_/.test(name)))

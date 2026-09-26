@@ -402,7 +402,10 @@ describe('dist/export-worker.mjs 新鲜度 · 进出明细导出接线（#360）
       distCode: segment(file),
       distSegmentOfImport: (specifier) => {
         const target = resolveImportFile(file, specifier)
-        return target ? segment(target) : null
+        if (!target) return null
+        // 找不到模块头 / 区段为空都返回 null，交给比较器按「找不到区段」fail-closed
+        const lines = moduleSegments(dist, target, true)
+        return lines.some((line) => line.trim() !== '') ? lines.join('\n') : null
       },
       only,
     })
@@ -421,6 +424,24 @@ describe('dist/export-worker.mjs 新鲜度 · 进出明细导出接线（#360）
       equivalenceIssues(file, ['EXPORT_JOB_TYPES', 'EXPORT_PERMISSIONS_BY_TYPE', 'EXPORT_LABEL_BY_TYPE']),
       `产物里的导出类型登记与源码不一致${REBUILD_HINT}`,
     ).toEqual([])
+  })
+
+  it('真实调用链：源码新增一个产物里根本没有的内部依赖（旧产物），必须判不等而不是当空模块放行', () => {
+    const file = 'src/lib/inventory/movements.ts'
+    const dist = fs.readFileSync(DIST, 'utf-8')
+    // src/lib/menu.ts 不在 export-worker bundle 里：模拟「源码新增依赖、产物未重建」
+    expect(moduleSegments(dist, 'src/lib/menu.ts', true)).toEqual([])
+    const issues = compareModuleRuntime({
+      sourceCode: `import '@/lib/menu'\n${fs.readFileSync(path.join(ADMIN_ROOT, file), 'utf-8')}`,
+      distCode: moduleSegments(dist, file, true).join('\n'),
+      distSegmentOfImport: (specifier) => {
+        const target = resolveImportFile(file, specifier)
+        if (!target) return null
+        const lines = moduleSegments(dist, target, true)
+        return lines.some((line) => line.trim() !== '') ? lines.join('\n') : null
+      },
+    })
+    expect(issues.join('\n')).toMatch(/找不到 @\/lib\/menu 在产物里的模块区段/)
   })
 
   it('registry.ts 的 inventoryMovementColumns 与分发函数 createExportContent（含 case 分支体接线）与产物语义等价', () => {
