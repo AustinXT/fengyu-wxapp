@@ -410,28 +410,71 @@ describe('dist/export-worker.mjs 新鲜度 · 进出明细导出接线（#360）
   ]
   /**
    * bun 对 JS 行的改写是固定几类：import 别名前缀、局部变量加数字后缀、去类型标注、单双引号、行尾 `;` `,`、
-   * 把 `if (…) x` 拆成两行。归一掉这些再比对，就能把「单行 sql`` 条件」与「WHERE ${…} 接线」也纳入闭集
+   * 把 `if (…) x` 拆成两行（后者由 sqlBuilders 拼回，谓词保留参与比对）。归一掉这些再比对，就能把「单行 sql`` 条件」与「WHERE ${…} 接线」也纳入闭集
    * （codex round-2 P2：源码改成 `WHERE TRUE` 而不重建时，只比多行模板正文的探针会照绿）。
    */
   const normalizeJs = (line: string) => line.trim()
     .replace(/import_drizzle_orm\d+\./g, '')
     .replace(/\b(conditions)\d+\b/g, '$1')
     .replace(/: SQL\[\]/g, '')
-    .replace(/^if \([^)]*\) (?=conditions\.push)/, '')
     .replace(/'/g, '"')
     .replace(/[;,]$/, '')
-  const sqlWiring = (lines: string[]) => lines
-    .map(normalizeJs)
-    .filter((line) => line.includes('sql`') || line.startsWith('WHERE ${') || line.startsWith('return sql'))
-    .sort()
+  /**
+   * 取 inventoryMovementWhereSql → inventoryMovementCountSql 三个 SQL 构造函数的**有序**函数体做整体比对：
+   * `if` 谓词与它控制的 `conditions.push(...)` 一起比（codex round-3 P2：只比 push 行时，源码把
+   * `if (filters.startDate)` 改成 `if (filters.endDate)` 而不重建，照样全绿）。
+   * 归一：删注释 / 空行 / `type` 声明；函数签名折成 `function <名>`（去掉 TS 参数与返回类型）；
+   * bun 把 `if (…) x` 拆成两行，这里把无 `{` 的 `if (…)` 行与下一行拼回去。
+   */
+  /** 纯 `if (…)` 头：条件括号在行尾恰好闭合、后面没有语句（bun 拆出来的那半行） */
+  const isBareIfHeader = (line: string) => {
+    if (!line.startsWith('if (')) return false
+    let depth = 0
+    for (let index = 3; index < line.length; index += 1) {
+      if (line[index] === '(') depth += 1
+      if (line[index] === ')') depth -= 1
+      if (depth === 0) return index === line.length - 1
+    }
+    return false
+  }
+  const sqlBuilders = (lines: string[]) => {
+    const start = lines.findIndex((line) => /function inventoryMovementWhereSql\(/.test(line))
+    const countAt = lines.findIndex((line, index) => index > start && /function inventoryMovementCountSql\(/.test(line))
+    const end = lines.findIndex((line, index) => index > countAt && /^}/.test(line))
+    if (start < 0 || countAt < 0 || end < 0) return []
+    const out: string[] = []
+    let inSignature = false
+    for (const raw of lines.slice(start, end + 1)) {
+      const line = normalizeJs(raw).replace(/^export /, '')
+      if (!line || line.startsWith('//') || line.startsWith('type ')) continue
+      const fn = /^function (\w+)\(/.exec(line)
+      if (fn) {
+        out.push(`function ${fn[1]}`)
+        inSignature = !line.endsWith('{')
+        continue
+      }
+      if (inSignature) {
+        if (line.endsWith('{')) inSignature = false
+        continue
+      }
+      const previous = out[out.length - 1]
+      if (previous && isBareIfHeader(previous)) {
+        out[out.length - 1] = `${previous} ${line}`
+        continue
+      }
+      out.push(line)
+    }
+    return out
+  }
 
-  it('movements.ts 的 sql`` 条件与 WHERE 接线逐行等于源码（归一 bun 改写后）', () => {
+  it('movements.ts 的 SQL 构造函数（条件谓词 + sql`` + WHERE 接线）逐行有序等于源码（归一 bun 改写后）', () => {
     const file = 'src/lib/inventory/movements.ts'
-    const src = sqlWiring(fs.readFileSync(path.join(ADMIN_ROOT, file), 'utf-8').split('\n'))
-    const dist = sqlWiring(moduleSegments(fs.readFileSync(DIST, 'utf-8'), file))
-    // fail-closed：主体 / 商品编号 / 批号 / 两条日界 / 两条游标 / 排序方向 / 两个 WHERE / 三个 return
-    expect(src.length, `源码里提取到的 sql 接线行数异常，归一规则可能失配`).toBeGreaterThanOrEqual(13)
-    expect(dist, `产物 // ${file} 区段的 sql 接线与源码不一致${REBUILD_HINT}`).toEqual(src)
+    const src = sqlBuilders(fs.readFileSync(path.join(ADMIN_ROOT, file), 'utf-8').split('\n'))
+    const dist = sqlBuilders(moduleSegments(fs.readFileSync(DIST, 'utf-8'), file))
+    // fail-closed：三个函数体至少包含全部条件、投影与两条 WHERE 接线
+    expect(src.length, '源码里提取到的 SQL 构造函数行数异常，归一规则可能失配').toBeGreaterThanOrEqual(60)
+    expect(src.filter((line) => line.startsWith('if (')).length, '源码条件谓词数异常').toBe(6)
+    expect(dist, `产物 // ${file} 区段的 SQL 构造函数与源码不一致${REBUILD_HINT}`).toEqual(src)
   })
 
   it('registry.ts 的 inventoryMovementColumns 有序列定义逐行等于源码（归一 bun 改写后）', () => {

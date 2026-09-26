@@ -233,6 +233,17 @@ describe('进出明细取数 SQL（#360）', () => {
     expect(new Set([...batchWhere.matchAll(/\b([a-z_]+)\.[a-z_]+/g)].map((match) => match[1]))).toEqual(new Set(['m', 'lot']))
   })
 
+  it('只填一端日期：各自只生成对应一侧的边界（谓词不串）', () => {
+    const onlyStart = compile(inventoryMovementWhereSql(filters({ locationId: 'S1', batchNo: 'B-1', startDate: '2026-09-01' })))
+    expect(onlyStart.sql).toMatch(/m\.created_at >= /)
+    expect(onlyStart.sql).not.toMatch(/m\.created_at < /)
+    expect(onlyStart.params).toContain('2026-09-01')
+    const onlyEnd = compile(inventoryMovementWhereSql(filters({ locationId: 'S1', batchNo: 'B-1', endDate: '2026-09-30' })))
+    expect(onlyEnd.sql).toMatch(/m\.created_at < /)
+    expect(onlyEnd.sql).not.toMatch(/m\.created_at >= /)
+    expect(onlyEnd.params).toContain('2026-09-30')
+  })
+
   it('计数与列表共用同一 where（导出行数 = 页面总数的前提）', () => {
     const where = (query: SQL) => compile(query).sql.replace(/\s+/g, ' ').match(/WHERE (m\.location_id.*?)( ORDER BY|$)/)?.[1]
     const f = filters({ locationId: 'S1', skuCode: 'P-01', startDate: '2026-09-01' })
