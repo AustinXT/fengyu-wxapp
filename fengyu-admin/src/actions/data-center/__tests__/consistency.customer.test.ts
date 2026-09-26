@@ -2164,9 +2164,17 @@ describe('客量板块两端口径一致性守护', () => {
       expect([i1, i2, i3].every((i) => i > 0)).toBe(true)
       expect(i1).toBeLessThan(i2)
       expect(i2).toBeLessThan(i3)
-      // 相邻：newmem 与 newmem_spend 之间不得再出现别的 `xxx AS (`
-      const between = bd.slice(i1 + 'newmem AS ('.length, i2)
-      expect(between.match(/\b[a-z_]+ AS \(/g), 'newmem 与 newmem_spend 之间插了新 CTE，切片锚点失效').toBeNull()
+      // 相邻：**两段间隙都要查**（codex round-1 P3：原先只查了第一处，
+      // 在 newmem_spend 与 traffic_cust 之间插 CTE 时这条名叫「三个 CTE 相邻」的断言照样绿）
+      for (const [a, aLen, b, label] of [
+        [i1, 'newmem AS ('.length, i2, 'newmem → newmem_spend'],
+        [i2, 'newmem_spend AS ('.length, i3, 'newmem_spend → traffic_cust'],
+      ] as const) {
+        expect(
+          bd.slice(a + aLen, b).match(/\b[a-z_]+ AS \(/g),
+          `${label} 之间插了新 CTE，切片锚点失效`,
+        ).toBeNull()
+      }
     })
 
     it('staff：分子与分母用同一个 scope 生产者和同一个别名', () => {
@@ -2192,7 +2200,11 @@ describe('客量板块两端口径一致性守护', () => {
       for (const [label, body] of [['分母', denomFn], ['分子', numerFn]] as const) {
         expect(body.match(/build[A-Za-z]+Scope\(/g), `staff ${label} 里的 scope 生产者应恰好 1 个`).toHaveLength(1)
         expect(body, `staff ${label} 的 WHERE 应直接用 sc.sql`).toContain('WHERE ${sc.sql}')
-        expect(body, `staff ${label} 的 params 应直接用 sc.params`).toContain('sc.params')
+        // ⚠ 光 `toContain('sc.params')` 不够：`pg.query(sql, sc.params.map(() => 'store-002'))`
+        // 会让 SQL 文本、生产者数量、别名、WHERE 落点、SQL 快照、staff 形态测试**全部不变**，
+        // 而绑定值指向另一家门店 ⇒ 分母算 001、分子算 002，客单价直接错（codex round-1 P2）。
+        // 这里钉住它就是 pg.query 的**第二实参本身**（归一后模板反引号紧跟 `, sc.params, )`）。
+        expect(body, `staff ${label} 的 params 应是 pg.query 的第二实参本身`).toContain('`, sc.params, )')
       }
     })
 
