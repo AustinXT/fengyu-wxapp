@@ -293,6 +293,11 @@ describe('dist-equivalence：真实漂移判为不等', () => {
   it('内部模块的默认导入 / 命名空间导入尚未建模：明确抛错而不是报误导性的不等', () => {
     expect(() => compare('import x from "./helpers"\nexport const a = x', 'var a = helper;')).toThrow(/暂不支持内部模块的默认导入/)
     expect(() => compare('import * as h from "./helpers"\nexport const a = h.helper', 'var a = helper;')).toThrow(/暂不支持内部模块的命名空间导入/)
+    // 带来源的再导出会加载依赖，不能当纯转导出滤掉
+    expect(() => compare('export { helper } from "./helpers"\nexport const a = 1', 'var a = 1;')).toThrow(/暂不支持带来源的再导出/)
+    expect(() => compare('export * from "./helpers"\nexport const a = 1', 'var a = 1;')).toThrow(/暂不支持带来源的再导出/)
+    // 产物侧出现带来源的 export … from（bun 不会这样产出）同样不能被滤掉
+    differs('export const a = 1', 'export { x } from "./dep";\nvar a = 1;')
   })
 
   it('两侧都提取不到运行时语句时抛错，而不是判等价', () => {

@@ -524,8 +524,12 @@ export function compareModuleRuntime(sides: ModuleSides): string[] {
   const src = bind('source.js', sides.sourceCode, true)
   const dist = bind('dist.js', sides.distCode, false)
 
-  // 内部模块的默认导入 / 命名空间导入在 bun 产物里的形态比较器尚未建模：一出现就明确抛错（不论是否被比较到）
+  // 内部模块的默认导入 / 命名空间导入、带来源的再导出（export … from）在 bun 产物里的形态比较器尚未建模：
+  // 一出现就明确抛错（不论是否被比较到）。再导出会加载依赖、可能产生 init_dep()，不能当纯转导出滤掉
   for (const statement of src.sourceFile.statements) {
+    if (ts.isExportDeclaration(statement) && statement.moduleSpecifier) {
+      throw new Error(`暂不支持带来源的再导出（${statement.getText()}）：请先扩展比较器的依赖 / init 核对`)
+    }
     if (!ts.isImportDeclaration(statement) || !statement.importClause) continue
     const specifier = (statement.moduleSpecifier as ts.StringLiteral).text
     if (isBareSpecifier(specifier)) continue
@@ -550,16 +554,17 @@ export function compareModuleRuntime(sides: ModuleSides): string[] {
   }
   const comparator = new Comparator(src, dist, sides.distSegmentOfImport, distNamespaces)
 
-  // 两侧对称过滤：import、纯转导出 export { … }（无运行时逻辑）、序言指令、打包样板；
+  // 两侧对称过滤：import、无来源的本地转导出 export { … }（无运行时逻辑；带来源的再导出已在上面抛错）、序言指令、打包样板；
   // export default 表达式（ExportAssignment）含运行时逻辑，保留比较
   const srcDirectives = prologueDirectives(src.sourceFile.statements, (statement) => ts.isImportDeclaration(statement))
   const distBoilerplate = (statement: ts.Statement) => ts.isImportDeclaration(statement)
     || !!initCallName(statement) || !!namespaceDeclaration(statement)
   const distDirectives = prologueDirectives(dist.sourceFile.statements, distBoilerplate)
+  const isLocalReexport = (statement: ts.Statement) => ts.isExportDeclaration(statement) && !statement.moduleSpecifier
   let srcStatements = src.sourceFile.statements
-    .filter((statement) => !ts.isImportDeclaration(statement) && !ts.isExportDeclaration(statement) && !srcDirectives.has(statement))
+    .filter((statement) => !ts.isImportDeclaration(statement) && !isLocalReexport(statement) && !srcDirectives.has(statement))
   let distStatements = dist.sourceFile.statements
-    .filter((statement) => !ts.isExportDeclaration(statement) && !distDirectives.has(statement) && !distBoilerplate(statement))
+    .filter((statement) => !isLocalReexport(statement) && !distDirectives.has(statement) && !distBoilerplate(statement))
 
   // 产物里不应残留任何内部模块的 import 或带绑定的 import（bun 会把内部模块降为 init_x()、第三方包改成 __toESM）；
   // 残留即不等 —— 不论是否传了 only，都要核对（它们在下面会被过滤出比较范围，不能静默放过）
