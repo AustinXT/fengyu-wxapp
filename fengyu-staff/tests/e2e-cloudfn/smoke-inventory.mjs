@@ -139,6 +139,7 @@ async function createInventoryFixture() {
 
 async function main() {
   rec('[smoke-inventory] start')
+  await purgePrivateInventoryLedger()
   await cleanupTestData(NS)
   await ensureTestStore()
   await createTestStaff()
@@ -405,11 +406,45 @@ async function stocktakeFlow(errors) {
  * 会写 append-only 的 inventory_movements，共享库上删不掉，所以只在点名私有库时跑。
  * 同时是 ensureInventoryLotFromSku 列序（#358 修的 42804）在真 PG 上的唯一覆盖。
  */
+let ranPrivateLedgerFlow = false
+
+/**
+ * 仅点名私有库：在 session_replication_role=replica 下删掉本命名空间的库存流水与单据血缘
+ * （流水 append-only 触发器、血缘守卫在共享库上删不掉）。之后 cleanupTestData 照常删单据 / 批次。
+ * 共享库上直接返回，绝不关触发器。
+ */
+async function purgePrivateInventoryLedger() {
+  if (!(await isPrivateSeedRun())) return
+  const client = await getPool().connect()
+  try {
+    await client.query('BEGIN')
+    await client.query("SET LOCAL session_replication_role = 'replica'")
+    const nsDocs = `SELECT id FROM inventory_docs
+                     WHERE id LIKE $1 OR source_org_node_id LIKE $1 OR target_org_node_id LIKE $1 OR created_by LIKE $1`
+    await client.query(
+      `DELETE FROM inventory_movements
+        WHERE location_id LIKE $1 OR sku_id LIKE $1 OR doc_id IN (${nsDocs})`,
+      [`${NS}%`],
+    )
+    await client.query(
+      `DELETE FROM inventory_doc_links WHERE from_doc_id IN (${nsDocs}) OR to_doc_id IN (${nsDocs})`,
+      [`${NS}%`],
+    )
+    await client.query('COMMIT')
+  } catch (error) {
+    await client.query('ROLLBACK')
+    throw error
+  } finally {
+    client.release()
+  }
+}
+
 async function receiveRemainderFlow(errors) {
   if (!(await isPrivateSeedRun())) {
     rec('  · 未设 SMOKE_INVENTORY_SEED_STOCK=<私有库名>：跳过确认收货剩余量（会写删不掉的流水）')
     return
   }
+  ranPrivateLedgerFlow = true
   const before = errors.length
   const fphId = `${NS}_INV_FPH_358`
   const oldInboundId = `${NS}_INV_YRK_358`
@@ -489,7 +524,18 @@ try {
 } catch (error) {
   console.error('EXCEPTION:', error.message)
 } finally {
-  try { await cleanupTestData(NS) } catch {}
+  // 私有库跑法写过 append-only 的库存流水：先在点名私有库上受控清掉，再走常规清理；
+  // 清理失败不能报 PASS，否则下次在同一库上重跑会卡在开头的清理（#358 codex R1）
+  try {
+    await purgePrivateInventoryLedger()
+    await cleanupTestData(NS)
+  } catch (error) {
+    if (ranPrivateLedgerFlow) {
+      console.error(`私有库清理失败：${error.message}`)
+      pass = false
+      exitCode = 1
+    }
+  }
   if (insertedCutover) {
     // 清理失败不能报 PASS：残留的「已初始化」行会被后续跑法当成真实期初状态
     try {
