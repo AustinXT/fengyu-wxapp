@@ -42,8 +42,16 @@ function mockTransactionClient(
       // sync 漂移探测（AS drifted）同样不消耗队列；无结果 → 保守执行 UPSERT 旧路径。
       if (text.includes('AS drifted')) return { rows: [], rowCount: 0 }
       // 门店报货事务内复读门店父级（#348）：默认与夹具的市场一致
-      if (text.includes('SELECT parent_location_id FROM inventory_locations')) {
-        return { rows: [{ parent_location_id: locationRow?.parent_location_id ?? 'market-A' }], rowCount: 1 }
+      if (text.includes('location_id = ANY($1::text[])') && text.includes('FOR SHARE')) {
+        const [storeId, marketId] = params[0]
+        const parent = locationRow?.parent_location_id ?? 'market-A'
+        return {
+          rows: [
+            { location_id: storeId, location_type: '门店', is_active: true, parent_location_id: parent },
+            { location_id: marketId, location_type: '市场', is_active: true, parent_location_id: 'HQ' },
+          ],
+          rowCount: 2,
+        }
       }
       if (text.includes('INSERT INTO inventory_locations')) return { rows: [], rowCount: 0 }
       if (text.includes('SELECT location_id, location_type, parent_location_id')) {
@@ -650,8 +658,15 @@ describe('inventory.createDoc 权限与状态', () => {
           const text = String(sql)
           const cutover = cutoverQueryResult(text)
           if (cutover) return cutover
-          if (text.includes('SELECT parent_location_id FROM inventory_locations')) {
-            return { rows: [{ parent_location_id: 'market-A' }], rowCount: 1 }
+          if (text.includes('location_id = ANY($1::text[])') && text.includes('FOR SHARE')) {
+            const [storeId, marketId] = params[0]
+            return {
+              rows: [
+                { location_id: storeId, location_type: '门店', is_active: true, parent_location_id: 'market-A' },
+                { location_id: marketId, location_type: '市场', is_active: true, parent_location_id: null },
+              ],
+              rowCount: 2,
+            }
           }
           if (text.includes('COALESCE(SUM(quantity_on_hand), 0)')) {
             return { rows: bookRows, rowCount: bookRows.length, _params: params }
@@ -2354,7 +2369,7 @@ describe('门店报货草稿（#348）', () => {
     market_id: 'market-A', updated_at_iso: '2026-09-26T01:02:03.456Z',
   }
 
-  function mockDraftEnv({ draft = DRAFT, linked = false, scopedStores = ['store-A'], storeParent = 'market-A' } = {}) {
+  function mockDraftEnv({ draft = DRAFT, linked = false, scopedStores = ['store-A'], storeParent = 'market-A', storeActive = true } = {}) {
     pg.query.mockImplementation(async (query, params) => {
       const sql = String(query)
       if (sql.includes('WITH RECURSIVE descendants')) return scopedStores.map((storeId) => ({ store_id: storeId }))
@@ -2384,8 +2399,15 @@ describe('门店报货草稿（#348）', () => {
             return { rows: draft ? [draft] : [], rowCount: draft ? 1 : 0 }
           }
           if (text.includes('AS linked')) return { rows: [{ linked }], rowCount: 1 }
-          if (text.includes('SELECT parent_location_id FROM inventory_locations')) {
-            return { rows: [{ parent_location_id: storeParent }], rowCount: 1 }
+          if (text.includes('location_id = ANY($1::text[])') && text.includes('FOR SHARE')) {
+            const [storeId, marketId] = params[0]
+            return {
+              rows: [
+                { location_id: storeId, location_type: '门店', is_active: storeActive, parent_location_id: storeParent },
+                { location_id: marketId, location_type: '市场', is_active: true, parent_location_id: null },
+              ],
+              rowCount: 2,
+            }
           }
           if (text.includes('WITH RECURSIVE descendants')) {
             return { rows: scopedStores.map((storeId) => ({ store_id: storeId })), rowCount: scopedStores.length }
@@ -2525,6 +2547,13 @@ describe('门店报货草稿（#348）', () => {
     const getClient = mockDraftEnv({ storeParent: 'market-NEW' })
     await expect(inventoryRoutes.createDoc(createCtx({ payload: { ...payload, draft: true }, auth: STORE_AUTH })))
       .rejects.toThrow('CONFLICT: 门店所属市场刚发生变化，请刷新后重试')
+    expect(calls(getClient(), /INSERT INTO inventory_docs|UPDATE inventory_docs/)).toHaveLength(0)
+  })
+
+  test('事务内复核：解析后门店被停用 → INVALID_STATE「库存主体已停用」，不写任何单据', async () => {
+    const getClient = mockDraftEnv({ storeActive: false })
+    await expect(inventoryRoutes.createDoc(createCtx({ payload: { ...payload, draft: true }, auth: STORE_AUTH })))
+      .rejects.toThrow('INVALID_STATE: 库存主体已停用')
     expect(calls(getClient(), /INSERT INTO inventory_docs|UPDATE inventory_docs/)).toHaveLength(0)
   })
 

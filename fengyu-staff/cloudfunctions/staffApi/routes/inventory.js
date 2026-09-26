@@ -1652,8 +1652,6 @@ async function docDetail(ctx) {
  * 门店报货草稿（#348）：锁住并校验一张本门店的门店报货草稿。与 admin `lockStoreReplenishmentDraft` 同口径：
  * 非门店报货 NOT_FOUND；非草稿 INVALID_STATE（已删除 / 已提交分开提示）；换门店 INVALID_PARAMS；
  * 带血缘 / 预留的只可能是存量异常单，一律 INVALID_STATE 交人工处理。
- */
-/**
  * `check` = 存草稿 / 提交时的额外校验（当前市场 + 打开草稿时的版本，版本**必填**）；删除不传（不比市场、不比版本）。
  */
 async function lockStoreRequestDraft(client, draftId, sourceOrgNodeId, check = null) {
@@ -1783,11 +1781,24 @@ async function createDoc(ctx) {
     if (docType === '门店报货') {
       // 市场归属在事务外按门店父级解析；这里对门店行取共享锁并复读父级：解析与写入之间门店被改挂市场时拒绝，
       // 且在本事务结束前挡住改挂（与 admin 的门店 → 市场 → 单据锁序同向）
-      const { rows: storeRows } = await client.query(
-        `SELECT parent_location_id FROM inventory_locations WHERE location_id = $1 FOR SHARE`,
-        [sourceLocationId],
+      // 门店与市场两行一起复核（类型 / 启用 / 父级）：解析后门店被闭店或市场被停用也要拒，不能写出指向停用主体的单
+      const { rows: endpointRows } = await client.query(
+        `SELECT location_id, location_type, is_active, parent_location_id
+           FROM inventory_locations
+          WHERE location_id = ANY($1::text[])
+          ORDER BY location_id
+          FOR SHARE`,
+        [[sourceLocationId, marketId].filter(Boolean)],
       )
-      if ((storeRows[0]?.parent_location_id || null) !== (marketId || null)) {
+      const storeRow = endpointRows.find((row) => row.location_id === sourceLocationId)
+      const marketRow = endpointRows.find((row) => row.location_id === marketId)
+      if (!storeRow || !marketRow || storeRow.location_type !== '门店' || marketRow.location_type !== '市场') {
+        throw new Error('CONFLICT: 门店所属市场刚发生变化，请刷新后重试')
+      }
+      if (storeRow.is_active === false || marketRow.is_active === false) {
+        throw new Error('INVALID_STATE: 库存主体已停用')
+      }
+      if ((storeRow.parent_location_id || null) !== marketId) {
         throw new Error('CONFLICT: 门店所属市场刚发生变化，请刷新后重试')
       }
     }
