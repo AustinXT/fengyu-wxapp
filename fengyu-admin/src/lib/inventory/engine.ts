@@ -4245,7 +4245,7 @@ export const confirmInventoryCoreReceive = withAnyPermission(
         // 本路径按发货量整行收（调货只能整单收）；来源已有已收量说明走过别的收货路径，
         // 再按全量收会重复入库 —— fail-closed，与 staffApi confirmReceive 的剩余量口径不冲突（#358）
         if (Number(item.fulfilled_quantity ?? 0) > 0) {
-          throw new ApiError('CONFLICT', '该调货单已有收货记录，请刷新后重试')
+          throw new ApiError('CONFLICT', '该调货单已有收货记录，剩余数量请在员工小程序确认收货')
         }
         const lot = await ensureLotFromSku(tx, targetLocationId, {
           skuId: item.sku_id,

@@ -529,6 +529,16 @@ try {
   try {
     await purgePrivateInventoryLedger()
     await cleanupTestData(NS)
+    if (ranPrivateLedgerFlow) {
+      // cleanupTestData 逐条吞错，不会抛 —— 私有库跑法要自己断言清干净了，否则下次重跑会撞残留
+      const [left] = await pgQuery(
+        `SELECT (SELECT COUNT(*) FROM inventory_docs
+                  WHERE id LIKE $1 OR source_org_node_id LIKE $1 OR target_org_node_id LIKE $1)::int AS docs,
+                (SELECT COUNT(*) FROM inventory_movements WHERE location_id LIKE $1 OR sku_id LIKE $1)::int AS movements`,
+        [`${NS}%`],
+      )
+      if (left.docs > 0 || left.movements > 0) throw new Error(`残留 docs=${left.docs} movements=${left.movements}`)
+    }
   } catch (error) {
     if (ranPrivateLedgerFlow) {
       console.error(`私有库清理失败：${error.message}`)

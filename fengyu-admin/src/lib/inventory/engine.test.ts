@@ -1691,6 +1691,54 @@ describe('库存可用量与收货复核', () => {
     await expect(confirmInventoryCoreReceive('DTO-260809-0001'))
       .rejects.toThrow('分院调货的出入库主体必须均为门店')
   })
+
+  // #358：本路径按发货量整行收；来源已有已收量（走过别的收货路径）再全量收会重复入库 → fail-closed
+  it.each([
+    ['3', true],
+    [null, false],
+    ['0', false],
+  ])('调货收货：来源 fulfilled=%s 时%s拒收', async (fulfilled, rejected) => {
+    const txInsert = vi.fn(() => ({
+      values: vi.fn(() => {
+        const inserted = Promise.resolve([]) as Promise<unknown[]> & { returning?: unknown }
+        inserted.returning = vi.fn(async () => { throw new Error('__REACHED_ITEM_INSERT__') })
+        return inserted
+      }),
+    }))
+    const txExecute = vi.fn(async (query: unknown) => {
+      const sqlText = renderSql(query)
+      if (sqlText.includes('FROM inventory_docs') && sqlText.includes('FOR UPDATE')) {
+        return [{
+          id: 'DTO-260809-0001', doc_type: '分院调货出库', status: '待收货',
+          source_org_node_id: 'STORE-1', target_org_node_id: 'STORE-2', total_quantity: '10', remark: null,
+        }]
+      }
+      if (sqlText.includes('FROM inventory_locations')) return [{ location_id: 'STORE-2' }]
+      if (sqlText.includes('FROM inventory_doc_items item')) {
+        return [{
+          source_item_id: 7, sku_id: 'SKU-1', batch_no: 'B1', expiry_date: null, is_gift: false,
+          quantity: '10', fulfilled_quantity: fulfilled,
+        }]
+      }
+      return []
+    })
+    mockDb.transaction.mockImplementation(async (callback: (tx: unknown) => unknown) => callback({
+      execute: initializedCutoverExecutor(txExecute),
+      insert: txInsert,
+    }))
+    mockDb.select.mockImplementation(() => selectWithoutLimit([
+      { locationId: 'STORE-1', orgNodeId: 'STORE-1', locationType: '门店', parentLocationId: 'MARKET-1' },
+      { locationId: 'STORE-2', orgNodeId: 'STORE-2', locationType: '门店', parentLocationId: 'MARKET-1' },
+    ]))
+
+    const attempt = confirmInventoryCoreReceive('DTO-260809-0001')
+    if (rejected) {
+      await expect(attempt).rejects.toThrow('CONFLICT: 该调货单已有收货记录')
+    } else {
+      // 过闸后走到建批次 / 明细（mock 在此之后不再模拟），不会是已收量闸的报错
+      await expect(attempt).rejects.not.toThrow('该调货单已有收货记录')
+    }
+  })
 })
 
 describe('库存主体启停同步', () => {

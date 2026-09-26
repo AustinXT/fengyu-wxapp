@@ -556,18 +556,20 @@ function escapeRe(s: string): string {
  * 返回值交调用方记 verdict —— 行数为 0 或任一行可编辑 / 不等于待收都必须响亮失败。
  */
 async function checkReceiptRowsReadonly(page: Page): Promise<number> {
-  const rows = page.locator('form tbody tr')
+  // 只取表头含「本次实收」的进度表：form 内还有候选单选择表，不能按 `form tbody tr` 一把抓；
+  // 进度表里每一行都必须恰有一个「本次实收」框，缺框即回归，响亮失败（不跳过）
+  const table = page.locator('form table').filter({ has: page.getByRole('columnheader', { name: '本次实收', exact: true }) })
+  const rows = table.locator('tbody tr')
   await rows.first().waitFor({ state: 'visible', timeout: 20_000 }).catch(() => null)
   const total = await rows.count()
   let matched = 0
   for (let i = 0; i < total; i += 1) {
     const row = rows.nth(i)
-    // 表单里还有候选单选择表（同在 form 内、没有本次实收框），跳过这类行
-    const input = row.getByLabel(/^本次实收 /).first()
-    if (await input.count() === 0) continue
+    const input = row.getByLabel(/^本次实收 /)
+    if (await input.count() !== 1) return -1
     const outstanding = (await row.locator('td').nth(3).innerText()).trim()   // td[3] = 待收
-    const readonly = (await input.getAttribute('readonly')) !== null
-    if (!readonly || Number(await input.inputValue()) !== Number(outstanding)) return -1
+    const readonly = (await input.first().getAttribute('readonly')) !== null
+    if (!readonly || Number(await input.first().inputValue()) !== Number(outstanding)) return -1
     matched += 1
   }
   return matched
