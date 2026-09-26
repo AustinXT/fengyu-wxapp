@@ -2678,7 +2678,7 @@ describe('#289 新客客单价 WorkFine 分支（两端逐字一致 + legacy 片
               } else if (ts.isConditionalExpression(m)) {
                 collect(m.whenTrue)
                 collect(m.whenFalse)
-              } else if (ts.isBinaryExpression(m) && [ts.SyntaxKind.PlusToken, ts.SyntaxKind.BarBarToken, ts.SyntaxKind.QuestionQuestionToken].includes(m.operatorToken.kind)) {
+              } else if (ts.isBinaryExpression(m) && [ts.SyntaxKind.PlusToken, ts.SyntaxKind.BarBarToken, ts.SyntaxKind.QuestionQuestionToken, ts.SyntaxKind.AmpersandAmpersandToken].includes(m.operatorToken.kind)) {
                 collect(m.left)
                 collect(m.right)
               } else if (ts.isParenthesizedExpression(m) || ts.isAsExpression(m) || ts.isTypeAssertionExpression(m) || ts.isNonNullExpression(m) || ts.isSatisfiesExpression(m)) {
