@@ -69,10 +69,11 @@ export function scopeFilterSql(
  *   - UI 选了市场     → 锚定市场等于该市场才出现；该市场若只是门店级账号的**祖先市场**（未直接授权），
  *                       另须「锚定市场下有本账号可见的在营门店」——与 authorized 同一条可见性（#399），
  *                       即选祖先市场看到的直挂员工 ⊆ 汇总范围看到的，不会更多
- *   - all / authorized → admin 全可见；其他角色按「锚定市场下是否有本账号可见门店」判定
+ *   - all / authorized → 超管或持总部范围全可见（#334，与 staff `all` 恒真一致）；
+ *                        其他角色按「锚定市场下是否有本账号可见的在营门店」判定
  *   - 多店（#376）     → 锚定市场下至少有一家**所选**在营门店（非超管再与授权门店取交集）才出现
- * 品项公司是总部直属市场节点、其下无门店：admin/总部，以及直接授权到品项公司的账号（以市场范围，#399）可见；
- * 汇总范围（all / authorized）下非超管看不到它（锚定市场下没有可见门店）。
+ * 品项公司是总部直属市场节点、其下无门店：超管/总部账号在汇总范围可见，直接授权到品项公司的账号以市场范围可见（#399）；
+ * 市场级 / 门店级账号的汇总范围看不到它（锚定市场下没有可见的在营门店）。
  * 养生部锚到南昌凤御，该市场范围的账号可见。
  *
  * @param anchorCol 锚定市场列引用（默认 `pb.anchor_market_id`）
@@ -105,8 +106,10 @@ export function orgAnchorScopeSql(
     return activeAnchorAmongSql(ids, col)
   }
 
-  // all / authorized：admin 全开；其他角色按锚定市场下的可见门店判定
-  if (isAdminScope(session)) return sql`TRUE`
+  // all / authorized：超管或持总部范围 → 全开（#334）；其他角色按锚定市场下的可见门店判定。
+  // 判定与 getScopeTopLevel / validateScope（context.ts）逐字相同、与 staff `all` 恒真对齐：总部账号本就看全集团，
+  // 锚定市场下有没有在营门店与它无关（品项公司即此例）。session 已被 withPermission 收窄到授予本动作的角色。
+  if (isAdminScope(session) || session.roles.some((r) => r.scopeType === '总部')) return sql`TRUE`
   return visibleActiveAnchorSql(session, col)
 }
 

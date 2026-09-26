@@ -168,6 +168,62 @@ describe('orgAnchorScopeSql — 无门店员工（直挂组织节点）的可见
   })
 })
 
+/**
+ * #334：持总部范围的非超管（总部店长 / 财务 / 人事）在汇总范围下与超管同样全开，
+ * 对齐 staff `all` 恒真与本端 validateScope / getScopeTopLevel。
+ * 否则「锚定市场下没有在营门店」的直挂员工（品项公司）对他们不可见：技师分母 165 vs staff 166、员工榜少约 20 人。
+ */
+describe('orgAnchorScopeSql — 总部非超管的汇总范围（#334）', () => {
+  // 总部角色展开后 scopeStoreIds 为全部门店；这里故意给非空列表，确认不是靠「空列表」走到 TRUE
+  const HQ_STORES = ['S1', 'S2']
+
+  for (const role of ['manager', 'finance', 'hr'] as const) {
+    for (const scope of [ALL, { type: 'authorized' } as DataCenterScope]) {
+      it(`总部 ${role}（非超管）+ ${scope.type} → TRUE（无门店市场直挂员工可见）`, () => {
+        const session = makeSession([{ role, scopeType: '总部' }], HQ_STORES)
+        const { raw, params } = render(orgAnchorScopeSql(session, scope))
+        expect(raw.trim().toUpperCase()).toBe('TRUE')
+        expect(params).toEqual([])
+      })
+    }
+  }
+
+  it('总部 + 门店混合绑定的账号 → TRUE（任一总部角色即全开，与 validateScope 同判定）', () => {
+    const session = makeSession(
+      [{ role: 'manager', scopeType: '门店' }, { role: 'hr', scopeType: '总部' }],
+      HQ_STORES,
+    )
+    expect(render(orgAnchorScopeSql(session, ALL)).raw.trim().toUpperCase()).toBe('TRUE')
+  })
+
+  it('反向：市场级 / 门店级账号的 all / authorized 仍走 EXISTS（不因本单放宽）', () => {
+    for (const scopeType of ['市场', '门店'] as const) {
+      for (const scope of [ALL, { type: 'authorized' } as DataCenterScope]) {
+        const session = makeSession([{ role: 'manager', scopeType }], HQ_STORES)
+        const { sql, params } = render(orgAnchorScopeSql(session, scope))
+        expect(sql, `${scopeType} ${scope.type}`).toMatch(/^\s*exists \(/)
+        expect(params).toEqual(HQ_STORES)
+      }
+    }
+  })
+
+  it('总部非超管的单店 / 市场 / 多店分支不变（只动汇总分支）', () => {
+    // 真实会话里总部角色的 scopeOrgNodeIds 是全部组织节点（expandRoleScope），市场即直接授权
+    const base = makeSession([{ role: 'manager', scopeType: '总部' }], HQ_STORES)
+    const session: AuthSession = {
+      ...base,
+      permissions: { ...base.permissions, scopeOrgNodeIds: ['hq', 'mkt-A'] },
+    }
+    expect(render(orgAnchorScopeSql(session, { type: 'store', id: 'S1' })).raw.trim()).toBe('FALSE')
+    const market = render(orgAnchorScopeSql(session, { type: 'market', id: 'mkt-A' }))
+    expect(market.raw.replace(/\s+/g, ' ').trim()).toBe('pb.anchor_market_id = $1')
+    expect(market.params).toEqual(['mkt-A'])
+    const multi = render(orgAnchorScopeSql(session, { type: 'stores', ids: ['S1', 'S2'] }))
+    expect(multi.sql).toMatch(/^\s*exists \(/)
+    expect(multi.params).toEqual(['S1', 'S2'])
+  })
+})
+
 describe('orgAnchorScopeSql — 市场分支按「直接授权」收窄（#399）', () => {
   const MKT: DataCenterScope = { type: 'market', id: 'mkt-A' }
   function withNodes(session: AuthSession, scopeOrgNodeIds: string[] | undefined): AuthSession {
