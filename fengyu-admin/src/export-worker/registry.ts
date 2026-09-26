@@ -20,6 +20,7 @@ import { exportEmployees } from '@/actions/employees'
 import { exportPointTransactions } from '@/actions/points'
 import { exportCards } from '@/actions/cards'
 import { exportInventoryLots } from '@/actions/inventory/stocks'
+import { exportInventoryMovements } from '@/actions/inventory/movements'
 import { exportPickupRecords } from '@/actions/pickup-records'
 import { getSalesBoard } from '@/actions/data-center/sales'
 import { getCustomerBoard } from '@/actions/data-center/customer'
@@ -523,6 +524,26 @@ const inventoryColumns = (canViewPrice: boolean) => mapColumns([
   { header: '更新时间', width: 20, key: 'updatedAt', map: (row) => fmtDateTime(value(row, 'updatedAt') as string | Date | null) },
 ])
 
+// 进出明细（#360）：结存是批次结存（流水自带 before/after），不是主体合计。
+// 导出始终带「批号」「批次 ID」列（Excel 里可自行筛选）；页面只在按商品编号查询时显示批号列
+const inventoryMovementColumns = mapColumns([
+  { header: '时间', width: 20, key: 'createdAt' },
+  { header: '单据类型', width: 16, key: 'docType' },
+  { header: '单号', width: 26, key: 'docId' },
+  { header: 'SKU', width: 24, key: 'skuId' },
+  { header: '产品', width: 32, key: 'skuName' },
+  { header: '规格', width: 16, key: 'specName' },
+  { header: '批号', width: 16, key: 'batchNo' },
+  { header: '批次 ID', width: 10, key: 'lotId', map: (row) => numberOrEmpty(row, 'lotId') },
+  { header: '方向', width: 8, key: 'direction' },
+  { header: '数量', width: 10, key: 'quantityDelta', map: (row) => numberOrEmpty(row, 'quantityDelta') },
+  { header: '变动前结存', width: 12, key: 'quantityBefore', map: (row) => numberOrEmpty(row, 'quantityBefore') },
+  { header: '变动后结存', width: 12, key: 'quantityAfter', map: (row) => numberOrEmpty(row, 'quantityAfter') },
+  { header: '对方主体', width: 20, key: 'counterpartyName' },
+  { header: '经办人', width: 12, key: 'operatorName', map: (row) => String(value(row, 'operatorName') ?? value(row, 'operatorId') ?? '') },
+  { header: '备注', width: 24, key: 'remark' },
+])
+
 function breakdownContent(
   view: DataCenterBoardExportView,
   rows: BreakdownRow[],
@@ -863,6 +884,12 @@ export async function createExportContent(
         rows: pagedRows((options: ExportBatchOptions<number>) => exportInventoryLots(params, options), firstPage),
       }
     }
+    case 'inventory-movements':
+      return {
+        sheetName: '进出明细',
+        columns: inventoryMovementColumns,
+        rows: pagedRows((options: ExportBatchOptions<number>) => exportInventoryMovements(params, options)),
+      }
     case 'pickup-records':
       return {
         sheetName: '提货记录',

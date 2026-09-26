@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { describe, it, expect, beforeAll } from 'vitest'
+import { compareModuleRuntime } from './dist-equivalence'
 
 /**
  * dist/export-worker.mjs 新鲜度守护。
@@ -113,7 +114,8 @@ function uncomment(line: string): string {
  * 前提：模块头是 bun 写的行首 `// src/…` / `// node_modules/…` / `// ../…` 注释；被守护的源文件自己不要写这种行首注释
  * （会被误当模块头截断区段，表现为误红，方向是 fail-closed）。bun 升级改了注释格式时这里要跟着改。
  */
-function moduleSegments(dist: string, file: string): string[] {
+/** `keepIndent`：AST 规范化比对要保留原始行（模板字面量里的缩进是 SQL 原文的一部分） */
+function moduleSegments(dist: string, file: string, keepIndent = false): string[] {
   const lines = dist.split('\n')
   const out: string[] = []
   let inside = false
@@ -122,7 +124,7 @@ function moduleSegments(dist: string, file: string): string[] {
       inside = line === `// ${file}`
       continue
     }
-    if (inside) out.push(line.trim())
+    if (inside) out.push(keepIndent ? line : line.trim())
   }
   return out
 }
@@ -333,6 +335,8 @@ const PROBES: Probe[] = [
     uniqueLines: 4,
     exactCountsInModule: true,
   },
+  // #360 进出明细的 SQL 不走本表的逐行探针：模板插值 `${filters.x}` / `${bound.after}` 里的局部变量
+  // 会被 bun 合法改名，逐行文本比对必误红；改由下方「进出明细导出接线（#360）」里的语义等价比较（dist-equivalence.ts）整体守护。
   {
     label: '品项板 · 区间业绩净额，负数冲销不整组丢弃；人数只认正数行（#288）',
     file: 'src/actions/data-center/product.ts',
@@ -381,6 +385,79 @@ describe('dist/export-worker.mjs 新鲜度 · 提货记录导出接线（#341）
     const missing = fragments.filter((fragment) => !segment.includes(fragment))
     expect(missing, `产物 // ${file} 区段缺少以下 #341 片段（产物不是按当前源码构建的）${REBUILD_HINT}`).toEqual([])
   })
+})
+
+/** #360 进出明细导出的 JS 接线（类型登记 / registry 分支与列 / keyset 游标）。写法同上：按产物里的写法找。 */
+describe('dist/export-worker.mjs 新鲜度 · 进出明细导出接线（#360）', () => {
+  /**
+   * 源码模块 ↔ 产物里 bun 改写后的同一模块做**语义等价**比较（规则与正反例见 dist-equivalence.ts / .test.ts）。
+   * 比的是模块的全部运行时顶层语句：常量、入参校验、SQL 构造、行映射、取数、导出、withPermission 包装器。
+   * ⚠ 误红时的排查顺序：先核对 bun 版本并按提示重建；重建后仍红，再看是不是出现了比较器没登记的新改写形态。
+   */
+  const resolveImportFile = (fromFile: string, specifier: string): string | null => {
+    let base: string
+    if (specifier.startsWith('@/')) base = `src/${specifier.slice(2)}`
+    else if (specifier.startsWith('@db/')) base = `../db/schema/${specifier.slice(4)}`
+    else if (specifier.startsWith('.')) base = path.posix.normalize(path.posix.join(path.posix.dirname(fromFile), specifier))
+    else return null
+    for (const suffix of ['.ts', '.tsx', '/index.ts']) {
+      if (fs.existsSync(path.join(ADMIN_ROOT, `${base}${suffix}`))) return `${base}${suffix}`
+    }
+    return null
+  }
+  /** 被导入模块 → 产物区段；找不到模块头 / 区段仅含空白都返回 null，交给比较器按「找不到区段」fail-closed */
+  const buildDistSegmentOfImport = (file: string, dist: string) => (specifier: string): string | null => {
+    const target = resolveImportFile(file, specifier)
+    if (!target) return null
+    const lines = moduleSegments(dist, target, true)
+    return lines.some((line) => line.trim() !== '') ? lines.join('\n') : null
+  }
+  const equivalenceIssues = (file: string, only?: readonly string[]) => {
+    const dist = fs.readFileSync(DIST, 'utf-8')
+    return compareModuleRuntime({
+      sourceCode: fs.readFileSync(path.join(ADMIN_ROOT, file), 'utf-8'),
+      distCode: moduleSegments(dist, file, true).join('\n'),
+      distSegmentOfImport: buildDistSegmentOfImport(file, dist),
+      only,
+    })
+  }
+
+  it.each([
+    'src/lib/inventory/movements.ts',
+    'src/actions/inventory/movements.ts',
+  ])('%s 的全部运行时代码与产物语义等价', (file) => {
+    expect(equivalenceIssues(file), `产物 // ${file} 区段与源码不等价（产物不是按当前源码构建的）${REBUILD_HINT}`).toEqual([])
+  })
+
+  it('export-job-types.ts 的类型登记、权限映射、标签映射与产物语义等价（键值对应关系整体比较）', () => {
+    const file = 'src/lib/export-job-types.ts'
+    expect(
+      equivalenceIssues(file, ['EXPORT_JOB_TYPES', 'EXPORT_PERMISSIONS_BY_TYPE', 'EXPORT_LABEL_BY_TYPE']),
+      `产物里的导出类型登记与源码不一致${REBUILD_HINT}`,
+    ).toEqual([])
+  })
+
+  it('真实调用链：源码新增一个产物里根本没有的内部依赖（旧产物），必须判不等而不是当空模块放行', () => {
+    const file = 'src/lib/inventory/movements.ts'
+    const dist = fs.readFileSync(DIST, 'utf-8')
+    // src/lib/menu.ts 不在 export-worker bundle 里：模拟「源码新增依赖、产物未重建」
+    expect(moduleSegments(dist, 'src/lib/menu.ts', true)).toEqual([])
+    const issues = compareModuleRuntime({
+      sourceCode: `import '@/lib/menu'\n${fs.readFileSync(path.join(ADMIN_ROOT, file), 'utf-8')}`,
+      distCode: moduleSegments(dist, file, true).join('\n'),
+      distSegmentOfImport: buildDistSegmentOfImport(file, dist),
+    })
+    expect(issues.join('\n')).toMatch(/找不到 @\/lib\/menu 在产物里的模块区段/)
+  })
+
+  it('registry.ts 的 inventoryMovementColumns 与分发函数 createExportContent（含 case 分支体接线）与产物语义等价', () => {
+    const file = 'src/export-worker/registry.ts'
+    expect(
+      equivalenceIssues(file, ['inventoryMovementColumns', 'createExportContent']),
+      `产物里进出明细导出列与源码不一致（增删 / 换序 / 错接）${REBUILD_HINT}`,
+    ).toEqual([])
+  })
+
 })
 
 describe('dist/export-worker.mjs 新鲜度（改了 data-center SQL 口径必须重建产物）', () => {

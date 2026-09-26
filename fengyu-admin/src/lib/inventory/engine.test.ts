@@ -37,6 +37,7 @@ import {
   getInventoryCoreDocById,
   listInventoryCoreDocs,
   listInventoryLocationFilterOptions,
+  listInventoryMovementLocationFilterOptions,
   listInventoryLots,
   listInventorySkus,
   listInventoryMarketTransferTargets,
@@ -1846,6 +1847,129 @@ describe('库存主体筛选 scope', () => {
       }],
       defaultLocationId: 'M1',
     })
+  })
+})
+
+describe('进出明细主体选项（#360）：保留 scope 内停用主体查历史', () => {
+  const MARKET_SESSION = {
+    employeeId: 'E001',
+    name: '市场用户',
+    phone: '13800000000',
+    roles: [{
+      role: 'finance',
+      scopeId: 'M1',
+      scopeType: '市场',
+      actions: ['inventory:stock_list'],
+      scopeStoreIds: ['S1', 'S3'],
+      scopeOrgNodeIds: ['M1', 'N-S1', 'N-S3'],
+    }],
+    permissions: {
+      actions: ['inventory:stock_list'],
+      scopeStoreIds: ['S1', 'S3'],
+      scopeOrgNodeIds: ['M1', 'N-S1', 'N-S3'],
+    },
+  }
+
+  beforeEach(() => {
+    vi.mocked(isAdminScope).mockReturnValue(false)
+    mockDb.execute.mockResolvedValue([])
+  })
+
+  it('停用主体标注「已停用」仍可选，scope 外停用主体不出现；默认主体取在营的', async () => {
+    // 再绑一个已停用的九江市场：按名称它排在南昌前面，不特殊处理的话会被选成默认主体
+    mockGetSession.mockResolvedValue({
+      ...MARKET_SESSION,
+      roles: [...MARKET_SESSION.roles, { ...MARKET_SESSION.roles[0], scopeId: 'M0', scopeStoreIds: [], scopeOrgNodeIds: ['M0'] }],
+    })
+    const where = vi.fn()
+    mockDb.select.mockReturnValue({
+      from: () => ({
+        where: (condition: unknown) => {
+          where(condition)
+          return {
+            orderBy: async () => [
+              { locationId: 'M0', locationType: '市场', name: '九江市场', orgNodeId: 'M0', storeId: null, parentLocationId: 'HQ', isActive: false },
+              { locationId: 'M9', locationType: '市场', name: '抚州市场', orgNodeId: 'M9', storeId: null, parentLocationId: 'HQ', isActive: false },
+              { locationId: 'M1', locationType: '市场', name: '南昌市场', orgNodeId: 'M1', storeId: null, parentLocationId: 'HQ', isActive: true },
+              { locationId: 'S1', locationType: '门店', name: '红谷滩店', orgNodeId: 'N-S1', storeId: 'S1', parentLocationId: 'M1', isActive: true },
+              { locationId: 'S3', locationType: '门店', name: '八一店', orgNodeId: 'N-S3', storeId: 'S3', parentLocationId: 'M1', isActive: false },
+            ],
+          }
+        },
+      }),
+    })
+
+    await expect(listInventoryMovementLocationFilterOptions()).resolves.toEqual({
+      headquarters: [],
+      markets: [
+        { locationId: 'M0', name: '九江市场（已停用）', canSelectInventory: true, stores: [] },
+        {
+          locationId: 'M1',
+          name: '南昌市场',
+          canSelectInventory: true,
+          stores: [{ locationId: 'S3', name: '八一店（已停用）' }, { locationId: 'S1', name: '红谷滩店' }],
+        },
+      ],
+      defaultLocationId: 'M1',
+    })
+    // 不按 is_active 过滤（库存查询页那一支才过滤）
+    expect(where).toHaveBeenCalledWith(undefined)
+  })
+
+  it('停用市场下仍有在营门店：默认主体落到在营门店，而不是退回停用市场', async () => {
+    mockGetSession.mockResolvedValue({
+      ...MARKET_SESSION,
+      roles: [{ ...MARKET_SESSION.roles[0], scopeId: 'M0', scopeStoreIds: ['S5'], scopeOrgNodeIds: ['M0', 'N-S5'] }],
+    })
+    mockDb.select.mockReturnValue({
+      from: () => ({
+        where: () => ({
+          orderBy: async () => [
+            { locationId: 'M0', locationType: '市场', name: '九江市场', orgNodeId: 'M0', storeId: null, parentLocationId: 'HQ', isActive: false },
+            { locationId: 'S5', locationType: '门店', name: '浔阳店', orgNodeId: 'N-S5', storeId: 'S5', parentLocationId: 'M0', isActive: true },
+          ],
+        }),
+      }),
+    })
+    const options = await listInventoryMovementLocationFilterOptions()
+    expect(options.markets).toEqual([{
+      locationId: 'M0', name: '九江市场（已停用）', canSelectInventory: true, stores: [{ locationId: 'S5', name: '浔阳店' }],
+    }])
+    expect(options.defaultLocationId).toBe('S5')
+  })
+
+  it('全部主体都停用时，默认退回任一可选主体（不为空）', async () => {
+    mockGetSession.mockResolvedValue(MARKET_SESSION)
+    mockDb.select.mockReturnValue({
+      from: () => ({
+        where: () => ({
+          orderBy: async () => [
+            { locationId: 'M1', locationType: '市场', name: '南昌市场', orgNodeId: 'M1', storeId: null, parentLocationId: 'HQ', isActive: false },
+          ],
+        }),
+      }),
+    })
+    expect((await listInventoryMovementLocationFilterOptions()).defaultLocationId).toBe('M1')
+  })
+
+  it('库存查询页的选项仍只取在营主体', async () => {
+    mockGetSession.mockResolvedValue(MARKET_SESSION)
+    const where = vi.fn()
+    mockDb.select.mockReturnValue({
+      from: () => ({ where: (condition: unknown) => { where(condition); return { orderBy: async () => [] } } }),
+    })
+    await listInventoryLocationFilterOptions()
+    expect(where.mock.calls[0][0]).toBeDefined()
+  })
+
+  it('库存查询页的 action 不接受 includeInactive 入参（参数不透传）', async () => {
+    mockGetSession.mockResolvedValue(MARKET_SESSION)
+    const where = vi.fn()
+    mockDb.select.mockReturnValue({
+      from: () => ({ where: (condition: unknown) => { where(condition); return { orderBy: async () => [] } } }),
+    })
+    await (listInventoryLocationFilterOptions as unknown as (input: unknown) => Promise<unknown>)({ includeInactive: true })
+    expect(where.mock.calls[0][0]).toBeDefined()
   })
 })
 

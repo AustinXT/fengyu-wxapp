@@ -1566,26 +1566,34 @@ export const listInventoryLocations = withPermission(
 
 async function inventoryLocationFilterOptions(
   session: AuthSession,
+  { includeInactive = false }: { includeInactive?: boolean } = {},
 ): Promise<InventoryLocationFilterOptions> {
   await syncInventoryLocations()
   const scoped = await scopedLocationIds(session)
   const rows = await db
     .select()
     .from(inventoryLocations)
-    .where(eq(inventoryLocations.isActive, true))
+    .where(includeInactive ? undefined : eq(inventoryLocations.isActive, true))
     .orderBy(asc(inventoryLocations.locationType), asc(inventoryLocations.name))
-  return buildInventoryLocationFilterOptions(
-    rows.map((row) => ({
-      locationId: row.locationId,
-      locationType: row.locationType as InventoryLocationType,
-      name: row.name,
-      orgNodeId: row.orgNodeId,
-      storeId: row.storeId,
-      parentLocationId: row.parentLocationId,
-      isActive: row.isActive,
-    })),
-    scoped,
-  )
+  const toRow = (row: typeof rows[number]) => ({
+    locationId: row.locationId,
+    locationType: row.locationType as InventoryLocationType,
+    // 与单据中心同一标注：停用主体只为查历史保留
+    name: row.isActive ? row.name : `${row.name}（已停用）`,
+    orgNodeId: row.orgNodeId,
+    storeId: row.storeId,
+    parentLocationId: row.parentLocationId,
+    isActive: row.isActive,
+  })
+  const options = buildInventoryLocationFilterOptions(rows.map(toRow), scoped)
+  if (!includeInactive) return options
+  // 含停用主体时，默认主体仍取在营的（按名称排序可能先排到停用主体）；全都停用才退回任一可选主体。
+  // 行集保持完整、只把「可选」收窄到在营主体：停用市场下仍有在营门店时，门店要靠这行市场做分组，
+  // 把停用行删掉会让门店掉出选项、默认退回停用市场（codex round-2 P2）
+  const activeIds = new Set(rows.filter((row) => row.isActive).map((row) => row.locationId))
+  const activeScoped = (scoped ?? rows.map((row) => row.locationId)).filter((id) => activeIds.has(id))
+  const activeDefault = buildInventoryLocationFilterOptions(rows.map(toRow), activeScoped).defaultLocationId
+  return { ...options, defaultLocationId: activeDefault ?? options.defaultLocationId }
 }
 
 async function inventoryDocLocationFilterOptions(
@@ -1615,7 +1623,17 @@ async function inventoryDocLocationFilterOptions(
 
 export const listInventoryLocationFilterOptions = withPermission(
   'inventory:stock_list',
-  inventoryLocationFilterOptions,
+  // 显式包一层：别把 includeInactive 暴露成 Server Action 入参
+  (session: AuthSession) => inventoryLocationFilterOptions(session),
+)
+
+/**
+ * 进出明细（#360）的主体选项：查的是「从头到尾全部流水」，已停用市场 / 关闭门店的历史也要能查，
+ * 所以在库存查询同一 scope（stock_list，总部不展开）基础上保留停用主体。
+ */
+export const listInventoryMovementLocationFilterOptions = withPermission(
+  'inventory:stock_list',
+  (session: AuthSession) => inventoryLocationFilterOptions(session, { includeInactive: true }),
 )
 
 export const listInventoryDocLocationFilterOptions = withPermission(

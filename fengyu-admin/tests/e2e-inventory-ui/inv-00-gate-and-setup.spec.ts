@@ -31,9 +31,10 @@ import { readCutoverStatus } from './_helpers/cutover'
 
 test.setTimeout(300_000)
 
-/** 库存管理全部 11 个路由（src/app/(main)/(inventory)/inventory/） */
+/** 库存管理全部列表路由（src/app/(main)/(inventory)/inventory/，不含详情页与跳转壳） */
 const INVENTORY_ROUTES = [
   { path: '/inventory/stocks', heading: /实时库存|库存查询|库存/ },
+  { path: '/inventory/movements', heading: /进出明细/ },
   { path: '/inventory/docs', heading: /单据|库存单据/ },
   { path: '/inventory/operations/supply-chain', heading: /供应链|需求与采购/ },
   { path: '/inventory/operations/market', heading: /市场|需求与采购/ },
