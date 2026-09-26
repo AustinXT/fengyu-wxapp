@@ -1604,12 +1604,12 @@ try {
     !JSON.stringify(scSummary348).includes(`"${draft348}"`)
       && !scSummary348.items.some((line) => (line.requestItemIds ?? []).map(Number).includes(Number(draftItem348.id))),
     JSON.stringify(scSummary348.items.map((line) => line.requestItemIds)))
-  await expectThrow('#348 草稿明细不能被供应链汇总引用（INVALID_STATE）', /INVALID_STATE/, () =>
+  await expectThrow('#348 草稿明细不能被供应链汇总引用（INVALID_STATE）', /INVALID_STATE: 所选明细不是该市场可汇总的市场报货/, () =>
     biz.createMarketReportSummary({
       supplyChainLocationId: HQ_ORG,
       items: [{ skuId: SKU_SUPPLY, marketId: MKA_ORG, quantity: 1, sourceReportItemIds: [draftItem348.id] }],
     }))
-  await expectThrow('#348 草稿不能发货（INVALID_STATE）', /INVALID_STATE/, () =>
+  await expectThrow('#348 草稿不能发货（INVALID_STATE）', /INVALID_STATE: 品项公司发货必须引用有效的市场报货单/, () =>
     biz.createItemCompanyShipment({
       marketId: MKA_ORG, sourceOrgNodeId: HQ_ORG,
       items: [{ reportItemId: draftItem348.id, lotId: hqLot.id, quantity: 1 }],
@@ -1664,14 +1664,14 @@ try {
     settlementAfter348.docCount === settlementBefore348.docCount + 1
       && Math.abs(settlementAfter348.payable - settlementBefore348.payable - 5520) < 0.001,
     JSON.stringify({ before: settlementBefore348, after: settlementAfter348 }))
-  await expectThrow('#348 已提交不能再存草稿（INVALID_STATE）', /INVALID_STATE/, () =>
+  await expectThrow('#348 已提交不能再存草稿（INVALID_STATE）', /INVALID_STATE: 市场报货已提交，不能再修改或删除/, () =>
     biz.saveMarketReplenishmentDraft({
       draftId: draft348, marketId: MKA_ORG, supplyChainLocationId: HQ_ORG,
       items: [{ skuId: SKU_SUPPLY, purchaseQuantity: 1 }],
     }))
-  await expectThrow('#348 已提交不能删除（INVALID_STATE）', /INVALID_STATE/, () =>
+  await expectThrow('#348 已提交不能删除（INVALID_STATE）', /INVALID_STATE: 市场报货已提交，不能再修改或删除/, () =>
     biz.deleteMarketReplenishmentDraft({ draftId: draft348 }))
-  await expectThrow('#348 已提交不能再提交（INVALID_STATE）', /INVALID_STATE/, () =>
+  await expectThrow('#348 已提交不能再提交（INVALID_STATE）', /INVALID_STATE: 市场报货已提交，不能再修改或删除/, () =>
     biz.createMarketReplenishment({
       draftId: draft348, marketId: MKA_ORG, supplyChainLocationId: HQ_ORG,
       items: [{ skuId: SKU_SUPPLY, sourceRequestItemIds: [item348.id], purchaseQuantity: 1 }],
@@ -1707,12 +1707,12 @@ try {
   check('#348a 门店报货草稿不进市场汇总',
     !summaryWithStoreDraft.items.some((line) => line.requestItemIds.includes(Number(storeDraftItem348.id))),
     JSON.stringify(summaryWithStoreDraft.items.map((line) => line.requestItemIds)))
-  await expectThrow('#348a 市场报货不能引用门店报货草稿（INVALID_STATE）', /INVALID_STATE/, () =>
+  await expectThrow('#348a 市场报货不能引用门店报货草稿（INVALID_STATE）', /INVALID_STATE: 所选明细不是当前市场可汇总的门店报货/, () =>
     biz.createMarketReplenishment({
       marketId: MKA_ORG, supplyChainLocationId: HQ_ORG,
       items: [{ skuId: SKU_SUPPLY, sourceRequestItemIds: [storeDraftItem348.id], purchaseQuantity: 1 }],
     }))
-  await expectThrow('#348a 分院配货不能引用门店报货草稿（INVALID_STATE）', /INVALID_STATE/, () =>
+  await expectThrow('#348a 分院配货不能引用门店报货草稿（INVALID_STATE）', /INVALID_STATE: 分院配货必须引用有效门店报货单/, () =>
     biz.createStoreAllocation({
       storeRequestId: storeDraft348, sourceMarketId: MKA_ORG,
       items: [{ requestItemId: storeDraftItem348.id, lotId: hqLot.id, quantity: 1 }],
@@ -1747,11 +1747,11 @@ try {
     summaryAfterSubmit348.items.some((line) => line.requestItemIds.includes(Number(storeSubmittedItem348.id))),
     JSON.stringify(summaryAfterSubmit348.items.map((line) => line.requestItemIds)))
   setSession(storeA1Session())
-  await expectThrow('#348a 已提交不能再改（INVALID_STATE）', /INVALID_STATE/, () =>
+  await expectThrow('#348a 已提交不能再改（INVALID_STATE）', /INVALID_STATE: 门店报货已提交，不能再修改或删除/, () =>
     biz.saveStoreReplenishmentDraft({
       draftId: storeDraft348, storeId: STA1_ID, marketId: MKA_ORG, items: [{ skuId: SKU_SUPPLY, quantity: 1 }],
     }))
-  await expectThrow('#348a 已提交不能删除（INVALID_STATE）', /INVALID_STATE/, () =>
+  await expectThrow('#348a 已提交不能删除（INVALID_STATE）', /INVALID_STATE: 门店报货已提交，不能再修改或删除/, () =>
     biz.deleteStoreReplenishmentDraft({ draftId: storeDraft348 }))
   const { id: storeDrop348 } = await biz.saveStoreReplenishmentDraft({
     storeId: STA1_ID, marketId: MKA_ORG, items: [{ skuId: SKU_SUPPLY, quantity: 1 }],

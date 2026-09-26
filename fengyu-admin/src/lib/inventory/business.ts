@@ -2612,9 +2612,10 @@ export async function summarizeStoreReplenishmentRequests(
         // 只是这里查单个 SKU、盘点那条 GROUP BY 批量查），复用时别把这一行的扣减一起抄走。
         const availableQuantity = Math.max(0, fixed(onHandQuantity - reservedQuantity))
         const rowOutstanding = Math.max(0, fixed(Number(row.outstanding_quantity)))
-        // 覆盖查询与主查询同在本事务、且都在上面那把市场行锁之下（门店报货 / 配货 / 市场报货 / 品项公司发货 /
-        // 市场收货都会 FOR UPDATE 本市场行），两条语句读到的是同一份数据，demand 必含主查询的 SKU。
-        // 这里的回退只是防御：退回逐行口径，不抛错。
+        // 覆盖查询与主查询同在本事务、且都在上面那把市场行锁之下（admin 的门店报货 / 配货 / 市场报货 / 品项公司发货 /
+        // 市场收货都会 FOR UPDATE 本市场行），两条语句读到的基本是同一份数据。
+        // ⚠️ staffApi 的门店报货建单 / 提交草稿（#348）不锁市场行：READ COMMITTED 下两条语句之间有门店报货落成已完成时，
+        // demand 可能比主查询多出这部分（只影响本次展示，刷新即恢复）。这里的回退只是防御：退回逐行口径，不抛错。
         // ⚠️ 别按「只读路径用 locationForRead」把上面的锁换掉 —— 两条 SQL 之间的一致性靠的就是它。
         const skuCoverage = coverage.get(row.sku_id) ?? { undelivered: rowOutstanding, inTransit: 0 }
         const { outstandingQuantity, suggestedPurchaseQuantity } = storeReplenishmentCoverage({

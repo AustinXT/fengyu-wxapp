@@ -45,9 +45,9 @@ export interface InventoryOperationDocFilter {
   /** 本段要查的单据类型。多个时合并展示（转换类一次产出出库 + 入库两张）。 */
   docTypes: readonly InventoryDocType[]
   /**
-   * 状态收窄。produced 侧只给「本身不产出新单、只改目标单状态」的业务用
-   * （关闭采购、审批撤回），其余业务不限状态 —— 产出单从草稿到已完成都该在自己的 Tab 里
-   * 看得到。inbox 侧则**必须**带（见 `InventoryOperationDocQuery.inbox` 的不变量 1）。
+   * 状态收窄。produced 侧给「本身不产出新单、只改目标单状态」的业务用（关闭采购、审批撤回），
+   * 以及可存草稿的报货类（市场报货 / 门店报货，#348：produced 只列已完成，草稿在 inbox）；
+   * 其余业务不限状态。inbox 侧则**必须**带（见 `InventoryOperationDocQuery.inbox` 的不变量 1）。
    */
   statuses?: readonly InventoryCoreDocStatus[]
   /**
