@@ -2528,35 +2528,8 @@ describe('#289 新客客单价 WorkFine 分支（两端逐字一致 + legacy 片
         return owner
       }
       /** 常量求值：能确定完整文本返回字符串，否则 null */
-      const constant = (n: ts.Node): string | null => {
-        if (ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n)) return n.text
-        // 与说明符侧对齐，剥 TS 透明包装（codex r14 P2：`'…' + ('::numeric' as const)`）
-        if (ts.isParenthesizedExpression(n) || ts.isAsExpression(n) || ts.isTypeAssertionExpression(n) || ts.isNonNullExpression(n) || ts.isSatisfiesExpression(n)) {
-          return constant(n.expression)
-        }
-        // 条件是字面量 true / false 时取对应分支（GLM r17 P3：`${true ? '::numeric' : ''}` 静态可判定）
-        if (ts.isConditionalExpression(n)) {
-          const cond = unwrapExpr(n.condition) // TS 包装 `(true as const)` 同样剥（codex r19 P3）
-          if (cond.kind === ts.SyntaxKind.TrueKeyword) return constant(n.whenTrue)
-          if (cond.kind === ts.SyntaxKind.FalseKeyword) return constant(n.whenFalse)
-          return null
-        }
-        if (ts.isTemplateExpression(n)) {
-          let out = n.head.text
-          for (const span of n.templateSpans) {
-            const v = constant(span.expression)
-            if (v === null) return null
-            out += v + span.literal.text
-          }
-          return out
-        }
-        if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.PlusToken) {
-          const l = constant(n.left)
-          const r = l === null ? null : constant(n.right)
-          return l !== null && r !== null ? l + r : null
-        }
-        return null
-      }
+      /** 常量求值：与说明符侧同一实现（GLM r19 P3：两份等价实现日后会漂移） */
+      const constant = staticSpec
       /**
        * 本节点作为一个扫描单元的文本；不是字符串类节点返回 null。
        * 带未知插值的模板：静态片段之间放哨兵 `\u0000`（非空白，签名里的 `\s*` 跨不过去，codex r4 P2），
@@ -2851,7 +2824,7 @@ describe('#289 新客客单价 WorkFine 分支（两端逐字一致 + legacy 片
   let analystOptions: ts.CompilerOptions | undefined
   /** JSON 与前端静态资源（bundler 资源 loader 处理，不作为 JS 执行）——扩展名闭集 */
   // 与 Next.js 原生静态导入类型对齐（codex r20 P2：漏项会让正常新增资源导入误红）
-  const ASSET_EXT = /\.(json|css|scss|sass|less|png|jpe?g|gif|svg|webp|avif|bmp|ico|woff2?|ttf|otf|eot)$/i
+  const ASSET_EXT = /\.(json|css|scss|sass|less|png|jpe?g|gif|svg|webp|avif|bmp|ico|woff2?|ttf|otf|eot|mp4|webm|mov|mp3|wav|flac|aac)$/i
 
   /**
    * 生产代码不得加载「扫描看不见」的文件（GLM r17/r18、codex r19 P2）：
@@ -2860,7 +2833,7 @@ describe('#289 新客客单价 WorkFine 分支（两端逐字一致 + legacy 片
    *   - `#` 子路径导入（package.json `imports` 字段可把任意名字映射到任意文件；现存零处）
    * 说明符先常量求值（拼接 / TS 包装 / 字面量条件），再按所属项目的模块规则解析到最终文件、取 realpath 判定；
    * 解析不到（目标尚不存在等）时按所属项目的字面路径兜底，不放行。
-   * ⚠ 射程：非常量说明符（网关 `require('./routes/' + module)` 是合法存量）、`require.resolve` / `module.require` /
+   * ⚠ 射程：`@db/*` 等指向四个扫描根之外（db/）的 paths 别名；非常量说明符（网关 `require('./routes/' + module)` 是合法存量）、`require.resolve` / `module.require` /
    *   `globalThis.require` 等成员形式、`.json` 数据文件里承载的 SQL 文本，均不在本条射程。
    */
   function skippedImportOffenders(files: Array<[string, string]>): string[] {
