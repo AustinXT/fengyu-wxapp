@@ -9,9 +9,18 @@ on:
       # 预构建产物（package.json 的 export-worker 直跑它）：单独被换回旧版时要让新鲜度守护跑一遍（#298）
       - 'fengyu-admin/dist/export-worker.mjs'
       - 'fengyu-staff/cloudfunctions/**/*.js'
-      # 经营分析站的在营口径副本由 staffApi 的 cross-end-store-active-snapshot 守护（#421）；
-      # analyst 自己的 vitest 不进 CI（#382），只改 analyst 的 PR 不加这条就一条守护都不跑。
+      # 经营分析站：analyst 全量 vitest（analyst-tests job，#436）+ staffApi 的
+      # cross-end-store-active-snapshot（#421）。依赖清单 / vitest 与 tsconfig 路径配置
+      # 同样左右测试收集与模块解析，一并触发（理由同下方 admin / 云函数依赖清单）。
       - 'fengyu-analyst/src/**'
+      - 'fengyu-analyst/package.json'
+      - 'fengyu-analyst/package-lock.json'
+      - 'fengyu-analyst/vitest.*'
+      - 'fengyu-analyst/tsconfig.json'
+      - 'fengyu-analyst/.npmrc'
+      # analyst-tests 会在 db/ 里 npm ci（drizzle-orm/pg-core 从那里解析），只升 db 依赖的 PR 也要跑一遍
+      - 'db/package.json'
+      - 'db/package-lock.json'
       - 'fengyu-client/cloudfunctions/**/*.js'
       - 'scripts/lint-cas-guards.mjs'
       - '.claude/skills/remote-deploy/**'
@@ -141,6 +150,30 @@ jobs:
       # meta-guard 反向锁住。
       - name: Run staffApi full test suite (含全部 cross-end / cross-copy 守护)
         working-directory: fengyu-staff/cloudfunctions/staffApi
+        run: npx vitest run
+
+  # 经营分析站（#436，先落 #382 的 analyst 这一块）：此前 analyst 的 vitest 从不进 CI，
+  # #421 的 AST / 行为守护、#436 的 scope 最后一跳守护都只在本地跑得到。
+  # 跑全量、不点名文件（理由同上面 staffApi job）；全部 mock 了 db，不碰数据库，本地约 2 秒。
+  analyst-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install analyst deps
+        working-directory: fengyu-analyst
+        run: npm ci
+      # analyst 直接 import `../../../db/schema/org`，那里的 `drizzle-orm/pg-core` 按 node 规则
+      # 从 db/ 目录向上找 node_modules —— 只装 analyst 的依赖会整文件加载失败（同 admin job 的说明）。
+      - name: Install db schema deps
+        working-directory: db
+        run: npm ci --omit=dev
+      - name: Run analyst full test suite (含 #421 在营口径 / #436 scope 最后一跳守护)
+        working-directory: fengyu-analyst
         run: npx vitest run
 
   # 三份副本里的第三份（前端净化器）。cart.test.ts 的闭环守护 require 真实云函数
