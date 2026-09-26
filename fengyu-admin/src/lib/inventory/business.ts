@@ -211,6 +211,8 @@ export interface CreateStoreReplenishmentInput {
    * 提交时转「已完成」。缺省为新建。
    */
   draftId?: string | null
+  /** 草稿乐观锁（#348）：打开草稿时拿到的 updatedAt；与库里不一致即 CONFLICT（别人改过） */
+  expectedUpdatedAt?: string | null
 }
 
 export interface StoreReplenishmentSummaryLine {
@@ -252,6 +254,8 @@ export interface CreateMarketReplenishmentInput {
   promotionSelections?: MarketPromotionSelectionInput[]
   /** 提交草稿（#348）：在该草稿单上原单号转「已完成」；缺省为直接新建。 */
   draftId?: string | null
+  /** 草稿乐观锁（#348），同 CreateStoreReplenishmentInput.expectedUpdatedAt */
+  expectedUpdatedAt?: string | null
 }
 
 /**
@@ -268,6 +272,8 @@ export interface SaveMarketReplenishmentDraftInput {
   remark?: string | null
   items: Array<{ skuId: string; purchaseQuantity: number }>
   promotionSelections?: MarketPromotionSelectionInput[]
+  /** 草稿乐观锁（#348），同 CreateStoreReplenishmentInput.expectedUpdatedAt */
+  expectedUpdatedAt?: string | null
 }
 
 export interface MarketPromotionSelectionInput {
@@ -2108,7 +2114,7 @@ export async function createStoreReplenishmentRequest(
   session: AuthSession,
   input: CreateStoreReplenishmentInput,
   options: { asDraft?: boolean } = {},
-): Promise<{ id: string }> {
+): Promise<{ id: string; updatedAt: string | null }> {
   const storeId = required(input.storeId, '门店')
   const marketId = required(input.marketId, '市场')
   const draftId = input.draftId == null ? null : required(input.draftId, '草稿单号')
@@ -2117,7 +2123,7 @@ export async function createStoreReplenishmentRequest(
     throw new ApiError('INVALID_PARAMS', '门店报货至少需要一条明细')
   }
   await syncLocations()
-  const id = await db.transaction(async (tx) => {
+  const { id, updatedAt } = await db.transaction(async (tx) => {
     await assertInventoryBusinessWritable(tx)
     const store = await locationForUpdate(tx, storeId)
     const market = await locationForUpdate(tx, marketId)
@@ -2128,7 +2134,7 @@ export async function createStoreReplenishmentRequest(
     }
     assertLocationWritable(session, store)
     // 锁序：门店 → 市场 → 草稿单（与新建一致，先主体后单据）
-    if (draftId) await lockStoreReplenishmentDraft(tx, draftId, store)
+    if (draftId) await lockStoreReplenishmentDraft(tx, draftId, store, market, input.expectedUpdatedAt)
     const skuIds = new Set<string>()
     const prepared: Array<{ sku: SkuSnapshot; quantity: number; remark: string | null }> = []
     for (const item of input.items) {
@@ -2155,7 +2161,8 @@ export async function createStoreReplenishmentRequest(
                doc_date = ${dateOrToday(input.docDate)},
                remark = ${text(input.remark)},
                confirmed_by = ${asDraft ? null : session.employeeId},
-               confirmed_at = ${asDraft ? null : sql`NOW()`}
+               confirmed_at = ${asDraft ? null : sql`NOW()`},
+               updated_at = NOW()
          WHERE id = ${draftId}
       `)
     } else {
@@ -2195,7 +2202,8 @@ export async function createStoreReplenishmentRequest(
         remark: item.remark,
       })
     }
-    return docId
+    // 回传新版本号：留在编辑态的表单下一次保存拿它做乐观锁（#348）
+    return { id: docId, updatedAt: await docUpdatedAtIso(tx, docId) }
   })
   await logOperation(
     session,
@@ -2207,15 +2215,39 @@ export async function createStoreReplenishmentRequest(
     { storeId, marketId, draftId },
   )
   refreshInventoryPaths()
-  return { id }
+  return { id, updatedAt }
 }
 
 /** 存门店报货草稿（#348）：新建或覆盖，与新建 / 提交同一条写路径。 */
 export async function saveStoreReplenishmentDraft(
   session: AuthSession,
   input: CreateStoreReplenishmentInput,
-): Promise<{ id: string }> {
+): Promise<{ id: string; updatedAt: string | null }> {
   return createStoreReplenishmentRequest(session, input, { asDraft: true })
+}
+
+/** 单据 updated_at 的毫秒 ISO（UTC）：与单据详情下发的 `updatedAt`（Date#toISOString）同精度，供草稿乐观锁比对 */
+async function docUpdatedAtIso(tx: Tx, id: string): Promise<string | null> {
+  const [row] = rows<{ updated_at: string | null }>(await tx.execute(sql`
+    SELECT to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS updated_at
+      FROM inventory_docs
+     WHERE id = ${id}
+  `))
+  return row?.updated_at ?? null
+}
+
+/**
+ * 草稿乐观锁（#348）：草稿同一门店 / 市场的多人都能改，且提交即终态 —— 拿着旧内容提交会把别人刚存的改动
+ * 永久覆盖。调用方传入打开草稿时的 updatedAt，与库里不一致即 CONFLICT。缺省（旧调用方）不校验。
+ */
+async function assertDraftUnchanged(tx: Tx, id: string, expectedUpdatedAt?: string | null): Promise<void> {
+  if (expectedUpdatedAt == null || expectedUpdatedAt === '') return
+  const expected = Date.parse(expectedUpdatedAt)
+  if (Number.isNaN(expected)) throw new ApiError('INVALID_PARAMS', '草稿版本格式不正确')
+  const current = await docUpdatedAtIso(tx, id)
+  if (current === null || Date.parse(current) !== expected) {
+    throw new ApiError('CONFLICT', '草稿已被他人修改，请重新打开后再保存')
+  }
 }
 
 /**
@@ -2224,7 +2256,13 @@ export async function saveStoreReplenishmentDraft(
  * （staffApi 取 FOR KEY SHARE，与 admin 的 FOR UPDATE 互斥），放宽那把锁之前先统一锁序。
  * 草稿的报货门店不可改；带血缘 / 预留的只可能是存量异常单，一律交人工处理。
  */
-async function lockStoreReplenishmentDraft(tx: Tx, draftId: string, store: Location): Promise<DocHeader> {
+async function lockStoreReplenishmentDraft(
+  tx: Tx,
+  draftId: string,
+  store: Location,
+  market: Location | null,
+  expectedUpdatedAt?: string | null,
+): Promise<DocHeader> {
   const draft = await docForUpdate(tx, draftId)
   if (draft.docType !== '门店报货') throw new ApiError('NOT_FOUND', '门店报货草稿不存在')
   if (draft.status !== '草稿') {
@@ -2236,6 +2274,12 @@ async function lockStoreReplenishmentDraft(tx: Tx, draftId: string, store: Locat
   if (draft.sourceOrgNodeId !== store.orgNodeId) {
     throw new ApiError('INVALID_PARAMS', '草稿的报货门店不能修改')
   }
+  // 草稿存续期间门店改挂了别的市场：单头的市场归属（汇总 / 配货都按它）不会随状态更新重算，
+  // 提交会把单挂在旧市场上 —— 让人删了按新市场重报（删除不传 market，不受此限）
+  if (market && draft.marketId !== market.orgNodeId) {
+    throw new ApiError('INVALID_STATE', '门店已更换所属市场，请删除该草稿后重新报货')
+  }
+  await assertDraftUnchanged(tx, draftId, expectedUpdatedAt)
   const [linked] = rows<{ linked: boolean }>(await tx.execute(sql`
     SELECT EXISTS (
       SELECT 1 FROM inventory_doc_links WHERE from_doc_id = ${draftId} OR to_doc_id = ${draftId}
@@ -2285,7 +2329,7 @@ export async function deleteStoreReplenishmentDraft(
       parentLocationId: storeRow.parent_location_id,
     }
     assertLocationWritable(session, store)
-    await lockStoreReplenishmentDraft(tx, draftId, store)
+    await lockStoreReplenishmentDraft(tx, draftId, store, null)
     await tx.execute(sql`
       UPDATE inventory_docs
          SET status = '已取消',
@@ -2660,7 +2704,12 @@ function assertMarketPromotionSelectable(session: AuthSession, market: Location)
  * `assertInventoryBusinessWritable` 那把 cutover 全局锁；放宽那把锁之前先统一锁序。
  * 草稿的报货市场不可改 —— 换市场等于换一张单，前端也锁定了市场选择。
  */
-async function lockMarketReplenishmentDraft(tx: Tx, draftId: string, market: Location): Promise<DocHeader> {
+async function lockMarketReplenishmentDraft(
+  tx: Tx,
+  draftId: string,
+  market: Location,
+  expectedUpdatedAt?: string | null,
+): Promise<DocHeader> {
   const draft = await docForUpdate(tx, draftId)
   if (draft.docType !== '市场报货') throw new ApiError('NOT_FOUND', '市场报货草稿不存在')
   if (draft.status !== '草稿') {
@@ -2672,6 +2721,7 @@ async function lockMarketReplenishmentDraft(tx: Tx, draftId: string, market: Loc
   if (draft.marketId !== market.orgNodeId) {
     throw new ApiError('INVALID_PARAMS', '草稿的报货市场不能修改')
   }
+  await assertDraftUnchanged(tx, draftId, expectedUpdatedAt)
   // 本功能产出的草稿不写血缘；带血缘的只可能是存量 / 人工修复的异常单，覆盖明细会撞外键、删除会释放占用，一律交人工处理
   const [linked] = rows<{ linked: boolean }>(await tx.execute(sql`
     SELECT EXISTS (
@@ -2707,7 +2757,7 @@ export async function createMarketReplenishment(
     assertType(supplyChain, '总部', '供应链库存主体')
     assertLocationWritable(session, market)
     if ((input.promotionSelections?.length ?? 0) > 0) assertMarketPromotionSelectable(session, market)
-    if (draftId) await lockMarketReplenishmentDraft(tx, draftId, market)
+    if (draftId) await lockMarketReplenishmentDraft(tx, draftId, market, input.expectedUpdatedAt)
     const seenRequestItems = new Set<number>()
     const docDate = dateOrToday(input.docDate)
     const prepared: Array<{
@@ -2804,7 +2854,8 @@ export async function createMarketReplenishment(
                doc_date = ${docDate},
                remark = ${text(input.remark)},
                confirmed_by = ${session.employeeId},
-               confirmed_at = NOW()
+               confirmed_at = NOW(),
+               updated_at = NOW()
          WHERE id = ${draftId}
       `)
     } else {
@@ -2882,7 +2933,7 @@ export async function createMarketReplenishment(
 export async function saveMarketReplenishmentDraft(
   session: AuthSession,
   input: SaveMarketReplenishmentDraftInput,
-): Promise<{ id: string }> {
+): Promise<{ id: string; updatedAt: string | null }> {
   const marketId = required(input.marketId, '市场')
   const supplyChainLocationId = required(input.supplyChainLocationId, '供应链库存主体')
   const draftId = input.draftId == null ? null : required(input.draftId, '草稿单号')
@@ -2901,7 +2952,7 @@ export async function saveMarketReplenishmentDraft(
     lines.push({ skuId, purchaseQuantity: positive(line.purchaseQuantity, '实际采购数量') })
   }
   await syncLocations()
-  const id = await db.transaction(async (tx) => {
+  const { id, updatedAt } = await db.transaction(async (tx) => {
     await assertInventoryBusinessWritable(tx)
     const market = await locationForUpdate(tx, marketId)
     const supplyChain = await locationForUpdate(tx, supplyChainLocationId)
@@ -2909,7 +2960,7 @@ export async function saveMarketReplenishmentDraft(
     assertType(supplyChain, '总部', '供应链库存主体')
     assertLocationWritable(session, market)
     if ((input.promotionSelections?.length ?? 0) > 0) assertMarketPromotionSelectable(session, market)
-    if (draftId) await lockMarketReplenishmentDraft(tx, draftId, market)
+    if (draftId) await lockMarketReplenishmentDraft(tx, draftId, market, input.expectedUpdatedAt)
     const docDate = dateOrToday(input.docDate)
     const skus = new Map<string, SkuSnapshot>()
     for (const line of lines) {
@@ -2932,7 +2983,8 @@ export async function saveMarketReplenishmentDraft(
         UPDATE inventory_docs
            SET target_org_node_id = ${supplyChain.orgNodeId},
                doc_date = ${docDate},
-               remark = ${text(input.remark)}
+               remark = ${text(input.remark)},
+               updated_at = NOW()
          WHERE id = ${draftId}
       `)
     } else {
@@ -2959,14 +3011,14 @@ export async function saveMarketReplenishmentDraft(
         ...marketReportItemPriceFields(skus.get(line.skuId)!, line.purchaseQuantity, quote),
       })
     }
-    return docId
+    return { id: docId, updatedAt: await docUpdatedAtIso(tx, docId) }
   })
   await logOperation(session, 'inventory.market_request.save_draft', 'inventory_docs', id, {
     marketId,
     created: !draftId,
   })
   refreshInventoryPaths()
-  return { id }
+  return { id, updatedAt }
 }
 
 /**

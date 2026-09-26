@@ -1841,6 +1841,8 @@ function StoreRequestForm({
   const [loadingDraft, setLoadingDraft] = useState(false)
   /** 正在编辑的草稿单号（#348）。非空时报货门店锁定，「提交」在该草稿上转已完成。 */
   const [draftId, setDraftId] = useState<string | null>(null)
+  /** 草稿版本（updatedAt），同 MarketReportForm */
+  const [draftVersion, setDraftVersion] = useState<string | null>(null)
   /** 表单世代（同 MarketReportForm）：迟到的回填 / 存草稿响应在世代变化后丢弃。 */
   const epochRef = useRef(0)
   useEffect(() => {
@@ -1865,6 +1867,7 @@ function StoreRequestForm({
     epochRef.current += 1
     setLoadingDraft(false)
     setDraftId(null)
+    setDraftVersion(null)
     setDocDate(today)
     setRemark('')
     setLines([{ skuId: '', quantity: '1', remark: '' }])
@@ -1893,6 +1896,7 @@ function StoreRequestForm({
       const currentDate = today()
       if (draftDate < currentDate) toast.info(`报货日期已从草稿的 ${draftDate} 更新为今天`)
       setDraftId(detail.id)
+      setDraftVersion(detail.updatedAt)
       setStoreId(store.locationId)
       setMarketId(store.parentLocationId ?? '')
       setDocDate(draftDate < currentDate ? currentDate : draftDate)
@@ -1915,7 +1919,8 @@ function StoreRequestForm({
   }, [prefillToken])
 
   async function submit(asDraft = false) {
-    if (saving) return
+    // 回填在途时按回车也会触发 form submit：别把半截表单当新单建出去
+    if (saving || loadingDraft) return
     if (!storeId || !marketId) {
       toast.error('请选择报货门店和市场')
       return
@@ -1939,11 +1944,15 @@ function StoreRequestForm({
         remark: optionalText(remark),
         items: items.map((item) => ({ ...item, quantity: item.quantity! })),
         draftId,
+        expectedUpdatedAt: draftVersion,
       }
       if (asDraft) {
         const result = await saveStoreReplenishmentDraft(input)
         // 存完留在编辑态；世代变了（期间回填了别的草稿 / 退出编辑）就不写回单号
-        if (epoch === epochRef.current) setDraftId(result.id)
+        if (epoch === epochRef.current) {
+          setDraftId(result.id)
+          setDraftVersion(result.updatedAt)
+        }
         onSuccess(`门店报货草稿已保存：${result.id}（未提交，市场暂不可汇总）`)
       } else {
         const result = await createStoreReplenishmentRequest(input)
@@ -1975,8 +1984,9 @@ function StoreRequestForm({
             value={storeId}
             onChange={selectStore}
             placeholder="请选择门店"
-            // 草稿的报货门店不可改（服务端 lockStoreReplenishmentDraft 同口径）
-            disabled={draftId !== null}
+            // 草稿的报货门店不可改（服务端 lockStoreReplenishmentDraft 同口径）；保存在途也不许换，
+            // 否则新草稿的单号回来时门店已经不是存的那个
+            disabled={draftId !== null || saving}
           />
         </FormField>
         <FormField label="所属市场" required>
@@ -1991,7 +2001,7 @@ function StoreRequestForm({
             }}
             placeholder="请选择市场"
             autoSelect={false}
-            disabled={draftId !== null}
+            disabled={draftId !== null || saving}
           />
         </FormField>
         <FormField label="报货日期">
@@ -2218,6 +2228,8 @@ function MarketReportForm({
   const [saving, setSaving] = useState(false)
   /** 正在编辑的草稿单号（#348）。非空时报货市场锁定，「提交」在该草稿上转已完成。 */
   const [draftId, setDraftId] = useState<string | null>(null)
+  /** 草稿版本（updatedAt）：保存 / 提交时回传做乐观锁，别人改过就 CONFLICT（#348） */
+  const [draftVersion, setDraftVersion] = useState<string | null>(null)
   const [quoteFailed, setQuoteFailed] = useState(false)
   const quoteRequestRef = useRef(0)
   /*
@@ -2299,6 +2311,7 @@ function MarketReportForm({
   function resetForm() {
     bumpEpoch()
     setDraftId(null)
+    setDraftVersion(null)
     setLines([])
     setQuoteResult(null)
     setRemark('')
@@ -2362,6 +2375,7 @@ function MarketReportForm({
       const currentDate = today()
       if (draftDate < currentDate) toast.info(`报货日期已从草稿的 ${draftDate} 更新为今天`)
       setDraftId(detail.id)
+      setDraftVersion(detail.updatedAt)
       setMarketId(draftMarketId)
       setSupplyChainLocationId(supplyChain?.locationId ?? '')
       setDocDate(draftDate < currentDate ? currentDate : draftDate)
@@ -2479,6 +2493,7 @@ function MarketReportForm({
     try {
       const result = await saveMarketReplenishmentDraft({
         draftId,
+        expectedUpdatedAt: draftVersion,
         marketId,
         supplyChainLocationId,
         docDate: optionalText(docDate),
@@ -2488,7 +2503,10 @@ function MarketReportForm({
       })
       // 存完留在编辑态：同一张草稿可以接着改、再存或直接提交。
       // 世代已变（期间回填了别的草稿 / 退出编辑）就不能再把这个单号写回表单
-      if (epoch === epochRef.current) setDraftId(result.id)
+      if (epoch === epochRef.current) {
+        setDraftId(result.id)
+        setDraftVersion(result.updatedAt)
+      }
       onSuccess(`市场报货草稿已保存：${result.id}（未提交，不进入下游）`)
     } catch (error) {
       toast.error(actionErrorMessage(error, '保存市场报货草稿失败'))
@@ -2533,6 +2551,7 @@ function MarketReportForm({
         items: items.map((item) => ({ ...item, purchaseQuantity: item.purchaseQuantity! })),
         promotionSelections: currentPromotionSelections(),
         draftId,
+        expectedUpdatedAt: draftVersion,
       })
       onSuccess(draftId ? `市场报货草稿已提交：${result.id}` : `市场报货单已创建：${result.id}`)
       if (epoch === epochRef.current) resetForm()

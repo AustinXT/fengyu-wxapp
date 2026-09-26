@@ -4357,7 +4357,7 @@ describe('市场报货草稿（#348）', () => {
     })).rejects.toThrow('PERMISSION_DENIED: 无权切换市场报货福利方案')
     // 不改选福利（系统推荐）时照常可存 —— 前端只回传人工改选的行，系统推荐不传（见办理台用例「只回传人工改选的福利」）
     mockDraftTx(null)
-    await expect(saveMarketReplenishmentDraft(MIXED, { ...input, promotionSelections: undefined })).resolves.toEqual({ id: expect.stringMatching(/^MBH-/) })
+    await expect(saveMarketReplenishmentDraft(MIXED, { ...input, promotionSelections: undefined })).resolves.toMatchObject({ id: expect.stringMatching(/^MBH-/) })
   })
 
   it('入参守卫：空明细、重复商品、非正数量、无价格权限改选福利', async () => {
@@ -4402,6 +4402,7 @@ describe('门店报货草稿（#348）', () => {
         return [{ location_id: id, org_node_id: id, location_type: '门店', name: `门店 ${id}`, parent_location_id: 'M1', is_active: true }]
       }
       if (rendered.includes('SELECT source_org_node_id FROM inventory_docs')) return draft ? [{ source_org_node_id: draft.source_org_node_id }] : []
+      if (rendered.includes('to_char(updated_at')) return [{ updated_at: '2026-09-26T01:02:03.456Z' }]
       if (rendered.includes('FROM inventory_doc_links WHERE from_doc_id')) return [{ linked }]
       if (rendered.includes('FROM inventory_docs') && rendered.includes('FOR UPDATE')) return draft ? [draft] : []
       if (rendered.includes('FROM inventory_skus')) return [marketSkuRow(String(params[0]))]
@@ -4459,6 +4460,33 @@ describe('门店报货草稿（#348）', () => {
       await expect(saveStoreReplenishmentDraft(SESSION, { ...input, draftId: 'DBH-D1' })).rejects.toThrow(error)
       expect(rendered().some((text) => text.includes('DELETE FROM inventory_doc_items')), String(error)).toBe(false)
     }
+  })
+
+  it('乐观锁：打开草稿后别人改过（updatedAt 不一致）→ CONFLICT 且不动明细；一致放行并回传新版本', async () => {
+    const stale = mockStoreDraftTx(STORE_DRAFT)
+    await expect(saveStoreReplenishmentDraft(SESSION, { ...input, draftId: 'DBH-D1', expectedUpdatedAt: '2026-09-26T01:00:00.000Z' }))
+      .rejects.toThrow('CONFLICT: 草稿已被他人修改')
+    expect(stale.rendered().some((text) => text.includes('DELETE FROM inventory_doc_items'))).toBe(false)
+    mockStoreDraftTx(STORE_DRAFT)
+    await expect(createStoreReplenishmentRequest(SESSION, { ...input, draftId: 'DBH-D1', expectedUpdatedAt: '2026-09-26T01:00:00.000Z' }))
+      .rejects.toThrow('CONFLICT: 草稿已被他人修改')
+    mockStoreDraftTx(STORE_DRAFT)
+    // 同一时刻的不同写法（+08:00）按时刻比较
+    await expect(saveStoreReplenishmentDraft(SESSION, { ...input, draftId: 'DBH-D1', expectedUpdatedAt: '2026-09-26T09:02:03.456+08:00' }))
+      .resolves.toEqual({ id: 'DBH-D1', updatedAt: '2026-09-26T01:02:03.456Z' })
+    mockStoreDraftTx(STORE_DRAFT)
+    await expect(saveStoreReplenishmentDraft(SESSION, { ...input, draftId: 'DBH-D1', expectedUpdatedAt: 'abc' }))
+      .rejects.toThrow(/^INVALID_PARAMS: /)
+  })
+
+  it('草稿存续期间门店改挂了别的市场 → INVALID_STATE（提交会把单挂在旧市场）', async () => {
+    const { rendered } = mockStoreDraftTx({ ...STORE_DRAFT, market_id: 'M-OLD', target_org_node_id: 'M-OLD' })
+    await expect(createStoreReplenishmentRequest(SESSION, { ...input, draftId: 'DBH-D1' }))
+      .rejects.toThrow('INVALID_STATE: 门店已更换所属市场，请删除该草稿后重新报货')
+    expect(rendered().some((text) => text.includes('UPDATE inventory_docs'))).toBe(false)
+    // 删除不受此限（旧市场的草稿要能清掉）
+    mockStoreDraftTx({ ...STORE_DRAFT, market_id: 'M-OLD', target_org_node_id: 'M-OLD' })
+    await expect(deleteStoreReplenishmentDraft(SESSION, { draftId: 'DBH-D1' })).resolves.toEqual({ id: 'DBH-D1' })
   })
 
   it('删除草稿 = 已取消（原因、删除人、updated_at），不校验门店是否启用；越权门店拒绝', async () => {

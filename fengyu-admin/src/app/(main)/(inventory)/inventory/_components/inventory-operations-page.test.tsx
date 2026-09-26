@@ -2887,7 +2887,7 @@ describe('市场报货草稿（#348）', () => {
   it('存草稿：新建时不带 draftId、不传来源明细，存完留在编辑态且下次覆盖同一张', async () => {
     mockDocs({})
     vi.mocked(summarizeStoreReplenishmentRequests).mockResolvedValue({ marketId: 'M1', items: [summaryLine('SKU-1', [11], 4)] })
-    vi.mocked(saveMarketReplenishmentDraft).mockResolvedValue({ id: 'MBH-D9' })
+    vi.mocked(saveMarketReplenishmentDraft).mockResolvedValue({ id: 'MBH-D9', updatedAt: '2026-09-26T01:00:00.000Z' })
     renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1] })
 
     fireEvent.click(await screen.findByRole('button', { name: '汇总门店报货' }))
@@ -2935,7 +2935,7 @@ describe('市场报货草稿（#348）', () => {
   it('存草稿在途：待办「继续编辑」不响应；在途期间换了市场，迟到的单号不写回表单', async () => {
     mockDocs({ inbox: segment([draftRow()]) })
     vi.mocked(summarizeStoreReplenishmentRequests).mockResolvedValue({ marketId: 'M1', items: [summaryLine('SKU-1', [11], 4)] })
-    const slowSave = deferred<{ id: string }>()
+    const slowSave = deferred<{ id: string; updatedAt: string | null }>()
     vi.mocked(saveMarketReplenishmentDraft).mockReturnValue(slowSave.promise)
     vi.mocked(getInventoryCoreDocById).mockResolvedValue(draftDetail([{ skuId: 'SKU-1', quantity: 3 }]))
     renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1, M2] })
@@ -2954,7 +2954,7 @@ describe('市场报货草稿（#348）', () => {
     // 在途期间换市场 = 新世代：迟到的保存结果不能把单号写回（否则下一次「提交」会落到那张单上）
     fireEvent.click(screen.getByRole('tab', { name: '填报表单' }))
     fireEvent.change(marketSelect, { target: { value: 'M2' } })
-    await act(async () => { slowSave.resolve({ id: 'MBH-OLD' }) })
+    await act(async () => { slowSave.resolve({ id: 'MBH-OLD', updatedAt: null }) })
     expect(screen.queryByText('MBH-OLD', { selector: 'span.font-mono' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '创建市场报货单' })).toBeInTheDocument()
   })
@@ -2962,7 +2962,7 @@ describe('市场报货草稿（#348）', () => {
   it('无市场价格权限（marketPriceLocationIds=[]）：不取福利报价，存草稿不带福利选择', async () => {
     mockDocs({})
     vi.mocked(summarizeStoreReplenishmentRequests).mockResolvedValue({ marketId: 'M1', items: [summaryLine('SKU-1', [11], 4)] })
-    vi.mocked(saveMarketReplenishmentDraft).mockResolvedValue({ id: 'MBH-D9' })
+    vi.mocked(saveMarketReplenishmentDraft).mockResolvedValue({ id: 'MBH-D9', updatedAt: '2026-09-26T01:00:00.000Z' })
     renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1], marketPriceLocationIds: [] })
     fireEvent.click(await screen.findByRole('button', { name: '汇总门店报货' }))
     await screen.findByRole('checkbox', { name: '选择 商品SKU-1 SKU-1' })
@@ -2974,7 +2974,7 @@ describe('市场报货草稿（#348）', () => {
   it('价格权只覆盖别的市场（办理 A、价格权在 B）：在 A 市场不取价、不带福利选择（与服务端同绑定判据同源）', async () => {
     mockDocs({})
     vi.mocked(summarizeStoreReplenishmentRequests).mockResolvedValue({ marketId: 'M1', items: [summaryLine('SKU-1', [11], 4)] })
-    vi.mocked(saveMarketReplenishmentDraft).mockResolvedValue({ id: 'MBH-D9' })
+    vi.mocked(saveMarketReplenishmentDraft).mockResolvedValue({ id: 'MBH-D9', updatedAt: '2026-09-26T01:00:00.000Z' })
     renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1], marketPriceLocationIds: ['M2'] })
     fireEvent.click(await screen.findByRole('button', { name: '汇总门店报货' }))
     await screen.findByRole('checkbox', { name: '选择 商品SKU-1 SKU-1' })
@@ -2993,7 +2993,7 @@ describe('市场报货草稿（#348）', () => {
         promotionRuleType: '单品阶梯', recommendedPromotionPlanId: 'P-REC', selectionMode: '系统推荐',
       })),
     }) as never)
-    vi.mocked(saveMarketReplenishmentDraft).mockResolvedValue({ id: 'MBH-D9' })
+    vi.mocked(saveMarketReplenishmentDraft).mockResolvedValue({ id: 'MBH-D9', updatedAt: '2026-09-26T01:00:00.000Z' })
     renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1] })
     fireEvent.click(await screen.findByRole('button', { name: '汇总门店报货' }))
     await screen.findByText('FL-1 · 推荐福利')
@@ -3056,7 +3056,7 @@ describe('门店报货草稿（#348 · 348a）', () => {
   it('继续编辑：回填门店 / 市场 / 明细并锁定门店，提交带 draftId', async () => {
     mockDocs({ inbox: segment([draftRow()]) })
     vi.mocked(getInventoryCoreDocById).mockResolvedValue(draftDetail())
-    vi.mocked(createStoreReplenishmentRequest).mockResolvedValue({ id: 'DBH-D1' })
+    vi.mocked(createStoreReplenishmentRequest).mockResolvedValue({ id: 'DBH-D1', updatedAt: null })
     renderPage({ level: 'store', operation: 'store-request', locations: [M1, S1, S2] })
     await openDocsTab()
     expect(screen.getByText('草稿：存了未提交的门店报货单，提交后市场才能汇总、配货')).toBeInTheDocument()
@@ -3071,13 +3071,15 @@ describe('门店报货草稿（#348 · 348a）', () => {
       storeId: 'S1', marketId: 'M1', docDate: expect.any(String), remark: '门店草稿',
       items: [{ skuId: 'SKU-1', quantity: 3, remark: '急用' }],
       draftId: 'DBH-D1',
+      // 草稿乐观锁：回传打开草稿时的版本
+      expectedUpdatedAt: draftRow().updatedAt,
     }))
   })
 
   it('存草稿走 saveStoreReplenishmentDraft，存完停在编辑态', async () => {
     mockDocs({ inbox: segment([draftRow()]) })
     vi.mocked(getInventoryCoreDocById).mockResolvedValue(draftDetail())
-    vi.mocked(saveStoreReplenishmentDraft).mockResolvedValue({ id: 'DBH-D1' })
+    vi.mocked(saveStoreReplenishmentDraft).mockResolvedValue({ id: 'DBH-D1', updatedAt: '2026-09-26T02:00:00.000Z' })
     renderPage({ level: 'store', operation: 'store-request', locations: [M1, S1] })
     await openDocsTab()
     fireEvent.click(screen.getByRole('button', { name: '继续编辑 DBH-D1' }))
