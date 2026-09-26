@@ -394,19 +394,19 @@ describe('dist/export-worker.mjs 新鲜度 · 进出明细导出接线（#360）
     }
     return null
   }
+  /** 被导入模块 → 产物区段；找不到模块头 / 区段仅含空白都返回 null，交给比较器按「找不到区段」fail-closed */
+  const buildDistSegmentOfImport = (file: string, dist: string) => (specifier: string): string | null => {
+    const target = resolveImportFile(file, specifier)
+    if (!target) return null
+    const lines = moduleSegments(dist, target, true)
+    return lines.some((line) => line.trim() !== '') ? lines.join('\n') : null
+  }
   const equivalenceIssues = (file: string, only?: readonly string[]) => {
     const dist = fs.readFileSync(DIST, 'utf-8')
-    const segment = (target: string) => moduleSegments(dist, target, true).join('\n')
     return compareModuleRuntime({
       sourceCode: fs.readFileSync(path.join(ADMIN_ROOT, file), 'utf-8'),
-      distCode: segment(file),
-      distSegmentOfImport: (specifier) => {
-        const target = resolveImportFile(file, specifier)
-        if (!target) return null
-        // 找不到模块头 / 区段为空都返回 null，交给比较器按「找不到区段」fail-closed
-        const lines = moduleSegments(dist, target, true)
-        return lines.some((line) => line.trim() !== '') ? lines.join('\n') : null
-      },
+      distCode: moduleSegments(dist, file, true).join('\n'),
+      distSegmentOfImport: buildDistSegmentOfImport(file, dist),
       only,
     })
   }
@@ -434,12 +434,7 @@ describe('dist/export-worker.mjs 新鲜度 · 进出明细导出接线（#360）
     const issues = compareModuleRuntime({
       sourceCode: `import '@/lib/menu'\n${fs.readFileSync(path.join(ADMIN_ROOT, file), 'utf-8')}`,
       distCode: moduleSegments(dist, file, true).join('\n'),
-      distSegmentOfImport: (specifier) => {
-        const target = resolveImportFile(file, specifier)
-        if (!target) return null
-        const lines = moduleSegments(dist, target, true)
-        return lines.some((line) => line.trim() !== '') ? lines.join('\n') : null
-      },
+      distSegmentOfImport: buildDistSegmentOfImport(file, dist),
     })
     expect(issues.join('\n')).toMatch(/找不到 @\/lib\/menu 在产物里的模块区段/)
   })
