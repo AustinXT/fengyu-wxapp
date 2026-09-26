@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { describe, it, expect, beforeAll } from 'vitest'
+import ts from 'typescript'
 
 /**
  * dist/export-worker.mjs 新鲜度守护。
@@ -113,7 +114,8 @@ function uncomment(line: string): string {
  * 前提：模块头是 bun 写的行首 `// src/…` / `// node_modules/…` / `// ../…` 注释；被守护的源文件自己不要写这种行首注释
  * （会被误当模块头截断区段，表现为误红，方向是 fail-closed）。bun 升级改了注释格式时这里要跟着改。
  */
-function moduleSegments(dist: string, file: string): string[] {
+/** `keepIndent`：AST 规范化比对要保留原始行（模板字面量里的缩进是 SQL 原文的一部分） */
+function moduleSegments(dist: string, file: string, keepIndent = false): string[] {
   const lines = dist.split('\n')
   const out: string[] = []
   let inside = false
@@ -122,7 +124,7 @@ function moduleSegments(dist: string, file: string): string[] {
       inside = line === `// ${file}`
       continue
     }
-    if (inside) out.push(line.trim())
+    if (inside) out.push(keepIndent ? line : line.trim())
   }
   return out
 }
@@ -409,85 +411,94 @@ describe('dist/export-worker.mjs 新鲜度 · 进出明细导出接线（#360）
     ]],
   ]
   /**
-   * bun 对 JS 行的改写是固定几类：import 别名前缀、局部变量加数字后缀、去类型标注、单双引号、行尾 `;` `,`、
-   * 把 `if (…) x` 拆成两行（后者由 sqlBuilders 拼回，谓词保留参与比对）。归一掉这些再比对，就能把「单行 sql`` 条件」与「WHERE ${…} 接线」也纳入闭集
-   * （codex round-2 P2：源码改成 `WHERE TRUE` 而不重建时，只比多行模板正文的探针会照绿）。
+   * 把「源码里的某个函数 / 常量」与「产物里 bun 改写后的同一段」做 **AST 规范化打印** 后整体比对
+   * （codex round-2~4：逐行文本归一既会 fail-open —— 删行尾标点连 SQL 模板里的也删了 ——
+   * 又会误红 —— 行尾 / 块注释 bun 会删而源码侧还在）。做法：
+   *   - 源码先 transpileModule（去类型、去注释），两侧都用 TS 解析成 AST；
+   *   - 只改写 bun 的三类固定差异：`import_drizzle_ormN.x` → `x`、局部变量 `conditionsN` → `conditions`、字符串引号；
+   *   - printer（removeComments）统一输出 —— 分号、`if` 拆行、尾逗号、模板外注释全部由打印器抹平；
+   *   - **模板字面量（SQL 原文，含其中的 `--` 注释）逐字保留**，SQL 里多一个分号、少一个逗号都会红。
+   * bun 若改变局部变量改名策略（例如别的变量也加后缀），这里会**误红而非漏报** —— fail-closed。
    */
-  const normalizeJs = (line: string) => line.trim()
-    .replace(/import_drizzle_orm\d+\./g, '')
-    .replace(/\b(conditions)\d+\b/g, '$1')
-    .replace(/: SQL\[\]/g, '')
-    .replace(/'/g, '"')
-    .replace(/[;,]$/, '')
-  /**
-   * 取 inventoryMovementWhereSql → inventoryMovementCountSql 三个 SQL 构造函数的**有序**函数体做整体比对：
-   * `if` 谓词与它控制的 `conditions.push(...)` 一起比（codex round-3 P2：只比 push 行时，源码把
-   * `if (filters.startDate)` 改成 `if (filters.endDate)` 而不重建，照样全绿）。
-   * 归一：删注释 / 空行 / `type` 声明；函数签名折成 `function <名>`（去掉 TS 参数与返回类型）；
-   * bun 把 `if (…) x` 拆成两行，这里把无 `{` 的 `if (…)` 行与下一行拼回去。
-   */
-  /** 纯 `if (…)` 头：条件括号在行尾恰好闭合、后面没有语句（bun 拆出来的那半行） */
-  const isBareIfHeader = (line: string) => {
-    if (!line.startsWith('if (')) return false
-    let depth = 0
-    for (let index = 3; index < line.length; index += 1) {
-      if (line[index] === '(') depth += 1
-      if (line[index] === ')') depth -= 1
-      if (depth === 0) return index === line.length - 1
+  const canonicalize = (code: string, kind: ts.ScriptKind, names: readonly string[]): string[] => {
+    const js = kind === ts.ScriptKind.TS
+      ? ts.transpileModule(code, {
+        compilerOptions: { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.ESNext, removeComments: true },
+      }).outputText
+      : code
+    const sourceFile = ts.createSourceFile('canonical.js', js, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS)
+    const rewrite: ts.TransformerFactory<ts.Node> = (context) => (root) => {
+      const visit = (node: ts.Node): ts.Node => {
+        if (
+          ts.isPropertyAccessExpression(node)
+          && ts.isIdentifier(node.expression)
+          && /^import_drizzle_orm\d+$/.test(node.expression.text)
+        ) {
+          return ts.factory.createIdentifier(node.name.text)
+        }
+        if (ts.isIdentifier(node) && /^conditions\d+$/.test(node.text)) return ts.factory.createIdentifier('conditions')
+        if (ts.isStringLiteral(node)) return ts.factory.createStringLiteral(node.text)
+        // 尾逗号：printer 按原样保留，bun 会去掉 —— 两侧统一去掉（只动 JS 语法层，模板原文不受影响）
+        const visited = ts.visitEachChild(node, visit, context)
+        const plain = <T extends ts.Node>(list: ts.NodeArray<T>) => ts.factory.createNodeArray([...list], false)
+        if (ts.isArrayLiteralExpression(visited)) return ts.factory.updateArrayLiteralExpression(visited, plain(visited.elements))
+        if (ts.isObjectLiteralExpression(visited)) return ts.factory.updateObjectLiteralExpression(visited, plain(visited.properties))
+        if (ts.isCallExpression(visited)) {
+          return ts.factory.updateCallExpression(visited, visited.expression, visited.typeArguments, plain(visited.arguments))
+        }
+        return visited
+      }
+      return ts.visitNode(root, visit) as ts.Node
     }
-    return false
+    const printer = ts.createPrinter({ removeComments: true })
+    return names.map((name) => {
+      // 函数：整条声明（去掉 export）；常量：只比初始化表达式（源码 const、产物 var）
+      let target: ts.Node | undefined
+      for (const statement of sourceFile.statements) {
+        if (ts.isFunctionDeclaration(statement) && statement.name?.text === name) {
+          target = ts.factory.updateFunctionDeclaration(
+            statement, undefined, statement.asteriskToken, statement.name,
+            statement.typeParameters, statement.parameters, statement.type, statement.body,
+          )
+        }
+        if (ts.isVariableStatement(statement)) {
+          const declaration = statement.declarationList.declarations
+            .find((item) => ts.isIdentifier(item.name) && item.name.text === name)
+          if (declaration?.initializer) target = declaration.initializer
+        }
+      }
+      if (!target) return ''
+      const [transformed] = ts.transform(target, [rewrite]).transformed
+      return printer.printNode(ts.EmitHint.Unspecified, transformed, sourceFile)
+    })
   }
-  const sqlBuilders = (lines: string[]) => {
-    const start = lines.findIndex((line) => /function inventoryMovementWhereSql\(/.test(line))
-    const countAt = lines.findIndex((line, index) => index > start && /function inventoryMovementCountSql\(/.test(line))
-    const end = lines.findIndex((line, index) => index > countAt && /^}/.test(line))
-    if (start < 0 || countAt < 0 || end < 0) return []
-    const out: string[] = []
-    let inSignature = false
-    for (const raw of lines.slice(start, end + 1)) {
-      const line = normalizeJs(raw).replace(/^export /, '')
-      if (!line || line.startsWith('//') || line.startsWith('type ')) continue
-      const fn = /^function (\w+)\(/.exec(line)
-      if (fn) {
-        out.push(`function ${fn[1]}`)
-        inSignature = !line.endsWith('{')
-        continue
-      }
-      if (inSignature) {
-        if (line.endsWith('{')) inSignature = false
-        continue
-      }
-      const previous = out[out.length - 1]
-      if (previous && isBareIfHeader(previous)) {
-        out[out.length - 1] = `${previous} ${line}`
-        continue
-      }
-      out.push(line)
-    }
-    return out
-  }
+  const distSegment = (file: string) => moduleSegments(fs.readFileSync(DIST, 'utf-8'), file, true).join('\n')
+  const sourceText = (file: string) => fs.readFileSync(path.join(ADMIN_ROOT, file), 'utf-8')
 
-  it('movements.ts 的 SQL 构造函数（条件谓词 + sql`` + WHERE 接线）逐行有序等于源码（归一 bun 改写后）', () => {
+  const SQL_BUILDERS = ['inventoryMovementWhereSql', 'inventoryMovementSelectSql', 'inventoryMovementCountSql'] as const
+
+  it('movements.ts 的三个 SQL 构造函数（条件谓词 + sql`` 原文 + WHERE 接线）规范化后等于源码', () => {
     const file = 'src/lib/inventory/movements.ts'
-    const src = sqlBuilders(fs.readFileSync(path.join(ADMIN_ROOT, file), 'utf-8').split('\n'))
-    const dist = sqlBuilders(moduleSegments(fs.readFileSync(DIST, 'utf-8'), file))
-    // fail-closed：三个函数体至少包含全部条件、投影与两条 WHERE 接线
-    expect(src.length, '源码里提取到的 SQL 构造函数行数异常，归一规则可能失配').toBeGreaterThanOrEqual(60)
-    expect(src.filter((line) => line.startsWith('if (')).length, '源码条件谓词数异常').toBe(6)
+    const src = canonicalize(sourceText(file), ts.ScriptKind.TS, SQL_BUILDERS)
+    const dist = canonicalize(distSegment(file), ts.ScriptKind.JS, SQL_BUILDERS)
+    // 两侧分别前置断言：提取失配（规则 / bun 版本问题）与内容漂移（没重建）给不同提示
+    // printer 输出的带 tag 模板形如 `sql \`…\``
+    expect(src.every((text) => /\bsql `/.test(text)), '源码里没提取到三个 SQL 构造函数，规范化规则失配').toBe(true)
+    expect(
+      dist.every((text) => /\bsql `/.test(text)),
+      `产物 // ${file} 区段里没提取到三个 SQL 构造函数 —— 先确认是提取规则失配（bun 升级？），再考虑重建${REBUILD_HINT}`,
+    ).toBe(true)
+    expect(src.join('\n').match(/\bif \(/g)?.length, '源码条件谓词数异常').toBe(6)
     expect(dist, `产物 // ${file} 区段的 SQL 构造函数与源码不一致${REBUILD_HINT}`).toEqual(src)
   })
 
-  it('registry.ts 的 inventoryMovementColumns 有序列定义逐行等于源码（归一 bun 改写后）', () => {
-    const block = (lines: string[]) => {
-      const start = lines.findIndex((line) => /(const|var) inventoryMovementColumns = mapColumns\(\[/.test(line))
-      const end = lines.findIndex((line, index) => index > start && /^\]\)/.test(line.trim()))
-      return start < 0 || end < 0 ? [] : lines.slice(start + 1, end).map(normalizeJs).filter(Boolean)
-    }
+  it('registry.ts 的 inventoryMovementColumns 有序列定义规范化后等于源码', () => {
     const file = 'src/export-worker/registry.ts'
-    const src = block(fs.readFileSync(path.join(ADMIN_ROOT, file), 'utf-8').split('\n'))
-    const dist = block(moduleSegments(fs.readFileSync(DIST, 'utf-8'), file))
-    expect(src.length, '源码里没找到 inventoryMovementColumns 的列定义').toBeGreaterThanOrEqual(15)
-    expect(dist, `产物里进出明细导出列与源码不一致（增删 / 换序 / 错接）${REBUILD_HINT}`).toEqual(src)
+    const [src] = canonicalize(sourceText(file), ts.ScriptKind.TS, ['inventoryMovementColumns'])
+    const [dist] = canonicalize(distSegment(file), ts.ScriptKind.JS, ['inventoryMovementColumns'])
+    expect(src.match(/header:/g)?.length, '源码里没找到 inventoryMovementColumns 的列定义').toBe(15)
+    expect(dist, `产物里没提取到 inventoryMovementColumns —— 先确认提取规则${REBUILD_HINT}`).not.toBe('')
+    expect(dist, `产物里进出明细导出列与源码不一致（增删 / 换序 / 错接）${REBUILD_HINT}`).toBe(src)
   })
 
   it.each(SEGMENT_FRAGMENTS)('%s 的 #360 片段在产物模块区段内', (file, fragments) => {

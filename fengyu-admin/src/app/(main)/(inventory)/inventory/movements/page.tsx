@@ -11,6 +11,7 @@ import InventoryMovementsPage from '../_components/inventory-movements-page'
 
 export const dynamic = 'force-dynamic'
 
+/** 本页从 URL 消费的全部键 —— 新增筛选参数必须同步加进来，否则它重复时会被静默当成未传 */
 const QUERY_KEYS = ['location', 'sku', 'batch', 'start', 'end', 'after', 'before', 'size'] as const
 
 const EMPTY_PAGE: InventoryMovementPage = { rows: [], total: 0, hasPrev: false, hasNext: false }
