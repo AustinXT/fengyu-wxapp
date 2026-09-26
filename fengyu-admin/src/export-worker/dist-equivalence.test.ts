@@ -114,15 +114,8 @@ describe('dist-equivalence：bun 的合法改写判为等价', () => {
     )).toEqual([])
   })
 
-  it('顶层 const ≡ var：常量表上的方法调用不会落回本模块函数，不触发 fail-closed', () => {
-    expect(compare(
-      "const T = ['a', 'b']\nconst U = T.filter(Boolean)\nfunction label(): number { return V }\nconst V = 1\nexport const w = [U, label()]",
-      'var T = ["a", "b"];\nvar U = T.filter(Boolean);\nfunction label() { return V; }\nvar V = 1;\nvar w = [U, label()];',
-    )).toEqual([])
-  })
-
-  it('顶层 const ≡ var：初始化器里的引用若延后执行（const A = () => A）不算 TDZ', () => {
-    expect(compare('const A = (): unknown => A\nexport const b = A', 'var A = () => A;\nvar b = A;')).toEqual([])
+  it('顶层 const / let ≡ var 无条件等价（bun 固定转换，TDZ 语义差异不在守护的威胁模型内，见比较器文件头）', () => {
+    expect(compare('export function f() { return A }\nconst probe = f()\nconst A = 1', 'function f() { return A; }\nvar probe = f();\nvar A = 1;')).toEqual([])
   })
 
   it('only：只比指定声明，两侧各恰好一处', () => {
@@ -137,6 +130,8 @@ describe('dist-equivalence：bun 的合法改写判为等价', () => {
     expect(() => only(['c'], 'var c = 1;')).toThrow(/源码里 c 的顶层声明找到 0 处/)
     expect(() => only(['b'], 'var a = 1;')).toThrow(/产物里 b 的顶层声明找到 0 处/)
     expect(() => only(['b'], 'var b = 2;\nvar b2 = 2;')).toThrow(/产物里 b 的顶层声明找到 2 处/)
+    // only 模式下产物残留的内部 import 同样不能被过滤放过
+    expect(only(['b'], 'import"./fx";\nvar b2 = 2;').join('\n')).toMatch(/产物残留非预期的 import/)
   })
 
   it('"use server" 与 init_*() 样板不参与比较', () => {
@@ -275,30 +270,6 @@ describe('dist-equivalence：真实漂移判为不等', () => {
     differs('export function f(o: object) { let a; ({ a = 1 } = o as never); return a }', 'function f(o) { let a; ({ a: a } = o); return a; }')
     // 键改名、默认值相同：局部绑定同步改名也不能掩盖读的是另一个属性
     differs('export function f(o: object) { let a; ({ a = 1 } = o as never); return a }', 'function f(o) { let b; ({ b = 1 } = o); return b; }')
-  })
-
-  it('顶层 const 在声明前被引用时，与 var 不等价（TDZ 抛错 vs undefined）', () => {
-    expect(compare('export function f() { return A }\nconst probe = f()\nconst A = 1', 'function f() { return A; }\nvar probe = f();\nvar A = 1;').join('\n')).toMatch(/可能在初始化完成之前被执行读取/)
-    // 自身初始化器里的自引用、同组靠后声明项的前置引用
-    expect(compare('const A = typeof A\nexport const b = A', 'var A = typeof A;\nvar b = A;').join('\n')).toMatch(/可能在初始化完成之前被执行读取/)
-    expect(compare('const A = B, B = 1\nexport const c = A', 'var A = B, B = 1;\nvar c = A;').join('\n')).toMatch(/可能在初始化完成之前被执行读取/)
-    // 引用写在声明之后、却在初始化期间被执行（初始化器调用了读 A 的本地函数）
-    const tdz = /可能在初始化完成之前被执行读取/
-    expect(compare('const A = read()\nfunction read(): unknown { return A }\nexport const b = A', 'var A = read();\nfunction read() { return A; }\nvar b = A;').join('\n')).toMatch(tdz)
-    // 回调传给未知函数：不能证明延后执行，保守按急切执行（宁可误红不可漏报）
-    // 函数别名链：const alias = read; const A = alias()
-    expect(compare(
-      'function read(): unknown { return A }\nconst alias = read\nconst A = alias()\nexport const b = A',
-      'function read() { return A; }\nvar alias = read;\nvar A = alias();\nvar b = A;',
-    ).join('\n')).toMatch(tdz)
-    // 解析不出的本地可调用对象（本地对象上的方法）：fail-closed
-    expect(compare(
-      'function read(): unknown { return A }\nconst o = { f: read }\nconst A = o.f()\nexport const b = A',
-      'function read() { return A; }\nvar o = { f: read };\nvar A = o.f();\nvar b = A;',
-    ).join('\n')).toMatch(tdz)
-    expect(compare('import { wrap } from "./helpers"\nconst A = wrap(() => A)\nexport const b = A', 'init_helpers();\nvar A = wrap(() => A);\nvar b = A;')).toEqual([
-      'A/VariableDeclarationList: 顶层 A 可能在初始化完成之前被执行读取，const/let → var 不等价',
-    ])
   })
 
   it('私有名 / BigInt 不同', () => {

@@ -21,7 +21,12 @@
  *   - `(…)` 透明；产物侧 `(0, import_pkgN.f)` ≡ `f`（只限命名空间成员 —— `(0, obj.m)` 丢 this、`(0, eval)` 是间接 eval，不归一）；
  *   - `return undefined` ≡ `return`（仅当 `undefined` 是未被遮蔽的全局名）；
  *   - 无替换模板 ≡ 同文字符串；`{ a }` ≡ `{ a: a }`（有默认值 `{ a = 1 }` 时两侧须同为简写且默认值等价）；
- *   - 顶层 `const` / `let` ≡ `var`：仅当没有引用会在它**初始化完成之前被执行**（按急切执行分析，保守；否则 TDZ 与 undefined 行为不同）。
+ *   - 顶层 `const` / `let` ≡ `var`（仅顶层；函数内 let / const / var 仍须逐一相同）。
+ *
+ * 威胁模型：本比较器只回答「产物是不是按当前源码构建的」（防改了源码忘记重建），**不验证 bun 转换本身的语义正确性**。
+ * 顶层 const → var 是 bun 对每个模块都做的固定转换；一份过期产物不可能单靠「const 变 var」这一处差异
+ * 掩盖源码的真实改动 —— 源码任何运行时改动都会在别处的结构 / 字面量 / 绑定上显现。因此这里不做 TDZ 执行时序分析
+ * （#360 round-7~11 曾为此加过急切执行分析，边界无穷且与威胁模型无关，已撤回）。
  *
  * 打包样板单独核对（保序），不是简单忽略：
  *   - 产物 `init_x()` 调用序列 ≡ 按源码导入顺序推出的各内部模块 `init_x` 序列（漏调、多调、重复、顺序不同都算不等）；
@@ -438,11 +443,8 @@ class Comparator {
     if (ts.isVariableDeclarationList(srcNode) && ts.isVariableDeclarationList(distNode)) {
       const kind = (node: ts.VariableDeclarationList) => node.flags & (ts.NodeFlags.Let | ts.NodeFlags.Const)
       if (kind(srcNode) !== kind(distNode)) {
-        if (!topLevel || kind(distNode) !== 0) {
-          this.fail(path, '变量声明种类不同（let / const / var）')
-        } else {
-          this.checkTopLevelVarSafe(path, srcNode)
-        }
+        // 顶层 const / let → var 是 bun 的固定转换，按等价处理（见文件头「威胁模型」）；函数内仍须一致
+        if (!topLevel || kind(distNode) !== 0) this.fail(path, '变量声明种类不同（let / const / var）')
       }
     }
 
@@ -458,149 +460,6 @@ class Comparator {
     })
   }
 
-  /** 源码模块里「急切执行」到的标识符引用及其执行时刻（按源码位置近似顶层执行顺序），见 checkTopLevelVarSafe */
-  private eagerReferences?: Array<{ node: ts.Identifier; time: number }>
-
-  /**
-   * 近似模块顶层的执行时序：
-   *   - 顶层语句按书写顺序执行，引用的执行时刻 = 它自己的位置；
-   *   - 函数体延后执行，不算；
-   *   - 但被急切调用的本地函数（函数声明 / 以函数初始化的变量 / 别名链），以及**传给任何调用的回调**（保守：
-   *     不知道被调方会不会同步调用它，一律按「在调用点执行」处理），其函数体在调用点时刻执行（可传递）；
-   *   - 调用了解析不出、且**可能持有本地可调用对象**的本地绑定（如装了本地函数的对象上的方法）：fail-closed，
-   *     本模块全部函数视为在调用点执行。只装字面量 / 导入 / 全局值的常量表上的方法调用不触发。
-   * 宁可误红不可漏报：不能证明延后执行的，都按急切执行算。
-   */
-  private collectEagerReferences() {
-    if (this.eagerReferences) return this.eagerReferences
-    const references: Array<{ node: ts.Identifier; time: number }> = []
-    const executedAt = new Map<ts.Node, number>()
-    const checker = this.src.checker
-    const isOwnDeclaration = (declaration: ts.Declaration | undefined) =>
-      !!declaration && declaration.getSourceFile() === this.src.sourceFile
-      && !ts.isImportSpecifier(declaration) && !ts.isImportClause(declaration) && !ts.isNamespaceImport(declaration)
-    /**
-     * 本地绑定「可能持有本地可调用对象」：初始化值里（递归追溯引用的本地绑定）出现函数字面量或本地函数。
-     * 只装字面量 / 导入值 / 全局值的数组、对象（如字符串常量表）不会让调用落回本模块函数。
-     */
-    const mayHoldLocalCallable = (declaration: ts.Declaration, seen: Set<ts.Node>): boolean => {
-      if (seen.has(declaration)) return false
-      seen.add(declaration)
-      if (ts.isFunctionDeclaration(declaration) || ts.isClassDeclaration(declaration)) return true
-      if (!ts.isVariableDeclaration(declaration)) return false // 参数等：外部传入
-      if (!declaration.initializer) return false
-      let found = false
-      const scan = (node: ts.Node) => {
-        if (found) return
-        if (ts.isFunctionLike(node) || ts.isClassExpression(node)) {
-          found = true
-          return
-        }
-        if (ts.isIdentifier(node)) {
-          const target = checker.getSymbolAtLocation(node)?.declarations?.[0]
-          if (target && isOwnDeclaration(target) && target !== declaration && mayHoldLocalCallable(target, seen)) found = true
-        }
-        ts.forEachChild(node, scan)
-      }
-      scan(declaration.initializer)
-      return found
-    }
-    /**
-     * 被调用表达式 → 本地函数：函数字面量、函数声明、以函数初始化的变量，以及**别名链**
-     * （const alias = read / const alias = other_alias）。返回 'unknown-local' 表示它是本模块的绑定
-     * （或本地绑定上的属性）但解析不出具体函数 —— 调用方据此 fail-closed。
-     */
-    const localFunction = (callee: ts.Expression, seen = new Set<ts.Node>()): ts.SignatureDeclaration | 'unknown-local' | undefined => {
-      let target: ts.Expression = callee
-      while (ts.isParenthesizedExpression(target)) target = target.expression
-      if (ts.isArrowFunction(target) || ts.isFunctionExpression(target)) return target
-      if (ts.isPropertyAccessExpression(target) || ts.isElementAccessExpression(target)) {
-        let root: ts.Expression = target
-        while (ts.isPropertyAccessExpression(root) || ts.isElementAccessExpression(root)) root = root.expression
-        const rootDeclaration = ts.isIdentifier(root) ? checker.getSymbolAtLocation(root)?.declarations?.[0] : undefined
-        return isOwnDeclaration(rootDeclaration) && mayHoldLocalCallable(rootDeclaration!, new Set()) ? 'unknown-local' : undefined
-      }
-      if (!ts.isIdentifier(target)) return undefined
-      const declaration = checker.getSymbolAtLocation(target)?.declarations?.[0]
-      if (!isOwnDeclaration(declaration) || seen.has(declaration!)) return seen.has(declaration!) ? 'unknown-local' : undefined
-      seen.add(declaration!)
-      if (ts.isFunctionDeclaration(declaration!)) return declaration
-      if (ts.isVariableDeclaration(declaration!) && declaration.initializer) {
-        const init = declaration.initializer
-        if (ts.isArrowFunction(init) || ts.isFunctionExpression(init)) return init
-        if (ts.isIdentifier(init) || ts.isParenthesizedExpression(init)) {
-          return localFunction(init, seen) ?? (mayHoldLocalCallable(declaration!, new Set()) ? 'unknown-local' : undefined)
-        }
-      }
-      if (ts.isParameter(declaration!)) return undefined // 参数：外部传入，按未知外部可调用处理（回调参数另行保守处理）
-      return mayHoldLocalCallable(declaration!, new Set()) ? 'unknown-local' : undefined
-    }
-    /** 本模块全部函数（fail-closed 时整体视为在某时刻执行） */
-    const allLocalFunctions: ts.SignatureDeclaration[] = []
-    const collectFunctions = (node: ts.Node) => {
-      if (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isArrowFunction(node)
-        || ts.isMethodDeclaration(node) || ts.isGetAccessor(node) || ts.isSetAccessor(node)) {
-        allLocalFunctions.push(node)
-      }
-      ts.forEachChild(node, collectFunctions)
-    }
-    collectFunctions(this.src.sourceFile)
-    const run = (fn: ts.SignatureDeclaration, time: number) => {
-      const previous = executedAt.get(fn)
-      if (previous !== undefined && previous <= time) return
-      executedAt.set(fn, time)
-      const body = (fn as ts.FunctionLikeDeclaration).body
-      if (body) visit(body, time)
-    }
-    const visit = (node: ts.Node, inherited: number | null) => {
-      const time = inherited ?? node.getStart()
-      if (ts.isFunctionLike(node)) return // 延后执行，除非被 run 显式执行
-      if (ts.isIdentifier(node)) references.push({ node, time })
-      ts.forEachChild(node, (child) => visit(child, inherited))
-      if (ts.isCallExpression(node) || ts.isNewExpression(node) || ts.isTaggedTemplateExpression(node)) {
-        const callee = ts.isTaggedTemplateExpression(node) ? node.tag : node.expression
-        const invoke = (target: ReturnType<typeof localFunction>) => {
-          if (target === 'unknown-local') {
-            // 调用了解析不出的本地可调用对象：保守认为本模块任何函数都可能在此刻执行
-            for (const fn of allLocalFunctions) run(fn, time)
-          } else if (target) {
-            run(target, time)
-          }
-        }
-        invoke(localFunction(callee))
-        const args = ts.isTaggedTemplateExpression(node) ? [] : node.arguments ?? []
-        for (const argument of args) invoke(localFunction(argument))
-      }
-    }
-    for (const statement of this.src.sourceFile.statements) visit(statement, null)
-    this.eagerReferences = references
-    return references
-  }
-
-  /**
-   * 顶层 const/let → var 只在没有 TDZ 期执行的引用时等价：对每个声明项，任何在**该声明项初始化完成之前
-   * 被执行**的引用（声明之前的顶层代码、自身初始化器、初始化期间被调用的本地函数 / 回调里的引用）
-   * 都会让 const 抛 ReferenceError 而 var 读到 undefined。延后执行的引用（如 `const A = () => A`）不算。
-   */
-  private checkTopLevelVarSafe(path: string, list: ts.VariableDeclarationList) {
-    const guarded = new Map<ts.Symbol, ts.VariableDeclaration>()
-    for (const declaration of list.declarations) {
-      if (!ts.isIdentifier(declaration.name)) {
-        this.fail(path, '顶层解构声明的 const / let → var 不做等价归一')
-        return
-      }
-      const symbol = this.src.checker.getSymbolAtLocation(declaration.name)
-      if (symbol) guarded.set(symbol, declaration)
-    }
-    for (const { node, time } of this.collectEagerReferences()) {
-      const symbol = this.src.checker.getSymbolAtLocation(node)
-      const declaration = symbol ? guarded.get(symbol) : undefined
-      if (declaration && node !== declaration.name && time < declaration.getEnd()) {
-        this.fail(path, `顶层 ${node.text} 可能在初始化完成之前被执行读取，const/let → var 不等价`)
-        return
-      }
-    }
-  }
 }
 
 function statementLabel(statement: ts.Statement): string {
@@ -652,6 +511,16 @@ export function compareModuleRuntime(sides: ModuleSides): string[] {
   let distStatements = dist.sourceFile.statements
     .filter((statement) => !ts.isImportDeclaration(statement) && !isDirective(statement)
       && !initCallName(statement) && !namespaceDeclaration(statement))
+
+  // 产物里不应残留任何内部模块的 import 或带绑定的 import（bun 会把内部模块降为 init_x()、第三方包改成 __toESM）；
+  // 残留即不等 —— 不论是否传了 only，都要核对（它们在下面会被过滤出比较范围，不能静默放过）
+  for (const statement of dist.sourceFile.statements) {
+    if (!ts.isImportDeclaration(statement)) continue
+    const specifier = (statement.moduleSpecifier as ts.StringLiteral).text
+    if (!isBareSpecifier(specifier) || statement.importClause) {
+      comparator.fail('imports', `产物残留非预期的 import：${statement.getText()}`)
+    }
+  }
 
   if (sides.only) {
     const declares = (statement: ts.Statement, name: string, allowSuffix: boolean) => {
@@ -705,14 +574,6 @@ export function compareModuleRuntime(sides: ModuleSides): string[] {
     }
     if (unmatched.length > 0) {
       comparator.fail('namespaces', `产物多出源码没有导入的命名空间声明：[${unmatched.map(([name, required]) => `${name}=${required}`).join(' ')}]`)
-    }
-    // 产物里不应残留任何内部模块的 import（bun 会把它们降为 init_x()）；残留即不等，不能被过滤掉
-    for (const statement of dist.sourceFile.statements) {
-      if (!ts.isImportDeclaration(statement)) continue
-      const specifier = (statement.moduleSpecifier as ts.StringLiteral).text
-      if (!isBareSpecifier(specifier) || statement.importClause) {
-        comparator.fail('imports', `产物残留非预期的 import：${statement.getText()}`)
-      }
     }
     const srcSideEffects = sideEffectImports(src.sourceFile.statements)
     const distSideEffects = sideEffectImports(dist.sourceFile.statements)
