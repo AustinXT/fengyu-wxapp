@@ -1559,6 +1559,137 @@ try {
   check('#362 在途 = Σ(市场报货 − engine 正常已收)，且样本里确有已收货（非空集对账）',
     receivedTotal > 0 && supplyLine?.inTransitQuantity === expectedInTransit,
     JSON.stringify({ inTransit: supplyLine?.inTransitQuantity, expectedInTransit, receivedTotal, reports: mkaReports.length }))
+
+  // ════ #348b：市场报货草稿（存草稿不占用、不进下游；提交按最新福利取价后锁定；删除 = 已取消）════
+  setSession(storeA1Session())
+  const { id: req348 } = await biz.createStoreReplenishmentRequest({
+    storeId: STA1_ID, marketId: MKA_ORG, items: [{ skuId: SKU_SUPPLY, quantity: 6 }],
+  })
+  const [item348] = await docItems(req348)
+  setSession(marketASession())
+  const mkaSettlement = async () => {
+    const rows = (await settle.listInventorySettlements({})).marketRows
+      .filter((row) => [row.sourceOrgNodeId, row.targetOrgNodeId].includes(MKA_ORG))
+    return {
+      docCount: rows.reduce((sum, row) => sum + row.docCount, 0),
+      payable: rows.reduce((sum, row) => sum + row.payableAmount, 0),
+    }
+  }
+  const settlementBefore348 = await mkaSettlement()
+  const { id: draft348 } = await biz.saveMarketReplenishmentDraft({
+    marketId: MKA_ORG, supplyChainLocationId: HQ_ORG,
+    items: [{ skuId: SKU_SUPPLY, purchaseQuantity: 5 }],
+  })
+  const draftHead348 = await docHeader(draft348)
+  const [draftItem348] = await docItems(draft348)
+  check('#348 存草稿：状态草稿、未确认、明细带预览价（5×950）',
+    draftHead348?.status === '草稿' && !draftHead348?.confirmed_at
+      && num(draftItem348?.actual_unit_price) === 950 && num(draftHead348?.total_amount) === 4750,
+    JSON.stringify({ status: draftHead348?.status, price: draftItem348?.actual_unit_price, total: draftHead348?.total_amount }))
+  const draftLinks348 = await pgQuery(
+    `SELECT COUNT(*)::int AS n FROM inventory_doc_links WHERE to_doc_id = $1 OR from_doc_id = $1`, [draft348],
+  )
+  check('#348 草稿没有任何血缘（不写「门店报货汇总」）', draftLinks348[0]?.n === 0, JSON.stringify(draftLinks348))
+  const line348 = (await biz.summarizeStoreReplenishmentRequests({ marketId: MKA_ORG }))
+    .items.find((line) => line.skuId === SKU_SUPPLY)
+  check('#348 草稿不占用门店报货：门店明细仍在市场汇总里可提取',
+    line348?.requestItemIds.includes(Number(item348.id)) === true, JSON.stringify(line348?.requestItemIds ?? null))
+  const settlementDraft348 = await mkaSettlement()
+  check('#348 草稿不进市场货款结算',
+    JSON.stringify(settlementDraft348) === JSON.stringify(settlementBefore348),
+    JSON.stringify({ before: settlementBefore348, draft: settlementDraft348 }))
+  setSession(supplyChainSession())
+  const scSummary348 = await biz.summarizeMarketReplenishmentRequests({ supplyChainLocationId: HQ_ORG })
+  check('#348 草稿不进供应链市场报货汇总',
+    !JSON.stringify(scSummary348).includes(`"${draft348}"`)
+      && !scSummary348.items.some((line) => (line.requestItemIds ?? []).map(Number).includes(Number(draftItem348.id))),
+    JSON.stringify(scSummary348.items.map((line) => line.requestItemIds)))
+  await expectThrow('#348 草稿明细不能被供应链汇总引用（INVALID_STATE）', /INVALID_STATE/, () =>
+    biz.createMarketReportSummary({
+      supplyChainLocationId: HQ_ORG,
+      items: [{ skuId: SKU_SUPPLY, marketId: MKA_ORG, quantity: 1, sourceReportItemIds: [draftItem348.id] }],
+    }))
+  await expectThrow('#348 草稿不能发货（INVALID_STATE）', /INVALID_STATE/, () =>
+    biz.createItemCompanyShipment({
+      marketId: MKA_ORG, sourceOrgNodeId: HQ_ORG,
+      items: [{ reportItemId: draftItem348.id, lotId: hqLot.id, quantity: 1 }],
+    }))
+
+  setSession(marketBSession())
+  await expectThrow('#348 别的市场不能改 / 删本市场草稿（PERMISSION_DENIED）', /PERMISSION_DENIED/, () =>
+    biz.deleteMarketReplenishmentDraft({ draftId: draft348 }))
+  setSession(marketASession())
+  await biz.saveMarketReplenishmentDraft({
+    draftId: draft348, marketId: MKA_ORG, supplyChainLocationId: HQ_ORG,
+    items: [{ skuId: SKU_SUPPLY, purchaseQuantity: 6 }], remark: '改过的草稿',
+  })
+  const editedItems348 = await docItems(draft348)
+  const editedHead348 = await docHeader(draft348)
+  check('#348 覆盖草稿：明细整体重写、仍是草稿',
+    editedItems348.length === 1 && num(editedItems348[0]?.quantity) === 6
+      && editedHead348?.status === '草稿' && editedHead348?.remark === '改过的草稿' && num(editedHead348?.total_quantity) === 6,
+    JSON.stringify({ n: editedItems348.length, qty: editedItems348[0]?.quantity, status: editedHead348?.status }))
+
+  // 草稿期间福利变了（单价优惠 50 → 80），提交按新福利取价
+  const [promoItem348] = await pgQuery(
+    `SELECT id, market_unit_discount FROM inventory_promotion_plan_items WHERE plan_id = $1 AND sku_id = $2`,
+    [PROMO_ID, SKU_SUPPLY],
+  )
+  await pgQuery(`UPDATE inventory_promotion_plan_items SET market_unit_discount = 80 WHERE id = $1`, [promoItem348.id])
+  try {
+    const { id: submitted348 } = await biz.createMarketReplenishment({
+      draftId: draft348, marketId: MKA_ORG, supplyChainLocationId: HQ_ORG,
+      items: [{ skuId: SKU_SUPPLY, sourceRequestItemIds: [item348.id], purchaseQuantity: 6 }],
+    })
+    const submittedHead348 = await docHeader(submitted348)
+    const [submittedItem348] = await docItems(submitted348)
+    check('#348 提交沿用草稿单号、转已完成并记确认',
+      submitted348 === draft348 && submittedHead348?.status === '已完成' && Boolean(submittedHead348?.confirmed_at),
+      JSON.stringify({ id: submitted348, status: submittedHead348?.status }))
+    check('#348 提交按新福利重新取价（1000−80=920，6×920）',
+      num(submittedItem348?.actual_unit_price) === 920 && num(submittedHead348?.total_amount) === 5520,
+      JSON.stringify({ price: submittedItem348?.actual_unit_price, total: submittedHead348?.total_amount }))
+  } finally {
+    await pgQuery(`UPDATE inventory_promotion_plan_items SET market_unit_discount = $2 WHERE id = $1`,
+      [promoItem348.id, promoItem348.market_unit_discount])
+  }
+  const submitLinks348 = await pgQuery(
+    `SELECT from_item_id, quantity FROM inventory_doc_links WHERE to_doc_id = $1 AND relation_type = '门店报货汇总'`, [draft348],
+  )
+  check('#348 提交后才写「门店报货汇总」血缘（6 挂在门店明细上）',
+    submitLinks348.length === 1 && Number(submitLinks348[0].from_item_id) === Number(item348.id) && num(submitLinks348[0].quantity) === 6,
+    JSON.stringify(submitLinks348))
+  const settlementAfter348 = await mkaSettlement()
+  check('#348 提交后计入市场货款结算（+1 单、+5520）',
+    settlementAfter348.docCount === settlementBefore348.docCount + 1
+      && Math.abs(settlementAfter348.payable - settlementBefore348.payable - 5520) < 0.001,
+    JSON.stringify({ before: settlementBefore348, after: settlementAfter348 }))
+  await expectThrow('#348 已提交不能再存草稿（INVALID_STATE）', /INVALID_STATE/, () =>
+    biz.saveMarketReplenishmentDraft({
+      draftId: draft348, marketId: MKA_ORG, supplyChainLocationId: HQ_ORG,
+      items: [{ skuId: SKU_SUPPLY, purchaseQuantity: 1 }],
+    }))
+  await expectThrow('#348 已提交不能删除（INVALID_STATE）', /INVALID_STATE/, () =>
+    biz.deleteMarketReplenishmentDraft({ draftId: draft348 }))
+  await expectThrow('#348 已提交不能再提交（INVALID_STATE）', /INVALID_STATE/, () =>
+    biz.createMarketReplenishment({
+      draftId: draft348, marketId: MKA_ORG, supplyChainLocationId: HQ_ORG,
+      items: [{ skuId: SKU_SUPPLY, sourceRequestItemIds: [item348.id], purchaseQuantity: 1 }],
+    }))
+
+  const { id: drop348 } = await biz.saveMarketReplenishmentDraft({
+    marketId: MKA_ORG, supplyChainLocationId: HQ_ORG, items: [{ skuId: SKU_SUPPLY, purchaseQuantity: 1 }],
+  })
+  await biz.deleteMarketReplenishmentDraft({ draftId: drop348, reason: '报错了' })
+  const dropHead348 = await docHeader(drop348)
+  check('#348 删除草稿 = 已取消，记原因与删除人（不物理删除）',
+    dropHead348?.status === '已取消' && dropHead348?.cancellation_reason === '报错了' && Boolean(dropHead348?.cancelled_by),
+    JSON.stringify({ status: dropHead348?.status, reason: dropHead348?.cancellation_reason }))
+  const { id: next348 } = await biz.saveMarketReplenishmentDraft({
+    marketId: MKA_ORG, supplyChainLocationId: HQ_ORG, items: [{ skuId: SKU_SUPPLY, purchaseQuantity: 1 }],
+  })
+  check('#348 删除后的单号不被复用', next348 !== drop348, `${drop348} → ${next348}`)
+  await biz.deleteMarketReplenishmentDraft({ draftId: next348 })
 } catch (e) {
   check('冒烟整体', false, '致命错误：' + (e?.stack || e?.message || String(e)))
 } finally {
