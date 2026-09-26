@@ -506,13 +506,28 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
    * members 按 declIdentity 精确到「词法容器链 + 成员」；同一身份覆盖其**全部**重载声明，登记前须逐个重载自查。
    * 对象字面量方法、接口调用签名（`interface Fn { <T>(): T }`）没有可登记的身份——需要时改成具名函数再登记。
    */
+  /** SOUND_GENERICS 里 react 条目放行的全部签名（React 升级改动任何一个重载都要回来重审；审过的结论：每个重载的 T 都只从受检入参 / setter 进入，零输入的 `useState<S = undefined>()` 读出恒为 undefined） */
+  const REACT_SIGNATURE_SNAPSHOT: string[] = [
+    "@types/react/index.d.ts | React>createContext | function createContext<T>( // If you thought this should be optional, see // https://github.com/DefinitelyTyped/DefinitelyTyped/pull/24509#issuecomment-382213106 defaultValue: T, ): Context<T>;",
+    "@types/react/index.d.ts | React>useCallback | function useCallback<T extends Function>(callback: T, deps: DependencyList): T;",
+    "@types/react/index.d.ts | React>useContext | function useContext<T>(context: Context<T> /*, (not public API) observedBits?: number|boolean */): T;",
+    "@types/react/index.d.ts | React>useMemo | function useMemo<T>(factory: () => T, deps: DependencyList): T;",
+    "@types/react/index.d.ts | React>useReducer | function useReducer<S, A extends AnyActionArg>( reducer: (prevState: S, ...args: A) => S, initialState: S, ): [S, ActionDispatch<A>];",
+    "@types/react/index.d.ts | React>useReducer | function useReducer<S, I, A extends AnyActionArg>( reducer: (prevState: S, ...args: A) => S, initialArg: I, init: (i: I) => S, ): [S, ActionDispatch<A>];",
+    "@types/react/index.d.ts | React>useRef | function useRef<T>(initialValue: T | null): RefObject<T | null>;",
+    "@types/react/index.d.ts | React>useRef | function useRef<T>(initialValue: T | undefined): RefObject<T | undefined>;",
+    "@types/react/index.d.ts | React>useRef | function useRef<T>(initialValue: T): RefObject<T>;",
+    "@types/react/index.d.ts | React>useState | function useState<S = undefined>(): [S | undefined, Dispatch<SetStateAction<S | undefined>>];",
+    "@types/react/index.d.ts | React>useState | function useState<S>(initialState: S | (() => S)): [S, Dispatch<SetStateAction<S>>];",
+  ]
   const SOUND_GENERICS: Array<{ pkg?: string; file?: string; members: readonly string[] }> = [
     // @types/react 是 `export = React; declare namespace React { function useState… }`，身份带命名空间（有断言锁住已安装声明）
     { pkg: 'react', members: ['React>useState', 'React>useReducer', 'React>useRef', 'React>createContext', 'React>useContext', 'React>useMemo', 'React>useCallback'] },
   ]
   // 类成员作为容器时的编码：static / constructor / get / set 与实例方法区分开
   function memberLabel(m: ts.Node): string | undefined {
-    if (!ts.isClassLike(m.parent) && !ts.isInterfaceDeclaration(m.parent)) return undefined
+    // 只认真正的类成员 / 接口成员（装饰器、heritage 子句等挂在类下的节点不是成员）
+    if (!((ts.isClassLike(m.parent) && ts.isClassElement(m)) || (ts.isInterfaceDeclaration(m.parent) && ts.isTypeElement(m)))) return undefined
     if (ts.isConstructorDeclaration(m)) return 'constructor'
     if (ts.isClassStaticBlockDeclaration(m)) return `static{@${m.pos}}`
     const isStatic = ts.canHaveModifiers(m) && !!ts.getModifiers(m)?.some((x) => x.kind === ts.SyntaxKind.StaticKeyword)
@@ -520,7 +535,18 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
     const name = ts.getNameOfDeclaration(m as ts.Declaration)?.getText() ?? `<anon@${m.pos}>`
     return `${isStatic ? 'static:' : ''}${kind}${name}`
   }
+  /**
+   * 函数 / 类的名字：声明（function / class 声明、方法）取自身名；**表达式**（函数表达式、箭头、类表达式）只在直接赋给变量时
+   * 取变量名，否则视为匿名——`(function identity<T>() {…})(s)` 这类具名函数表达式不能凭自身名冒充顶层同名登记。
+   */
+  function namedOrHeld(n: ts.Node): string | undefined {
+    if (ts.isFunctionExpression(n) || ts.isArrowFunction(n) || ts.isClassExpression(n)) {
+      return ts.isVariableDeclaration(n.parent) ? n.parent.name.getText() : undefined
+    }
+    return ts.getNameOfDeclaration(n as ts.Declaration)?.getText()
+  }
   // 会形成词法作用域、却没有名字的节点：代码块（非函数体）、switch 的 case 块、各类循环头、catch、类静态块
+  // for-in / for-of 头部、catch 参数语法上带不了函数初始化器，这三项是防御性冗余（catch 体已由 Block 覆盖）
   const isAnonScope = (m: ts.Node) =>
     (ts.isBlock(m) && !ts.isFunctionLike(m.parent) && !ts.isClassStaticBlockDeclaration(m.parent)) || ts.isCaseBlock(m) ||
     ts.isForStatement(m) || ts.isForInStatement(m) || ts.isForOfStatement(m) || ts.isCatchClause(m)
@@ -537,8 +563,7 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
     }
     const own = (() => {
       if (ts.isClassLike(decl.parent) || ts.isInterfaceDeclaration(decl.parent)) return memberLabel(decl)
-      if ((ts.isArrowFunction(decl) || ts.isFunctionExpression(decl)) && ts.isVariableDeclaration(decl.parent)) return decl.parent.name.getText()
-      return ts.getNameOfDeclaration(decl)?.getText()
+      return namedOrHeld(decl)
     })()
     if (!own) return undefined
     const chain: string[] = []
@@ -549,14 +574,12 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
       const member = memberLabel(n)
       if (member) {
         const owner = n.parent as ts.ClassLikeDeclaration | ts.InterfaceDeclaration
-        chain.unshift(`${owner.name?.text ?? `<anon@${owner.pos}>`}.${member}`) // 类成员容器与所属类用 `.` 相连
+        chain.unshift(`${namedOrHeld(owner) ?? `<anon@${owner.pos}>`}.${member}`) // 类成员容器与所属类用 `.` 相连
         n = owner // 所属类已计入，跳过
-      } else if (ts.isClassLike(n) || ts.isInterfaceDeclaration(n)) chain.unshift(n.name?.text ?? `<anon@${n.pos}>`)
+      } else if (ts.isClassLike(n) || ts.isInterfaceDeclaration(n)) chain.unshift(namedOrHeld(n) ?? `<anon@${n.pos}>`)
       else if (ts.isModuleDeclaration(n)) chain.unshift(n.name.getText())
-      else if (ts.isFunctionLike(n)) {
-        const name = ts.isVariableDeclaration(n.parent) ? n.parent.name.getText() : n.name?.getText()
-        chain.unshift(name ?? `<anon@${n.pos}>`)
-      } else if (isAnonScope(n)) chain.unshift(`{@${n.pos}}`)
+      else if (ts.isFunctionLike(n)) chain.unshift(namedOrHeld(n) ?? `<anon@${n.pos}>`)
+      else if (isAnonScope(n)) chain.unshift(`{@${n.pos}}`)
     }
     const cls = inType
     const head = cls ? chain.slice(0, -1) : chain
@@ -781,21 +804,40 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
     for (const entry of SOUND_GENERICS) expect(entry.members.filter((m) => ANON_ID.test(m)), JSON.stringify(entry)).toEqual([])
   })
 
-  it('白名单不过期：已安装 @types/react 里登记的 hook 声明，身份仍与 SOUND_GENERICS 一致', () => {
-    const reactTypes = program.getSourceFiles().find((f) => /[\\/]node_modules[\\/]@types[\\/]react[\\/]index\.d\.ts$/.test(f.fileName))
-    expect(reactTypes, '主 Program 里找不到 @types/react').toBeDefined()
-    const registered = SOUND_GENERICS.find((e) => e.pkg === 'react')!.members
-    const found = new Set<string>()
-    const visit = (node: ts.Node) => {
-      if (ts.isFunctionDeclaration(node) && node.name && registered.some((m) => m.endsWith(`>${node.name!.text}`))) {
-        const id = declIdentity(node)
-        if (id) found.add(id)
-        expect(isSoundGeneric(node), id).toBe(true)
-      }
-      ts.forEachChild(node, visit)
+  /**
+   * 白名单条目放行的是「该身份的**全部**声明（含所有重载、跨声明文件的补充）」，所以把 Program 里 react 包全部声明文件中
+   * 命中登记身份的每一个签名钉成快照：React 升级新增 / 改动任何一个重载（包括零输入重载）都会让这里变红，逼回来重审白名单。
+   */
+  const signatureSnapshot = (entryPkg: string) => {
+    const entry = SOUND_GENERICS.find((e) => e.pkg === entryPkg)!
+    const pkgFile = (f: ts.SourceFile) => {
+      const norm = f.fileName.replace(/\\/g, '/')
+      return norm.includes(`/node_modules/${entryPkg}/`) || norm.includes(`/node_modules/@types/${toTypesName(entryPkg)}/`)
     }
-    visit(reactTypes!)
-    expect([...found].sort()).toEqual([...registered].sort())
+    const out: string[] = []
+    for (const sf of program.getSourceFiles().filter(pkgFile)) {
+      const visit = (node: ts.Node) => {
+        if (ts.isFunctionLike(node) && !ts.isFunctionTypeNode(node) && ts.getNameOfDeclaration(node as ts.Declaration)) {
+          const id = declIdentity(node as ts.Declaration)
+          if (id && entry.members.includes(id)) {
+            const file = sf.fileName.replace(/\\/g, '/').split('/node_modules/').pop()
+            out.push(`${file} | ${id} | ${node.getText(sf).replace(/\s+/g, ' ')}`)
+          }
+        }
+        ts.forEachChild(node, visit)
+      }
+      visit(sf)
+    }
+    return out.sort()
+  }
+
+  it('白名单不过期：react 包全部声明文件里命中登记身份的签名（含全部重载）与快照逐字相等', () => {
+    const snap = signatureSnapshot('react')
+    expect(snap).toEqual(REACT_SIGNATURE_SNAPSHOT)
+    // 每个登记身份都至少有一个真实声明（登记名写错 / React 改了结构 → 红）
+    for (const id of SOUND_GENERICS.find((e) => e.pkg === 'react')!.members) {
+      expect(snap.some((line) => line.includes(` | ${id} | `)), id).toBe(true)
+    }
   })
 
   it('自检：闭包里出现全局增强 / 模块增强时退回全量扫描；三斜线引用进闭包', () => {
@@ -874,6 +916,7 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
         `import { useState } from 'react'`,
         `import { spoofSmuggle, type SpoofBox } from './spoof'`,
         `import { make as typedOnlyMake } from 'typed-only'`,
+        `import { make as scopedMake } from '@scope/pkg'`,
         `import { mint as libSpoofMint } from 'typescript/lib/lib.spoof'`,
         `import { fakeMint, type FakeBox } from './fakelib'`,
         `import { mint as bothMint } from 'typescript/lib/lib.both'`,
@@ -945,6 +988,16 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
         `interface IdentityHolder { identity<T>(raw: unknown): T }`,
         `declare const ih: IdentityHolder`,
         `export const imh = ih.identity<CD>(s) // @interface-method-same-name`,
+        `export const iife = (function identity<T>(raw: unknown): T { return raw as T })<CD>(s) // @named-fn-expr`,
+        `export const scoped = scopedMake<CD>() // @scoped-types-pkg`,
+        `const ClsExpr = class { hold<T>(v: T): T { return v } }`,
+        `export const ce = ok(s) ? new ClsExpr().hold(s) : null // @class-expr-member`,
+        `declare const tlit: { identity<T>(raw: unknown): T }`,
+        `export const tlm = tlit.identity<CD>(s) // @type-literal-method`,
+        // 类与命名空间合并：命名空间里的安全函数登记为 `Merged>identity`；类静态块里的同名危险函数身份是 `Merged.static{@…}>identity`
+        `class Merged { static { const identity = <T,>(): T => null as T; void identity<CD>() } } // @static-block`,
+        `namespace Merged { export function identity<T>(v: T): T { return v } }`,
+        `export const mns = ok(s) ? Merged.identity(s) : null // @merged-ns-safe`,
         `export const st8 = useState<Alias>({ preset: 'month' }) // @sound-lib`,
         `function smuggle<T>(raw: unknown, witness: T): T { void witness; return raw as T }`,
         `export const smug = ok(s) ? smuggle<CD>('invalid', s) : null // @smuggle-witness`,
@@ -995,6 +1048,9 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
     writeFileSync(join(dir, 'node_modules/typescript/lib/lib.spoof.d.ts'), 'export declare function mint<T>(witness: T): T')
     // 两个条件同时伪造（同名路径 + no-default-lib）：只有「路径钉到当前运行的 TS 安装目录」能拦下
     writeFileSync(join(dir, 'node_modules/typescript/lib/lib.both.d.ts'), '/// <reference no-default-lib="true"/>\nexport declare function mint<T>(witness: T): T')
+    // scoped 包只有 @types 形态：`@scope/pkg` 的类型在 node_modules/@types/scope__pkg
+    mkdirSync(join(dir, 'node_modules/@types/scope__pkg'), { recursive: true })
+    writeFileSync(join(dir, 'node_modules/@types/scope__pkg/index.d.ts'), 'export declare function make<T>(): T')
     mkdirSync(join(dir, 'node_modules/@types/typed-only'), { recursive: true })
     writeFileSync(join(dir, 'node_modules/@types/typed-only/index.d.ts'), 'export declare function make<T>(): T')
     const p = ts.createProgram([join(dir, 'brand.ts'), join(dir, 'neutral.ts'), join(dir, 'decl.d.ts'), join(dir, 'fakelib.d.ts'), join(dir, 'spoof.ts'), join(dir, 'bad.ts')], {
@@ -1016,12 +1072,13 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
     checker = p.getTypeChecker()
     // 安全泛型须显式登记（白名单语义）；自检用临时条目，结束后移除
     // `Twin.get` 只登记实例方法：同名静态方法 `Twin.static:get` 不得蹭到
-    const fixtureEntry = { file: join(dir, 'bad.ts'), members: ['SafeBox.constructor', 'SafeBox.get', 'SafeTag.constructor', 'SafeTag.tag', 'Twin.get'] }
+    const fixtureEntry = { file: join(dir, 'bad.ts'), members: ['SafeBox.constructor', 'SafeBox.get', 'SafeTag.constructor', 'SafeTag.tag', 'Twin.get', 'Merged>identity', 'ClsExpr.hold'] }
     // 按文件登记时路径分隔符两侧都归一：用反斜杠形态登记 `identity` 也必须命中
     const backslashEntry = { file: join(dir, 'bad.ts').replace(/\//g, '\\'), members: ['identity'] }
     // 只有 @types 包的白名单条目（锁住 node_modules/@types/<pkg>/ 分支）
     const typesOnlyEntry = { pkg: 'typed-only', members: ['make'] }
-    SOUND_GENERICS.push(fixtureEntry, typesOnlyEntry, backslashEntry)
+    const scopedEntry = { pkg: '@scope/pkg', members: ['make'] }
+    SOUND_GENERICS.push(fixtureEntry, typesOnlyEntry, backslashEntry, scopedEntry)
     try {
       const found = escapes(p.getSourceFile(join(dir, 'bad.ts'))!)
       const text = files['bad.ts'].split('\n')
@@ -1097,6 +1154,9 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
         "泛型实例化带出 brand|static-twin",
         "泛型实例化带出 brand|object-literal-method",
         "泛型实例化带出 brand|interface-method-same-name",
+        "泛型实例化带出 brand|type-literal-method",
+        "泛型实例化带出 brand|named-fn-expr",
+        "泛型实例化带出 brand|static-block",
         "泛型实例化带出 brand|smuggle-witness",
         "泛型实例化带出 brand|generic-elem"
       ].sort())
@@ -1105,12 +1165,12 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
         lineOf('after-suppress') - 1, lineOf('after-suffix') - 1, lineOf('block-last') - 2, lineOf('block-star') - 2,
       ])
       // 安全泛型传递、字符串 / JSDoc 句中提及、正路都不误报
-      expect(found.filter((e) => ['safe-generic', 'sound-lib', 'safe-tag', 'lib-passthrough', 'types-pkg', 'twin-instance', 'string', 'doc-mention', 'good', 'mid-nocheck', 'block-nonlast'].some((m) => e.line === lineOf(m)))).toEqual([])
+      expect(found.filter((e) => ['safe-generic', 'sound-lib', 'safe-tag', 'lib-passthrough', 'types-pkg', 'twin-instance', 'merged-ns-safe', 'scoped-types-pkg', 'class-expr-member', 'string', 'doc-mention', 'good', 'mid-nocheck', 'block-nonlast'].some((m) => e.line === lineOf(m)))).toEqual([])
       // .d.ts 里的值声明
       const inDecl = escapes(p.getSourceFile(join(dir, 'decl.d.ts'))!)
       expect(inDecl.map((e) => e.kind)).toEqual(['无实现检查的声明携带 brand'])
     } finally {
-      for (const entry of [fixtureEntry, typesOnlyEntry, backslashEntry]) {
+      for (const entry of [fixtureEntry, typesOnlyEntry, backslashEntry, scopedEntry]) {
         const at = SOUND_GENERICS.indexOf(entry)
         if (at >= 0) SOUND_GENERICS.splice(at, 1)
       }
