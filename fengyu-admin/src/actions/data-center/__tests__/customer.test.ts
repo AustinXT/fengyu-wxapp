@@ -395,7 +395,7 @@ describe('getCustomerBoard 装配', () => {
    * **没有** `0, 5000` 这一格（pr-ready boundary P3-2）——即"已消除"这句此前没有任何测试钉着。
    * 这里补上：万一将来又被改成不同源，至少页面行为是 `--` 而不是 `Infinity`。
    */
-  it('#439 分母 0 而分子 > 0：新客客单价为 null 而非 Infinity，金额列如实透传', async () => {
+  it('#439 分母 0 而分子 > 0：新客客单价为 null 而非 Infinity', async () => {
     responder.scalarRow = { v: 0, total_count: 0, total_spend: 0 }
     responder.skeletonRows = [
       { market_id: 'm1', market_name: '市场A', store_id: 's1', store_name: '门店1' },
@@ -413,6 +413,8 @@ describe('getCustomerBoard 装配', () => {
     expect(m.metrics.newCustomerAvgTicket).toBeNull()
     expect(Number.isFinite(m.metrics.newCustomerAvgTicket as number)).toBe(false)
     expect(m.metrics.newMembers).toBe(0)
+    // ⚠ 用例名里**不写**「金额如实透传」：`new_spend` 只映射到内部字段 newMemberSpendTotal、
+    // 不进 metrics，这里断言不到（GLM round-2 P3-1 指出原名是形态三「名字范围 > 实际检查」）。
   })
 
   it('明细派生防除零：分母 0 → null', async () => {

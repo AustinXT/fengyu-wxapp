@@ -2103,13 +2103,27 @@ describe('客量板块两端口径一致性守护', () => {
     const STAFF_SCOPE_RE = /(build[A-Za-z]+Scope)\(scopeType, scopeId, '([a-z]+)', 1\)/
 
     it('admin KPI：分子的 scope 列 = 分母的 scope 列（从分母现读）', () => {
-      const denom = fnSource(adminSrc, ADMIN_CUSTOMER, 'queryNewMemberCount').match(SCOPE_COL_RE)
-      const numer = fnSource(adminSrc, ADMIN_CUSTOMER, 'queryNewMemberSpend').match(SCOPE_COL_RE)
+      const denomFn = fnSource(adminSrc, ADMIN_CUSTOMER, 'queryNewMemberCount')
+      const numerFn = fnSource(adminSrc, ADMIN_CUSTOMER, 'queryNewMemberSpend')
+      const denom = denomFn.match(SCOPE_COL_RE)
+      const numer = numerFn.match(SCOPE_COL_RE)
       expect(denom, '分母里抓不到 scopeFilterSql 的列名实参').not.toBeNull()
       expect(numer, '分子里抓不到 scopeFilterSql 的列名实参').not.toBeNull()
       expect(numer![1]).toBe(denom![1])
       // 同时钉死它确实是顾客维度那一列 —— 否则两侧一起改成 o.store_id 也能"同源"
       expect(denom![1]).toBe('c.bound_store_id')
+
+      /**
+       * 与 staff 侧对称的落点守护（GLM round-2 P3-2：staff 补了、admin 漏了）。
+       * `.match()` 只取首个命中，于是
+       *   const scGuard = scopeFilterSql(session, scope, 'c.bound_store_id'); void scGuard
+       *   const sc = scopeFilterSql(session, scope, 'o.store_id')   // 实际用的
+       * 能让上面三条全绿。这里钉住：函数体内 scope 生产者**恰好 1 个**，且 WHERE 用的就是它。
+       */
+      for (const [label, body] of [['分母', denomFn], ['分子', numerFn]] as const) {
+        expect(body.match(/scopeFilterSql\(/g), `admin ${label} 里的 scope 生产者应恰好 1 个`).toHaveLength(1)
+        expect(body, `admin ${label} 的 WHERE 应直接用 \${sc}`).toContain('WHERE ${sc}')
+      }
     })
 
     it('admin 明细：分子的骨架 JOIN = 分母的骨架 JOIN（从分母现读）', () => {
