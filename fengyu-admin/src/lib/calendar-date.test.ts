@@ -507,8 +507,23 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
    * 对象字面量方法、接口调用签名（`interface Fn { <T>(): T }`）没有可登记的身份——需要时改成具名函数再登记。
    */
   const SOUND_GENERICS: Array<{ pkg?: string; file?: string; members: readonly string[] }> = [
-    { pkg: 'react', members: ['useState', 'useReducer', 'useRef', 'createContext', 'useContext', 'useMemo', 'useCallback'] },
+    // @types/react 是 `export = React; declare namespace React { function useState… }`，身份带命名空间（有断言锁住已安装声明）
+    { pkg: 'react', members: ['React>useState', 'React>useReducer', 'React>useRef', 'React>createContext', 'React>useContext', 'React>useMemo', 'React>useCallback'] },
   ]
+  // 类成员作为容器时的编码：static / constructor / get / set 与实例方法区分开
+  function memberLabel(m: ts.Node): string | undefined {
+    if (!ts.isClassLike(m.parent) && !ts.isInterfaceDeclaration(m.parent)) return undefined
+    if (ts.isConstructorDeclaration(m)) return 'constructor'
+    if (ts.isClassStaticBlockDeclaration(m)) return `static{@${m.pos}}`
+    const isStatic = ts.canHaveModifiers(m) && !!ts.getModifiers(m)?.some((x) => x.kind === ts.SyntaxKind.StaticKeyword)
+    const kind = ts.isGetAccessor(m) ? 'get:' : ts.isSetAccessor(m) ? 'set:' : ''
+    const name = ts.getNameOfDeclaration(m as ts.Declaration)?.getText() ?? `<anon@${m.pos}>`
+    return `${isStatic ? 'static:' : ''}${kind}${name}`
+  }
+  // 会形成词法作用域、却没有名字的节点：代码块（非函数体）、switch 的 case 块、各类循环头、catch、类静态块
+  const isAnonScope = (m: ts.Node) =>
+    (ts.isBlock(m) && !ts.isFunctionLike(m.parent) && !ts.isClassStaticBlockDeclaration(m.parent)) || ts.isCaseBlock(m) ||
+    ts.isForStatement(m) || ts.isForInStatement(m) || ts.isForOfStatement(m) || ts.isCatchClause(m)
   /**
    * 声明的精确身份：完整词法容器链 + 自身名，用 `>` 连接。容器 = 外层函数 / 类 / 命名空间 / 非函数体代码块；
    * 类成员区分静态（`Class.static:m`）与实例（`Class.m`），构造器为 `Class.constructor`；`const f = <T,>() => …` 取变量名。
@@ -516,45 +531,59 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
    * 例：顶层登记 `identity` 不会放行某函数体内新写的同名 `identity`（后者身份是 `outer>identity`）。
    */
   function declIdentity(decl: ts.Declaration): string | undefined {
+    // 对象字面量 / 类型字面量的成员是匿名容器里的东西：不可登记（返回 undefined 即不放行）
+    for (let a: ts.Node | undefined = decl.parent; a; a = a.parent) {
+      if (ts.isObjectLiteralExpression(a) || ts.isTypeLiteralNode(a)) return undefined
+    }
     const own = (() => {
-      if (ts.isClassLike(decl.parent)) {
-        const isStatic = ts.canHaveModifiers(decl) && !!ts.getModifiers(decl)?.some((m) => m.kind === ts.SyntaxKind.StaticKeyword)
-        return ts.isConstructorDeclaration(decl) ? 'constructor' : `${isStatic ? 'static:' : ''}${ts.getNameOfDeclaration(decl)?.getText() ?? '<anon>'}`
-      }
+      if (ts.isClassLike(decl.parent) || ts.isInterfaceDeclaration(decl.parent)) return memberLabel(decl)
       if ((ts.isArrowFunction(decl) || ts.isFunctionExpression(decl)) && ts.isVariableDeclaration(decl.parent)) return decl.parent.name.getText()
       return ts.getNameOfDeclaration(decl)?.getText()
     })()
     if (!own) return undefined
     const chain: string[] = []
     // 起点：类成员从类本身开始；变量持有的函数从变量声明的外层开始；其余从自身外层开始
-    let n: ts.Node | undefined = ts.isClassLike(decl.parent) ? decl.parent : ts.isVariableDeclaration(decl.parent) ? decl.parent.parent : decl.parent
+    const inType = ts.isClassLike(decl.parent) || ts.isInterfaceDeclaration(decl.parent)
+    let n: ts.Node | undefined = inType ? decl.parent : ts.isVariableDeclaration(decl.parent) ? decl.parent.parent : decl.parent
     for (; n && !ts.isSourceFile(n); n = n.parent) {
-      if (ts.isClassLike(n)) chain.unshift(n.name?.text ?? `<anon@${n.pos}>`)
+      const member = memberLabel(n)
+      if (member) {
+        const owner = n.parent as ts.ClassLikeDeclaration | ts.InterfaceDeclaration
+        chain.unshift(`${owner.name?.text ?? `<anon@${owner.pos}>`}.${member}`) // 类成员容器与所属类用 `.` 相连
+        n = owner // 所属类已计入，跳过
+      } else if (ts.isClassLike(n) || ts.isInterfaceDeclaration(n)) chain.unshift(n.name?.text ?? `<anon@${n.pos}>`)
       else if (ts.isModuleDeclaration(n)) chain.unshift(n.name.getText())
       else if (ts.isFunctionLike(n)) {
         const name = ts.isVariableDeclaration(n.parent) ? n.parent.name.getText() : n.name?.getText()
         chain.unshift(name ?? `<anon@${n.pos}>`)
-      } else if (ts.isBlock(n) && !ts.isFunctionLike(n.parent)) chain.unshift(`{@${n.pos}}`)
+      } else if (isAnonScope(n)) chain.unshift(`{@${n.pos}}`)
     }
-    const cls = ts.isClassLike(decl.parent)
+    const cls = inType
     const head = cls ? chain.slice(0, -1) : chain
     const container = cls ? `${chain[chain.length - 1]}.` : ''
     return [...head, `${container}${own}`].join('>')
   }
+  /** 匿名容器的身份串（`<anon@…>` / `{@…}`）不稳定，登记了也不认（整条条目作废，另有断言要求白名单里不出现） */
+  const ANON_ID = /<anon|\{@/
   const toTypesName = (pkg: string) => (pkg.startsWith('@') ? pkg.slice(1).replace('/', '__') : pkg)
   function isSoundGeneric(decl: ts.Declaration): boolean {
     const file = decl.getSourceFile().fileName.replace(/\\/g, '/') // 统一分隔符后按路径段字面量比较
     const id = declIdentity(decl)
     return !!id && SOUND_GENERICS.some((entry) =>
-      (entry.pkg ? file.includes(`/node_modules/${entry.pkg}/`) || file.includes(`/node_modules/@types/${toTypesName(entry.pkg)}/`) : entry.file === file) &&
+      entry.members.every((m) => !ANON_ID.test(m)) &&
+      (entry.pkg ? file.includes(`/node_modules/${entry.pkg}/`) || file.includes(`/node_modules/@types/${toTypesName(entry.pkg)}/`)
+        : entry.file?.replace(/\\/g, '/') === file) &&
       entry.members.includes(id))
   }
   /**
    * TS 安装目录下的标准库声明文件：路径 **且** 编译器认定为默认库，双条件（`/// <reference no-default-lib>` 只能伪造后者，
-   * 在仓内造 `node_modules/typescript/lib/lib.x.d.ts` 只能伪造前者）。残余面：两者同时伪造需要在依赖目录里放文件，评审可见。
+   * 路径钉到当前运行的 TS 安装目录，仓内另造 `node_modules/typescript/lib/lib.x.d.ts` 连前者都伪造不了）。
+   * 残余面：往真实 TS 安装目录里放文件——那已是篡改依赖本身。
    */
+  const TS_LIB_DIR = dirname(ts.getDefaultLibFilePath({})).replace(/\\/g, '/') // 当前运行的 TS 安装目录，钉死而非任意同名路径
   const isTsStandardLib = (f: ts.SourceFile) =>
-    /[\\/]node_modules[\\/]typescript[\\/]lib[\\/]lib\.[^\\/]*\.d\.ts$/.test(f.fileName) && program.isSourceFileDefaultLibrary(f)
+    dirname(f.fileName).replace(/\\/g, '/') === TS_LIB_DIR && /^lib\.[^/]*\.d\.ts$/.test(f.fileName.split(/[\\/]/).pop() ?? '') &&
+    program.isSourceFileDefaultLibrary(f)
 
   /**
    * 泛型实例化后返回值带 brand 时，是否放行（闭集，fail-closed）：
@@ -748,6 +777,27 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
     ])
   }, 180_000)
 
+  it('白名单条目不含匿名身份串（`<anon@…>` / `{@…}` 随位置漂移，不可稳定登记）', () => {
+    for (const entry of SOUND_GENERICS) expect(entry.members.filter((m) => ANON_ID.test(m)), JSON.stringify(entry)).toEqual([])
+  })
+
+  it('白名单不过期：已安装 @types/react 里登记的 hook 声明，身份仍与 SOUND_GENERICS 一致', () => {
+    const reactTypes = program.getSourceFiles().find((f) => /[\\/]node_modules[\\/]@types[\\/]react[\\/]index\.d\.ts$/.test(f.fileName))
+    expect(reactTypes, '主 Program 里找不到 @types/react').toBeDefined()
+    const registered = SOUND_GENERICS.find((e) => e.pkg === 'react')!.members
+    const found = new Set<string>()
+    const visit = (node: ts.Node) => {
+      if (ts.isFunctionDeclaration(node) && node.name && registered.some((m) => m.endsWith(`>${node.name!.text}`))) {
+        const id = declIdentity(node)
+        if (id) found.add(id)
+        expect(isSoundGeneric(node), id).toBe(true)
+      }
+      ts.forEachChild(node, visit)
+    }
+    visit(reactTypes!)
+    expect([...found].sort()).toEqual([...registered].sort())
+  })
+
   it('自检：闭包里出现全局增强 / 模块增强时退回全量扫描；三斜线引用进闭包', () => {
     const dir = mkdtempSync(join(tmpdir(), 'calendar-date-global-'))
     try {
@@ -826,6 +876,7 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
         `import { make as typedOnlyMake } from 'typed-only'`,
         `import { mint as libSpoofMint } from 'typescript/lib/lib.spoof'`,
         `import { fakeMint, type FakeBox } from './fakelib'`,
+        `import { mint as bothMint } from 'typescript/lib/lib.both'`,
         `import { mint as evilMint } from 'evil'`,
         `type Derived = Parameters<typeof use>[0]`,
         `declare const s: string`,
@@ -878,8 +929,22 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
         `export const to = typedOnlyMake<CD>() // @types-pkg`,
         `export const lsm = ok(s) ? libSpoofMint<CD>(s) : null // @spoof-lib-path`,
         `export const fkm = ok(s) ? fakeMint<CD>(s) : null // @fake-default-lib`,
+        `export const bm = ok(s) ? bothMint<CD>(s) : null // @spoof-both`,
         `export const fkb: FakeBox = j // @fake-default-libtype`,
         `export function outer() { const identity = <T,>(): T => null as T; return identity<CD>() } // @nested-same-name`,
+        // 以下三种都在**模块顶层**：与顶层登记的 `identity` 同名，若作用域节点漏识别就会撞上白名单
+        `switch (Number('1')) { case 1: const identity = <T,>(): T => null as T; void identity<CD>() } // @case-block`,
+        `for (const identity = <T,>(): T => null as T; ;) { void identity<CD>(); break } // @loop-scope`,
+        `{ const identity = <T,>(): T => null as T; void identity<CD>() } // @block-scope`,
+        `try { void 0 } catch { const identity = <T,>(): T => null as T; void identity<CD>() } // @catch-scope`,
+        `class Twin { static get<T>(): T { return null as T } get<T>(): T { return null as T } constructor() { const identity = <T,>(): T => null as T; void identity<CD>() } } // @ctor-nested`,
+        `export const tw = Twin.get<CD>() // @static-twin`,
+        `export const twi = new Twin().get<CD>() // @twin-instance`,
+        `const objM = { identity<T>(raw: unknown): T { return raw as T } }`,
+        `export const om = objM.identity<CD>(s) // @object-literal-method`,
+        `interface IdentityHolder { identity<T>(raw: unknown): T }`,
+        `declare const ih: IdentityHolder`,
+        `export const imh = ih.identity<CD>(s) // @interface-method-same-name`,
         `export const st8 = useState<Alias>({ preset: 'month' }) // @sound-lib`,
         `function smuggle<T>(raw: unknown, witness: T): T { void witness; return raw as T }`,
         `export const smug = ok(s) ? smuggle<CD>('invalid', s) : null // @smuggle-witness`,
@@ -919,7 +984,8 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
     // 仿 react 类型包：验证白名单按「包 + 名字」放行
     mkdirSync(join(dir, 'node_modules/react'), { recursive: true })
     writeFileSync(join(dir, 'node_modules/react/package.json'), '{"name":"react","types":"index.d.ts"}')
-    writeFileSync(join(dir, 'node_modules/react/index.d.ts'), 'export declare function useState<S>(initial: S): [S, (v: S) => void]')
+    // 结构照搬 @types/react：`export = React` + `declare namespace React { function useState… }`
+    writeFileSync(join(dir, 'node_modules/react/index.d.ts'), 'export = React\ndeclare namespace React { function useState<S>(initial: S): [S, (v: S) => void] }')
     // 未登记的 npm 包：其泛型不因「来自 node_modules」获得信任
     mkdirSync(join(dir, 'node_modules/evil'), { recursive: true })
     writeFileSync(join(dir, 'node_modules/evil/package.json'), '{"name":"evil","types":"index.d.ts"}')
@@ -927,6 +993,8 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
     // 伪造「标准库路径」：放在 node_modules/typescript/lib/lib.*.d.ts，但编译器并不认它为默认库
     mkdirSync(join(dir, 'node_modules/typescript/lib'), { recursive: true })
     writeFileSync(join(dir, 'node_modules/typescript/lib/lib.spoof.d.ts'), 'export declare function mint<T>(witness: T): T')
+    // 两个条件同时伪造（同名路径 + no-default-lib）：只有「路径钉到当前运行的 TS 安装目录」能拦下
+    writeFileSync(join(dir, 'node_modules/typescript/lib/lib.both.d.ts'), '/// <reference no-default-lib="true"/>\nexport declare function mint<T>(witness: T): T')
     mkdirSync(join(dir, 'node_modules/@types/typed-only'), { recursive: true })
     writeFileSync(join(dir, 'node_modules/@types/typed-only/index.d.ts'), 'export declare function make<T>(): T')
     const p = ts.createProgram([join(dir, 'brand.ts'), join(dir, 'neutral.ts'), join(dir, 'decl.d.ts'), join(dir, 'fakelib.d.ts'), join(dir, 'spoof.ts'), join(dir, 'bad.ts')], {
@@ -936,16 +1004,24 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
     // 中性 re-export 也必须进反向闭包（守护的预筛环节）
     const closure = reverseClosure(p, join(dir, 'brand.ts'))
     expect(closure instanceof Set ? [...closure].map((f) => relative(dir, f)).sort() : closure).toEqual(['bad.ts', 'brand.ts', 'decl.d.ts', 'fakelib.d.ts', 'neutral.ts', 'spoof.ts'])
+    // 临时 Program 确实带着真实标准库（no-default-lib 夹具不得把整个 Program 的默认库关掉），且两个伪库夹具的编译器认定各自如预期
+    expect(p.getSourceFiles().some((f) => /[\\/]node_modules[\\/]typescript[\\/]lib[\\/]lib\.es5\.d\.ts$/.test(f.fileName))).toBe(true)
+    expect(p.isSourceFileDefaultLibrary(p.getSourceFile(join(dir, 'fakelib.d.ts'))!)).toBe(true)
+    const libSpoof = p.getSourceFiles().find((f) => f.fileName.endsWith('node_modules/typescript/lib/lib.spoof.d.ts'))
+    expect(libSpoof && p.isSourceFileDefaultLibrary(libSpoof)).toBe(false)
     // .d.ts 进入 scanned（守护的扫描集）
     expect(scanned(p, dir).map((f) => relative(dir, f.fileName))).toContain('decl.d.ts')
     const saved = [program, checker] as const
     program = p
     checker = p.getTypeChecker()
     // 安全泛型须显式登记（白名单语义）；自检用临时条目，结束后移除
-    const fixtureEntry = { file: join(dir, 'bad.ts'), members: ['SafeBox.constructor', 'SafeBox.get', 'SafeTag.constructor', 'SafeTag.tag', 'identity'] }
+    // `Twin.get` 只登记实例方法：同名静态方法 `Twin.static:get` 不得蹭到
+    const fixtureEntry = { file: join(dir, 'bad.ts'), members: ['SafeBox.constructor', 'SafeBox.get', 'SafeTag.constructor', 'SafeTag.tag', 'Twin.get'] }
+    // 按文件登记时路径分隔符两侧都归一：用反斜杠形态登记 `identity` 也必须命中
+    const backslashEntry = { file: join(dir, 'bad.ts').replace(/\//g, '\\'), members: ['identity'] }
     // 只有 @types 包的白名单条目（锁住 node_modules/@types/<pkg>/ 分支）
     const typesOnlyEntry = { pkg: 'typed-only', members: ['make'] }
-    SOUND_GENERICS.push(fixtureEntry, typesOnlyEntry)
+    SOUND_GENERICS.push(fixtureEntry, typesOnlyEntry, backslashEntry)
     try {
       const found = escapes(p.getSourceFile(join(dir, 'bad.ts'))!)
       const text = files['bad.ts'].split('\n')
@@ -1010,8 +1086,17 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
         "any / never 值落在要求 brand 的上下文|spoof-libtype",
         "泛型实例化带出 brand|spoof-lib-path",
         "泛型实例化带出 brand|fake-default-lib",
+        "泛型实例化带出 brand|spoof-both",
         "any / never 值落在要求 brand 的上下文|fake-default-libtype",
         "泛型实例化带出 brand|nested-same-name",
+        "泛型实例化带出 brand|case-block",
+        "泛型实例化带出 brand|loop-scope",
+        "泛型实例化带出 brand|block-scope",
+        "泛型实例化带出 brand|catch-scope",
+        "泛型实例化带出 brand|ctor-nested",
+        "泛型实例化带出 brand|static-twin",
+        "泛型实例化带出 brand|object-literal-method",
+        "泛型实例化带出 brand|interface-method-same-name",
         "泛型实例化带出 brand|smuggle-witness",
         "泛型实例化带出 brand|generic-elem"
       ].sort())
@@ -1020,12 +1105,12 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
         lineOf('after-suppress') - 1, lineOf('after-suffix') - 1, lineOf('block-last') - 2, lineOf('block-star') - 2,
       ])
       // 安全泛型传递、字符串 / JSDoc 句中提及、正路都不误报
-      expect(found.filter((e) => ['safe-generic', 'sound-lib', 'safe-tag', 'lib-passthrough', 'types-pkg', 'string', 'doc-mention', 'good', 'mid-nocheck', 'block-nonlast'].some((m) => e.line === lineOf(m)))).toEqual([])
+      expect(found.filter((e) => ['safe-generic', 'sound-lib', 'safe-tag', 'lib-passthrough', 'types-pkg', 'twin-instance', 'string', 'doc-mention', 'good', 'mid-nocheck', 'block-nonlast'].some((m) => e.line === lineOf(m)))).toEqual([])
       // .d.ts 里的值声明
       const inDecl = escapes(p.getSourceFile(join(dir, 'decl.d.ts'))!)
       expect(inDecl.map((e) => e.kind)).toEqual(['无实现检查的声明携带 brand'])
     } finally {
-      for (const entry of [fixtureEntry, typesOnlyEntry]) {
+      for (const entry of [fixtureEntry, typesOnlyEntry, backslashEntry]) {
         const at = SOUND_GENERICS.indexOf(entry)
         if (at >= 0) SOUND_GENERICS.splice(at, 1)
       }
