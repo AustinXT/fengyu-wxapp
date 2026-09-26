@@ -1779,19 +1779,20 @@ async function createDoc(ctx) {
   await pg.transaction(async (client) => {
     await assertWorkfineInventoryInitialized(client)
     if (docType === '门店报货') {
-      // 市场归属在事务外按门店父级解析；这里对门店行取共享锁并复读父级：解析与写入之间门店被改挂市场时拒绝，
-      // 且在本事务结束前挡住改挂（与 admin 的门店 → 市场 → 单据锁序同向）
-      // 门店与市场两行一起复核（类型 / 启用 / 父级）：解析后门店被闭店或市场被停用也要拒，不能写出指向停用主体的单
-      const { rows: endpointRows } = await client.query(
+      // 市场归属在事务外按门店父级解析；这里在事务内对市场、门店两行取共享锁并复核（类型 / 启用 / 父级）：
+      // 解析与写入之间门店被闭店、市场被停用或门店被改挂都拒，且在本事务结束前挡住这些改动。
+      // 锁序固定「先市场、后门店」—— 与 0009 同步触发器（inventory_sync_location_from_store /
+      // inventory_sync_location_from_org_node）先写上级市场行、再写门店行同向；按主键字典序取锁会在
+      // store_id < market_id 时与触发器反向成环（关店 / 改名与报货并发即死锁）。
+      const lockEndpoint = async (locationId) => (await client.query(
         `SELECT location_id, location_type, is_active, parent_location_id
            FROM inventory_locations
-          WHERE location_id = ANY($1::text[])
-          ORDER BY location_id
+          WHERE location_id = $1
           FOR SHARE`,
-        [[sourceLocationId, marketId].filter(Boolean)],
-      )
-      const storeRow = endpointRows.find((row) => row.location_id === sourceLocationId)
-      const marketRow = endpointRows.find((row) => row.location_id === marketId)
+        [locationId],
+      )).rows[0]
+      const marketRow = marketId ? await lockEndpoint(marketId) : null
+      const storeRow = await lockEndpoint(sourceLocationId)
       if (!storeRow || !marketRow || storeRow.location_type !== '门店' || marketRow.location_type !== '市场') {
         throw new Error('CONFLICT: 门店所属市场刚发生变化，请刷新后重试')
       }
