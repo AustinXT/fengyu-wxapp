@@ -716,7 +716,9 @@ describe('§8 收货已收口径与建批次 SQL 两端守护（#358）', () => 
       expect(body, `${name} 必须写「发货收货」血缘`).toContain('发货收货')
       expect(body, `${name} 必须回写来源 fulfilled_quantity`).toMatch(FULFILLED_INCREMENT)
     }
-    // 闭集：全仓写「发货收货」血缘的只有这三处（新增写入方须登记到上表）
+    // 闭集：全仓写「发货收货」血缘的只有这三处（新增写入方须登记到上表）。
+    // ⚠️ 计数只认三种既有拼写（drizzle `relationType: '发货收货'` / pg 参数数组 / VALUES 字面量）；
+    // 换其它写法新增第四个写入方时这里不会变红 —— 新增 inventory_doc_links 写入点必须人工登记。
     const count = (src) => (src.match(/relationType: '发货收货'|'发货收货',\$3|VALUES \(\$1,\$2,'发货收货'/g) || []).length
     expect(count(staffJs) + count(adminEngine) + count(adminBusiness)).toBe(3)
     expect(writers['staff confirmReceive']).toContain('Number(item.quantity) - Number(item.fulfilled_quantity || 0)')

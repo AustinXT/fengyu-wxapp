@@ -4205,7 +4205,7 @@ export const confirmInventoryCoreReceive = withAnyPermission(
 
       const itemRows = await tx.execute(sql`
         SELECT item.id AS source_item_id, item.sku_id, item.batch_no, item.expiry_date, item.is_gift, item.quantity,
-               item.standard_unit_price, item.unit_discount, item.actual_unit_price, item.amount,
+               item.fulfilled_quantity, item.standard_unit_price, item.unit_discount, item.actual_unit_price, item.amount,
                item.supply_chain_unit_cost, item.market_standard_unit_price, item.market_unit_discount,
                item.market_actual_unit_price, item.store_standard_unit_price, item.store_unit_discount,
                item.store_actual_unit_price, item.reason, item.remark,
@@ -4224,6 +4224,7 @@ export const confirmInventoryCoreReceive = withAnyPermission(
         expiry_date: string | null
         is_gift: boolean
         quantity: string | number
+        fulfilled_quantity: string | number | null
         standard_unit_price: string | number | null
         unit_discount: string | number | null
         actual_unit_price: string | number | null
@@ -4241,6 +4242,11 @@ export const confirmInventoryCoreReceive = withAnyPermission(
         source_doc_id: string | null
         source_supplier: string | null
       }>) {
+        // 本路径按发货量整行收（调货只能整单收）；来源已有已收量说明走过别的收货路径，
+        // 再按全量收会重复入库 —— fail-closed，与 staffApi confirmReceive 的剩余量口径不冲突（#358）
+        if (Number(item.fulfilled_quantity ?? 0) > 0) {
+          throw new ApiError('CONFLICT', '该调货单已有收货记录，请刷新后重试')
+        }
         const lot = await ensureLotFromSku(tx, targetLocationId, {
           skuId: item.sku_id,
           batchNo: item.batch_no,

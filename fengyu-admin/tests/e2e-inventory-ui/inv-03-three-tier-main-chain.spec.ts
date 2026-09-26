@@ -562,8 +562,9 @@ async function checkReceiptRowsReadonly(page: Page): Promise<number> {
   let matched = 0
   for (let i = 0; i < total; i += 1) {
     const row = rows.nth(i)
+    // 表单里还有候选单选择表（同在 form 内、没有本次实收框），跳过这类行
     const input = row.getByLabel(/^本次实收 /).first()
-    if (await input.count() === 0) return -1
+    if (await input.count() === 0) continue
     const outstanding = (await row.locator('td').nth(3).innerText()).trim()   // td[3] = 待收
     const readonly = (await input.getAttribute('readonly')) !== null
     if (!readonly || Number(await input.inputValue()) !== Number(outstanding)) return -1
