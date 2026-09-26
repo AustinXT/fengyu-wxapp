@@ -1,5 +1,4 @@
-import { redirect, unstable_rethrow } from "next/navigation"
-import { getDataStartDates } from "@/actions/data-center/shared"
+import { redirect } from "next/navigation"
 import {
   evaluateDataStart,
   type DataStartAxis,
@@ -11,6 +10,7 @@ import { reportNoticeRanges, resolveReportPage, type ReportPageContext } from "@
 import type { DataCenterReport } from "@/lib/data-center/reports"
 import { scopeStores } from "@/lib/data-center/scope-options"
 import type { DataCenterScopeOptions, ResolvedRange } from "@/lib/data-center/types"
+import { loadDataStartsSafely } from "../load-data-starts"
 
 /**
  * 经营明细报表页的服务端准备（#367）：权限闸门 + 入口控制流 + 期间解析 + 数据起点判定。
@@ -39,15 +39,8 @@ export async function prepareReport(input: {
   const needsStarts = (input.axes.length > 0 || !!input.extraNotices) && input.report.periodKind !== "none"
   const [scopeOptions, starts] = await Promise.all([
     input.loadScopeOptions(),
-    // 数据起点只是辅助提示：取数失败时降级为不提示，不能把整张报表页变成错误页。
-    // 权限闸门由 loadScopeOptions 承担（它先于或同时 reject），这里吞掉的不会是页面级的 403。
-    needsStarts
-      ? getDataStartDates().catch((error: unknown): StoreDataStarts => {
-          unstable_rethrow(error) // 会话过期的登录跳转等 Next 控制流错误照常上抛
-          console.error("[data-center] 数据起点取数失败，本次不显示提示", error)
-          return {}
-        })
-      : Promise.resolve<StoreDataStarts>({}),
+    // 数据起点只是辅助提示：取数失败时降级为不提示（见 loadDataStartsSafely）
+    needsStarts ? loadDataStartsSafely() : Promise.resolve<StoreDataStarts>({}),
   ])
 
   const page = resolveReportPage({

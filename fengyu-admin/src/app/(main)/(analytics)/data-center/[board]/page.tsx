@@ -9,14 +9,22 @@ import { SalesBoard } from "../_components/sales/sales-board"
 import { CustomerBoard } from "../_components/customer/customer-board"
 import { EfficiencyBoard } from "../_components/efficiency/efficiency-board"
 import { ProductBoard } from "../_components/product/product-board"
+import { loadDataStartsSafely } from "../_components/load-data-starts"
+import type { BoardPageProps } from "../_components/board-props"
 
 export const dynamic = "force-dynamic"
+
+/**
+ * 需要数据起点提示的板块（#289）。客量板的指标分子来自交易（款项最早 2026-07-03、服务单 07-08）、
+ * 分母来自会员档案（回溯到 2022-08），跨割点的区间整块失真，按整块板提示。
+ */
+const DATA_START_BOARDS: ReadonlySet<DataCenterTab> = new Set<DataCenterTab>(["customer"])
 
 /**
  * 查表而非三元：`Record<DataCenterTab, …>` 让新增板块时漏配在 tsc 就报错。
  * 三元写法的 default 分支会把漏配的板块静默渲染成销售，和 parseBoard 想堵的是同一类洞。
  */
-const BOARD_COMPONENTS: Record<DataCenterTab, ComponentType> = {
+const BOARD_COMPONENTS: Record<DataCenterTab, ComponentType<BoardPageProps>> = {
   sales: SalesBoard,
   customer: CustomerBoard,
   efficiency: EfficiencyBoard,
@@ -56,15 +64,17 @@ export default async function Page({
   const { noViewableScope, inactiveStore, defaultScopeHref } = entry
 
   const Board = BOARD_COMPONENTS[board]
+  const showBoard = !(noViewableScope || inactiveStore)
+  const dataStarts = showBoard && DATA_START_BOARDS.has(board) ? await loadDataStartsSafely() : null
 
   return (
     <div className="flex flex-col gap-4">
       <h1 className="text-xl font-semibold text-[var(--foreground)]">{DATA_CENTER_BOARD_LABELS[board]}</h1>
       <ScopeTimeFilter scopeOptions={scopeOptions} />
-      {noViewableScope || inactiveStore ? (
-        <ScopeEmptyState inactiveStore={inactiveStore} defaultScopeHref={defaultScopeHref} />
+      {showBoard ? (
+        <Board scopeOptions={scopeOptions} dataStarts={dataStarts} />
       ) : (
-        <Board />
+        <ScopeEmptyState inactiveStore={inactiveStore} defaultScopeHref={defaultScopeHref} />
       )}
     </div>
   )

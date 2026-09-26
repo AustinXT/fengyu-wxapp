@@ -135,3 +135,19 @@ export function evaluateDataStart(input: {
   }
   return results
 }
+
+/**
+ * 板块页（`[board]`）的提示期间：所选期间 + 环比基期（#289 客量板）。
+ * 与报表页 `reportNoticeRanges` 同形——同比基期不列：它在 2027-07 之前恒早于全部门店的起点，
+ * 列进来提示会永远挂着，失去「这次选的区间有问题」的信号意义。
+ */
+export function boardNoticeRanges(timeRange: {
+  start: string
+  end: string
+  previous: ResolvedRange | null
+}): Array<{ label: string; range: ResolvedRange }> {
+  return [
+    { label: '所选期间', range: { start: timeRange.start, end: timeRange.end } },
+    ...(timeRange.previous ? [{ label: '环比基期', range: timeRange.previous }] : []),
+  ]
+}
