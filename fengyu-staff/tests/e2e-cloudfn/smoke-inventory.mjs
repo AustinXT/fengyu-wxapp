@@ -532,9 +532,15 @@ try {
     if (ranPrivateLedgerFlow) {
       // cleanupTestData 逐条吞错，不会抛 —— 私有库跑法要自己断言清干净了，否则下次重跑会撞残留
       const [left] = await pgQuery(
-        `SELECT (SELECT COUNT(*) FROM inventory_docs
-                  WHERE id LIKE $1 OR source_org_node_id LIKE $1 OR target_org_node_id LIKE $1)::int AS docs,
-                (SELECT COUNT(*) FROM inventory_movements WHERE location_id LIKE $1 OR sku_id LIKE $1)::int AS movements`,
+        // 口径与 cleanupTestData 删单据的六列对齐，流水再补按单据归属
+        `WITH ns_docs AS (
+           SELECT id FROM inventory_docs
+            WHERE id LIKE $1 OR source_org_node_id LIKE $1 OR target_org_node_id LIKE $1
+               OR related_sale_order_id LIKE $1 OR client_user_id LIKE $1 OR created_by LIKE $1
+         )
+         SELECT (SELECT COUNT(*) FROM ns_docs)::int AS docs,
+                (SELECT COUNT(*) FROM inventory_movements
+                  WHERE location_id LIKE $1 OR sku_id LIKE $1 OR doc_id IN (SELECT id FROM ns_docs))::int AS movements`,
         [`${NS}%`],
       )
       if (left.docs > 0 || left.movements > 0) throw new Error(`残留 docs=${left.docs} movements=${left.movements}`)
