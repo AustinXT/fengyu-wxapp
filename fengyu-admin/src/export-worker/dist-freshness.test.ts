@@ -378,11 +378,6 @@ describe('dist/export-worker.mjs 新鲜度 · 提货记录导出接线（#341）
 
 /** #360 进出明细导出的 JS 接线（类型登记 / registry 分支与列 / keyset 游标）。写法同上：按产物里的写法找。 */
 describe('dist/export-worker.mjs 新鲜度 · 进出明细导出接线（#360）', () => {
-  // 只剩类型登记一处文本锚点（最小语义串，不含排版字符）；movements 模块全文、导出列与
-  // registry 分发（createExportContent 的 case 分支体）都由下方语义等价比较覆盖
-  const SEGMENT_FRAGMENTS: Array<[string, string[]]> = [
-    ['src/lib/export-job-types.ts', ['"inventory-movements"', '"inventory:export"', '"进出明细"']],
-  ]
   /**
    * 源码模块 ↔ 产物里 bun 改写后的同一模块做**语义等价**比较（规则与正反例见 dist-equivalence.ts / .test.ts）。
    * 比的是模块的全部运行时顶层语句：常量、入参校验、SQL 构造、行映射、取数、导出、withPermission 包装器。
@@ -420,6 +415,14 @@ describe('dist/export-worker.mjs 新鲜度 · 进出明细导出接线（#360）
     expect(equivalenceIssues(file), `产物 // ${file} 区段与源码不等价（产物不是按当前源码构建的）${REBUILD_HINT}`).toEqual([])
   })
 
+  it('export-job-types.ts 的类型登记、权限映射、标签映射与产物语义等价（键值对应关系整体比较）', () => {
+    const file = 'src/lib/export-job-types.ts'
+    expect(
+      equivalenceIssues(file, ['EXPORT_JOB_TYPES', 'EXPORT_PERMISSIONS_BY_TYPE', 'EXPORT_LABEL_BY_TYPE']),
+      `产物里的导出类型登记与源码不一致${REBUILD_HINT}`,
+    ).toEqual([])
+  })
+
   it('registry.ts 的 inventoryMovementColumns 与分发函数 createExportContent（含 case 分支体接线）与产物语义等价', () => {
     const file = 'src/export-worker/registry.ts'
     expect(
@@ -428,12 +431,6 @@ describe('dist/export-worker.mjs 新鲜度 · 进出明细导出接线（#360）
     ).toEqual([])
   })
 
-  it.each(SEGMENT_FRAGMENTS)('%s 的 #360 片段在产物模块区段内', (file, fragments) => {
-    const segment = moduleSegments(fs.readFileSync(DIST, 'utf-8'), file).join('\n')
-    expect(segment.length, `产物里找不到 // ${file} 模块区段${REBUILD_HINT}`).toBeGreaterThan(0)
-    const missing = fragments.filter((fragment) => !segment.includes(fragment))
-    expect(missing, `产物 // ${file} 区段缺少以下 #360 片段（产物不是按当前源码构建的）${REBUILD_HINT}`).toEqual([])
-  })
 })
 
 describe('dist/export-worker.mjs 新鲜度（改了 data-center SQL 口径必须重建产物）', () => {

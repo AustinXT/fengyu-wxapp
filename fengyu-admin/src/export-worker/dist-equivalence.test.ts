@@ -57,7 +57,7 @@ describe('dist-equivalence：bun 的合法改写判为等价', () => {
     )).toEqual([])
   })
 
-  it('导入绑定加后缀（被导入模块确实声明了该名字）、命名空间导入、(0, f) 间接调用', () => {
+  it('导入绑定加后缀（被导入模块确实声明了该名字）、命名空间导入', () => {
     expect(compare(
       `import { db } from '@/db'
        import { sql } from 'drizzle-orm'
@@ -66,7 +66,7 @@ describe('dist-equivalence：bun 的合法改写判为等价', () => {
       `init_db2();
        init_helpers();
        var import_drizzle_orm60 = __toESM(require_drizzle_orm(), 1);
-       async function q(id) { return db2.execute(import_drizzle_orm60.sql\`SELECT \${id}\`).then((0, helper)); }`,
+       async function q(id) { return db2.execute(import_drizzle_orm60.sql\`SELECT \${id}\`).then(helper); }`,
     )).toEqual([])
   })
 
@@ -92,6 +92,18 @@ describe('dist-equivalence：bun 的合法改写判为等价', () => {
        var s = import_zod3.string();
        var d = (0, import_dayjs2.default)(COUNT);`,
     )).toEqual([])
+  })
+
+  it('BigInt 按值：1n ≡ 0x1n ≡ 1_0n / 10', () => {
+    expect(compare('export const a = 1n\nexport const b = 1_0n', 'var a = 0x1n;\nvar b = 10n;')).toEqual([])
+  })
+
+  it('init 调用与副作用导入各自保序；副作用导入可与 init 交错', () => {
+    expect(compareModuleRuntime({
+      sourceCode: 'import { db } from "@/db"\nimport "server-only"\nimport { helper } from "./helpers"\nexport const a = helper(db)',
+      distCode: 'init_db2();\nimport"server-only";\ninit_helpers();\nvar a = helper(db2);',
+      distSegmentOfImport: (specifier) => SEGMENTS[specifier] ?? null,
+    })).toEqual([])
   })
 
   it('only：只比指定声明，两侧各恰好一处', () => {
@@ -172,11 +184,17 @@ describe('dist-equivalence：真实漂移判为不等', () => {
     differs('export function f() { const a = 1; return a }', 'function f() { let a = 1; return a; }')
   })
 
-  it('打包样板：漏调 / 多调 / 调错 init；副作用导入不同；指令不同', () => {
+  it('打包样板：漏调 / 多调 / 重复调 / 调错 / 顺序对调 init；副作用导入不同或顺序对调；指令不同', () => {
     const source = 'import { helper } from "./helpers"\nexport const a = helper(1)'
     differs(source, 'var a = helper(1);')
     differs(source, 'init_helpers();\ninit_db2();\nvar a = helper(1);')
+    differs(source, 'init_helpers();\ninit_helpers();\nvar a = helper(1);')
     differs(source, 'init_helper();\nvar a = helper(1);')
+    differs(
+      'import { db } from "@/db"\nimport { helper } from "./helpers"\nexport const a = helper(db)',
+      'init_helpers();\ninit_db2();\nvar a = helper(db2);',
+    )
+    differs('import "a-pkg"\nimport "b-pkg"\nexport const a = 1', 'import"b-pkg";\nimport"a-pkg";\nvar a = 1;')
     differs('import "server-only"\nexport const a = 1', 'var a = 1;')
     differs('"use server"\nexport const a = 1', 'var a = 1;')
   })
@@ -188,8 +206,28 @@ describe('dist-equivalence：真实漂移判为不等', () => {
     differs('import { sql } from "drizzle-orm"\nexport const q = sql`x`', 'var import_drizzle_orm1 = __toESM(require_drizzle_orm(), 1);\nvar q = import_drizzle_orm1.raw`x`;')
   })
 
-  it('(0, obj.method)() 丢 this，不等于 obj.method()', () => {
+  it('命名空间声明闭集：多出 / 缺少 / 重复；__toESM 形态不精确', () => {
+    const source = 'import { sql } from "drizzle-orm"\nexport const q = sql`x`'
+    const use = 'var q = import_drizzle_orm1.sql`x`;'
+    const ok = 'var import_drizzle_orm1 = __toESM(require_drizzle_orm(), 1);\n'
+    expect(compare(source, ok + use)).toEqual([])
+    differs(source, ok + 'var import_zod1 = __toESM(require_zod(), 1);\n' + use)
+    differs(source, ok + ok + use)
+    // 源码确实用到 zod（未使用的导入会被 transpile / bun 一并省略，不算缺失），产物却没有它的命名空间声明
+    expect(compare(
+      'import { sql } from "drizzle-orm"\nimport { z } from "zod"\nexport const q = sql`x`\nexport const s = z',
+      ok + use + '\nvar s = import_zod1;',
+    ).join('\n')).toMatch(/namespaces: 源码导入的包 zod 在产物里没有对应/)
+    expect(compare(source, ok + ok + use).join('\n')).toMatch(/命名空间变量重复声明/)
+    expect(compare(source, ok + 'var import_zod1 = __toESM(require_zod(), 1);\n' + use).join('\n')).toMatch(/产物多出源码没有导入的命名空间声明/)
+    differs(source, 'var import_drizzle_orm1 = __toESM(require_drizzle_orm(sideEffect), 1);\n' + use)
+    differs(source, 'var import_drizzle_orm1 = __toESM(require_drizzle_orm(), 0);\n' + use)
+    differs(source, 'var import_drizzle_orm1 = __toESM(require_drizzle_orm());\n' + use)
+  })
+
+  it('(0, obj.method)() 丢 this、(0, eval)() 是间接 eval，都不等于直接调用', () => {
     differs('export function f(o: { m(): void }) { return o.m() }', 'function f(o) { return (0, o.m)(); }')
+    differs('export function f(code: string) { return eval(code) }', 'function f(code) { return (0, eval)(code); }')
   })
 
   it('return undefined 中的 undefined 被遮蔽时不等于 return', () => {
@@ -199,10 +237,15 @@ describe('dist-equivalence：真实漂移判为不等', () => {
   it('带默认值的简写属性：默认值不同 / 形态不同', () => {
     differs('export function f(o: object) { let a; ({ a = 1 } = o as never); return a }', 'function f(o) { let a; ({ a = 2 } = o); return a; }')
     differs('export function f(o: object) { let a; ({ a = 1 } = o as never); return a }', 'function f(o) { let a; ({ a: a } = o); return a; }')
+    // 键改名、默认值相同：局部绑定同步改名也不能掩盖读的是另一个属性
+    differs('export function f(o: object) { let a; ({ a = 1 } = o as never); return a }', 'function f(o) { let b; ({ b = 1 } = o); return b; }')
   })
 
   it('顶层 const 在声明前被引用时，与 var 不等价（TDZ 抛错 vs undefined）', () => {
     differs('export function f() { return A }\nconst probe = f()\nconst A = 1', 'function f() { return A; }\nvar probe = f();\nvar A = 1;')
+    // 自身初始化器里的自引用、同组靠后声明项的前置引用
+    differs('const A = typeof A\nexport const b = A', 'var A = typeof A;\nvar b = A;')
+    differs('const A = B, B = 1\nexport const c = A', 'var A = B, B = 1;\nvar c = A;')
   })
 
   it('私有名 / BigInt 不同', () => {

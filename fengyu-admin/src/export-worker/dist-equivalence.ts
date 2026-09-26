@@ -18,14 +18,15 @@
  *   - 运算符逐个比较（一元运算符不是子节点，单独比）。
  *
  * 已知等价形态（只在确认安全的范围内归一）：
- *   - `(…)` 透明；产物侧 `(0, f)` / `(0, import_pkgN.f)` ≡ `f`（只限普通标识符与命名空间成员 —— `(0, obj.m)` 会丢 this，不归一）；
+ *   - `(…)` 透明；产物侧 `(0, import_pkgN.f)` ≡ `f`（只限命名空间成员 —— `(0, obj.m)` 丢 this、`(0, eval)` 是间接 eval，不归一）；
  *   - `return undefined` ≡ `return`（仅当 `undefined` 是未被遮蔽的全局名）；
  *   - 无替换模板 ≡ 同文字符串；`{ a }` ≡ `{ a: a }`（有默认值 `{ a = 1 }` 时两侧须同为简写且默认值等价）；
  *   - 顶层 `const` / `let` ≡ `var`：仅当源码里**声明之前没有任何对它的引用**（否则 TDZ 与 undefined 行为不同）。
  *
- * 打包样板单独核对，不是简单忽略：
- *   - 产物里的 `init_x()` 调用集合 ≡ 源码导入的各内部模块在产物里声明的 `init_x` 集合（漏调、多调、调错都算不等）；
- *   - 副作用导入 `import "x"` 的说明符集合两侧相同；`"use server"` 等指令两侧相同。
+ * 打包样板单独核对（保序），不是简单忽略：
+ *   - 产物 `init_x()` 调用序列 ≡ 按源码导入顺序推出的各内部模块 `init_x` 序列（漏调、多调、重复、顺序不同都算不等）；
+ *   - 第三方包：源码运行时导入的每个包 ↔ 产物恰好一条 `__toESM(require_<包>(), 1)` 声明（多、缺、重复都算不等）；
+ *   - 副作用导入 `import "x"` 的序列两侧相同；`"use server"` 等指令两侧相同。
  */
 import ts from 'typescript'
 
@@ -95,8 +96,14 @@ const namespaceDeclaration = (statement: ts.Statement): [string, string] | null 
     !ts.isIdentifier(declaration.name) || !/^import_/.test(declaration.name.text)
     || !init || !ts.isCallExpression(init) || !ts.isIdentifier(init.expression) || init.expression.text !== '__toESM'
   ) return null
-  const [required] = init.arguments
-  if (!required || !ts.isCallExpression(required) || !ts.isIdentifier(required.expression)) return null
+  // 精确形态：__toESM(require_x(), 1) —— 恰两个参数、第二个是字面量 1、require_x 零参数
+  if (init.arguments.length !== 2) return null
+  const [required, flag] = init.arguments
+  if (!ts.isNumericLiteral(flag) || flag.text !== '1') return null
+  if (
+    !ts.isCallExpression(required) || !ts.isIdentifier(required.expression)
+    || !/^require_/.test(required.expression.text) || required.arguments.length !== 0
+  ) return null
   return [declaration.name.text, required.expression.text]
 }
 
@@ -283,14 +290,15 @@ class Comparator {
         current = current.expression
         continue
       }
-      // 产物侧 (0, f) / (0, import_pkgN.f)：去 this 的间接调用。只归一普通标识符与命名空间成员
+      // 产物侧 (0, import_pkgN.f)：bun 对命名空间成员调用生成的去 this 形态。只归一命名空间成员 ——
+      // (0, obj.m) 会丢 this、(0, eval) 是间接 eval，语义都不同，不归一
       if (
         side === 'dist'
         && ts.isBinaryExpression(current)
         && current.operatorToken.kind === ts.SyntaxKind.CommaToken
         && ts.isNumericLiteral(current.left)
         && current.left.text === '0'
-        && (ts.isIdentifier(current.right) || this.namespaceMember(current.right))
+        && this.namespaceMember(current.right)
       ) {
         current = current.right
         continue
@@ -357,6 +365,11 @@ class Comparator {
           this.fail(path, `带默认值的简写属性形态不同：${srcNode.getText()} / ${distNode.getText()}`)
           return
         }
+        // 简写的名字同时是属性键：键必须逐字相同（绑定同步改名也不能掩盖读的是另一个属性）
+        if (srcNode.name.text !== distNode.name.text) {
+          this.fail(path, `简写属性键不同：${srcNode.name.text} / ${distNode.name.text}`)
+          return
+        }
         this.compareIdentifier(`${path}.${srcNode.name.text}`, srcNode.name, distNode.name)
         this.compare(`${path}.${srcNode.name.text}=`, srcInit, distInit)
         return
@@ -400,7 +413,8 @@ class Comparator {
       return
     }
     if (ts.isBigIntLiteral(srcNode) && ts.isBigIntLiteral(distNode)) {
-      if (srcNode.text !== distNode.text) this.fail(path, `BigInt 不同：${srcNode.text} / ${distNode.text}`)
+      const value = (text: string) => BigInt(text.replace(/_/g, '').replace(/n$/, ''))
+      if (value(srcNode.text) !== value(distNode.text)) this.fail(path, `BigInt 不同：${srcNode.text} / ${distNode.text}`)
       return
     }
     if (ts.isRegularExpressionLiteral(srcNode) && ts.isRegularExpressionLiteral(distNode)) {
@@ -444,23 +458,27 @@ class Comparator {
     })
   }
 
-  /** 顶层 const/let → var 只在「声明之前没有任何引用」时等价（否则 TDZ 抛错与读到 undefined 不同） */
+  /**
+   * 顶层 const/let → var 只在没有 TDZ 期引用时等价：对每个声明项，任何位于**该声明项结束之前**的引用
+   * （含声明之前、自身初始化器里的自引用、同组靠后声明项的前置引用）都会让 const 抛错而 var 读到 undefined。
+   */
   private checkTopLevelVarSafe(path: string, list: ts.VariableDeclarationList) {
-    const symbols = new Set<ts.Symbol>()
+    const guarded = new Map<ts.Symbol, ts.VariableDeclaration>()
     for (const declaration of list.declarations) {
       if (!ts.isIdentifier(declaration.name)) {
         this.fail(path, '顶层解构声明的 const / let → var 不做等价归一')
         return
       }
       const symbol = this.src.checker.getSymbolAtLocation(declaration.name)
-      if (symbol) symbols.add(symbol)
+      if (symbol) guarded.set(symbol, declaration)
     }
-    const declaredAt = list.getStart()
     const visit = (node: ts.Node) => {
-      if (node.getStart() >= declaredAt) return
       if (ts.isIdentifier(node)) {
         const symbol = this.src.checker.getSymbolAtLocation(node)
-        if (symbol && symbols.has(symbol)) this.fail(path, `顶层 ${node.text} 在声明之前被引用，const/let → var 不等价`)
+        const declaration = symbol ? guarded.get(symbol) : undefined
+        if (declaration && node !== declaration.name && node.getStart() < declaration.getEnd()) {
+          this.fail(path, `顶层 ${node.text} 在初始化完成之前被引用，const/let → var 不等价`)
+        }
       }
       ts.forEachChild(node, visit)
     }
@@ -476,10 +494,10 @@ function statementLabel(statement: ts.Statement): string {
   return ts.SyntaxKind[statement.kind]
 }
 
+/** 副作用导入 `import "x"`，保持源码顺序（bun 会把它与 init 调用交错，但副作用导入之间的相对顺序不变） */
 const sideEffectImports = (statements: readonly ts.Statement[]) => statements
   .filter((statement): statement is ts.ImportDeclaration => ts.isImportDeclaration(statement) && !statement.importClause)
   .map((statement) => (statement.moduleSpecifier as ts.StringLiteral).text)
-  .sort()
 
 const directives = (statements: readonly ts.Statement[]) => statements
   .filter(isDirective)
@@ -495,10 +513,14 @@ export function compareModuleRuntime(sides: ModuleSides): string[] {
   const dist = bind('dist.js', sides.distCode, false)
 
   const distNamespaces = new Map<string, string>()
+  const namespaceDeclarations: Array<[string, string]> = []
   const distInits: string[] = []
   for (const statement of dist.sourceFile.statements) {
     const namespace = namespaceDeclaration(statement)
-    if (namespace) distNamespaces.set(namespace[0], namespace[1])
+    if (namespace) {
+      namespaceDeclarations.push(namespace)
+      distNamespaces.set(namespace[0], namespace[1])
+    }
     const init = initCallName(statement)
     if (init) distInits.push(init)
   }
@@ -525,28 +547,54 @@ export function compareModuleRuntime(sides: ModuleSides): string[] {
     srcStatements = pick(srcStatements, false, '源码')
     distStatements = pick(distStatements, true, '产物')
   } else {
-    // 打包样板核对：init 调用集合、副作用导入、指令
-    const expectedInits = new Set<string>()
+    // 打包样板核对（保序）：init 调用序列、第三方命名空间声明闭集、副作用导入序列、指令
+    const expectedInits: string[] = []
+    const expectedPackages: string[] = []
     for (const statement of src.sourceFile.statements) {
-      if (!ts.isImportDeclaration(statement)) continue
+      if (!ts.isImportDeclaration(statement) || !statement.importClause) continue
       const specifier = (statement.moduleSpecifier as ts.StringLiteral).text
-      if (isBareSpecifier(specifier)) continue
+      if (isBareSpecifier(specifier)) {
+        if (!expectedPackages.includes(specifier)) expectedPackages.push(specifier)
+        continue
+      }
       const segment = comparator.importSegment(specifier)
       if (!segment) {
         comparator.fail('imports', `找不到 ${specifier} 在产物里的模块区段`)
         continue
       }
-      segment.inits.forEach((name) => expectedInits.add(name))
+      for (const name of segment.inits) if (!expectedInits.includes(name)) expectedInits.push(name)
     }
-    const actualInits = [...new Set(distInits)].sort()
-    const expected = [...expectedInits].sort()
-    if (JSON.stringify(actualInits) !== JSON.stringify(expected) || distInits.length !== actualInits.length) {
-      comparator.fail('init', `产物的 init 调用 [${distInits.join(' ')}] ≠ 源码导入模块声明的 init [${expected.join(' ')}]`)
+    // 副作用导入的模块（import "./x"）若有 init，也按源码顺序排进期望序列
+    for (const statement of src.sourceFile.statements) {
+      if (!ts.isImportDeclaration(statement) || statement.importClause) continue
+      const specifier = (statement.moduleSpecifier as ts.StringLiteral).text
+      if (isBareSpecifier(specifier)) continue
+      const segment = comparator.importSegment(specifier)
+      if (segment) for (const name of segment.inits) if (!expectedInits.includes(name)) expectedInits.push(name)
+    }
+    if (JSON.stringify(distInits) !== JSON.stringify(expectedInits)) {
+      comparator.fail('init', `产物的 init 调用序列 [${distInits.join(' ')}] ≠ 源码导入顺序推出的 [${expectedInits.join(' ')}]（漏调 / 多调 / 重复 / 顺序不同）`)
+    }
+    // 第三方包：源码运行时导入的每个包 ↔ 产物恰好一条 __toESM(require_<包>(), 1) 声明，不多不少、不重复
+    const declaredNames = namespaceDeclarations.map(([name]) => name)
+    if (new Set(declaredNames).size !== declaredNames.length) {
+      comparator.fail('namespaces', `命名空间变量重复声明：[${declaredNames.join(' ')}]`)
+    }
+    const unmatched = [...namespaceDeclarations]
+    for (const specifier of expectedPackages) {
+      const slug = packageSlug(specifier)
+      const index = unmatched.findIndex(([name, required]) =>
+        isRenamedFrom(name, `import_${slug}`) && isRenamedFrom(required, `require_${slug}`))
+      if (index < 0) comparator.fail('namespaces', `源码导入的包 ${specifier} 在产物里没有对应的 __toESM(require_${slug}(), 1) 声明`)
+      else unmatched.splice(index, 1)
+    }
+    if (unmatched.length > 0) {
+      comparator.fail('namespaces', `产物多出源码没有导入的命名空间声明：[${unmatched.map(([name, required]) => `${name}=${required}`).join(' ')}]`)
     }
     const srcSideEffects = sideEffectImports(src.sourceFile.statements)
     const distSideEffects = sideEffectImports(dist.sourceFile.statements)
     if (JSON.stringify(srcSideEffects) !== JSON.stringify(distSideEffects)) {
-      comparator.fail('imports', `副作用导入不同：[${srcSideEffects.join(' ')}] / [${distSideEffects.join(' ')}]`)
+      comparator.fail('imports', `副作用导入序列不同：[${srcSideEffects.join(' ')}] / [${distSideEffects.join(' ')}]`)
     }
     const srcDirectives = directives(src.sourceFile.statements)
     const distDirectives = directives(dist.sourceFile.statements)
