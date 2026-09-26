@@ -500,8 +500,16 @@ async function queryNewMemberCount(scopeType, scopeId, period) {
   return Number(rows[0]?.v || 0)
 }
 
+/**
+ * ★ 归店用 `c.bound_store_id`（顾客绑定门店），与分母 queryNewMemberCount 逐字同源
+ * （#439，用户 2026-09-26 拍板方案 A）。语义 = 「这批新会员给本店带来多少钱」，钱跟着人走。
+ *
+ * 此前用 buildSaleScope（`o.store_id`，订单发生门店），与分母的 buildClientScope 是两套归店口径 ——
+ * 员工端 wxml 的「新会员客单价」（mgmt-traffic-stats.ts 里 spend / count）正是拿这两个数相除，
+ * 「顾客绑定 A 店、在 B 店消费」时人进 A 的分母、钱进 B 的分子。admin 侧同型，两端同步整改。
+ */
 async function queryNewMemberSpend(scopeType, scopeId, period) {
-  const sc = buildSaleScope(scopeType, scopeId, 'o', 1)
+  const sc = buildClientScope(scopeType, scopeId, 'c', 1)
   const rows = await pg.query(
     `SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
        FROM sale_order_performance_events spe

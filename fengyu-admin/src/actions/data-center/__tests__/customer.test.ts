@@ -386,6 +386,37 @@ describe('getCustomerBoard 装配', () => {
     expect(m.metrics.visitTwiceRate).toBeNull()
   })
 
+  /**
+   * #439：新客客单价的「分母 0 而分子 > 0」—— 改同源后这个组合应当**结构性不可达**
+   * （`newmem_spend` 的骨架 JOIN 与 `newmem` 逐字相同，内连接已排除 NULL，
+   * 于是任何进分子的顾客必然也在分母里）。
+   *
+   * 但既有的「防除零」用例喂的是 `new_members: 0, new_spend: 0`（0/0），
+   * **没有** `0, 5000` 这一格（pr-ready boundary P3-2）——即"已消除"这句此前没有任何测试钉着。
+   * 这里补上：万一将来又被改成不同源，至少页面行为是 `--` 而不是 `Infinity`。
+   */
+  it('#439 分母 0 而分子 > 0：新客客单价为 null 而非 Infinity', async () => {
+    responder.scalarRow = { v: 0, total_count: 0, total_spend: 0 }
+    responder.skeletonRows = [
+      { market_id: 'm1', market_name: '市场A', store_id: 's1', store_name: '门店1' },
+    ]
+    responder.regActiveRows = []
+    const bad = {
+      bucket_d: 0, bucket_c: 0, bucket_b: 0, bucket_a: 0, bucket_v: 0, bucket_vic: 0,
+      operated_total: 0, member_spend_total: 0, member_spend_count: 0,
+      new_members: 0, new_spend: 5000,
+      traffic_customers: 0, traffic_visits: 0, member_visits: 0, project_count: 0, sm_total: 0,
+    }
+    responder.opsRows = [{ group_id: 'm1', ...bad }, { group_id: 's1', ...bad }]
+
+    const m = (await getCustomerBoard(PARAMS)).byMarket[0]
+    expect(m.metrics.newCustomerAvgTicket).toBeNull()
+    expect(Number.isFinite(m.metrics.newCustomerAvgTicket as number)).toBe(false)
+    expect(m.metrics.newMembers).toBe(0)
+    // ⚠ 用例名里**不写**「金额如实透传」：`new_spend` 只映射到内部字段 newMemberSpendTotal、
+    // 不进 metrics，这里断言不到（GLM round-2 P3-1 指出原名是形态三「名字范围 > 实际检查」）。
+  })
+
   it('明细派生防除零：分母 0 → null', async () => {
     responder.scalarRow = { v: 0, total_count: 0, total_spend: 0 }
     responder.skeletonRows = [
