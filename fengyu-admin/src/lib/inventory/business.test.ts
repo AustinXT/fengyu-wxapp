@@ -25,7 +25,9 @@ import {
   createMarketStaffPurchase,
   createMarketReplenishment,
   deleteMarketReplenishmentDraft,
+  deleteStoreReplenishmentDraft,
   saveMarketReplenishmentDraft,
+  saveStoreReplenishmentDraft,
   allocateRetainedQuantity,
   createPurchaseOrder,
   createReturnForRestock,
@@ -4373,5 +4375,150 @@ describe('市场报货草稿（#348）', () => {
       marketId: 'M1', supplyChainLocationId: 'HQ', items: [{ skuId: 'SKU-1', purchaseQuantity: 1 }],
       promotionSelections: [{ skuId: 'SKU-1', promotionPlanId: 'P1' }],
     })).rejects.toThrow(/^PERMISSION_DENIED: /)
+  })
+})
+
+/**
+ * 门店报货草稿（#348 · 348a）。新建 / 存草稿 / 提交共用 createStoreReplenishmentRequest，删除单独一个入口。
+ * 下游（市场报货引用 / 分院配货引用 / 汇总）只认已完成，草稿进不去。
+ */
+describe('门店报货草稿（#348）', () => {
+  const STORE_DRAFT = {
+    id: 'DBH-D1', doc_type: '门店报货', status: '草稿',
+    source_org_node_id: 'S1', target_org_node_id: 'M1', market_id: 'M1',
+    supplier_id: null, supplier_name: null,
+    cancellation_request_reason: null, cancellation_requested_by: null, cancellation_requested_at: null,
+  }
+
+  function mockStoreDraftTx(draft: Record<string, unknown> | null, { linked = false }: { linked?: boolean } = {}) {
+    const calls: unknown[] = []
+    const execute = initializedCutoverExecutor(async (query) => {
+      calls.push(query)
+      const rendered = renderSql(query)
+      const params = sqlParams(query)
+      if (rendered.includes('FROM inventory_locations')) {
+        const id = String(params[0])
+        if (id === 'M1') return [{ location_id: 'M1', org_node_id: 'M1', location_type: '市场', name: '市场', parent_location_id: 'HQ', is_active: true }]
+        return [{ location_id: id, org_node_id: id, location_type: '门店', name: `门店 ${id}`, parent_location_id: 'M1', is_active: true }]
+      }
+      if (rendered.includes('SELECT source_org_node_id FROM inventory_docs')) return draft ? [{ source_org_node_id: draft.source_org_node_id }] : []
+      if (rendered.includes('FROM inventory_doc_links WHERE from_doc_id')) return [{ linked }]
+      if (rendered.includes('FROM inventory_docs') && rendered.includes('FOR UPDATE')) return draft ? [draft] : []
+      if (rendered.includes('FROM inventory_skus')) return [marketSkuRow(String(params[0]))]
+      if (rendered.includes('INSERT INTO inventory_doc_items')) return [{ id: '21' }]
+      return []
+    })
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementation(async (callback) => callback({ execute } as never))
+    return { calls, rendered: () => calls.map(renderSql) }
+  }
+  const input = { storeId: 'S1', marketId: 'M1', items: [{ skuId: 'SKU-1', quantity: 2 }] }
+
+  beforeEach(() => {
+    vi.resetAllMocks()
+  })
+
+  it('新建草稿：单头状态草稿、不确认；与正式单同一套明细校验', async () => {
+    const { calls } = mockStoreDraftTx(null)
+    const result = await saveStoreReplenishmentDraft(SESSION, input)
+    expect(result.id).toMatch(/^DBH-/)
+    const header = calls.find((query) => renderSql(query).includes('INSERT INTO inventory_docs'))!
+    expect(sqlParams(header)).toContain('草稿')
+    // confirmed_by / confirmed_at 都是 NULL（insertDocHeader 的 confirmed=false）
+    expect(renderSql(header)).not.toContain('NOW()')
+  })
+
+  it('覆盖草稿仍是草稿；提交草稿在原单号上转已完成并确认', async () => {
+    const save = mockStoreDraftTx(STORE_DRAFT)
+    await saveStoreReplenishmentDraft(SESSION, { ...input, draftId: 'DBH-D1' })
+    const saveUpdate = save.calls.find((query) => renderSql(query).includes('UPDATE inventory_docs'))!
+    expect(sqlParams(saveUpdate)).toContain('草稿')
+    expect(save.rendered().some((text) => text.includes('DELETE FROM inventory_doc_items'))).toBe(true)
+    expect(save.rendered().some((text) => text.includes('INSERT INTO inventory_docs'))).toBe(false)
+
+    const submit = mockStoreDraftTx(STORE_DRAFT)
+    const result = await createStoreReplenishmentRequest(SESSION, { ...input, draftId: 'DBH-D1' })
+    expect(result.id).toBe('DBH-D1')
+    const submitUpdate = submit.calls.find((query) => renderSql(query).includes('UPDATE inventory_docs'))!
+    expect(sqlParams(submitUpdate)).toEqual(expect.arrayContaining(['已完成', 'E001', 'DBH-D1']))
+    // confirmed_at = NOW()：嵌套的 sql 片段（存草稿时是 null）
+    expect(sqlParams(submitUpdate).some((param) => typeof param === 'object' && param !== null)).toBe(true)
+    expect(sqlParams(saveUpdate).some((param) => typeof param === 'object' && param !== null)).toBe(false)
+  })
+
+  it('已提交 / 已删除 / 非门店报货 / 换门店 / 带关联：分别拒绝，且不动明细', async () => {
+    const cases: Array<[Record<string, unknown>, RegExp, { linked?: boolean }?]> = [
+      [{ ...STORE_DRAFT, status: '已完成' }, /^INVALID_STATE: 门店报货已提交/],
+      [{ ...STORE_DRAFT, status: '已取消' }, /^INVALID_STATE: 该门店报货草稿已删除/],
+      [{ ...STORE_DRAFT, doc_type: '市场报货' }, /^NOT_FOUND: 门店报货草稿不存在/],
+      [{ ...STORE_DRAFT, source_org_node_id: 'S2' }, /^INVALID_PARAMS: 草稿的报货门店不能修改/],
+      [STORE_DRAFT, /^INVALID_STATE: 该草稿已有上下游关联/, { linked: true }],
+    ]
+    for (const [draft, error, options] of cases) {
+      const { rendered } = mockStoreDraftTx(draft, options)
+      await expect(saveStoreReplenishmentDraft(SESSION, { ...input, draftId: 'DBH-D1' })).rejects.toThrow(error)
+      expect(rendered().some((text) => text.includes('DELETE FROM inventory_doc_items')), String(error)).toBe(false)
+    }
+  })
+
+  it('删除草稿 = 已取消（原因、删除人、updated_at），不校验门店是否启用；越权门店拒绝', async () => {
+    const { calls } = mockStoreDraftTx(STORE_DRAFT)
+    await deleteStoreReplenishmentDraft(SESSION, { draftId: 'DBH-D1', reason: '报错了' })
+    const update = calls.find((query) => renderSql(query).includes('UPDATE inventory_docs'))!
+    expect(renderSql(update)).toContain("status = '已取消'")
+    expect(renderSql(update)).toContain('updated_at = NOW()')
+    expect(sqlParams(update)).toEqual(expect.arrayContaining(['报错了', 'E001', 'DBH-D1']))
+    expect(calls.map(renderSql).find((text) => text.includes('FROM inventory_locations'))).not.toContain('is_active')
+
+    mockStoreDraftTx({ ...STORE_DRAFT, source_org_node_id: 'S9' })
+    await expect(deleteStoreReplenishmentDraft(NO_PRICE_SESSION, { draftId: 'DBH-D1' })).rejects.toThrow(/^PERMISSION_DENIED: /)
+    mockStoreDraftTx(null)
+    await expect(deleteStoreReplenishmentDraft(SESSION, { draftId: 'DBH-X' })).rejects.toThrow(/^NOT_FOUND: /)
+  })
+
+  it('市场报货不能引用门店报货草稿（INVALID_STATE），在锁定 / 占用来源之前就拒', async () => {
+    const execute = initializedCutoverExecutor(async (query) => {
+      const rendered = renderSql(query)
+      const params = sqlParams(query)
+      if (rendered.includes('FROM inventory_locations')) {
+        const id = String(params[0])
+        return id === 'HQ'
+          ? [{ location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null, is_active: true }]
+          : [{ location_id: id, org_node_id: id, location_type: '市场', name: '市场', parent_location_id: 'HQ', is_active: true }]
+      }
+      if (rendered.includes('FROM inventory_doc_items') && rendered.includes('FOR UPDATE')) return [storeRequestItemRow()]
+      if (rendered.includes('FROM inventory_docs') && rendered.includes('FOR UPDATE')) return [{ ...STORE_DRAFT, id: 'DBH-1' }]
+      return []
+    })
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementation(async (callback) => callback({ execute } as never))
+    await expect(createMarketReplenishment(SESSION, {
+      marketId: 'M1', supplyChainLocationId: 'HQ',
+      items: [{ skuId: 'SKU-1', sourceRequestItemIds: [1], purchaseQuantity: 1 }],
+    })).rejects.toThrow('INVALID_STATE: 所选明细不是当前市场可汇总的门店报货')
+  })
+
+  it('分院配货不能引用门店报货草稿（INVALID_STATE）', async () => {
+    const execute = initializedCutoverExecutor(async (query) => {
+      const rendered = renderSql(query)
+      if (rendered.includes('FROM inventory_docs') && rendered.includes('FOR UPDATE')) return [{ ...STORE_DRAFT, id: 'DBH-1' }]
+      return []
+    })
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementation(async (callback) => callback({ execute } as never))
+    await expect(createStoreAllocation(SESSION, {
+      storeRequestId: 'DBH-1', sourceMarketId: 'M1',
+      items: [{ requestItemId: 1, lotId: 1, quantity: 1 }],
+    })).rejects.toThrow('INVALID_STATE: 分院配货必须引用有效门店报货单')
+  })
+
+  it('市场汇总与在途只认已完成的门店报货（草稿不进待配）', () => {
+    const source = readFileSync(resolve(__dirname, 'business.ts'), 'utf-8')
+    const summarize = source.slice(source.indexOf('export async function summarizeStoreReplenishmentRequests('))
+    expect(summarize.slice(0, 3000)).toContain(`WHERE d.doc_type = '门店报货'
+         AND d.status = '已完成'`)
+    const coverage = source.slice(source.indexOf('async function loadStoreReplenishmentCoverage('))
+    expect(coverage.slice(0, 2000)).toContain(`WHERE request_doc.doc_type = '门店报货'
+         AND request_doc.status = '已完成'`)
   })
 })
