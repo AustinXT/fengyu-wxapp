@@ -1690,6 +1690,77 @@ try {
   })
   check('#348 删除后的单号不被复用', next348 !== drop348, `${drop348} → ${next348}`)
   await biz.deleteMarketReplenishmentDraft({ draftId: next348 })
+
+  // ════ #348a：门店报货草稿（不进市场汇总 / 在途 / 市场报货引用 / 分院配货；提交后才可汇总）════
+  setSession(storeA1Session())
+  const { id: storeDraft348 } = await biz.saveStoreReplenishmentDraft({
+    storeId: STA1_ID, marketId: MKA_ORG, items: [{ skuId: SKU_SUPPLY, quantity: 7 }],
+  })
+  const storeDraftHead348 = await docHeader(storeDraft348)
+  const [storeDraftItem348] = await docItems(storeDraft348)
+  check('#348a 门店报货存草稿：状态草稿、未确认、需求量=数量、已配 0',
+    storeDraftHead348?.status === '草稿' && !storeDraftHead348?.confirmed_at
+      && num(storeDraftItem348?.request_quantity) === 7 && num(storeDraftItem348?.fulfilled_quantity) === 0,
+    JSON.stringify({ status: storeDraftHead348?.status, req: storeDraftItem348?.request_quantity }))
+  setSession(marketASession())
+  const summaryWithStoreDraft = await biz.summarizeStoreReplenishmentRequests({ marketId: MKA_ORG })
+  check('#348a 门店报货草稿不进市场汇总',
+    !summaryWithStoreDraft.items.some((line) => line.requestItemIds.includes(Number(storeDraftItem348.id))),
+    JSON.stringify(summaryWithStoreDraft.items.map((line) => line.requestItemIds)))
+  await expectThrow('#348a 市场报货不能引用门店报货草稿（INVALID_STATE）', /INVALID_STATE/, () =>
+    biz.createMarketReplenishment({
+      marketId: MKA_ORG, supplyChainLocationId: HQ_ORG,
+      items: [{ skuId: SKU_SUPPLY, sourceRequestItemIds: [storeDraftItem348.id], purchaseQuantity: 1 }],
+    }))
+  await expectThrow('#348a 分院配货不能引用门店报货草稿（INVALID_STATE）', /INVALID_STATE/, () =>
+    biz.createStoreAllocation({
+      storeRequestId: storeDraft348, sourceMarketId: MKA_ORG,
+      items: [{ requestItemId: storeDraftItem348.id, lotId: hqLot.id, quantity: 1 }],
+    }))
+  const docs348 = await import(A('src', 'actions', 'inventory', 'docs.ts'))
+  const allocationCandidates348 = await docs348.listInventoryDocCandidates({ purpose: 'store-allocation-source', includeExhausted: true })
+  check('#348a 门店报货草稿不进分院配货候选',
+    !allocationCandidates348.data.some((row) => row.id === storeDraft348),
+    JSON.stringify(allocationCandidates348.data.map((row) => row.id)))
+  setSession(storeA2Session())
+  await expectThrow('#348a 别的门店不能改本店草稿（PERMISSION_DENIED）', /PERMISSION_DENIED/, () =>
+    biz.deleteStoreReplenishmentDraft({ draftId: storeDraft348 }))
+  setSession(storeA1Session())
+  await biz.saveStoreReplenishmentDraft({
+    draftId: storeDraft348, storeId: STA1_ID, marketId: MKA_ORG, items: [{ skuId: SKU_SUPPLY, quantity: 4 }], remark: '改过',
+  })
+  const editedStoreItems348 = await docItems(storeDraft348)
+  check('#348a 覆盖门店报货草稿：明细重写、仍是草稿',
+    editedStoreItems348.length === 1 && num(editedStoreItems348[0]?.quantity) === 4
+      && (await docHeader(storeDraft348))?.status === '草稿',
+    JSON.stringify(editedStoreItems348.map((item) => item.quantity)))
+  const { id: storeSubmitted348 } = await biz.createStoreReplenishmentRequest({
+    draftId: storeDraft348, storeId: STA1_ID, marketId: MKA_ORG, items: [{ skuId: SKU_SUPPLY, quantity: 4 }],
+  })
+  const [storeSubmittedItem348] = await docItems(storeSubmitted348)
+  check('#348a 提交沿用草稿单号、转已完成',
+    storeSubmitted348 === storeDraft348 && (await docHeader(storeDraft348))?.status === '已完成',
+    storeSubmitted348)
+  setSession(marketASession())
+  const summaryAfterSubmit348 = await biz.summarizeStoreReplenishmentRequests({ marketId: MKA_ORG })
+  check('#348a 提交后门店报货进入市场汇总',
+    summaryAfterSubmit348.items.some((line) => line.requestItemIds.includes(Number(storeSubmittedItem348.id))),
+    JSON.stringify(summaryAfterSubmit348.items.map((line) => line.requestItemIds)))
+  setSession(storeA1Session())
+  await expectThrow('#348a 已提交不能再改（INVALID_STATE）', /INVALID_STATE/, () =>
+    biz.saveStoreReplenishmentDraft({
+      draftId: storeDraft348, storeId: STA1_ID, marketId: MKA_ORG, items: [{ skuId: SKU_SUPPLY, quantity: 1 }],
+    }))
+  await expectThrow('#348a 已提交不能删除（INVALID_STATE）', /INVALID_STATE/, () =>
+    biz.deleteStoreReplenishmentDraft({ draftId: storeDraft348 }))
+  const { id: storeDrop348 } = await biz.saveStoreReplenishmentDraft({
+    storeId: STA1_ID, marketId: MKA_ORG, items: [{ skuId: SKU_SUPPLY, quantity: 1 }],
+  })
+  await biz.deleteStoreReplenishmentDraft({ draftId: storeDrop348, reason: '报错了' })
+  const storeDropHead348 = await docHeader(storeDrop348)
+  check('#348a 删除门店报货草稿 = 已取消，记原因',
+    storeDropHead348?.status === '已取消' && storeDropHead348?.cancellation_reason === '报错了',
+    JSON.stringify({ status: storeDropHead348?.status, reason: storeDropHead348?.cancellation_reason }))
 } catch (e) {
   check('冒烟整体', false, '致命错误：' + (e?.stack || e?.message || String(e)))
 } finally {
