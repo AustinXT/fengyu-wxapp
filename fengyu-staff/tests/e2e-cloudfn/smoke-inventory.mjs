@@ -433,7 +433,14 @@ async function storeRequestDraftFlow(errors) {
     errors.push(`草稿明细需求量应 = 数量 2、已配 0（不收客户端值）：${JSON.stringify(l1)}`)
   }
 
-  const rUpdate = await call('inventory.updateDraft', { draftId, items: [{ skuId: INV_SKU_ID, quantity: 3 }] })
+  const version1 = rDraft.data?.updatedAt
+  if (!version1) errors.push(`存草稿应回传版本号 updatedAt：${JSON.stringify(rDraft.data)}`)
+  const rNoVersion = await call('inventory.updateDraft', { draftId, items: [{ skuId: INV_SKU_ID, quantity: 3 }] })
+  if (rNoVersion.code !== -400 || !String(rNoVersion.message).includes('缺少草稿版本')) {
+    errors.push(`不带版本更新草稿应 -400「缺少草稿版本」，实际 code=${rNoVersion.code} msg=${rNoVersion.message}`)
+  }
+  const rUpdate = await call('inventory.updateDraft', { draftId, expectedUpdatedAt: version1, items: [{ skuId: INV_SKU_ID, quantity: 3 }] })
+  const version2 = rUpdate.data?.updatedAt
   const l2 = await lines(draftId)
   if (rUpdate.code !== 0 || (await head(draftId))?.status !== '草稿' || l2.length !== 1 || Number(l2[0].quantity) !== 3) {
     errors.push(`更新草稿应仍是草稿且明细重写为 3：code=${rUpdate.code} msg=${rUpdate.message} ${JSON.stringify(l2)}`)
@@ -443,7 +450,11 @@ async function storeRequestDraftFlow(errors) {
     errors.push(`非门店报货存草稿应 -400「只有门店报货支持草稿」，实际 code=${rOtherType.code} msg=${rOtherType.message}`)
   }
 
-  const rSubmit = await call('inventory.submitDraft', { draftId, items: [{ skuId: INV_SKU_ID, quantity: 3 }] })
+  const rStale = await call('inventory.submitDraft', { draftId, expectedUpdatedAt: version1, items: [{ skuId: INV_SKU_ID, quantity: 3 }] })
+  if (!String(rStale.message).includes('草稿已被他人修改')) {
+    errors.push(`拿旧版本提交应 CONFLICT「草稿已被他人修改」，实际 code=${rStale.code} msg=${rStale.message}`)
+  }
+  const rSubmit = await call('inventory.submitDraft', { draftId, expectedUpdatedAt: version2, items: [{ skuId: INV_SKU_ID, quantity: 3 }] })
   const h3 = await head(draftId)
   if (rSubmit.code !== 0 || rSubmit.data?.id !== draftId || h3?.status !== '已完成' || !h3?.confirmed_at) {
     errors.push(`提交草稿应原单号转已完成并确认：code=${rSubmit.code} msg=${rSubmit.message} ${JSON.stringify(h3)}`)

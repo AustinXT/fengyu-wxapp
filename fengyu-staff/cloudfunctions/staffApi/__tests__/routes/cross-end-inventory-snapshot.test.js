@@ -712,6 +712,7 @@ describe('门店报货草稿锁 staff ↔ admin 同口径（#348）', () => {
       'INVALID_STATE: 门店报货已提交，不能再修改或删除',
       'INVALID_PARAMS: 草稿的报货门店不能修改',
       'INVALID_STATE: 门店已更换所属市场，请删除该草稿后重新报货',
+      'INVALID_PARAMS: 缺少草稿版本，请重新打开草稿后再保存',
       'INVALID_PARAMS: 草稿版本格式不正确',
       'CONFLICT: 草稿已被他人修改，请重新打开后再保存',
       'INVALID_STATE: 该草稿已有上下游关联，不能按草稿修改或删除，请联系管理员处理',

@@ -2012,7 +2012,7 @@ function StoreRequestForm({
       <div className="space-y-3">
         <div className="flex items-center justify-between gap-3">
           <h3 className="text-sm font-medium">报货明细</h3>
-          <Button type="button" variant="outline" size="sm" onClick={() => setLines((previous) => [...previous, { skuId: '', quantity: '1', remark: '' }])}>
+          <Button type="button" variant="outline" size="sm" disabled={loadingDraft} onClick={() => setLines((previous) => [...previous, { skuId: '', quantity: '1', remark: '' }])}>
             添加明细
           </Button>
         </div>

@@ -1653,7 +1653,10 @@ async function docDetail(ctx) {
  * 非门店报货 NOT_FOUND；非草稿 INVALID_STATE（已删除 / 已提交分开提示）；换门店 INVALID_PARAMS；
  * 带血缘 / 预留的只可能是存量异常单，一律 INVALID_STATE 交人工处理。
  */
-async function lockStoreRequestDraft(client, draftId, sourceOrgNodeId, { marketId, expectedUpdatedAt } = {}) {
+/**
+ * `check` = 存草稿 / 提交时的额外校验（当前市场 + 打开草稿时的版本，版本**必填**）；删除不传（不比市场、不比版本）。
+ */
+async function lockStoreRequestDraft(client, draftId, sourceOrgNodeId, check = null) {
   const { rows } = await client.query(
     `SELECT id, doc_type, status, source_org_node_id, market_id,
             to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS updated_at_iso
@@ -1673,12 +1676,16 @@ async function lockStoreRequestDraft(client, draftId, sourceOrgNodeId, { marketI
   if (sourceOrgNodeId !== undefined && draft.source_org_node_id !== sourceOrgNodeId) {
     throw new Error('INVALID_PARAMS: 草稿的报货门店不能修改')
   }
-  // 草稿存续期间门店改挂了别的市场：单头市场归属不会随状态更新重算（与 admin 同口径）；删除不传 marketId，不受此限
-  if (marketId !== undefined && draft.market_id !== marketId) {
+  // 草稿存续期间门店改挂了别的市场：单头市场归属不会随状态更新重算（与 admin 同口径）；删除不受此限
+  if (check && draft.market_id !== check.marketId) {
     throw new Error('INVALID_STATE: 门店已更换所属市场，请删除该草稿后重新报货')
   }
-  // 草稿乐观锁：打开草稿时的 updatedAt 与库里不一致 = 别人改过（与 admin assertDraftUnchanged 同口径）
-  if (expectedUpdatedAt != null && expectedUpdatedAt !== '') {
+  // 草稿乐观锁（与 admin assertDraftUnchanged 同口径）：版本必填，缺了不能退化成「不校验」
+  if (check) {
+    const expectedUpdatedAt = check.expectedUpdatedAt
+    if (expectedUpdatedAt == null || expectedUpdatedAt === '') {
+      throw new Error('INVALID_PARAMS: 缺少草稿版本，请重新打开草稿后再保存')
+    }
     const expected = Date.parse(expectedUpdatedAt)
     if (Number.isNaN(expected)) throw new Error('INVALID_PARAMS: 草稿版本格式不正确')
     if (!draft.updated_at_iso || Date.parse(draft.updated_at_iso) !== expected) {
@@ -1770,8 +1777,20 @@ async function createDoc(ctx) {
   if (plan?.role === 'target' && !targetOrgNodeId) throw new Error('INVALID_PARAMS: 入库类单据缺少入库主体')
   let docId
 
+  let updatedAt = null
   await pg.transaction(async (client) => {
     await assertWorkfineInventoryInitialized(client)
+    if (docType === '门店报货') {
+      // 市场归属在事务外按门店父级解析；这里对门店行取共享锁并复读父级：解析与写入之间门店被改挂市场时拒绝，
+      // 且在本事务结束前挡住改挂（与 admin 的门店 → 市场 → 单据锁序同向）
+      const { rows: storeRows } = await client.query(
+        `SELECT parent_location_id FROM inventory_locations WHERE location_id = $1 FOR SHARE`,
+        [sourceLocationId],
+      )
+      if ((storeRows[0]?.parent_location_id || null) !== (marketId || null)) {
+        throw new Error('CONFLICT: 门店所属市场刚发生变化，请刷新后重试')
+      }
+    }
     if (draftId) {
       // 草稿没有血缘 / 预留 / 流水（lockStoreRequestDraft 已核对），明细整体重写；合计由明细 trigger 回填
       // `|| null`：解析不出门店节点时按 null 比对（fail-closed），不能退化成「跳过门店核对」
@@ -1967,18 +1986,18 @@ async function createDoc(ctx) {
         })
       }
     }
+    // 草稿回传新版本号（事务内、持草稿行锁读取，拿到的一定是本次写入的版本）：
+    // 留在编辑态的页面下一次保存拿它做乐观锁。提交后是终态，不需要版本
+    if (asDraft) {
+      const { rows: versionRows } = await client.query(
+        `SELECT to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS updated_at_iso
+           FROM inventory_docs WHERE id = $1`,
+        [docId],
+      )
+      updatedAt = versionRows[0]?.updated_at_iso || null
+    }
   })
 
-  // 草稿回传新版本号：留在编辑态的页面下一次保存拿它做乐观锁
-  let updatedAt = null
-  if (asDraft) {
-    const versionRows = await pg.query(
-      `SELECT to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS updated_at_iso
-         FROM inventory_docs WHERE id = $1`,
-      [docId],
-    )
-    updatedAt = versionRows[0]?.updated_at_iso || null
-  }
   ctx.result = { id: docId, draft: asDraft, updatedAt, message: asDraft ? '草稿已保存' : '提交成功' }
   return ctx.result
 }

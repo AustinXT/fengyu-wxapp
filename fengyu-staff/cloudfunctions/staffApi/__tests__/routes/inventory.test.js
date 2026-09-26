@@ -41,6 +41,10 @@ function mockTransactionClient(
       // 这两类不消耗 responses 队列；主体行默认按入参回显门店行，可传 locationRow 覆盖。
       // sync 漂移探测（AS drifted）同样不消耗队列；无结果 → 保守执行 UPSERT 旧路径。
       if (text.includes('AS drifted')) return { rows: [], rowCount: 0 }
+      // 门店报货事务内复读门店父级（#348）：默认与夹具的市场一致
+      if (text.includes('SELECT parent_location_id FROM inventory_locations')) {
+        return { rows: [{ parent_location_id: locationRow?.parent_location_id ?? 'market-A' }], rowCount: 1 }
+      }
       if (text.includes('INSERT INTO inventory_locations')) return { rows: [], rowCount: 0 }
       if (text.includes('SELECT location_id, location_type, parent_location_id')) {
         // locationRows：#251 用于构造「一个入参命中多行」的撞值场景。
@@ -646,6 +650,9 @@ describe('inventory.createDoc 权限与状态', () => {
           const text = String(sql)
           const cutover = cutoverQueryResult(text)
           if (cutover) return cutover
+          if (text.includes('SELECT parent_location_id FROM inventory_locations')) {
+            return { rows: [{ parent_location_id: 'market-A' }], rowCount: 1 }
+          }
           if (text.includes('COALESCE(SUM(quantity_on_hand), 0)')) {
             return { rows: bookRows, rowCount: bookRows.length, _params: params }
           }
@@ -2347,7 +2354,7 @@ describe('门店报货草稿（#348）', () => {
     market_id: 'market-A', updated_at_iso: '2026-09-26T01:02:03.456Z',
   }
 
-  function mockDraftEnv({ draft = DRAFT, linked = false, scopedStores = ['store-A'] } = {}) {
+  function mockDraftEnv({ draft = DRAFT, linked = false, scopedStores = ['store-A'], storeParent = 'market-A' } = {}) {
     pg.query.mockImplementation(async (query, params) => {
       const sql = String(query)
       if (sql.includes('WITH RECURSIVE descendants')) return scopedStores.map((storeId) => ({ store_id: storeId }))
@@ -2377,6 +2384,9 @@ describe('门店报货草稿（#348）', () => {
             return { rows: draft ? [draft] : [], rowCount: draft ? 1 : 0 }
           }
           if (text.includes('AS linked')) return { rows: [{ linked }], rowCount: 1 }
+          if (text.includes('SELECT parent_location_id FROM inventory_locations')) {
+            return { rows: [{ parent_location_id: storeParent }], rowCount: 1 }
+          }
           if (text.includes('WITH RECURSIVE descendants')) {
             return { rows: scopedStores.map((storeId) => ({ store_id: storeId })), rowCount: scopedStores.length }
           }
@@ -2427,7 +2437,7 @@ describe('门店报货草稿（#348）', () => {
 
   test('updateDraft：锁草稿后重写明细，仍是草稿；submitDraft：转已完成并确认', async () => {
     let getClient = mockDraftEnv()
-    await inventoryRoutes.updateDraft(createCtx({ payload: { ...payload, draftId: DRAFT.id }, auth: STORE_AUTH }))
+    await inventoryRoutes.updateDraft(createCtx({ payload: { ...payload, draftId: DRAFT.id, expectedUpdatedAt: DRAFT.updated_at_iso }, auth: STORE_AUTH }))
     let client = getClient()
     expect(calls(client, /DELETE FROM inventory_doc_items WHERE doc_id = \$1/)[0][1]).toEqual([DRAFT.id])
     let [update] = calls(client, /UPDATE inventory_docs/)
@@ -2436,7 +2446,7 @@ describe('门店报货草稿（#348）', () => {
     expect(calls(client, /INSERT INTO inventory_docs/)).toHaveLength(0)
 
     getClient = mockDraftEnv()
-    const result = await inventoryRoutes.submitDraft(createCtx({ payload: { ...payload, draftId: DRAFT.id }, auth: STORE_AUTH }))
+    const result = await inventoryRoutes.submitDraft(createCtx({ payload: { ...payload, draftId: DRAFT.id, expectedUpdatedAt: DRAFT.updated_at_iso }, auth: STORE_AUTH }))
     expect(result).toMatchObject({ id: DRAFT.id, message: '提交成功' })
     client = getClient()
     ;[update] = calls(client, /UPDATE inventory_docs/)
@@ -2452,7 +2462,7 @@ describe('门店报货草稿（#348）', () => {
     ['带上下游关联', DRAFT, true, 'INVALID_STATE: 该草稿已有上下游关联'],
   ])('updateDraft 拒绝%s，且不动明细', async (_label, draft, linked, error) => {
     const getClient = mockDraftEnv({ draft, linked })
-    await expect(inventoryRoutes.updateDraft(createCtx({ payload: { ...payload, draftId: DRAFT.id }, auth: STORE_AUTH }))).rejects.toThrow(error)
+    await expect(inventoryRoutes.updateDraft(createCtx({ payload: { ...payload, draftId: DRAFT.id, expectedUpdatedAt: DRAFT.updated_at_iso }, auth: STORE_AUTH }))).rejects.toThrow(error)
     expect(calls(getClient(), /DELETE FROM inventory_doc_items/)).toHaveLength(0)
   })
 
@@ -2499,9 +2509,29 @@ describe('门店报货草稿（#348）', () => {
 
   test('门店已改挂别的市场：更新 / 提交草稿拒绝，不动明细', async () => {
     const getClient = mockDraftEnv({ draft: { ...DRAFT, market_id: 'market-OLD' } })
-    await expect(inventoryRoutes.submitDraft(createCtx({ payload: { ...payload, draftId: DRAFT.id }, auth: STORE_AUTH })))
+    await expect(inventoryRoutes.submitDraft(createCtx({ payload: { ...payload, draftId: DRAFT.id, expectedUpdatedAt: DRAFT.updated_at_iso }, auth: STORE_AUTH })))
       .rejects.toThrow('INVALID_STATE: 门店已更换所属市场，请删除该草稿后重新报货')
     expect(calls(getClient(), /DELETE FROM inventory_doc_items/)).toHaveLength(0)
+  })
+
+  test('乐观锁必填：带 draftId 不带版本 → INVALID_PARAMS，不动明细', async () => {
+    const getClient = mockDraftEnv()
+    await expect(inventoryRoutes.submitDraft(createCtx({ payload: { ...payload, draftId: DRAFT.id }, auth: STORE_AUTH })))
+      .rejects.toThrow('INVALID_PARAMS: 缺少草稿版本，请重新打开草稿后再保存')
+    expect(calls(getClient(), /DELETE FROM inventory_doc_items/)).toHaveLength(0)
+  })
+
+  test('事务内复读门店父级：解析后门店被改挂市场 → CONFLICT，不写任何单据', async () => {
+    const getClient = mockDraftEnv({ storeParent: 'market-NEW' })
+    await expect(inventoryRoutes.createDoc(createCtx({ payload: { ...payload, draft: true }, auth: STORE_AUTH })))
+      .rejects.toThrow('CONFLICT: 门店所属市场刚发生变化，请刷新后重试')
+    expect(calls(getClient(), /INSERT INTO inventory_docs|UPDATE inventory_docs/)).toHaveLength(0)
+  })
+
+  test('存草稿在事务内回读新版本并回传', async () => {
+    mockDraftEnv()
+    const result = await inventoryRoutes.createDoc(createCtx({ payload: { ...payload, draft: true }, auth: STORE_AUTH }))
+    expect(result.updatedAt).toBe('2026-09-26T02:00:00.000Z')
   })
 
   test('乐观锁：版本不一致 CONFLICT；一致放行（按时刻比较）', async () => {
@@ -2519,7 +2549,7 @@ describe('门店报货草稿（#348）', () => {
 
   test('submitDraft 覆盖客户端带来的 draft:true，确认人非空', async () => {
     const getClient = mockDraftEnv()
-    await inventoryRoutes.submitDraft(createCtx({ payload: { ...payload, draftId: DRAFT.id, draft: true }, auth: STORE_AUTH }))
+    await inventoryRoutes.submitDraft(createCtx({ payload: { ...payload, draftId: DRAFT.id, expectedUpdatedAt: DRAFT.updated_at_iso, draft: true }, auth: STORE_AUTH }))
     const [update] = calls(getClient(), /UPDATE inventory_docs/)
     expect(update[1][1]).toBe('已完成')
     expect(update[1][5]).toBeTruthy()

@@ -1576,7 +1576,7 @@ try {
     }
   }
   const settlementBefore348 = await mkaSettlement()
-  const { id: draft348 } = await biz.saveMarketReplenishmentDraft({
+  const { id: draft348, updatedAt: draftVersion348 } = await biz.saveMarketReplenishmentDraft({
     marketId: MKA_ORG, supplyChainLocationId: HQ_ORG,
     items: [{ skuId: SKU_SUPPLY, purchaseQuantity: 5 }],
   })
@@ -1619,8 +1619,12 @@ try {
   await expectThrow('#348 别的市场不能改 / 删本市场草稿（PERMISSION_DENIED）', /PERMISSION_DENIED/, () =>
     biz.deleteMarketReplenishmentDraft({ draftId: draft348 }))
   setSession(marketASession())
-  await biz.saveMarketReplenishmentDraft({
-    draftId: draft348, marketId: MKA_ORG, supplyChainLocationId: HQ_ORG,
+  await expectThrow('#348 覆盖草稿不带版本被拒（乐观锁必填）', /INVALID_PARAMS: 缺少草稿版本/, () =>
+    biz.saveMarketReplenishmentDraft({
+      draftId: draft348, marketId: MKA_ORG, supplyChainLocationId: HQ_ORG, items: [{ skuId: SKU_SUPPLY, purchaseQuantity: 6 }],
+    }))
+  const { updatedAt: editedVersion348 } = await biz.saveMarketReplenishmentDraft({
+    draftId: draft348, expectedUpdatedAt: draftVersion348, marketId: MKA_ORG, supplyChainLocationId: HQ_ORG,
     items: [{ skuId: SKU_SUPPLY, purchaseQuantity: 6 }], remark: '改过的草稿',
   })
   const editedItems348 = await docItems(draft348)
@@ -1637,8 +1641,13 @@ try {
   )
   await pgQuery(`UPDATE inventory_promotion_plan_items SET market_unit_discount = 80 WHERE id = $1`, [promoItem348.id])
   try {
+    await expectThrow('#348 拿旧版本提交被拒（别人已改过）', /CONFLICT: 草稿已被他人修改/, () =>
+      biz.createMarketReplenishment({
+        draftId: draft348, expectedUpdatedAt: draftVersion348, marketId: MKA_ORG, supplyChainLocationId: HQ_ORG,
+        items: [{ skuId: SKU_SUPPLY, sourceRequestItemIds: [item348.id], purchaseQuantity: 6 }],
+      }))
     const { id: submitted348 } = await biz.createMarketReplenishment({
-      draftId: draft348, marketId: MKA_ORG, supplyChainLocationId: HQ_ORG,
+      draftId: draft348, expectedUpdatedAt: editedVersion348, marketId: MKA_ORG, supplyChainLocationId: HQ_ORG,
       items: [{ skuId: SKU_SUPPLY, sourceRequestItemIds: [item348.id], purchaseQuantity: 6 }],
     })
     const submittedHead348 = await docHeader(submitted348)
@@ -1693,7 +1702,7 @@ try {
 
   // ════ #348a：门店报货草稿（不进市场汇总 / 在途 / 市场报货引用 / 分院配货；提交后才可汇总）════
   setSession(storeA1Session())
-  const { id: storeDraft348 } = await biz.saveStoreReplenishmentDraft({
+  const { id: storeDraft348, updatedAt: storeVersion348 } = await biz.saveStoreReplenishmentDraft({
     storeId: STA1_ID, marketId: MKA_ORG, items: [{ skuId: SKU_SUPPLY, quantity: 7 }],
   })
   const storeDraftHead348 = await docHeader(storeDraft348)
@@ -1726,8 +1735,9 @@ try {
   await expectThrow('#348a 别的门店不能改本店草稿（PERMISSION_DENIED）', /PERMISSION_DENIED/, () =>
     biz.deleteStoreReplenishmentDraft({ draftId: storeDraft348 }))
   setSession(storeA1Session())
-  await biz.saveStoreReplenishmentDraft({
-    draftId: storeDraft348, storeId: STA1_ID, marketId: MKA_ORG, items: [{ skuId: SKU_SUPPLY, quantity: 4 }], remark: '改过',
+  const { updatedAt: storeEditedVersion348 } = await biz.saveStoreReplenishmentDraft({
+    draftId: storeDraft348, expectedUpdatedAt: storeVersion348, storeId: STA1_ID, marketId: MKA_ORG,
+    items: [{ skuId: SKU_SUPPLY, quantity: 4 }], remark: '改过',
   })
   const editedStoreItems348 = await docItems(storeDraft348)
   check('#348a 覆盖门店报货草稿：明细重写、仍是草稿',
@@ -1735,7 +1745,7 @@ try {
       && (await docHeader(storeDraft348))?.status === '草稿',
     JSON.stringify(editedStoreItems348.map((item) => item.quantity)))
   const { id: storeSubmitted348 } = await biz.createStoreReplenishmentRequest({
-    draftId: storeDraft348, storeId: STA1_ID, marketId: MKA_ORG, items: [{ skuId: SKU_SUPPLY, quantity: 4 }],
+    draftId: storeDraft348, expectedUpdatedAt: storeEditedVersion348, storeId: STA1_ID, marketId: MKA_ORG, items: [{ skuId: SKU_SUPPLY, quantity: 4 }],
   })
   const [storeSubmittedItem348] = await docItems(storeSubmitted348)
   check('#348a 提交沿用草稿单号、转已完成',
