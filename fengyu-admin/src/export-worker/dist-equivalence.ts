@@ -566,6 +566,12 @@ export function compareModuleRuntime(sides: ModuleSides): string[] {
     || !!initCallName(statement) || !!namespaceDeclaration(statement)
   const distDirectives = prologueDirectives(dist.sourceFile.statements, distBoilerplate)
   const isLocalReexport = (statement: ts.Statement) => ts.isExportDeclaration(statement) && !statement.moduleSpecifier
+  // 产物侧带来源的 export … from（bun 不会这样产出）：两种模式都直接判不等，不能被 only 的挑选静默丢掉
+  for (const statement of dist.sourceFile.statements) {
+    if (ts.isExportDeclaration(statement) && statement.moduleSpecifier) {
+      comparator.fail('exports', `产物出现带来源的再导出：${statement.getText()}`)
+    }
+  }
   let srcStatements = src.sourceFile.statements
     .filter((statement) => !ts.isImportDeclaration(statement) && !isLocalReexport(statement) && !srcDirectives.has(statement))
   let distStatements = dist.sourceFile.statements
@@ -627,6 +633,13 @@ export function compareModuleRuntime(sides: ModuleSides): string[] {
     const matchesPackage = ([name, required]: [string, string], specifier: string) => {
       const slug = packageSlug(specifier)
       return isRenamedFrom(name, `import_${slug}`) && isRenamedFrom(required, `require_${slug}`)
+    }
+    // 包名存在数字前缀歧义（foo / foo2）时，一条声明可能同时对上多个包：无法无歧义配对就 fail-closed
+    for (const declaration of namespaceDeclarations) {
+      const candidates = expectedPackages.filter((specifier) => matchesPackage(declaration, specifier))
+      if (candidates.length > 1) {
+        comparator.fail('namespaces', `命名空间声明 ${declaration[0]} 能同时对上多个包 [${candidates.join(' ')}]，无法无歧义核对`)
+      }
     }
     const unmatched = [...namespaceDeclarations]
     for (const specifier of expectedPackages) {

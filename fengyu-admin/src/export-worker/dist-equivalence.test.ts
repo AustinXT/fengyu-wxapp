@@ -147,6 +147,8 @@ describe('dist-equivalence：bun 的合法改写判为等价', () => {
     expect(() => only(['c'], 'var c = 1;')).toThrow(/源码里 c 的顶层声明找到 0 处/)
     expect(() => only(['b'], 'var a = 1;')).toThrow(/产物里 b 的顶层声明找到 0 处/)
     expect(() => only(['b'], 'var b = 2;\nvar b2 = 2;')).toThrow(/产物里 b 的顶层声明找到 2 处/)
+    // only 模式下产物带来源的再导出同样不能被挑选静默丢掉
+    expect(only(['b'], 'export { x } from "./dep";\nvar b2 = 2;').join('\n')).toMatch(/产物出现带来源的再导出/)
     // only 模式下产物残留的内部 import 同样不能被过滤放过
     expect(only(['b'], 'import"./fx";\nvar b2 = 2;').join('\n')).toMatch(/产物残留非预期的 import/)
   })
@@ -277,6 +279,11 @@ describe('dist-equivalence：真实漂移判为不等', () => {
     const refs = 'var q = [import_drizzle_orm1.sql, import_zod1.z];'
     expect(compare(two, ok + zod + refs)).toEqual([])
     expect(compare(two, zod + ok + refs).join('\n')).toMatch(/命名空间声明顺序与源码导入顺序不同/)
+    // 包名数字前缀歧义（foo / foo2）：一条声明同时对上两个包 → fail-closed
+    expect(compare(
+      'import { a } from "foo"\nimport { b } from "foo2"\nexport const q = [a, b]',
+      'var import_foo21 = __toESM(require_foo2(), 1);\nvar import_foo2 = __toESM(require_foo(), 1);\nvar q = [import_foo2.a, import_foo21.b];',
+    ).join('\n')).toMatch(/能同时对上多个包/)
   })
 
   it('(0, obj.method)() 丢 this、(0, eval)() 是间接 eval，都不等于直接调用', () => {
