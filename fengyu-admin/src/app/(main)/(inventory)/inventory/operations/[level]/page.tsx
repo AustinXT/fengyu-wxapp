@@ -7,7 +7,7 @@ import {
 } from '@/actions/inventory/locations'
 import { listInventorySuppliers } from '@/actions/inventory/suppliers'
 import { getSession } from '@/lib/auth'
-import { inventoryPriceScopeByTier, inventoryPriceVisibility } from '@/lib/inventory/access'
+import { inventoryPriceScopeByTier, inventoryPriceVisibility, inventoryScopedLocationIds } from '@/lib/inventory/access'
 import { scopeSessionToAllActions } from '@/lib/action-scope'
 import {
   INVENTORY_BUSINESS_LEVELS,
@@ -108,6 +108,11 @@ export default async function Page({
           canApproveShipmentCancellation={hasUiCapability(actions, 'inventory:shipment_cancel_approve')}
           // 与单据列表查询回传的 canViewPrice 同一判据
           canViewPrice={inventoryPriceVisibility(session) !== 'none'}
+          // 市场报货福利报价 / 改选（#348）：与服务端 assertMarketPromotionSelectable 同一判据 ——
+          // 办理权与市场价格权落在同一条绑定上，按该绑定覆盖的主体判；null = 不受限（admin）
+          marketPriceLocationIds={hasUiCapability(actions, 'inventory:market_price_view')
+            ? inventoryScopedLocationIds(scopeSessionToAllActions(session, ['inventory:market_operate', 'inventory:market_price_view']))
+            : []}
           // 入库单价优惠（#346）与服务端 receiveSupplyChainPurchaseOrder 同判据：办理权与供应链价格权
           // 落在同一条角色绑定上，按总部节点判；null = 不受节点限制（admin）
           receiptDiscountOrgNodeIds={receiptDiscountOrgNodeIds(session)}

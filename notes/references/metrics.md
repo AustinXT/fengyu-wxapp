@@ -107,6 +107,17 @@
 
 ## 员工排行榜归属
 
+> ⚠️ **scope 决定谁出现、归属决定数字（#299，2026-09-23 拍板：不是缺陷，不改 SQL）**：scope 只作用于产能员工池
+> （staff `producerEmployeesCte` / admin `producerCte`），决定哪些员工上榜；金额 / 计数类 CTE（staff 6 个 `staffRanking*`、
+> admin Part D `revenue_by_emp` 等、Part E `revenue_by_emp_cat` / `consume_by_emp_cat` 等全部员工级 CTE）**不按 scope 过滤**，
+> 数值为员工个人全域产出（含在其他门店、停用门店的业绩 / 服务）。因此**员工榜合计 ≠ 所选范围的门店合计，属预期**。
+> 同样适用于 admin「按技师人效」明细，以及 #423 无门店市场场景（如 hr@品项公司 看到品项老师在所有门店的分配额）。
+> 下方变更记录 2026-08-08「员工排行榜……同步过滤、停用门店返回零数据」指的是**产能员工池**（谁上榜）按在营门店过滤，
+> 不是金额按门店过滤；提成日报页脚（#375「员工排行榜展示的是个人全域产出」）与本条同义。
+> 页面说明文案两端逐字一致：「数值为员工个人全域产出」——admin `STAFF_OUTPUT_SCOPE_NOTE`
+> （`src/lib/data-center/staff-output-note.ts`，员工排名榜 + 按技师人效）与 staff `mgmt-dashboard.wxml` 员工排行榜，
+> 由 staffApi `cross-end-staff-output-note.test.js` 守护；导出件「导出说明」随 #296 复用同一常量。
+
 > 用于 `mgmtDashboard.staffRanking` 接口的归属字段约定（设计稿见 ticket [`mgmt-staff-ranking-INDEX`](../tickets/2026-04-25-mgmt-staff-ranking-INDEX.md)）。
 > 时间锚点固定为 `NOW()`，period ∈ `month` / `lastMonth` / `year`（与门店排行榜一致，复用
 > `[spe.performance_date_period]` / `[service_date_period]` / `[became_member_at_period]` 缩写）。
@@ -138,8 +149,9 @@
 > 1. **`store_id` 兜底** — 档案 `store_id` 为空但直挂的是**门店**节点时反查该门店（修 1 例档案缺失）；
 > 2. **展示名兜底** — 「所属门店」列为空时显示直挂节点名（如「品项公司」「养生部」），不留空白；
 > 3. **可见性锚 `anchor_market_id`** — 直挂节点自身是市场则取自身，否则取父节点（部门→市场，org 树最多一层）。
->    无门店员工按「锚定市场下是否有本账号可见的在营门店」判定可见性：
->    - 品项公司是总部直属市场节点、其下无门店 → 汇总范围（全部 / 全部授权门店）下**仅总部 / admin 可见**；
+>    汇总范围（全部 / 全部授权门店）下超管或持总部范围的账号全部可见（#334，与 staff「全部」恒真一致）；
+>    其他账号按「锚定市场下是否有本账号可见的在营门店」判定可见性：
+>    - 品项公司是总部直属市场节点、其下无门店 → 汇总范围下**仅总部 / admin 可见**；
 >      **直接授权到品项公司的账号**（如 hr@品项公司）以「市场」范围可见（#399：数据中心默认落到该市场，
 >      人效榜看锚定员工，其余门店口径板块按实为 0）。门店级账号选自己门店的所属市场时，锚定员工与
 >      「全部授权门店」同一条可见性（锚定市场下须有本账号可见的在营门店）——店长所属市场的养生部等本就在汇总里可见，
@@ -193,10 +205,12 @@
 >     市场 scope → 锚定市场相等才计；全部 → 计
 >   - ⚠️ 市场锚分支**不带**启用门店过滤（直挂者不属于任何门店，无可判断启停的门店）；
 >     与 admin 一致，属已知取舍 —— 代价是「门店全停的市场 + 直挂技师」人均偏低
-> - ⚠️ 「全部」口径下 staff 与 admin **有一条已登记分叉**（#334）：admin 的 `all` 只对**超管**恒真，
->   非超管总部账号走「锚定市场下存在可见启用门店」的 EXISTS，看不到无门店市场（如品项公司）的人
+> - 「全部」口径两端等价（#334 起）：staff `all` 恒真（能选 `all` 的只有持总部范围的账号）；admin 的 `all` / `authorized`
+>   对超管**或持总部范围**的账号恒真（与 `validateScope` / `getScopeTopLevel` 同一判定），其他账号走「锚定市场下存在可见在营门店」的 EXISTS。
+>   #334 之前 admin 只对超管恒真，5 个总部非超管账号看集团分母 165（staff 166）、员工榜少品项公司 20 人
+>   ⚠️ 前提：admin 判总部用按动作收窄后的角色，staff 用账号全部绑定；「总部角色无数据中心权限、另一角色有」的混合账号两端会分叉（既有差异，2026-09-26 生产 0 个）
 > - 跨端一致性由 `fengyu-staff/cloudfunctions/staffApi/__tests__/routes/cross-end-technician-denominator.test.js`
->   的字面量断言守护（抽取自检 + 要件 1~9 含 6b + 单源反向守护，共 12 个 `it`）；
+>   的字面量断言守护（抽取自检 + 要件 1~9 含 6b + 单源反向守护，共 13 个 `it`）；
 >   两端是独立副本，改一端必同步另一端
 >
 > **门店数（2026-04-25 T4 起）已切「按 `selectedDate` 历史化」**：
@@ -571,7 +585,7 @@ admin 取 `fengyu-admin/src/lib/data-center/spend-buckets.ts` 的 `SPEND_BUCKET_
 | 指标 | 公式 | 数据源 | 筛选条件 |
 |------|------|--------|----------|
 | 新增会员数（newMemberCount） | `COUNT(*)` | `client_wechat_users` | `became_member_at::date BETWEEN $startDate AND $endDate` ∩ scope（`bound_store_id`） |
-| 新增会员对应消费（newMemberSpend） | `SUM(spe.amount)` | `sale_order_performance_events spe` JOIN `sale_orders` | JOIN 上面的新增会员；`spe.sale_order_type IN ('销售单','转换单')` ∩ `spe.status='已支付'` ∩ `spe.change_type IN ('首次支付','回款','退款')` ∩ `spe.legacy_source IS DISTINCT FROM 'workfine'` ∩ `[spe.performance_date]` ∩ scope（`store_id`）。**2026-09-16（#138）起同 §4 口径**，旧实现为 `SUM(o.received - COALESCE(o.refunded_amount,0)) @ o.paid_at::date` ∩ `o.status='已支付'`（旧文档误记为 `paid_amount`，该列已 DROP） |
+| 新增会员对应消费（newMemberSpend） | `SUM(spe.amount)` | `sale_order_performance_events spe` JOIN `sale_orders` | JOIN 上面的新增会员；`spe.sale_order_type IN ('销售单','转换单')` ∩ `spe.status='已支付'` ∩ `spe.change_type IN ('首次支付','回款','退款')` ∩ `spe.legacy_source IS DISTINCT FROM 'workfine'` ∩ `[spe.performance_date]` ∩ scope（**`c.bound_store_id`，与分母「新增会员数」同源；#439 自 2026-09-26 起，此前是 `o.store_id`**）。**2026-09-16（#138）起同 §4 口径**，旧实现为 `SUM(o.received - COALESCE(o.refunded_amount,0)) @ o.paid_at::date` ∩ `o.status='已支付'`（旧文档误记为 `paid_amount`，该列已 DROP） |
 | 新增会员客单价（newMemberAvgTicket） | `newMemberSpend / newMemberCount` | 派生；防除零 → `--` |
 | 新增会员成交率（newMemberConvRate） | `newMemberCount / trialFootfall × 100%` | 派生；防除零 → `--` |
 
@@ -649,6 +663,80 @@ FROM (
    `buildSaleScope` / `buildClientScope` 自 #401 起都恒叠加在营门店过滤（`org_nodes.is_active = TRUE`，两端
    `store-status` helper 独立副本 + 字面量守护）；`bound_store_id IS NULL` 的会员两端都不计（`NULL IN (...)` 不成立）。
    **各端内部分子/分母配对是自洽的**（同一个 scope helper 同时作用于分子与分母 ②），子集关系两端都成立。
+
+#### D-newMemberAvgTicket-store：新客客单价的分子分母**归店同源**（#439，2026-09-26 拍板方案 A）
+
+**改前（错的）**：分母「新增会员数」按 `c.bound_store_id`（顾客绑定门店），
+分子「新增会员对应消费」按 `o.store_id`（订单发生门店）—— 同一个比率两套归店口径。
+「顾客绑定 A 店、在 B 店消费」时**人进 A 的分母、钱进 B 的分子**。
+
+生产实测（2026-01-01 ~ 09-25，集团 scope）**6 家门店受影响，最高 ±13.3%**：
+
+| 门店 | 新增会员 | 改前客单价 | 改后（同源） | 偏差 |
+|---|---|---|---|---|
+| 九江大润发 | 5 | 2,596 | 2,994 | **−13.3%** |
+| 南昌丽景店 | 11 | 5,106 | 4,797 | +6.4% |
+| 南昌九龙湖 | 16 | 2,998 | 3,211 | −6.6% |
+| 南昌英伦店 | 15 | 4,297 | 4,431 | −3.0% |
+| 九江梦想店 | 15 | 8,545 | 8,413 | +1.6% |
+| 南昌万科店 | 54 | 3,623 | 3,586 | +1.0% |
+
+**改后**：分子改按 `c.bound_store_id`，与分母逐字同源。语义 = 「这批新会员给**本店**带来多少钱」，钱跟着人走。
+**admin 与 staff 两端同步**（staff 客量页 wxml 的「新会员客单价」= `spend / count`，同型同改）。
+
+**顺带关掉一个纯缺陷**：分子此前**不要求**绑定门店存在/在营，而分母要求。
+于是「绑定店为空或已停用的新会员在在营店消费」会让钱进分子却无对应分母 ⇒
+**集团客单价虚高** + **门店维度出现「分母 0 而分子 > 0」⇒ 页面显示 `--` 却有真实业绩**
+（`safeDiv` 把分母 0 静默吞成 null）。改同源后自然消失（`scopeFilterSql` 恒附加在营条件，`NULL IN (…)` 为 NULL 被过滤）。
+实测改前孤儿 0 人 0 元、分母 0 但有分子 0 家 —— 靠数据侥幸，不是代码保证。
+
+> ⚠️ **「分子 ⊆ 分母」的成立范围要说清**（pr-ready 后由 codex 评审指出，我原先写成了无条件的"结构性不可达"）：
+> - **明细表（byMarket / byStore）**：`newmem` 与 `newmem_spend` 在**同一条 SQL** 里 ⇒ 同一个数据库快照
+>   ⇒ 子集关系**真正结构性成立**。这也正是本单口径缺陷所在的那一层。
+> - **KPI 卡与 staff 汇总**：分子分母是**两条独立查询**（admin 走 `Promise.all`、staff 同样）
+>   ⇒ 两个快照之间存在毫秒级窗口。构造：顾客 C 是本期新会员、有 5000 元符合条件的款项、当前绑定 B 店；
+>   请求 A 店 → count 先取快照（C 属 B，分母 0）→ 期间提交 `bound_store_id: B → A` →
+>   spend 后取快照（C 属 A，分子 5000）⇒ admin 显示 `--`、staff 返回 `{count: 0, spend: 5000}`。
+>   反向调店得分母 1 分子 0。`became_member_at` 由 NULL 改成本期日期的并发提交同型。
+>   **影响仅限该次页面加载**（下次请求即自愈，不落库、不进导出的历史数据），
+>   代价是把两条查询合进一条 SQL 或塞进同一事务快照 —— 收益不抵改动面，**本单不做，登记于此**。
+
+⚠️ **它不会显形为 > 100%**（客单价无上限），所以 #287 / #414 那种「一眼看出」的信号在这里不存在，
+只能靠守护钉死 —— 这也是它拖到 #414 的 sibling 审计才被发现的原因。
+
+> **验收看不变量不看绝对值**：上表绝对值每日漂移（实测同一门店两小时内 8545 → 8611），
+> 但**两种口径的差额恒定**（该店恒为 133）。判对错看
+> ① 上表 6 家门店差额归零 ② 集团 = Σ 各门店（实测逐店分子合计 = 总额 3,469,091）。
+
+> ⚠️ **「集团 KPI 客单价改前 = 改后」只是当期巧合，不是结构不变量** —— 实测 5724.57 = 5724.57，
+> 但它成立需要**两个方向同时为空**：
+> - 方向 A「绑定门店为空/已停用的新会员，在**在营**门店消费」⇒ 改前计入、改后不计 ⇒ 改后 < 改前。实测 **0 人 0 元**
+> - 方向 B「绑定**在营**门店的新会员，在**已停用**门店消费」⇒ 改前不计、改后计入 ⇒ 改后 > 改前。实测 **0 人 0 元**
+>
+> 方向 B 之所以为空，是因为**全库已停用门店（3 家）一条款项事件都没有**（25 张销售单、0 条 `spe`）。
+> 一旦停用门店出现款项事件，集团 KPI 就会变。**别把这个等式当验收判据**（它是 pr-ready 对抗评审指出的，
+> 我最初只测了方向 A 就把等式写成了"证明"）。
+
+> 只改**客单价这一个比率**的分子，业绩类指标的归店一律不动。
+> D-3=A（消费不区分入会前后）不受影响，本条只定归店维度 —— 那是 D-3 从未涉及的。
+
+> ⚠️ **同一张明细表里「会员客单价」仍按 `o.store_id`，刻意不跟改**：它的分子分母同出一个
+> `member_spend` CTE（分母是"有消费的会员**人数**"，本身就是从订单数出来的），两侧已经同源；
+> 换成绑定门店等于改它自己的口径。**「同源」要求的是分子分母彼此一致，不是全表统一用一个归店列。**
+
+> ⚠️ **这是 #401「经营统计恒排除已停用门店」的第一个例外**，必须显式登记
+> （`fengyu-admin/src/lib/data-center/scope-sql.ts` 的 `activeStoreCondition` 注释同步写了）：
+> 改后分子只按 `c.bound_store_id` 过滤、**不再约束订单门店**，于是「绑定在营店的新会员在已停用门店消费」
+> 的钱会进分子。这在方案 A 下是**正确的**（分母只按绑定店数人、不看订单，这个人本来就在分母里，
+> 钱跟着人走就该含他在任何门店的消费），不是缺口 —— 但它与 #401 那句「即使直接构造停用门店 URL
+> 也只能得到零数据」形成张力，**不登记的话下一个 reviewer 会按 #401 把它改回去**。
+> 实测当前金额为 0（全库停用门店无款项事件）。
+>
+> 同理，非 admin 角色（`scopeStoreIds` 受限）的新客客单价分子会含**授权范围外门店**产生的金额
+> —— 分母一直按绑定店所以从不泄漏，这是分子侧新增面，量级同为 0。
+
+**守护**：`consistency.customer.test.ts` 第 10 组（派生式：从分母现读归店列/骨架 JOIN，
+再断言分子一致；admin KPI / admin 明细 / staff 三处 + 4 条反向变异）。
 
 > ⚠️ **已知限制（待拍板，#284 遗留）**：① 分支的判定 `became_member_at::date BETWEEN start AND end`
 > **带上界**，于是「在该区间之后才转化」的人会被排除出该历史区间的活跃池 —— 因为 `customer_type`
@@ -893,12 +981,15 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 | 2026-09-24 | **D-card-same-source 确立（#287）**：持卡占比分子分母此前**两个维度都不同源** —— ① 分子统计全部顾客、分母只统计会员（分子里 60.8% 的人永不可能进分母）；② 分子按 `so.store_id`（订单所属门店）归店、分母按 `c.bound_store_id`（顾客绑定门店）归店。集团占比恒 **253%**、单店最高 **2600%**、40 家在营门店 36 家 > 100%。**只修 ① 不够**（实测仍 7 家 > 100%、最高 104.55%）；两条都修后 **0 家 > 100%、最高正好 100.00%**，admin 侧集团 **1917 / 1931 = 99.27%**（2026-09-24 实测，含 `activeStoreCondition`；数字每日漂移，**验收看不变量不看绝对值**）。写法上 admin 用「分母壳 + `EXISTS`」、staff 因需 `GROUP BY pc.product_kind` 用「会员表驱动 + `COUNT(DISTINCT c.user_id)`」，两端 scope 均走 `bound_store_id`。⚠️ 该列修正后各店在 95.83%~100% 之间、**已失去区分度，勿用于门店排名**（旧列的店间方差全部来自非会员数量）。两端同步：`product.ts::queryCardHolders/queryCardHoldersByStore` + `mgmt-product.js::cardSql` |
 | 2026-09-25 | **一次/二次客活改按到店天数（#298）**：由服务单行数 `COUNT(*)` 改为 `COUNT(DISTINCT service_date)`，去重键 `(client_user_id, service_date)`，日期轴拍板为 `service_date`；admin 数据中心（KPI + 明细）与 staff mgmt-traffic 同步。补登 `monthly_activity` 口径（此前在本文档完全缺席，是两套定义分叉的根因）。prod 2026-09-01~09-24 集团一次/二次 527/982 → 590/919，63 人由「二次」回到「一次」 |
 | 2026-09-25 | **经营数据主表补齐 E–I、K–M、S–U、Y（#373）**：保有会员按「保有会员-*」时点还原（= 客量板有效保有会员，绑定门店）；被经营 = 当期（当月 / 年初至今）销售 + 转换单款项 ≥ 会员门槛、按下单门店；客流改「服务到店天数」、售前 = 当天核销体验项、Y = X/U。prod 自贡 2026-08 实测（2026-09-25）：E/F/H = 237/226/168，K/L = 82/77（含充值则 L = 83），S/T/U = 1,642/89/1,553（与 issue 参考值一致） |
+| 2026-09-26 | **新客客单价分子分母归店同源（#439，用户拍板方案 A）**：**改前**分母「新增会员数」按 `c.bound_store_id`、分子「新增会员对应消费」按 `o.store_id`，同一个比率两套归店口径 —— 「绑定 A 店、在 B 店消费」时人进 A 的分母、钱进 B 的分子。生产实测 **6 家门店受影响、最高 ±13.3%**（九江大润发 2596 vs 2994）。分子改按 `c.bound_store_id` 与分母逐字同源，**admin + staff 两端同步**（staff 客量页 wxml 的「新会员客单价」= spend / count，同型）。实测集团 KPI 客单价改前 = 改后（5724.57 = 5724.57），但**那只是当期巧合不是结构不变量**（需「绑定店空/停用 × 在在营店消费」与「绑定在营店 × 在停用店消费」两个方向同时为空；后者为空是因为全库停用门店无款项事件）。顺带关掉纯缺陷：分子此前不要求绑定门店存在/在营而分母要求 ⇒ 集团虚高 + 门店「分母 0 而分子 >0 显示 `--` 却有业绩」（实测孤儿 0 人 0 元，靠数据侥幸）。⚠️ 该缺陷**不会显形为 >100%**（客单价无上限），只能靠守护钉死。口径详见本文 D-newMemberAvgTicket-store；与 #289（同指标、时间轴割点根因）同改两处分子，merge 有冲突 |
 | 2026-09-25 | **1次/2次达成率分母改为会员注册数（#414，用户拍板）**：原分母 `retained`（保有会员，末 90 天窗口）与分子是同一批人 —— 生产实测两池各 1889、双向差集 0，36 家有数据门店 `1次达成率+2次达成率` **精确恒等 100.0%**，两列不携带「达成」信息。改用 `registered`（会员注册截面）。同轮给分子（KPI `queryActive` + 明细 `visit_count`）补上与分母逐字相同的会员守卫 `became_member_at IS NOT NULL AND ::date <= endDate` —— `customer_status` 是 cron 的**当前**截面、不随 `endDate` 回溯，缺守卫时「入会晚于区间终点」的人进分子不进分母（2026-07-08~07-31 实测 36 人，九江丽都店 7/7 = 100.0%；补后单店最高 62.7%、集团 24.3%）。**`endDate = 今天` 时 admin 当期数字一人不变**，只修历史区间；staff 同步补同一条守卫（仅 `lastMonth` 受影响：一次 511→486 / 二次 894→847，合计 −72 人），**merge 后须同批 deploy staffApi**。明细/导出表头改为「1次达成率(÷会员注册)」。另登记两处**当时未显形**的同源缺陷：窗口错配（服务单最早 2026-07-08，**2026-10-06 起**选跨度 > 90 天的区间会 >100%；模拟 78 天:30 天几何实测 29/36 家 >100%、最高 135.3%、集团 117.5%）与归店维度（跨店服务 27 人，影响 3 家各 1 人在 1次/2次 档间移动）。口径详见本文 D-visit-rate-denom |
 | 2026-09-25 | **客量板会员门槛读配置（#292）**：会员被经营 6 档的最低档下界与「会员经营人数」门槛由写死的 `1990` 改读 `system_configs.new_member_threshold`（与品项板同源），1w/3w/6w/10w 收敛到 `SPEND_BUCKET_FLOORS`；admin 与 staffApi 同步。prod/dev 当前配置均为 1990，上线后数字不变。标签保持写死；门槛须 < 1w（不加校验，仅文档化） |
 | 2026-09-25 | **数据中心「在营门店」口径收敛（#401）**：取数、范围下拉、#293 停用空态统一**只看 `org_nodes.is_active`**；`stores.is_closed` / `closed_at` 只作营业时间轴（门店数按 `closed_at` 时点历史化），不作统计范围——否则关店会抹掉关店前全部历史业绩。关店不联动停用节点。单源：admin `lib/store-status.ts` / staff `utils/store-status.js`（独立副本，`cross-end-store-status-snapshot.test.js` 守护：is_closed 闭集 + closed_at 白名单 + mgmt-*.js 分类闭集）。连带：①「只关店、节点仍启用」的门店进入两端范围下拉；② staff 客量页 / 品项页补在营过滤（此前不排除停用门店，与 admin 分叉）；③ staff 月店均月末 0 店返回 `null`（前端 `--`）。「可营业」口径（前台门店列表 / 库存位 / 提货）不变 |
 | 2026-09-25 | **数据中心范围支持门店多选（#376）**：新增「多店」范围 `scope=stores&scopeId=a,b`（单 key 逗号串，升序去重，≤200 家）。规范化：全选 → 总部 `all` / 非总部 `authorized`；恰好勾满单个市场 → `market`（范围面板里勾满只有 1 家店的市场也记为 `market`，与旧下拉「选市场」一致）；其余 1 家 → `store`；含停用门店不折叠。服务端所选门店须全在授权门店内，否则 `PERMISSION_DENIED`。无门店员工按「锚定市场下至少有一家所选在营门店」可见（⚠️ 单店仍恒不可见，1 家与 2 家之间有此跳变，是拍板语义；变体：所选多店部分停用、只剩 1 家在营时仍按多店判定，锚定员工可见）。所选全部停用 → #293 空态；部分停用 → 只算在营部分并提示。超管 `all` ≠ 全部在营门店的 `stores`（后者不含品项公司等无门店市场的锚定员工），故全选必须折叠成 `all`。dev 库对账：全选 / 勾满单市场与改造前 authorized / market 在 4 板块 + 5 新页逐项一致 |
 | 2026-09-25 | **无门店市场账号开放数据中心（#399）**：只授权到无在营门店市场（如 hr@品项公司）的非总部账号，默认范围落到该市场（此前整屏「暂无可查看范围」），人效榜按 `anchor_market_id` 看锚定员工，门店口径板块按实为 0；范围下拉改为「可切换范围 ≤1 才锁」（可见在营门店 + 直接授权的无门店市场）。「直接授权」= 角色范围覆盖该市场节点（`scopeOrgNodeIds`），门店级账号的祖先市场不算：不参与默认 / 锁定，且 admin `orgAnchorScopeSql` 市场分支对祖先市场另叠可见在营门店条件（与 authorized 同口径）。⚠️ 已知：该范围下人均类 KPI 分子为门店口径（恒 0）、分母含锚定技师，显示 0（口径待定，见 follow-up） |
 | 2026-09-25 | **经营分析站（fengyu-analyst）在营门店口径跟随 #401（#421）**：范围下拉由门店关店标记改为**只看 `org_nodes.is_active`**；复购 / 渗透 / 新客漏斗取数统一叠在营门店过滤（`scopeFilterSql`），「全部」范围也剔除门店为空 / 悬空的行（与 admin 一致）。**「首次」判定用全历史**：新客首单、复购首次进入的基线含停用门店的历史单（`scopeRangeSql`，仍只在所选范围内），归属门店须在营——否则在停用门店买过的老顾客换到在营门店会被误判为新客；新客首单、复购首次达标日同日在多家门店发生时优先归属在营门店（按日粒度，避免同日先去停用门店的顾客被整行剔除）。到店 / 入会金额 / 年贡献 / 复购达标日只计在营门店。门店级账号的门店全部停用时不再列出其市场（显示「暂无可查看的数据范围」）。第三份独立副本 `fengyu-analyst/src/lib/store-status.ts`，由 staff `cross-end-store-active-snapshot.test.js`（三端整段等值 + analyst 接线）与 `cross-end-store-status-snapshot.test.js`（analyst 全部源码 is_closed 闭集 + 单源）守护（staffApi 全量在 CI 跑；analyst 自身 vitest 未进 CI，#382）。prod 2026-08 影响：下拉少九江中辉店、南昌龙大店；全集团渗透会员数 1947→1946，其余指标不变 |
+| 2026-09-26 | **品项板新增/复购业绩改净额（#288）**：`daily_agg` 的 `HAVING` 由 `> 0` 改为「两列都为 0 才剔除」，`period_agg` 由 `purchase_received > 0` 改为 `<> 0` —— 退款负数冲销不再因当日净额 ≤ 0 被整组丢弃（原先约 62% 的冲销被吞）。体验判定与人数归店只认正数购买日（负数行只进业绩、不造人；否则 prod 实测体验多出 60 人）；admin 明细新增拆成 `new_store`（人数）与 `new_revenue_store`（业绩）。admin 与 staffApi 同步。2026-01-01~09-22 集团 prod：新增业绩 −11.99%、复购业绩 −6.93%，人数不变 |
+| 2026-09-26 | **总部非超管在汇总范围看到无门店市场的直挂员工（#334，方案 A 拍板）**：admin `orgAnchorScopeSql` 的 all / authorized 分支由「仅超管 → TRUE」改为「超管或持总部范围 → TRUE」，与 staff `all`、与 admin `validateScope` / `getScopeTopLevel` 同一判定；市场级 / 门店级账号与单店 / 市场 / 多店分支不变。生产（2026-09-26）影响 5 个能进数据中心的总部非超管账号：人效板集团技师分母 165 → 166（+季杰），员工榜 all / authorized 多出品项公司 20 名有技能标签的员工（名单已经用户确认）；另有 11 名无技能、零业绩的总部直挂人员进入候选池但不上榜。跨端守护 `cross-end-technician-denominator` 要件 6b 由「已登记分叉」改为等价断言 |
 | **2026-09-14** | **款项业绩归属日期收口（#137，迁移 0039 + 0040）**。视图 `sale_order_performance_events.performance_date` 改为**直读** `sale_order_payments.performance_attribution_date`，**查询侧不再有任何回退分支**；取值规则全部下沉到写入侧两个 trigger。0040 给该列加了 **CHECK 约束** `chk_sop_attribution_date_present`（列本身**不是** `NOT NULL`，Drizzle schema 里仍是 nullable）。<br>**影响面**：原文「首次支付取订单归属日、回款/退款取自身 `paid_at`」的表述在全文档失效——每一笔款项都有自己的归属日期。金额类指标按类型分流：**业绩/现金流类**（总业绩、分客型业绩、员工业绩、销售提成）走 `[spe.performance_date]`；**子项类**（生美业绩、产品出库、品项周期业绩）走 `[sipe.performance_date]`；**实耗 / 生美实耗 / 服务提成**仍走 `[service_date]`，不受本次收口影响。<br>⚠ **部署前置**：先 apply 0039 + 0040 再部署各端，否则未迁库时首次支付行归属日为 NULL，会被三值逻辑吞掉正数主体。 |
 | **2026-09-16** | **口径变更登记（#138 / #139 / #140 / #141）**，四条均为「从 `paid_at` 切到归属日期」：<br>· **#138** 客量数据子页 §4/§5：会员被经营 6 档分桶、会员客单价、新会员对应消费改按款项流水归属（`SUM(spe.amount) @ performance_date`；旧实现为 `SUM(o.received - COALESCE(o.refunded_amount,0)) @ o.paid_at::date` ∩ `o.status='已支付'`，旧文档曾误记为 `paid_amount`，该列已 DROP）。dev 实测 2026-08 经营人数 321→324、会员总数 470→413、消费合计 +7.78 万；含退款负行故 `spend` 可为负（本期净消费，不 clamp）。<br>· **#139** staff 订单列表 / 营业额分配列表的日期筛选固定按 `performance_attribution_date`。<br>· **#140** admin 工作台「今日实付 / 今日退款 / 昨日实付」改按 `spe.performance_date`（`total_paid_amount` 无日期条件不受影响）。⚠ 财务注意：这三项不再与银行流水逐日对齐。<br>· **#141** staff 顾客档案「年度消费」/ 列表「年消费」改按 `performance_attribution_date`（半开年区间）；**月度消费日历仍按 `paid_at`**，两个口径并存且有意。<br>同轮订正三处存量滞后表述：销售数据页总述、分客型业绩 `[sop.paid_at_period]`、分客型产品出库与品项维度汇总的 `SUM(si.received) @ paid_at`（实现早已是 `SUM(sipe.amount) @ sipe.performance_date`）；员工排行榜「复用 `[paid_at_period]`」。<br>另补登记一条历史遗漏：实耗 / 生美实耗 / 项目数等**消耗类**指标两端都套了 `excludeDepositRefundSql()` 剔除寄存单退款专用服务单（admin 19 处 / staff 12 处，由 `consistency.deposit-refund-filter.test.ts` 守护 31 处中的 29 处，且只校验文件级调用次数）——**客流 / 到店 / 服务人次 / 保有会员 / 提成不剔除**（寄存退款是真到店、假消耗）。本文档此前从未登记，照公式抄会多算。 |
 | **2026-09-22** | **环比基期（上期）长度首次登记（#283）**，见文末「数据中心（admin）板块专属指标」节。此前全文只登记了「上期」这个概念、从未定义其长度，`time-range.ts` 遂把本节「时间窗口补充」里 staff 端的**三选一并列维度**「上月=上月初~上月末」误当成环比分母，于是 `本周`/`本月` 两个 preset 拿 N 天的当期比整周/整月的基期（同文件 `今日`/`自定义` 恒等长，`今年` 另有跨闰年偏差）。现明确：**基期按日历同期对齐、不得无条件取完整上一周期**，`本周`→上周同一星期几、`本月`→上月同一日。同轮登记三条日历固有例外（`本月` 上月天数不足时 clamp 到上月末短 1~3 天；`今年` 的环比/同比基期跨闰年 ±1 天；`本周`/`自定义` 的**同比**基期跨闰年 ±1 天且星期漂移——后两条源自 `addYears` 的 2/29 归一化，**均尚未修复**）。并明确**同比基期与环比基期同受「不得长于当期」约束**（二者同走一个 `deltaPct`）。另补登记 `delta%` 的「算不出」情形含**基期 `<= 0`** 与**非有限值**（负基期会让符号翻转）。⚠ 「本月」与「自定义同起止日」的环比值本就不同，属语义差异非缺陷。 |
@@ -1075,7 +1166,7 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 | **entry_date（首次进入日）** | 某 client 在某 product_kind 下，全历史（截至 $endDate）中最早的进入达标日（跨门店合并） |
 | **品项进入（xinzeng/newEntry）** | entry_date 落在 `[startDate, endDate]` 内的顾客 |
 | **复购（fugou）** | 本期品项进入 cohort 中，entry_date 后在 `[startDate, endDate]` 内再次有复购达标日的顾客（threshold 与进入共用） |
-| **体验（tiyan）** | 在 `[startDate, endDate]` 内有销售单/转换单购买，但全历史（截至 endDate）从未有进入达标日的顾客 |
+| **体验（tiyan）** | 在 `[startDate, endDate]` 内有销售单/转换单购买（当日净额 > 0 的正数购买日），但全历史（截至 endDate）从未有进入达标日的顾客 |
 
 > **同一天合并规则**：同一顾客 + 同一门店 + 同一 product_kind + 同一日期的多笔消费先合并；进入基线汇总三类订单，复购达标仅汇总销售单/转换单，再分别对比 threshold。
 > **金额口径**：使用 `sale_item_performance_events.amount` 逐笔子项业绩事件（该视图按 sale_item 汇总恒等于 `sale_items.received`，回款/退款已逐笔入账）。寄存单只用于进入基线，不计入体验/进入/复购的区间业绩。
@@ -1106,7 +1197,8 @@ WITH daily_agg AS (
     AND pc.product_kind IS NOT NULL
     AND sipe.performance_date <= $endDate
   GROUP BY so.client_user_id, so.store_id, pc.product_kind, sipe.performance_date
-  HAVING SUM(sipe.amount::numeric) > 0
+  HAVING SUM(sipe.amount::numeric) <> 0         -- #288：只剔除两列都为 0 的空组，负数净额日保留
+      OR SUM(sipe.amount::numeric) FILTER (WHERE so.sale_order_type IN ('销售单','转换单')) <> 0
 ),
 qualifying_days AS (
   SELECT client_user_id, store_id, product_kind, purchase_date
@@ -1121,12 +1213,12 @@ first_entry AS (                              -- entry_date：全历史最早进
   FROM qualifying_days
   GROUP BY client_user_id, product_kind
 ),
-period_agg AS (                               -- 期内真实购买每日聚合（排除寄存金额）
+period_agg AS (                               -- 期内真实购买每日净额（排除寄存金额；含退款冲销负数日，#288）
   SELECT client_user_id, store_id, product_kind, purchase_date,
          purchase_received AS day_received
   FROM daily_agg
   WHERE purchase_date BETWEEN $startDate AND $endDate
-    AND purchase_received > 0
+    AND purchase_received <> 0                  -- 只排除纯寄存日；负数日必须保留
 ),
 xinzeng AS (                                  -- 新增：entry_date 在期内
   SELECT client_user_id, product_kind, entry_date FROM first_entry
@@ -1140,14 +1232,15 @@ fugou AS (                                    -- 复购：本期进入 cohort，
   WHERE q.purchase_date BETWEEN $startDate AND $endDate
     AND q.purchase_date > x.entry_date
 ),
-tiyan AS (                                    -- 体验：期内有购买但全历史无达标日
+tiyan AS (                                    -- 体验：期内有正数购买日但全历史无达标日
   SELECT DISTINCT pa.client_user_id, pa.product_kind
   FROM period_agg pa
-  WHERE NOT EXISTS (
-    SELECT 1 FROM first_entry f
-    WHERE f.client_user_id = pa.client_user_id
-      AND f.product_kind   = pa.product_kind
-  )
+  WHERE pa.day_received > 0                     -- #288：负数冲销行只进业绩、不造体验客
+    AND NOT EXISTS (
+      SELECT 1 FROM first_entry f
+      WHERE f.client_user_id = pa.client_user_id
+        AND f.product_kind   = pa.product_kind
+    )
 )
 ```
 
@@ -1158,7 +1251,7 @@ tiyan AS (                                    -- 体验：期内有购买但全�
 | 体验客单价（trialAvgTicket） | `trialRevenue / trialCount` | 派生；防除零 → `--` |
 | 品项进入人数（newCount）per product_kind | `COUNT(DISTINCT xinzeng.client_user_id)` | CTE `xinzeng` |
 | 进入业绩（newRevenue）per product_kind | `SUM(period_agg.day_received)` WHERE client ∈ xinzeng | `xinzeng` JOIN `period_agg` |
-| 进入客单价（newAvgTicket） | `newRevenue / newCount` | 派生；防除零 → `--` |
+| 进入客单价（newAvgTicket） | `newRevenue / newCount` | 派生；防除零 → `--`；业绩为负时可为负（#288） |
 | 复购人数（repurchaseCount）per product_kind | `COUNT(DISTINCT fugou.client_user_id)` | CTE `fugou` |
 | 复购业绩（repurchaseRevenue）per product_kind | `SUM(period_agg.day_received)` WHERE client ∈ fugou | `fugou` JOIN `period_agg` |
 | 复购客单价（repurchaseAvgTicket） | `repurchaseRevenue / repurchaseCount` | 派生；防除零 → `--` |
@@ -1168,6 +1261,20 @@ tiyan AS (                                    -- 体验：期内有购买但全�
 > **各类业绩口径**：为该客群在 period 内该 product_kind 的销售单/转换单购买 `SUM(sipe.amount)`（非仅达标当日，排除寄存单），
 > 体现"该客群对期内收入的贡献"。
 > ⚠ **2026-09-14 订正**：原写 `SUM(received)` 已失效，与本节其余部分一样改走子项业绩事件视图。
+> ⚠ **2026-09-26 订正（#288）**：区间业绩是**净额** —— 退款走负数冲销、不删行，冲销逐笔抵减业绩。
+> 原 `HAVING SUM(...) > 0` + `period_agg ... purchase_received > 0` 会把「当日净额 ≤ 0」的
+> (顾客, 门店, 品项, 日) 整组丢弃：同一批退款约 38% 被净入、62% 被吞，取决于当日净额符号（审计附录 A11）。
+> 现在只剔除「两列都为 0」的空组与纯寄存日（`purchase_received = 0`）；HAVING 不能只判 `day_received <> 0`，
+> 否则寄存单恰好抵平销售单/转换单净额的日子（prod 实测 14 组）仍会被误丢。
+> 负数事件不只是退款：转换单**转出行**（`received` 为负，冲减原品项）与 legacy 残差同样计入。2026-01-01~09-22 prod
+> 销售单/转换单负数事件：退款 -92.5 万、转换单转出 -126.2 万、回款 -1.8 万 —— 转换只把价值从原品项挪到新品项，净额口径下不在新品项凭空多算。
+> 寄存单大额冲销压过当日购买（`day_received ≤ 0 < purchase_received`）的组现在保留，按其 `purchase_received` 参与复购达标与人数判定（prod 全历史 0 组）。
+> 业绩为负、人数 > 0 时客单价为负；只有冲销、没有购买的门店会出现「人数 0、业绩为负」的明细行（客单价 `--`）。
+> 期内只有冲销、且不属于体验/进入/复购任一客群的顾客（如上期体验客本期退款），其冲销不在任何客群业绩里扣 —— 客群口径本身的边界。
+> **负数行只进业绩、不造人**：体验判定只认正数购买日；admin 明细的门店归店同理 ——
+> 人数只按正数购买日（新增无正数购买日时落 entry 门店），业绩按全部行（含冲销）归到发生门店，净额可为负。
+> 2026-01-01~09-22 集团 prod 实测：新增业绩 818.29 万 → 730.69 万（原虚高 11.99%），复购业绩 439.28 万 → 410.80 万
+> （原虚高 6.93%），体验/新增/复购人数均不变；门店级最高南昌梦时代 +30.1%、自贡贡井店 +29.6%、南昌江信店虚高 9.40 万。
 > **性能注意**：`daily_agg` 全历史扫描（`purchase_date <= $endDate`，无下界），随运营时长增长。
 > 索引建议**只能建在底层表上**——`sale_item_performance_events` 是普通 `pgView`，不能直接建索引，
 > 且 `sale_item_performance_events.performance_date` 的**底表来源有两个分支**：
@@ -1237,14 +1344,14 @@ tiyan AS (                                    -- 体验：期内有购买但全�
 | 单次客耗 | 客量 | `生美实耗 ÷ 服务人次` | 分子=`SUM(unit_real_price*session_used) WHERE is_shengmei`（已完成 ∩ service_date 区间）；分母=已完成 service_orders 行数（服务人次）。KPI 与明细表统一此口径（**不用** Excel 原稿"÷频率"，亦不用"÷会员人次"）|
 | 店长人数 | 人效 | `COUNT(在营启用门店)` | 每店一店长口径：按 `stores` JOIN `org_nodes(type='门店', is_active=TRUE)` 在营计数（`opening_date<=区间末 ∩ (closed_at IS NULL OR closed_at>区间末)`），**不依赖** `position_name`。故 `店长人均X = 每店平均 X`（含 店长人均收入 = 门店全部产能员工提成合计 ÷ 门店数）|
 | 员工/技师人均业绩分子 | 人效 | `SUM(spe.amount)`（门店现金流） | **2026-09-23 #285 订正**。`empAvgRevenue` 与 `byMarket.techAvgRevenue` 的分子 = 上方 §派生指标的 `storeRevenue`，与同页「门店排名榜-业绩」、销售板「总业绩」、staff `queryStoreRevenue` **四处同源**。详见下方「业绩两套口径」|
-| 人均派生分母（技师数） | 人效 | 产能技师 ∩ 区间末在职 ∩ **含直挂市场/部门者** | **2026-09-23 #285 订正**。`skills && ARRAY['美容师','养生师']`，归属按 `COALESCE(sw.store_id, ds.store_id)`；回收后仍无门店的用 `anchor_market_id` 锚到市场。⚠️ **只按 `store_id` 过滤会漏人**：组织归属双轨（`store_id` + `org_node_id`），2026-09 实测 13 名在职产能技师 `store_id IS NULL`（12 人直挂各市场「养生部」、1 人直挂「品项公司」），产出进分子、人头不进分母 → 集团 150 vs 164、虚高 **+9.33%**。⚠️ **单店 scope 下直挂者不出现**（`orgAnchorScopeSql` 返回 FALSE），故 `集团技师数 ≠ Σ门店技师数`，与员工榜同语义。⚠️ 另有一条**潜在**缺口：「既无门店、又锚不到市场」的产能技师会进 KPI 总分母却进不了任何 byMarket 行（`orgAnchorScopeSql` 在 admin+scope=all 时返回 `TRUE`，不要求锚得到市场），即 `KPI 技师数 ≥ Σ byMarket 技师数`。2026-09-23 实测该类人数为 **0**，当前两数恒等；不收紧是有意的——收紧会把真实技师从集团口径整个抹掉，且与 `producer_employees` 人池定义分叉 |
+| 人均派生分母（技师数） | 人效 | 产能技师 ∩ 区间末在职 ∩ **含直挂市场/部门者** | **2026-09-23 #285 订正**。`skills && ARRAY['美容师','养生师']`，归属按 `COALESCE(sw.store_id, ds.store_id)`；回收后仍无门店的用 `anchor_market_id` 锚到市场。⚠️ **只按 `store_id` 过滤会漏人**：组织归属双轨（`store_id` + `org_node_id`），2026-09 实测 13 名在职产能技师 `store_id IS NULL`（12 人直挂各市场「养生部」、1 人直挂「品项公司」），产出进分子、人头不进分母 → 集团 150 vs 164、虚高 **+9.33%**。⚠️ **单店 scope 下直挂者不出现**（`orgAnchorScopeSql` 返回 FALSE），故 `集团技师数 ≠ Σ门店技师数`，与员工榜同语义。⚠️ 另有一条**潜在**缺口：「既无门店、又锚不到市场」的产能技师会进 KPI 总分母却进不了任何 byMarket 行（`orgAnchorScopeSql` 在超管或持总部范围 + 汇总范围时返回 `TRUE`，不要求锚得到市场），即 `KPI 技师数 ≥ Σ byMarket 技师数`。2026-09-23 实测该类人数为 **0**，当前两数恒等；不收紧是有意的——收紧会把真实技师从集团口径整个抹掉，且与 `producer_employees` 人池定义分叉 |
 
 > ### ⚠️ 业绩有两套口径，按**聚合粒度**分（2026-09-23 #285 订正）
 >
 > | 粒度 | 公式 | 用在哪 |
 > |---|---|---|
 > | 门店/全局（不分组到人） | `SUM(sale_order_performance_events.amount)` ∩ 已支付 ∩ `change_type IN ('首次支付','回款','退款')` ∩ `sale_order_type IN ('销售单','转换单','充值单')` ∩ `legacy_source IS DISTINCT FROM 'workfine'` ∩ `[spe.performance_date]` | 人效板 KPI 大卡、按市场人效、门店排名榜；销售板总业绩；staff 大卡 |
-> | 员工（`GROUP BY employee_id`） | `SUM(sale_payment_item_allocations.allocated_amount)` ∩ `is_void=FALSE` ∩ 销售单/转换单 ∩ 已支付回款分配 | 员工排行榜、按技师人效明细（见上方 §员工排行榜归属） |
+> | 员工（`GROUP BY employee_id`，全域，不按 scope 过滤） | `SUM(sale_payment_item_allocations.allocated_amount)` ∩ `is_void=FALSE` ∩ 销售单/转换单 ∩ 已支付回款分配 | 员工排行榜、按技师人效明细（见上方 §员工排行榜归属，#299） |
 >
 > **为什么不能混用**：`allocated_amount` 是**角色归属额**不是钱。写入侧按 `(sale_item_id, role_type)`
 > **分池**校验「池内 Σratio ≤ 1」，单 receipt 挂几个角色就有几个独立的 100% 池 —— ratio 合计
@@ -1544,7 +1651,7 @@ SQL 单源 `fengyu-admin/src/lib/data-center/commission-sql.ts`，与 staff 管�
 | 员工范围 | 期内有任意提成行的员工（含期内离职）；**不加 >0 过滤**（#290），0 提成行灰显；☆「隐藏 0 提成行」只隐藏行合计 = 0 的行，负数行保留 |
 | 负数 | 销售侧退款写负数冲销行，归退款款项的归属日期；格子允许负数。服务侧 CHECK ≥ 0，不会出现负数 |
 | 有提成员工数 | 净提成 > 0 的去重 employee_id（KPI 定义，不是行过滤）；副文案 = 有任意提成行的去重员工数 |
-| 人均提成 | 本月提成合计 ÷ 产能技师数（`technician-sql.ts` 单源，= 人效板 technicianCount；区间末在职，本月截到今天）。非超管总部账号差异见 #334 |
+| 人均提成 | 本月提成合计 ÷ 产能技师数（`technician-sql.ts` 单源，= 人效板 technicianCount；区间末在职，本月截到今天）。总部非超管账号与超管同口径（#334） |
 | 单均提成 | 本月提成合计 ÷ 去重订单数（销售单号 + 服务单号，含 0 提成订单） |
 | 指标卡 | 按当前门店范围全量，不随员工搜索 / 隐藏 0 行变化（☆ 待答 7） |
 | 待分配提示 | 与 `/allocations`「待分配」筛选同源（`getPendingPayments`）+ 款项归属日期在所选月 + 当前 scope |

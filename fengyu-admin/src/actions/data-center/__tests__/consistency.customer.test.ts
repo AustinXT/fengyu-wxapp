@@ -147,7 +147,12 @@ const EXPECTED_SPE_BLOCKS: Record<'admin' | 'staff', string[]> = {
     // 门店/市场明细·会员消费分桶 —— 用 skel JOIN 代替 ${sc}
     "SELECT ${groupId} AS group_id, o.client_user_id, SUM(spe.amount::numeric) AS spend FROM sale_order_performance_events spe JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id JOIN skel sk ON sk.store_id = o.store_id JOIN client_wechat_users c ON c.user_id = o.client_user_id WHERE spe.sale_order_type IN ('销售单', '转换单') AND spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款', '退款') AND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN ${start} AND ${end} AND c.customer_type = '会员客' GROUP BY ${groupId}, o.client_user_id )",
     // 门店/市场明细·新会员消费
-    "SELECT ${groupId} AS group_id, COALESCE(SUM(spe.amount::numeric), 0) AS new_spend FROM sale_order_performance_events spe JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id JOIN skel sk ON sk.store_id = o.store_id JOIN client_wechat_users c ON c.user_id = o.client_user_id WHERE c.became_member_at IS NOT NULL AND c.became_member_at::date BETWEEN ${start} AND ${end} AND spe.sale_order_type IN ('销售单', '转换单') AND spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款', '退款') AND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN ${start} AND ${end} GROUP BY ${groupId} )",
+    // #439：归店从 `o.store_id`（订单店）改 `c.bound_store_id`（绑定店），与分母 newmem 归店 JOIN 逐字同源。
+    // JOIN 次序随之调整（skel 要排在 c 之后，否则 c.bound_store_id 还不可见）。
+    // ⚠ **刻意不补** `c.bound_store_id IS NOT NULL`（尽管分母 newmem 里有那句冗余的）：
+    // 内连接已排除 NULL，而下方「明细·新会员消费的 WHERE 与 KPI 版一致」按逐字比对，
+    // 差异只允许出现在 scope 段 —— 往这里补一句会直接打红那条。见 customer.ts 该 CTE 上方的说明。
+    "SELECT ${groupId} AS group_id, COALESCE(SUM(spe.amount::numeric), 0) AS new_spend FROM sale_order_performance_events spe JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id JOIN client_wechat_users c ON c.user_id = o.client_user_id JOIN skel sk ON sk.store_id = c.bound_store_id WHERE c.became_member_at IS NOT NULL AND c.became_member_at::date BETWEEN ${start} AND ${end} AND spe.sale_order_type IN ('销售单', '转换单') AND spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款', '退款') AND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN ${start} AND ${end} GROUP BY ${groupId} )",
   ],
   staff: [
     // queryMemberOps（会员经营 + 6 档分桶）
@@ -2070,6 +2075,189 @@ describe('客量板块两端口径一致性守护', () => {
       expect(normalize(stripComments(colsMut))).not.toContain(
         "{ key: 'visitOnceRate', label: '1次达成率(÷会员注册)', unit: 'percent' }",
       )
+    })
+  })
+  /**
+   * 10. 新客客单价：分子与分母**归店同源**（#439，用户 2026-09-26 拍板方案 A）
+   *
+   * ## 为什么需要单独一组
+   *
+   * 改前分母按 `c.bound_store_id`（顾客绑定门店）、分子按 `o.store_id`（订单发生门店）——
+   * 「顾客绑定 A 店、在 B 店消费」时**人进 A 的分母、钱进 B 的分子**。
+   * 生产实测 6 家门店受影响、最高 ±13.3%（九江大润发 2596 vs 2994）。
+   * 且分子此前**不要求**绑定门店存在/在营而分母要求，于是「绑定店为空或已停用的新会员在在营店消费」
+   * 会让钱进分子却无对应分母 ⇒ 集团虚高、门店维度出现「分母 0 而分子 > 0 ⇒ 页面 `--` 却有业绩」。
+   *
+   * ⚠ 它**不会显形为 > 100%**（客单价无上限），所以 #287 / #414 那种"一眼看出"的信号在这里不存在
+   * —— 只能靠守护钉死，这也是它拖到 #414 的 sibling 审计才被发现的原因。
+   *
+   * ## 写法：派生式，从**分母**现读归店列，不硬编码
+   *
+   * 改分母的归店列而忘了同步分子 → 派生出的新串在分子里找不到 → 红。
+   * 两端各自成立，且 admin KPI / admin 明细 / staff 三处都覆盖。
+   */
+  describe('新客客单价分子分母归店同源（#439）', () => {
+    /** admin 侧：scope 生产者的列名实参 */
+    const SCOPE_COL_RE = /scopeFilterSql\(session, scope, '([a-z_.]+)'\)/
+    /** staff 侧：scope 生产者的函数名 + 别名实参 */
+    const STAFF_SCOPE_RE = /(build[A-Za-z]+Scope)\(scopeType, scopeId, '([a-z]+)', 1\)/
+
+    it('admin KPI：分子的 scope 列 = 分母的 scope 列（从分母现读）', () => {
+      const denomFn = fnSource(adminSrc, ADMIN_CUSTOMER, 'queryNewMemberCount')
+      const numerFn = fnSource(adminSrc, ADMIN_CUSTOMER, 'queryNewMemberSpend')
+      const denom = denomFn.match(SCOPE_COL_RE)
+      const numer = numerFn.match(SCOPE_COL_RE)
+      expect(denom, '分母里抓不到 scopeFilterSql 的列名实参').not.toBeNull()
+      expect(numer, '分子里抓不到 scopeFilterSql 的列名实参').not.toBeNull()
+      expect(numer![1]).toBe(denom![1])
+      // 同时钉死它确实是顾客维度那一列 —— 否则两侧一起改成 o.store_id 也能"同源"
+      expect(denom![1]).toBe('c.bound_store_id')
+
+      /**
+       * 与 staff 侧对称的落点守护（GLM round-2 P3-2：staff 补了、admin 漏了）。
+       * `.match()` 只取首个命中，于是
+       *   const scGuard = scopeFilterSql(session, scope, 'c.bound_store_id'); void scGuard
+       *   const sc = scopeFilterSql(session, scope, 'o.store_id')   // 实际用的
+       * 能让上面三条全绿。这里钉住：函数体内 scope 生产者**恰好 1 个**，且 WHERE 用的就是它。
+       */
+      for (const [label, body] of [['分母', denomFn], ['分子', numerFn]] as const) {
+        expect(body.match(/scopeFilterSql\(/g), `admin ${label} 里的 scope 生产者应恰好 1 个`).toHaveLength(1)
+        expect(body, `admin ${label} 的 WHERE 应直接用 \${sc}`).toContain('WHERE ${sc}')
+      }
+    })
+
+    it('admin 明细：分子的骨架 JOIN = 分母的骨架 JOIN（从分母现读）', () => {
+      const bd = sqlInFunction(adminSrc, ADMIN_CUSTOMER, 'queryOpsBreakdown')
+      const JOIN_RE = /JOIN skel sk ON sk\.store_id = ([a-z_.]+)/
+      const denom = sliceBlock(bd, 'newmem AS (', 'newmem_spend AS (').match(JOIN_RE)
+      const numer = sliceBlock(bd, 'newmem_spend AS (', 'traffic_cust AS (').match(JOIN_RE)
+      expect(denom, 'newmem 里抓不到骨架 JOIN').not.toBeNull()
+      expect(numer, 'newmem_spend 里抓不到骨架 JOIN').not.toBeNull()
+      expect(numer![1]).toBe(denom![1])
+      expect(denom![1]).toBe('c.bound_store_id')
+      // 分子不得再按订单店归组（放在这里而不是只看上面的相等，是为了让失败信息直指回退）
+      expect(sliceBlock(bd, 'newmem_spend AS (', 'traffic_cust AS (')).not.toContain(
+        'JOIN skel sk ON sk.store_id = o.store_id',
+      )
+    })
+
+    /**
+     * 「分母 0 而分子 > 0 已消除」真正依赖的是**人群子集**，而人群由两段的
+     * `became_member_at` 谓词决定 —— 归店 JOIN 只决定归到哪一组。
+     *
+     * ⚠ 分母 `newmem` 既不含 `spe`、也不在 `EXPECTED_SPE_BLOCKS` 里，上面几条又只读它的 JOIN 一行，
+     * 于是把 `newmem` 的 `BETWEEN ${start} AND ${end}` 改成 `<= ${end}`（分母变大、子集仍成立但口径变了），
+     * 或反过来把分子改宽（子集直接破），一致性套件都全绿（pr-ready caliber-adversary P2-2）。
+     * 这里从**分母**现读这段谓词，断言分子逐字相同。
+     */
+    it('admin 明细：分子与分母的 became_member_at 谓词逐字相同（人群子集的真正依据）', () => {
+      const bd = sqlInFunction(adminSrc, ADMIN_CUSTOMER, 'queryOpsBreakdown')
+      const MEMBER_RE = /c\.became_member_at IS NOT NULL AND c\.became_member_at::date BETWEEN \$\{[a-zA-Z.]+\} AND \$\{[a-zA-Z.]+\}/
+      const denom = sliceBlock(bd, 'newmem AS (', 'newmem_spend AS (').match(MEMBER_RE)
+      const numer = sliceBlock(bd, 'newmem_spend AS (', 'traffic_cust AS (').match(MEMBER_RE)
+      expect(denom, 'newmem 里抓不到 became_member_at 谓词').not.toBeNull()
+      expect(numer, 'newmem_spend 里抓不到 became_member_at 谓词').not.toBeNull()
+      expect(numer![0]).toBe(denom![0])
+      // KPI 侧两条同理（它们的 WHERE 由 EXPECTED_SPE_BLOCKS 逐字钉死，这里只钉"两者相等"）
+      const kpiDenom = fnSource(adminSrc, ADMIN_CUSTOMER, 'queryNewMemberCount').match(MEMBER_RE)
+      const kpiNumer = fnSource(adminSrc, ADMIN_CUSTOMER, 'queryNewMemberSpend').match(MEMBER_RE)
+      expect(kpiDenom).not.toBeNull()
+      expect(kpiNumer![0]).toBe(kpiDenom![0])
+    })
+
+    /**
+     * 上面几条切片都靠 `newmem AS (` → `newmem_spend AS (` → `traffic_cust AS (` 这个**书写先后**。
+     * 将来在中间插一个新 CTE，切片会连带切进新 CTE 的 JOIN / 谓词而不报错（sibling P3）。
+     * 这里钉住三者相邻。
+     */
+    it('三个 CTE 相邻（切片锚点的前提）', () => {
+      const bd = sqlInFunction(adminSrc, ADMIN_CUSTOMER, 'queryOpsBreakdown')
+      const i1 = bd.indexOf('newmem AS (')
+      const i2 = bd.indexOf('newmem_spend AS (')
+      const i3 = bd.indexOf('traffic_cust AS (')
+      expect([i1, i2, i3].every((i) => i > 0)).toBe(true)
+      expect(i1).toBeLessThan(i2)
+      expect(i2).toBeLessThan(i3)
+      // 相邻：**两段间隙都要查**（codex round-1 P3：原先只查了第一处，
+      // 在 newmem_spend 与 traffic_cust 之间插 CTE 时这条名叫「三个 CTE 相邻」的断言照样绿）
+      for (const [a, aLen, b, label] of [
+        [i1, 'newmem AS ('.length, i2, 'newmem → newmem_spend'],
+        [i2, 'newmem_spend AS ('.length, i3, 'newmem_spend → traffic_cust'],
+      ] as const) {
+        expect(
+          bd.slice(a + aLen, b).match(/\b[a-z_]+ AS \(/g),
+          `${label} 之间插了新 CTE，切片锚点失效`,
+        ).toBeNull()
+      }
+    })
+
+    it('staff：分子与分母用同一个 scope 生产者和同一个别名', () => {
+      const denomFn = fnSource(staffSrc, STAFF_MGMT_TRAFFIC, 'queryNewMemberCount')
+      const numerFn = fnSource(staffSrc, STAFF_MGMT_TRAFFIC, 'queryNewMemberSpend')
+      const denom = denomFn.match(STAFF_SCOPE_RE)
+      const numer = numerFn.match(STAFF_SCOPE_RE)
+      expect(denom, 'staff 分母里抓不到 scope 生产者').not.toBeNull()
+      expect(numer, 'staff 分子里抓不到 scope 生产者').not.toBeNull()
+      expect([numer![1], numer![2]]).toEqual([denom![1], denom![2]])
+      expect(denom![1]).toBe('buildClientScope')
+      // 别名也钉死绝对值 —— 只比"两侧相等"的话，两侧一起写 'x' 也全绿（boundary P2-2）
+      expect(denom![2]).toBe('c')
+
+      /**
+       * ⚠ `.match()` 只取**首个**命中，也不校验"抓到的那个变量就是插进 WHERE 的那个"。
+       * staff 本来就有双 scope 的写法（queryActive / queryTrialFootfall），于是
+       *   const scClient = buildClientScope(..., 'c', 1)            // 被上面读到
+       *   const sc = buildSaleScope(..., 'o', 1 + scClient.params.length)  // 实际用的
+       * 能让上面全绿（第二个 startIdx 不是字面量 1，正则根本不匹配）——boundary P2-1。
+       * 这里钉住：函数体内**只有一个** scope 生产者，且 WHERE 用的就是它，params 也来自它。
+       */
+      for (const [label, body] of [['分母', denomFn], ['分子', numerFn]] as const) {
+        expect(body.match(/build[A-Za-z]+Scope\(/g), `staff ${label} 里的 scope 生产者应恰好 1 个`).toHaveLength(1)
+        expect(body, `staff ${label} 的 WHERE 应直接用 sc.sql`).toContain('WHERE ${sc.sql}')
+        // ⚠ 光 `toContain('sc.params')` 不够：`pg.query(sql, sc.params.map(() => 'store-002'))`
+        // 会让 SQL 文本、生产者数量、别名、WHERE 落点、SQL 快照、staff 形态测试**全部不变**，
+        // 而绑定值指向另一家门店 ⇒ 分母算 001、分子算 002，客单价直接错（codex round-1 P2）。
+        // 这里钉住它就是 pg.query 的**第二实参本身**（归一后模板反引号紧跟 `, sc.params, )`）。
+        expect(body, `staff ${label} 的 params 应是 pg.query 的第二实参本身`).toContain('`, sc.params, )')
+      }
+    })
+
+    it('反向验证：任一侧回退到订单店都会红', () => {
+      const mutate = (src: string, from: string, to: string): string => {
+        expect(src.split(from), `锚点不唯一：${from}`).toHaveLength(2)
+        return src.replace(from, to)
+      }
+
+      // ① admin KPI 分子回退
+      const kpiBack = mutate(
+        adminSrc,
+        "const sc = scopeFilterSql(session, scope, 'c.bound_store_id')\n  const rows = await db.execute(sql`\n    SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v",
+        "const sc = scopeFilterSql(session, scope, 'o.store_id')\n  const rows = await db.execute(sql`\n    SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v",
+      )
+      expect(
+        fnSource(kpiBack, ADMIN_CUSTOMER, 'queryNewMemberSpend').match(SCOPE_COL_RE)![1],
+      ).not.toBe(fnSource(kpiBack, ADMIN_CUSTOMER, 'queryNewMemberCount').match(SCOPE_COL_RE)![1])
+
+      // ② admin 明细分子回退（锚点带上 JOIN 次序，避免打到 newmem）
+      const bdBack = mutate(
+        adminSrc,
+        'JOIN client_wechat_users c ON c.user_id = o.client_user_id\n      JOIN skel sk ON sk.store_id = c.bound_store_id',
+        'JOIN skel sk ON sk.store_id = o.store_id\n      JOIN client_wechat_users c ON c.user_id = o.client_user_id',
+      )
+      const bdSql = sqlInFunction(bdBack, ADMIN_CUSTOMER, 'queryOpsBreakdown')
+      expect(sliceBlock(bdSql, 'newmem_spend AS (', 'traffic_cust AS (')).toContain(
+        'JOIN skel sk ON sk.store_id = o.store_id',
+      )
+
+      // ③ staff 分子回退
+      const staffBack = mutate(
+        staffSrc,
+        "const sc = buildClientScope(scopeType, scopeId, 'c', 1)\n  const rows = await pg.query(\n    `SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v",
+        "const sc = buildSaleScope(scopeType, scopeId, 'o', 1)\n  const rows = await pg.query(\n    `SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v",
+      )
+      expect(
+        fnSource(staffBack, STAFF_MGMT_TRAFFIC, 'queryNewMemberSpend').match(STAFF_SCOPE_RE)![1],
+      ).toBe('buildSaleScope')
     })
   })
 })

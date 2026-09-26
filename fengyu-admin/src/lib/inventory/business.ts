@@ -6,6 +6,7 @@ import { shanghaiToday, shanghaiYmd } from '@/lib/datetime'
 import { logOperation } from '@/lib/operation-log'
 import { hasPermission } from '@/lib/permissions'
 import { scopeSessionToAllActions } from '@/lib/action-scope'
+import { assertInventoryLocationInScope as assertLocationInPriceScope } from './access'
 import {
   assertInventoryLocationInScope,
   inventoryPriceScopeByTier,
@@ -244,6 +245,24 @@ export interface CreateMarketReplenishmentInput {
   remark?: string | null
   items: MarketReplenishmentLineInput[]
   promotionSelections?: MarketPromotionSelectionInput[]
+  /** 提交草稿（#348）：在该草稿单上原单号转「已完成」；缺省为直接新建。 */
+  draftId?: string | null
+}
+
+/**
+ * 市场报货草稿（#348）。只存 SKU、采购量与当时的福利报价（预览），**不写「门店报货汇总」血缘**：
+ * 链接守卫的累计占用只排除「已取消」，草稿写了血缘就会占住门店报货的可汇总量。
+ * 来源明细在提交时按当前门店需求重新汇总、重新校验。
+ */
+export interface SaveMarketReplenishmentDraftInput {
+  /** 缺省新建草稿；传入则覆盖该草稿。 */
+  draftId?: string | null
+  marketId: string
+  supplyChainLocationId: string
+  docDate?: string | null
+  remark?: string | null
+  items: Array<{ skuId: string; purchaseQuantity: number }>
+  promotionSelections?: MarketPromotionSelectionInput[]
 }
 
 export interface MarketPromotionSelectionInput {
@@ -432,8 +451,8 @@ export interface ReceiveShipmentInput {
  *
  * 与 `ReceiveShipmentInput` 的唯一差别是**没有 items** —— 明细由服务端从
  * `getShipmentReceiptProgress` 的 outstanding 算出来，客户端说不了收多少。
- * 需要部分收货 / 登记差异仍走带 items 的 `receiveItemCompanyShipment`
- * / `receiveStoreAllocation`。
+ * 带 items 的 `receiveItemCompanyShipment` / `receiveStoreAllocation` 自 #358 起同样只能整单收
+ * （服务端逐行校验实收 = 待收），只是多了逐行备注与收货日期。
  */
 export interface ReceiveShipmentInFullInput {
   shipmentId: string
@@ -2449,6 +2468,88 @@ export async function summarizeStoreReplenishmentRequests(
   })
 }
 
+/**
+ * 市场报货明细的价格与福利快照列（新建、提交草稿、存草稿三处共用，#348）。
+ * 草稿存的是当时的报价，只作预览；提交时重新取价后整行重写。
+ */
+function marketReportItemPriceFields(
+  sku: SkuSnapshot,
+  quantity: number,
+  quote: MarketPromotionQuoteLine,
+): Omit<InsertDocItemInput, 'docId'> {
+  return {
+    skuId: sku.skuId,
+    skuName: sku.productName,
+    specName: sku.specName,
+    supplier: sku.supplier,
+    productSeries: sku.productSeries,
+    quantity,
+    standardUnitPrice: quote.marketStandardUnitPrice,
+    unitDiscount: quote.marketUnitDiscount,
+    actualUnitPrice: quote.marketActualUnitPrice,
+    amount: fixed(quantity * quote.marketActualUnitPrice),
+    supplyChainUnitCost: sku.supplyChainPurchasePrice,
+    marketStandardUnitPrice: quote.marketStandardUnitPrice,
+    marketUnitDiscount: quote.marketUnitDiscount,
+    marketActualUnitPrice: quote.marketActualUnitPrice,
+    storeStandardUnitPrice: sku.storePurchasePrice,
+    storeUnitDiscount: 0,
+    storeActualUnitPrice: sku.storePurchasePrice,
+    promotionPlanId: quote.promotionPlanId,
+    promotionPlanNoSnapshot: quote.promotionPlanNo,
+    promotionPlanNameSnapshot: quote.promotionName,
+    promotionRuleTypeSnapshot: quote.promotionRuleType,
+    promotionSelectionMode: quote.selectionMode,
+    remark: quote.promotionPlanNo ? `福利方案：${quote.promotionPlanNo}` : null,
+  }
+}
+
+/**
+ * 改选福利方案的授权（#348 闸门 2）：`market_price_view` 必须与 `market_operate` 落在**同一条**角色绑定上，
+ * 且该绑定覆盖本市场 —— 只按全局 `permissions.actions` 判，会让「A 市场办理 + B 市场价格权」的账号
+ * 在 A 市场改选福利、影响货款。原则与 #346 入库单价优惠相同（AND 权限须在同一绑定），但判定函数不同：
+ * #346 按价格档位（inventoryPriceVisibilityForOrgNodes），这里按可操作主体 scope；前端 marketPriceLocationIds 与这里同源。
+ */
+function assertMarketPromotionSelectable(session: AuthSession, market: Location): void {
+  const bothGranted = scopeSessionToAllActions(session, ['inventory:market_operate', 'inventory:market_price_view'])
+  try {
+    assertLocationInPriceScope(bothGranted, market.locationId)
+  } catch {
+    throw new ApiError('PERMISSION_DENIED', '无权切换市场报货福利方案')
+  }
+}
+
+/**
+ * 锁住并校验一张市场报货草稿（#348）。调用方须已按「市场 → 供应链」取过主体锁：
+ * 草稿单排在主体之后，与新建市场报货的锁序一致（先主体、后单据）。
+ * ⚠️ 与 createStoreAllocation「报货单 → 市场」的既有反序之所以不成环，靠的是事务开头
+ * `assertInventoryBusinessWritable` 那把 cutover 全局锁；放宽那把锁之前先统一锁序。
+ * 草稿的报货市场不可改 —— 换市场等于换一张单，前端也锁定了市场选择。
+ */
+async function lockMarketReplenishmentDraft(tx: Tx, draftId: string, market: Location): Promise<DocHeader> {
+  const draft = await docForUpdate(tx, draftId)
+  if (draft.docType !== '市场报货') throw new ApiError('NOT_FOUND', '市场报货草稿不存在')
+  if (draft.status !== '草稿') {
+    throw new ApiError(
+      'INVALID_STATE',
+      draft.status === '已取消' ? '该市场报货草稿已删除' : '市场报货已提交，不能再修改或删除',
+    )
+  }
+  if (draft.marketId !== market.orgNodeId) {
+    throw new ApiError('INVALID_PARAMS', '草稿的报货市场不能修改')
+  }
+  // 本功能产出的草稿不写血缘；带血缘的只可能是存量 / 人工修复的异常单，覆盖明细会撞外键、删除会释放占用，一律交人工处理
+  const [linked] = rows<{ linked: boolean }>(await tx.execute(sql`
+    SELECT EXISTS (
+      SELECT 1 FROM inventory_doc_links WHERE from_doc_id = ${draftId} OR to_doc_id = ${draftId}
+    ) AS linked
+  `))
+  if (linked?.linked) {
+    throw new ApiError('INVALID_STATE', '该草稿已有上下游关联，不能按草稿修改或删除，请联系管理员处理')
+  }
+  return draft
+}
+
 /** 市场报货由服务端从门店需求、实时库存及福利方案计算，采购数量只允许显式业务字段传入。 */
 export async function createMarketReplenishment(
   session: AuthSession,
@@ -2456,6 +2557,7 @@ export async function createMarketReplenishment(
 ): Promise<{ id: string }> {
   const marketId = required(input.marketId, '市场')
   const supplyChainLocationId = required(input.supplyChainLocationId, '供应链库存主体')
+  const draftId = input.draftId == null ? null : required(input.draftId, '草稿单号')
   if (!Array.isArray(input.items) || input.items.length === 0) {
     throw new ApiError('INVALID_PARAMS', '市场报货至少需要一条明细')
   }
@@ -2470,6 +2572,8 @@ export async function createMarketReplenishment(
     assertType(market, '市场', '报货市场')
     assertType(supplyChain, '总部', '供应链库存主体')
     assertLocationWritable(session, market)
+    if ((input.promotionSelections?.length ?? 0) > 0) assertMarketPromotionSelectable(session, market)
+    if (draftId) await lockMarketReplenishmentDraft(tx, draftId, market)
     const seenRequestItems = new Set<number>()
     const docDate = dateOrToday(input.docDate)
     const prepared: Array<{
@@ -2550,52 +2654,48 @@ export async function createMarketReplenishment(
       if (!quote) throw new ApiError('CONFLICT', '市场报货福利报价丢失，请重试')
       return { ...line, quote }
     })
-    const docId = await generateDocId(tx, '市场报货')
     const totalQuantity = fixed(quoted.reduce((sum, line) => sum + line.purchaseQuantity, 0))
     const totalAmount = fixed(quoted.reduce((sum, line) => sum + line.purchaseQuantity * line.quote.marketActualUnitPrice, 0))
-    await insertDocHeader(tx, {
-      id: docId,
-      docType: '市场报货',
-      status: '已完成',
-      sourceOrgNodeId: marketId,
-      targetOrgNodeId: supplyChainLocationId,
-      marketId,
-      docDate,
-      totalQuantity,
-      totalAmount,
-      remark: input.remark,
-      createdBy: session.employeeId,
-      confirmed: true,
-    })
+    let docId: string
+    if (draftId) {
+      // 提交草稿（#348）：原单号转「已完成」，草稿里的预览明细整体重写；合计由明细 trigger 回填。
+      // 草稿没有血缘也没有流水，删明细不会带走任何下游引用。
+      docId = draftId
+      await tx.execute(sql`DELETE FROM inventory_doc_items WHERE doc_id = ${draftId}`)
+      await tx.execute(sql`
+        UPDATE inventory_docs
+           SET status = '已完成',
+               target_org_node_id = ${supplyChain.orgNodeId},
+               doc_date = ${docDate},
+               remark = ${text(input.remark)},
+               confirmed_by = ${session.employeeId},
+               confirmed_at = NOW()
+         WHERE id = ${draftId}
+      `)
+    } else {
+      docId = await generateDocId(tx, '市场报货')
+      await insertDocHeader(tx, {
+        id: docId,
+        docType: '市场报货',
+        status: '已完成',
+        sourceOrgNodeId: marketId,
+        targetOrgNodeId: supplyChainLocationId,
+        marketId,
+        docDate,
+        totalQuantity,
+        totalAmount,
+        remark: input.remark,
+        createdBy: session.employeeId,
+        confirmed: true,
+      })
+    }
     for (const line of quoted) {
       const itemId = await insertDocItem(tx, {
         docId,
-        skuId: line.sku.skuId,
-        skuName: line.sku.productName,
-        specName: line.sku.specName,
-        supplier: line.sku.supplier,
-        productSeries: line.sku.productSeries,
-        quantity: line.purchaseQuantity,
+        ...marketReportItemPriceFields(line.sku, line.purchaseQuantity, line.quote),
         stockSnapshot: line.stockSnapshot,
         requestQuantity: line.requestQuantity,
         fulfilledQuantity: 0,
-        standardUnitPrice: line.quote.marketStandardUnitPrice,
-        unitDiscount: line.quote.marketUnitDiscount,
-        actualUnitPrice: line.quote.marketActualUnitPrice,
-        amount: fixed(line.purchaseQuantity * line.quote.marketActualUnitPrice),
-        supplyChainUnitCost: line.sku.supplyChainPurchasePrice,
-        marketStandardUnitPrice: line.quote.marketStandardUnitPrice,
-        marketUnitDiscount: line.quote.marketUnitDiscount,
-        marketActualUnitPrice: line.quote.marketActualUnitPrice,
-        storeStandardUnitPrice: line.sku.storePurchasePrice,
-        storeUnitDiscount: 0,
-        storeActualUnitPrice: line.sku.storePurchasePrice,
-        promotionPlanId: line.quote.promotionPlanId,
-        promotionPlanNoSnapshot: line.quote.promotionPlanNo,
-        promotionPlanNameSnapshot: line.quote.promotionName,
-        promotionRuleTypeSnapshot: line.quote.promotionRuleType,
-        promotionSelectionMode: line.quote.selectionMode,
-        remark: line.quote.promotionPlanNo ? `福利方案：${line.quote.promotionPlanNo}` : null,
       })
       for (const sourceLink of allocateMarketReportSourceLinks(
         line.sourceItems,
@@ -2624,12 +2724,173 @@ export async function createMarketReplenishment(
         })),
     }
   })
-  await logOperation(session, 'inventory.market_request.create', 'inventory_docs', result.id, {
-    marketId,
-    promotionSelections: result.promotionSelections,
-  })
+  await logOperation(
+    session,
+    draftId ? 'inventory.market_request.submit_draft' : 'inventory.market_request.create',
+    'inventory_docs',
+    result.id,
+    {
+      marketId,
+      promotionSelections: result.promotionSelections,
+    },
+  )
   refreshInventoryPaths()
   return { id: result.id }
+}
+
+/**
+ * 存市场报货草稿（#348）：新建或覆盖。草稿可以随时改、删，提交后转「已完成」并锁定（Q1=A，提交即终态）。
+ *
+ * 只校验草稿自身能成立的部分（市场 / 供应链主体、SKU 可报、采购量为正），并按当前福利方案取一次价
+ * 存成预览；**不引用、不锁、不占用**门店报货明细 —— 来源在提交时由 `createMarketReplenishment` 重新校验。
+ */
+export async function saveMarketReplenishmentDraft(
+  session: AuthSession,
+  input: SaveMarketReplenishmentDraftInput,
+): Promise<{ id: string }> {
+  const marketId = required(input.marketId, '市场')
+  const supplyChainLocationId = required(input.supplyChainLocationId, '供应链库存主体')
+  const draftId = input.draftId == null ? null : required(input.draftId, '草稿单号')
+  if (!Array.isArray(input.items) || input.items.length === 0) {
+    throw new ApiError('INVALID_PARAMS', '市场报货至少需要一条明细')
+  }
+  if ((input.promotionSelections?.length ?? 0) > 0 && !hasPermission(session, 'inventory:market_price_view')) {
+    throw new ApiError('PERMISSION_DENIED', '无权切换市场报货福利方案')
+  }
+  const lines: Array<{ skuId: string; purchaseQuantity: number }> = []
+  const seenSkus = new Set<string>()
+  for (const line of input.items) {
+    const skuId = required(line.skuId, '库存 SKU')
+    if (seenSkus.has(skuId)) throw new ApiError('INVALID_PARAMS', '市场报货草稿的商品不能重复')
+    seenSkus.add(skuId)
+    lines.push({ skuId, purchaseQuantity: positive(line.purchaseQuantity, '实际采购数量') })
+  }
+  await syncLocations()
+  const id = await db.transaction(async (tx) => {
+    await assertInventoryBusinessWritable(tx)
+    const market = await locationForUpdate(tx, marketId)
+    const supplyChain = await locationForUpdate(tx, supplyChainLocationId)
+    assertType(market, '市场', '报货市场')
+    assertType(supplyChain, '总部', '供应链库存主体')
+    assertLocationWritable(session, market)
+    if ((input.promotionSelections?.length ?? 0) > 0) assertMarketPromotionSelectable(session, market)
+    if (draftId) await lockMarketReplenishmentDraft(tx, draftId, market)
+    const docDate = dateOrToday(input.docDate)
+    const skus = new Map<string, SkuSnapshot>()
+    for (const line of lines) {
+      const sku = await loadSku(tx, line.skuId, true)
+      assertSkuAvailableToMarket(sku, market.orgNodeId)
+      skus.set(line.skuId, sku)
+    }
+    const quoteResult = await quoteMarketPricesInTx(tx, {
+      marketId: market.orgNodeId,
+      items: lines.map((line) => ({ skuId: line.skuId, quantity: line.purchaseQuantity })),
+      docDate,
+      selections: input.promotionSelections,
+    })
+    const quoteBySku = new Map(quoteResult.items.map((quote) => [quote.skuId, quote]))
+    let docId: string
+    if (draftId) {
+      docId = draftId
+      await tx.execute(sql`DELETE FROM inventory_doc_items WHERE doc_id = ${draftId}`)
+      await tx.execute(sql`
+        UPDATE inventory_docs
+           SET target_org_node_id = ${supplyChain.orgNodeId},
+               doc_date = ${docDate},
+               remark = ${text(input.remark)}
+         WHERE id = ${draftId}
+      `)
+    } else {
+      docId = await generateDocId(tx, '市场报货')
+      await insertDocHeader(tx, {
+        id: docId,
+        docType: '市场报货',
+        status: '草稿',
+        sourceOrgNodeId: market.orgNodeId,
+        targetOrgNodeId: supplyChain.orgNodeId,
+        marketId: market.orgNodeId,
+        docDate,
+        totalQuantity: 0,
+        remark: input.remark,
+        createdBy: session.employeeId,
+        confirmed: false,
+      })
+    }
+    for (const line of lines) {
+      const quote = quoteBySku.get(line.skuId)
+      if (!quote) throw new ApiError('CONFLICT', '市场报货福利报价丢失，请重试')
+      await insertDocItem(tx, {
+        docId,
+        ...marketReportItemPriceFields(skus.get(line.skuId)!, line.purchaseQuantity, quote),
+      })
+    }
+    return docId
+  })
+  await logOperation(session, 'inventory.market_request.save_draft', 'inventory_docs', id, {
+    marketId,
+    created: !draftId,
+  })
+  refreshInventoryPaths()
+  return { id }
+}
+
+/**
+ * 删除市场报货草稿（#348）= 草稿 → 已取消（lifecycle trigger 允许）。
+ * 不物理删除：`generateDocId` 取当天最大单号 +1，删掉当天最后一张会让单号被下一张复用，
+ * 操作日志里的同一单号就对应了两张单；转「已取消」同时保留了谁删的、何时删的。
+ */
+export async function deleteMarketReplenishmentDraft(
+  session: AuthSession,
+  input: { draftId: string; reason?: string | null },
+): Promise<{ id: string }> {
+  const draftId = required(input.draftId, '草稿单号')
+  const reason = text(input.reason) ?? '删除草稿'
+  await syncLocations()
+  const marketId = await db.transaction(async (tx) => {
+    await assertInventoryBusinessWritable(tx)
+    // 先无锁读出市场，按「市场 → 单据」取锁（与新建 / 提交同序），锁住单据后再复核一次市场
+    const [peek] = rows<{ market_id: string | null }>(await tx.execute(sql`
+      SELECT market_id FROM inventory_docs WHERE id = ${draftId} AND doc_type = '市场报货'
+    `))
+    if (!peek?.market_id) throw new ApiError('NOT_FOUND', '市场报货草稿不存在')
+    // 删除不校验市场是否启用：市场停用后草稿仍挂在待办里，必须还能清掉（scope 照断）
+    const [marketRow] = rows<{ location_id: string; org_node_id: string; location_type: LocationType; name: string; parent_location_id: string | null }>(
+      await tx.execute(sql`
+        SELECT location_id, org_node_id, location_type, name, parent_location_id
+          FROM inventory_locations
+         WHERE org_node_id = ${peek.market_id}
+         ORDER BY location_id
+         LIMIT 1
+         FOR UPDATE
+      `),
+    )
+    if (!marketRow) throw new ApiError('NOT_FOUND', '库存主体不存在')
+    const market: Location = {
+      locationId: marketRow.location_id,
+      orgNodeId: marketRow.org_node_id,
+      locationType: marketRow.location_type,
+      name: marketRow.name,
+      parentLocationId: marketRow.parent_location_id,
+    }
+    assertLocationWritable(session, market)
+    await lockMarketReplenishmentDraft(tx, draftId, market)
+    await tx.execute(sql`
+      UPDATE inventory_docs
+         SET status = '已取消',
+             cancellation_reason = ${reason},
+             cancelled_by = ${session.employeeId},
+             cancelled_at = NOW(),
+             updated_at = NOW()
+       WHERE id = ${draftId}
+    `)
+    return market.orgNodeId
+  })
+  await logOperation(session, 'inventory.market_request.delete_draft', 'inventory_docs', draftId, {
+    marketId,
+    reason,
+  })
+  refreshInventoryPaths()
+  return { id: draftId }
 }
 
 /**
@@ -3745,6 +4006,8 @@ async function completeShipmentIfFullyReceived(tx: Tx, shipmentId: string): Prom
   }
 }
 
+const RECEIVE_WHOLE_DOC_MESSAGE = '收货须按待收数量整单确认，不能少收或漏收；实物短少请先不要收货，联系发货方处理'
+
 async function receivePhysicalShipment(
   session: AuthSession,
   input: ReceiveShipmentInput,
@@ -3780,6 +4043,9 @@ async function receivePhysicalShipment(
         throw new ApiError('INVALID_STATE', '分院配货的市场与门店归属不一致')
       }
     }
+    // #358（甲方拍板 A：实物短少一律走撤回）：收货只能整单确认 —— 每行实收 = 待收、
+    // 有待收的行一行不落。整张单的明细先按 id 序一次锁住，再逐行核对。
+    const shipmentItems = await allDocItemsForUpdate(tx, shipmentId)
     const seen = new Set<number>()
     const prepared: Array<{ shipmentItem: DocItemSnapshot; quantity: number; sourceLot: LotSnapshot; price: PriceSnapshot; sku: SkuSnapshot; remark: string | null }> = []
     for (const line of input.items) {
@@ -3790,9 +4056,12 @@ async function receivePhysicalShipment(
       seen.add(shipmentItemId)
       const shipmentItem = await docItemForUpdate(tx, shipmentItemId, shipmentId)
       const quantity = positive(line.receivedQuantity, '实收数量')
-      const received = shipmentItem.fulfilledQuantity ?? 0
-      if (nearlyGreater(quantity, shipmentItem.quantity - received)) {
+      const outstanding = shipmentItem.quantity - (shipmentItem.fulfilledQuantity ?? 0)
+      if (nearlyGreater(quantity, outstanding)) {
         throw new ApiError('CONFLICT', '实收数量不能超过待收数量')
+      }
+      if (nearlyGreater(outstanding, quantity)) {
+        throw new ApiError('INVALID_PARAMS', RECEIVE_WHOLE_DOC_MESSAGE)
       }
       if (!shipmentItem.lotId) throw new ApiError('INVALID_STATE', '发货明细缺少来源批次')
       const sourceLot = await lotForUpdate(tx, shipmentItem.lotId, source.locationId)
@@ -3803,6 +4072,9 @@ async function receivePhysicalShipment(
       assertSkuAvailableToMarket(sku, marketIdForLocation(source))
       assertSkuAvailableToMarket(sku, marketIdForLocation(target))
       prepared.push({ shipmentItem, quantity, sourceLot, price, sku, remark: text(line.remark) })
+    }
+    if (shipmentItems.some((item) => !seen.has(item.id) && nearlyGreater(item.quantity - (item.fulfilledQuantity ?? 0), 0))) {
+      throw new ApiError('INVALID_PARAMS', RECEIVE_WHOLE_DOC_MESSAGE)
     }
     const docId = await generateDocId(tx, inboundDocType)
     const totalQuantity = fixed(prepared.reduce((sum, item) => sum + item.quantity, 0))
@@ -4677,7 +4949,7 @@ export async function receiveStoreAllocation(
  *
  * ⚠️ **TOCTOU 是已知且刻意保留的**：outstanding 在 `getShipmentReceiptProgress`
  * 自己的事务里读，`receivePhysicalShipment` 另起一个事务才写。并发下第二个请求会在
- * `docItemForUpdate`(FOR UPDATE) + `nearlyGreater(quantity, shipmentItem.quantity - received)`
+ * `docItemForUpdate`(FOR UPDATE) + `nearlyGreater(quantity, outstanding)`
  * 处抛 CONFLICT「实收数量不能超过待收数量」—— fail-closed，前端按 stale 处理
  * （提示 + 重取列表）。**不要**为了消除这个窗口去改 `receivePhysicalShipment` 的
  * 事务边界，那是发货收货的核心路径。

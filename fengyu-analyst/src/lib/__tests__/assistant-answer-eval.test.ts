@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   getAnalystScopeOptions: vi.fn(),
   getAnalystScopeLabel: vi.fn(),
   getSystemProductTermOptions: vi.fn(),
+  getAssistantOrgNameCatalog: vi.fn(),
   getRepurchaseKpi: vi.fn(),
   getRepurchaseTrend: vi.fn(),
   getCategoryComparison: vi.fn(),
@@ -32,6 +33,10 @@ vi.mock("server-only", () => ({}))
 vi.mock("@/lib/analyst-scope", () => ({
   getAnalystScopeOptions: mocks.getAnalystScopeOptions,
   getAnalystScopeLabel: mocks.getAnalystScopeLabel,
+}))
+
+vi.mock("@/lib/assistant-org-names", () => ({
+  getAssistantOrgNameCatalog: mocks.getAssistantOrgNameCatalog,
 }))
 
 vi.mock("@/lib/assistant-product-terms", () => ({
@@ -211,6 +216,10 @@ beforeEach(() => {
     return "全部"
   })
   mocks.getSystemProductTermOptions.mockResolvedValue(productTerms)
+  mocks.getAssistantOrgNameCatalog.mockResolvedValue({
+    storeNames: ["南昌一店", "赣州一店", "九江中辉店"],
+    marketNames: ["南昌市场", "赣州市场", "九江市场"],
+  })
 
   mocks.getRepurchaseFilterOptions.mockResolvedValue({
     years: [2026, 2025],
