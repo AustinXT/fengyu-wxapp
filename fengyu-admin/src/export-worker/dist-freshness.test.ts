@@ -218,6 +218,28 @@ const PROBES: Probe[] = [
     exactLinesInModule: true,
   },
   {
+    // 新客客单价分子的 WorkFine 历史单分支：金额表达式 + 订单过滤（KPI 与明细共用这一个片段）。
+    // 行在 SQL 模板里（bun 原样保留），可开逐字比对；这几行在 admin 其余源码里不存在，旧产物上必红。
+    label: '客量板 · 新客客单价 WorkFine 历史单片段（#289，lib/data-center/workfine-legacy-spend.ts）',
+    file: 'src/lib/data-center/workfine-legacy-spend.ts',
+    pattern: /^(COALESCE\(SUM\(|o\.status IN \('已支付', '部分支付', '已完成'\)|WHEN EXISTS \(SELECT 1 FROM sale_items si WHERE si\.sale_order_id = o\.sale_order_id\)|THEN \(SELECT SUM\(si2\.received::numeric\) FROM sale_items si2 WHERE si2\.sale_order_id = o\.sale_order_id\)|ELSE o\.received::numeric|AND o\.sale_order_type IN \('销售单', '转换单'\)|AND o\.legacy_source = 'workfine'|AND o\.performance_attribution_date BETWEEN \$\{range\.start\} AND \$\{range\.end\})$/,
+    minLines: 8,
+    uniqueLines: 8,
+    exactCountsInModule: true,
+    exactLinesInModule: true,
+  },
+  {
+    // 明细里 WorkFine 分支要与款项流水分支相加、且 LEFT JOIN 进来才出数（KPI 的相加在 JS 里，bun 会重排，不钉）
+    label: '客量板 · 明细新客消费 = 款项流水 + WorkFine 历史单（#289）',
+    file: 'src/actions/data-center/customer.ts',
+    pattern: /^(newmem_legacy_spend AS \(|FROM sale_orders o|COALESCE\(newmem_spend\.new_spend, 0\) \+ COALESCE\(newmem_legacy_spend\.legacy_spend, 0\) AS new_spend,|LEFT JOIN newmem_legacy_spend ON newmem_legacy_spend\.group_id = gs\.group_id)$/,
+    // FROM sale_orders o ×2（KPI + 明细）
+    minLines: 5,
+    uniqueLines: 4,
+    exactCountsInModule: true,
+    exactLinesInModule: true,
+  },
+  {
     label: '客量板 · 到店日事件集 (顾客, service_date) 去重（#298，visitDaysSql）',
     file: 'src/lib/data-center/visit-days.ts',
     pattern: /^SELECT DISTINCT so\.client_user_id, \$\{col\} AS visit_date$/,
