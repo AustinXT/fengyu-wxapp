@@ -1,7 +1,7 @@
 // packageMy/inventory/detail.ts — 库存单据详情（只读；门店报货草稿可继续编辑 / 删除，#348）
 import { callStaffApi } from '../../utils/cloud'
 import { formatDateTime } from '../../utils/formatters'
-import { canOperateStoreInventory } from '../../utils/role'
+import { canOperateStoreInventory, getCurrentStoreId } from '../../utils/role'
 import { isStocktakeDocType, stocktakeDiffDisplay, stocktakeSummary } from '../../utils/stocktake'
 
 const STATUS_KEY_MAP: Record<string, string> = {
@@ -46,6 +46,8 @@ interface InventoryDetail {
   statusKey?: string
   sourceOrgNodeId: string | null
   sourceOrgNodeName: string | null
+  /** 发起门店的库存主体 id（门店 = store_id），判断草稿是不是当前门店的（#348） */
+  sourceLocationId?: string | null
   targetOrgNodeId: string | null
   targetOrgNodeName: string | null
   docDate: string
@@ -81,13 +83,18 @@ Page({
     this.load()
   },
 
+  _loadSeq: 0,
+
   async load() {
     if (!this.data.id) return
+    // 请求序号：onShow 刷新与删除后的刷新可能并发，迟到的旧响应不能把「已取消」改回「草稿」
+    const seq = ++this._loadSeq
     this.setData({ loading: true })
     try {
       const detail = await callStaffApi<InventoryDetail>('inventory.docDetail', {
         id: this.data.id,
       })
+      if (seq !== this._loadSeq) return
       const isStocktake = Boolean(detail && isStocktakeDocType(detail.docType))
       // 缺字段一律按 null（未记账面）处理，不能让 undefined 参与减法算出 NaN
       const stocktakeItems = isStocktake && detail
@@ -113,8 +120,10 @@ Page({
         && detail.status === '待收货'
         && ['分院配货', '分院调货出库'].includes(detail.docType),
       )
+      // 只给「当前门店」的草稿：云端 updateDraft/submitDraft 按当前门店核对单头门店，别店草稿点进去必报错
       const canEditDraft = Boolean(
-        canOperateStoreInventory() && detail && detail.docType === '门店报货' && detail.status === '草稿',
+        canOperateStoreInventory() && detail && detail.docType === '门店报货' && detail.status === '草稿'
+        && detail.sourceLocationId && detail.sourceLocationId === getCurrentStoreId(),
       )
       this.setData({
         detail: formatted,
@@ -125,6 +134,7 @@ Page({
         stocktakeSummary: isStocktake ? stocktakeSummary(stocktakeItems) : '',
       })
     } catch (err: any) {
+      if (seq !== this._loadSeq) return
       this.setData({ loading: false })
       wx.showToast({ title: err?.message || '加载失败', icon: 'none' })
     }

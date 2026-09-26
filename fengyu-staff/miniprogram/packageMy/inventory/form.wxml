@@ -46,7 +46,7 @@
       <input class="input" placeholder="请填写报损原因" value="{{reasonInput}}" bindinput="onReasonInput" maxlength="100" />
     </view>
 
-    <button class="add-button" bindtap="onAddItem" disabled="{{loadingOptions}}">添加明细</button>
+    <button class="add-button" bindtap="onAddItem" disabled="{{loadingOptions || loadingDraft}}">添加明细</button>
   </view>
 
   <view class="section">

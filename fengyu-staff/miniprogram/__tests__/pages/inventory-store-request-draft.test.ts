@@ -64,7 +64,8 @@ function instance(name: string) {
 
 const draftDetail = {
   id: 'DBH-260926-0001', docType: '门店报货', status: '草稿', remark: '先存着',
-  items: [{ skuId: 'sku-1', skuName: '产品1', specName: '50ml', quantity: 3 }],
+  sourceLocationId: 'store-001', updatedAt: '2026-09-26T01:02:03.456Z',
+  items: [{ skuId: 'sku-1', skuName: '产品1', specName: '50ml', quantity: 3, remark: '急用' }],
 }
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
@@ -108,9 +109,38 @@ describe('门店报货表单的草稿', () => {
       expect(page.data.items).toEqual([expect.objectContaining({ skuId: 'sku-1', quantity: 3 })])
 
       await page.submitDoc(false)
-      expect(mockedCall).toHaveBeenLastCalledWith('inventory.submitDraft', expect.objectContaining({ draftId: draftDetail.id, docType: '门店报货' }))
+      expect(mockedCall).toHaveBeenLastCalledWith('inventory.submitDraft', expect.objectContaining({
+        draftId: draftDetail.id,
+        docType: '门店报货',
+        // 乐观锁：回传打开草稿时的版本；行备注（admin 代建的）原样带回
+        expectedUpdatedAt: draftDetail.updatedAt,
+        items: [expect.objectContaining({ skuId: 'sku-1', quantity: 3, remark: '急用' })],
+      }))
       vi.advanceTimersByTime(800)
       expect((globalThis as any).wx.redirectTo).toHaveBeenCalledWith(expect.objectContaining({ url: expect.stringContaining(draftDetail.id) }))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  test('别的门店的草稿：提示切换门店并返回，不回填', async () => {
+    const page = instance('form')
+    page.setData({ sourceStoreId: 'store-001' })
+    mockedCall.mockResolvedValueOnce({ ...draftDetail, sourceLocationId: 'store-002' } as never)
+    await page.loadDraft(draftDetail.id)
+    expect(page.data.draftId).toBe('')
+    expect(((globalThis as any).wx.showToast as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0]?.title).toMatch(/其它门店/)
+  })
+
+  test('草稿加载失败：返回上一页，不停在空表单（否则提交会另建一张单）', async () => {
+    vi.useFakeTimers()
+    try {
+      const page = instance('form')
+      mockedCall.mockRejectedValueOnce(new Error('网络异常'))
+      await page.loadDraft(draftDetail.id)
+      vi.advanceTimersByTime(1500)
+      expect((globalThis as any).wx.navigateBack).toHaveBeenCalled()
+      expect(page.data.draftId).toBe('')
     } finally {
       vi.useRealTimers()
     }
@@ -138,6 +168,11 @@ describe('门店报货详情的草稿动作', () => {
     })
 
     mockedCall.mockResolvedValueOnce({ ...draftDetail, status: '已完成', lineage: [] })
+    await page.load()
+    expect(page.data.canEditDraft).toBe(false)
+
+    // 别的门店的草稿：不给入口（云端按当前门店核对，点进去必报错）
+    mockedCall.mockResolvedValueOnce({ ...draftDetail, sourceLocationId: 'store-002', lineage: [] })
     await page.load()
     expect(page.data.canEditDraft).toBe(false)
   })

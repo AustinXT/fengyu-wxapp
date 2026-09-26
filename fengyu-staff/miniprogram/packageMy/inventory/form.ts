@@ -57,6 +57,8 @@ interface DraftItem {
   quantity: number
   stockReference: number
   reason: string
+  /** 行备注：门店报货草稿回填时保留（admin 代建的行备注不能被小程序存一次就清掉，#348） */
+  remark?: string
 }
 
 const FORM_CONFIG: Record<OperateDocType, FormConfig> = {
@@ -134,6 +136,8 @@ Page({
     // 门店报货草稿（#348）：canDraft = 本业务支持存草稿；draftId 非空 = 正在编辑这张草稿
     canDraft: false,
     draftId: '',
+    // 草稿版本（updatedAt）：保存 / 提交时回传做乐观锁，别人改过云端报 CONFLICT
+    draftVersion: '',
     loadingDraft: false,
     // 门店报货选品弹层（#339）：服务端检索 + 分页，替换原来只拉前 100 条的原生 picker
     showSkuPicker: false,
@@ -194,11 +198,19 @@ Page({
         docType: string
         status: string
         remark: string | null
-        items: Array<{ skuId: string; skuName: string; specName: string | null; quantity: number }>
+        sourceLocationId: string | null
+        updatedAt: string | null
+        items: Array<{ skuId: string; skuName: string; specName: string | null; quantity: number; remark?: string | null }>
       }>('inventory.docDetail', { id })
       if (!detail || detail.docType !== '门店报货' || detail.status !== '草稿') {
         wx.showToast({ title: '该单据已不是可编辑的草稿', icon: 'none' })
         setTimeout(() => wx.navigateBack(), 800)
+        return
+      }
+      // 草稿属于别的门店：云端会按「报货门店不能修改」拒，先在这里说清楚该怎么办
+      if (detail.sourceLocationId && detail.sourceLocationId !== this.data.sourceStoreId) {
+        wx.showToast({ title: '该草稿属于其它门店，请切换到该门店后再编辑', icon: 'none', duration: 2500 })
+        setTimeout(() => wx.navigateBack(), 1500)
         return
       }
       const items: DraftItem[] = (detail.items || []).map((item) => ({
@@ -210,11 +222,14 @@ Page({
         quantity: Number(item.quantity),
         stockReference: 0,
         reason: '',
+        remark: item.remark || '',
       }))
-      this.setData({ draftId: detail.id, items, remark: detail.remark || '' })
+      this.setData({ draftId: detail.id, draftVersion: detail.updatedAt || '', items, remark: detail.remark || '' })
       wx.setNavigationBarTitle({ title: '编辑门店报货草稿' })
     } catch (err: any) {
+      // 加载失败别停在空表单：那样提交会走 createDoc 另建一张单，原草稿成了孤儿
       wx.showToast({ title: err?.message || '草稿加载失败', icon: 'none' })
+      setTimeout(() => wx.navigateBack(), 1200)
     } finally {
       this.setData({ loadingDraft: false })
     }
@@ -534,7 +549,7 @@ Page({
       ? (asDraft ? 'inventory.updateDraft' : 'inventory.submitDraft')
       : 'inventory.createDoc'
     try {
-      const result = await callStaffApi<{ id: string }>(action, {
+      const result = await callStaffApi<{ id: string; updatedAt?: string | null }>(action, {
         docType: this.data.docType,
         storeId: this.data.sourceStoreId,
         targetOrgNodeId: this.data.selectedStore?.orgNodeId || undefined,
@@ -544,12 +559,14 @@ Page({
           skuId: item.skuId,
           quantity: item.quantity,
           reason: item.reason || undefined,
+          remark: item.remark || undefined,
         })),
         draftId: draftId || undefined,
+        expectedUpdatedAt: draftId ? this.data.draftVersion || undefined : undefined,
         draft: asDraft && !draftId ? true : undefined,
       })
       if (asDraft) {
-        this.setData({ submitting: false, draftId: result.id })
+        this.setData({ submitting: false, draftId: result.id, draftVersion: result.updatedAt || '' })
         wx.setNavigationBarTitle({ title: '编辑门店报货草稿' })
         wx.showToast({ title: '草稿已保存', icon: 'success' })
         return
