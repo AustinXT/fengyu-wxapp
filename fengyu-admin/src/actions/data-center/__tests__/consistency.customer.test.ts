@@ -2633,14 +2633,14 @@ describe('#289 新客客单价 WorkFine 分支（两端逐字一致 + legacy 片
    * helper 的**消费者**闭集（codex r8 P2）：签名只活在 helper 里，别的 admin 文件导入 helper 自拼一条 WorkFine 查询，
    * A / B 两个所有者闭集都不会变。这里要求模块名 `workfine-legacy-spend` 在 admin 生产源码里
    * 只被 helper 自身与 customer.ts 引用（按 AST 解码 / 常量求值说明符并解析路径，静态导入、re-export、
-   * import()、require 都算；说明符不是常量的动态加载一律违规——现存零处），且 customer.ts 内两个导入符号的
+   * import()、require 都算；非常量说明符的静态片段里带 helper 名即违规），且 customer.ts 内两个导入符号的
    * 每处引用都是登记函数里的直接调用。
    * ⚠ type-only 引用（`import type` / `export type … from` / `typeof helper`）也按违规处理——无运行时风险，
    *   属已知误伤面（fail-closed），真要用改为引用函数的返回类型即可。
    * ⚠ 射程：fengyu-admin/src 之外的文件（admin 根级 middleware / instrumentation、analyst、云函数）直接导入或中转
    *   re-export 不在扫描域（跨子项目 import 违反 monorepo 规约）；路径解析走 TypeScript 模块解析器（项目 tsconfig），
    *   与 webpack 实际解析仍可能有细微差异（如 webpack 专有 alias），由写法闭集兜底
-   *   （tsconfig 另配 paths 别名不在内）；变量间接 / 插值拼接的说明符已由「非常量说明符一律违规」覆盖；
+   *   （tsconfig 另配 paths 别名不在内）；把 helper 名拆散到插值两侧 / 经变量间接的非常量说明符属对抗式绕过，不在射程；
    *   require 只认（可带括号 / 逗号序列 / TS 包装的）直接标识符调用；`module.require` / `globalThis.require` /
    *   `const r = require; r(…)` / `createRequire` / `eval` / `Function()` 等伪装形态不在射程。
    */
@@ -2656,7 +2656,7 @@ describe('#289 新客客单价 WorkFine 分支（两端逐字一致 + legacy 片
     const HELPER_FILE = 'fengyu-admin/src/lib/data-center/workfine-legacy-spend.ts'
     const CUSTOMER_FILE = 'fengyu-admin/src/actions/data-center/customer.ts'
     // 模块引用按 AST 取**解码后**的说明符（codex r9 P2：`l` 转义、常量拼接的 import() / require 都要还原），
-    // 能解析到 helper 文件的即为消费者；说明符不是常量的动态加载一律违规
+    // 能解析到 helper 文件的即为消费者；非常量说明符的静态片段带 helper 名即违规
     const constSpec = staticSpec // 与「跳过位置」检查同一实现
     const helperAbs = path.join(REPO, HELPER_FILE)
     const helperReal = fs.realpathSync(helperAbs)
@@ -2691,10 +2691,17 @@ describe('#289 新客客单价 WorkFine 分支（两端逐字一致 + legacy 片
         if (specNode) {
           const spec = constSpec(specNode)
           if (spec === null) {
-            // 非常量说明符一律违规（codex r11~r15 连续 5 轮在「推断它能拼出什么」上找到绕过：转义、插值切锚点、
-            // 片段顺序、条件分叉、未知父节点……）。admin 生产源码现存**零处**非常量动态加载，闭集就是空集——
-            // 新增任何一处都要求改成常量说明符，不再猜测运行时文本
-            out.opaque.push(`${rel}:${specNode.getText(sf)}`)
+            // 非常量说明符：静态片段（解码后）里带 helper 名才判红（codex r20 P2：一律判红会误伤
+            // `import(\`./reports/${x}\`)` 这类与 helper 无关的正常代码，超出合同）。
+            // 刻意把 helper 名拆散到插值两侧的写法属对抗式绕过，按合同不在射程
+            const pieces: string[] = []
+            const collect = (m: ts.Node): void => {
+              if (ts.isStringLiteral(m) || ts.isNoSubstitutionTemplateLiteral(m)) pieces.push(m.text)
+              else if (ts.isTemplateExpression(m)) pieces.push(m.head.text, ...m.templateSpans.map((sp) => sp.literal.text))
+              ts.forEachChild(m, collect)
+            }
+            collect(specNode)
+            if (pieces.some((t) => /legacy-spend/i.test(t))) out.opaque.push(`${rel}:${specNode.getText(sf)}`)
           } else {
             // ① 写法闭集：带 helper 名的常量说明符全部登记，由 EXPECTED_ANCHORED_SPECS 整表比对（codex r16 P2）
             if (/legacy-spend/i.test(spec)) out.anchored.push(`${rel} | ${spec}`)
@@ -2803,19 +2810,18 @@ describe('#289 新客客单价 WorkFine 分支（两端逐字一致 + legacy 片
   it('扫描根内没有符号链接，admin src 内没有 package.json（GLM r16/r17、codex r18 P2：别名文件 / 目录 main / 链接子树可绕开扫描）', () => {
     const offenders: string[] = []
     let rootAbs = ''
-    // 云函数各自的依赖清单（fengyu-client/cloudfunctions 根下有两个函数）——登记放行，新增的目录 package.json 一律红
-    const FUNCTION_PACKAGES = new Set([
-      'fengyu-client/cloudfunctions/clientApi/package.json',
-      'fengyu-client/cloudfunctions/payNotify/package.json',
-    ])
+    // 云函数一级目录的依赖清单（`<cloudfunctions>/<函数名>/package.json`）是部署必需——动态放行，
+    // 以后新增云函数不会被误伤（codex r20 P2）；更深的目录 package.json 才可能被当作 main 重定向
+    const isFunctionManifest = (full: string) => path.basename(path.dirname(path.dirname(full))) === 'cloudfunctions'
     const walk = (dir: string, admin: boolean) => {
       for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
         const full = path.join(dir, e.name)
-        if (e.name === 'node_modules') continue // 依赖目录（worktree 下可能是软链）不属于生产源码
+        // 依赖目录（worktree 下可能是软链）与测试夹具目录不属于生产源码（与 listSources 同一 SKIP_DIR）
+        if (SKIP_DIR(e.name)) continue
         // 符号链接默认禁止，只放行 `.md` 文档链接（AGENTS.md → CLAUDE.md 是项目约定）（codex r19 P2：无扩展名链接也可被 require）
         const badLink = e.isSymbolicLink() && !/\.md$/i.test(e.name)
         // 目录 package.json 的 main 能把不带目标名的路径指向任意文件：四个根的**子目录**里都禁止（根目录自身的依赖清单放行）
-        const subPackage = e.name === 'package.json' && (admin || path.dirname(full) !== rootAbs) && !FUNCTION_PACKAGES.has(path.relative(REPO, full))
+        const subPackage = e.name === 'package.json' && (admin || path.dirname(full) !== rootAbs) && !isFunctionManifest(full)
         if (badLink || subPackage) offenders.push(path.relative(REPO, full))
         else if (e.isDirectory()) walk(full, admin)
       }
@@ -2844,7 +2850,8 @@ describe('#289 新客客单价 WorkFine 分支（两端逐字一致 + legacy 片
   }
   let analystOptions: ts.CompilerOptions | undefined
   /** JSON 与前端静态资源（bundler 资源 loader 处理，不作为 JS 执行）——扩展名闭集 */
-  const ASSET_EXT = /\.(json|css|scss|png|jpe?g|gif|svg|webp|ico|woff2?)$/i
+  // 与 Next.js 原生静态导入类型对齐（codex r20 P2：漏项会让正常新增资源导入误红）
+  const ASSET_EXT = /\.(json|css|scss|sass|less|png|jpe?g|gif|svg|webp|avif|bmp|ico|woff2?|ttf|otf|eot)$/i
 
   /**
    * 生产代码不得加载「扫描看不见」的文件（GLM r17/r18、codex r19 P2）：
@@ -2891,7 +2898,7 @@ describe('#289 新客客单价 WorkFine 分支（两端逐字一致 + legacy 片
     expect(skippedImportOffenders(read(scopeOf(AMOUNT_ROOTS)))).toEqual([])
   }, 30_000)
 
-  it('红检：跳过位置闭集拦得住拼接 / TS 包装 / 逗号 require / 无扩展名目标 / 各项目 @/ / # 子路径', () => {
+  it('红检：跳过位置闭集拦得住拼接 / TS 包装 / 逗号 require / 非源码扩展名 / 各项目 @/ / # 子路径', () => {
     const files = read(scopeOf(AMOUNT_ROOTS))
     const withExtra = (rel: string, extra: string) => {
       expect(files.some(([r]) => r === rel), `注入目标不在扫描范围：${rel}`).toBe(true)
@@ -2900,7 +2907,6 @@ describe('#289 新客客单价 WorkFine 分支（两端逐字一致 + legacy 片
     const staffDash = 'fengyu-staff/cloudfunctions/staffApi/routes/mgmt-dashboard.js'
     const eff = 'fengyu-admin/src/actions/data-center/efficiency.ts'
     const analystFile = files.find(([r]) => r.startsWith('fengyu-analyst/src/'))![0]
-    // 无扩展名目标：用仓里现成的无扩展名文件（AGENTS.md 这类不行，要真实存在且扩展名不在白名单）
     const CASES: Array<[string, Array<[string, string]>]> = [
       ['staff 拼接 require __tests__', withExtra(staffDash, "\nconst __c = () => require('./__tests__/' + 'dc-copy')\n")],
       ['admin as 包装 require __tests__', withExtra(eff, "\nexport const __c = () => (require as NodeRequire)('./__tests__/dc-copy')\n")],
@@ -2931,19 +2937,13 @@ describe('#289 新客客单价 WorkFine 分支（两端逐字一致 + legacy 片
       ['别处具名导入自拼', withExtra(eff, "\nimport { workfineLegacyOrderSql as __w } from '@/lib/data-center/workfine-legacy-spend'\nexport const __q = () => __w({ start: '', end: '' })\n"), adminSrc],
       ['转义说明符', withExtra(eff, "\nimport { workfineLegacyOrderSql as __w } from '@/lib/data-center/workfine-\\u006cegacy-spend'\n"), adminSrc],
       ['常量拼接 require', withExtra(eff, "\nexport const __d = () => require('@/lib/data-center/workfine-' + 'legacy-spend')\n"), adminSrc],
-      ['相对路径动态 import', withExtra('fengyu-admin/src/lib/data-center/data-start.ts', "\nexport const __d = () => import('./workfine-legacy-' + 'spend')\n"), adminSrc],
-      ['非常量动态 import', withExtra(eff, "\nexport const __d = (x: string) => import(`@/lib/data-center/workfine-${x}`)\n"), adminSrc],
       ['customer.ts 别名转发', files, adminSrc + '\nconst __amount = workfineLegacyReceivedSumSql\nvoid __amount\n'],
       ['customer.ts 对象封装', files, adminSrc + '\nexport const __h = { f: workfineLegacyOrderSql }\n'],
       ['customer.ts 新增一处直接调用', files, adminSrc + "\nexport const __c = () => workfineLegacyOrderSql({ start: '', end: '' })\n"],
       ['.jsx 模块导入 helper', [...files, ['fengyu-admin/src/components/__x.jsx', "import { workfineLegacyOrderSql } from '@/lib/data-center/workfine-legacy-spend'\nexport const X = () => <div>{String(workfineLegacyOrderSql)}</div>\n"]], adminSrc],
       ['as 包装的 require', withExtra(eff, "\nexport const __r = () => (require as NodeRequire)('@/lib/data-center/workfine-legacy-spend')\n"), adminSrc],
-      ['锚点被未知插值切开', withExtra(eff, "\nexport const __r = (x: string) => import(`@/lib/data-center/work${x}fine-leg${x}acy-spend`)\n"), adminSrc],
       ['嵌套表达式按运行顺序拼出锚点', withExtra(eff, "\nexport const __r = () => import(`@/lib/data-center/work${true ? 'fine-leg' : ''}acy-spend`)\n"), adminSrc],
-      ['条件分支交错拼出锚点', withExtra(eff, "\nexport const __r = () => import(`@/lib/data-center/${true ? 'work' : 'x'}fine-${true ? 'leg' : 'x'}acy-spend`)\n"), adminSrc],
       ['.jsx 后缀说明符', withExtra(eff, "\nimport { workfineLegacyOrderSql as __w } from '@/lib/data-center/workfine-legacy-spend.jsx'\n"), adminSrc],
-      ['未知父节点里的分支（非常量说明符）', withExtra(eff, "\nexport const __r = (a: boolean, b: boolean) => require('./' + String(a ? 'work' : 'x') + 'fine-leg' + String(b ? 'x' : 'acy') + '-spend')\n"), adminSrc],
-      ['与 helper 无关的非常量动态加载也不允许', withExtra(eff, "\nexport const __r = (x: string) => import(`./reports/${x}`)\n"), adminSrc],
       ['绝对路径 require', withExtra(eff, `\nexport const __r = () => require('${path.join(REPO, 'fengyu-admin/src/lib/data-center/workfine-legacy-spend.ts')}')\n`), adminSrc],
       ['未知别名前缀带锚点', withExtra(eff, "\nimport { workfineLegacyOrderSql as __w } from '~/lib/data-center/workfine-legacy-spend'\n"), adminSrc],
       ['resource query 说明符', withExtra(eff, "\nexport const __r = () => require('@/lib/data-center/workfine-legacy-spend?x')\n"), adminSrc],
@@ -2958,6 +2958,8 @@ describe('#289 新客客单价 WorkFine 分支（两端逐字一致 + legacy 片
     for (const [label, adminFiles, customerSrc] of CASES) {
       expect(helperConsumers(adminFiles, customerSrc), `「${label}」未被消费者闭集拦下`).not.toEqual(CONSUMER_OK)
     }
+    // 反向：与 helper 无关的正常动态加载不误伤（codex r20 P2）
+    expect(helperConsumers(withExtra(eff, "\nexport const __r = (x: string) => import(`./reports/${x}`)\n"), adminSrc)).toEqual(CONSUMER_OK)
   }, 30_000)
 
   it('文件发现：生产源码扩展名闭集与解析方式', () => {
