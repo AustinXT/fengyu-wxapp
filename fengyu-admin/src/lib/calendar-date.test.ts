@@ -494,34 +494,45 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
   }
 
   /**
-   * 泛型调用的输入（实参、方法调用的接收者）里已经带着 brand：输出里的 brand 是传递来的（`new SafeBox(d)`、`identity(d)`、
-   * `box.get()`），不是凭空产出；只有「无 brand 输入却产出 brand」（`mintG<CD>(s)`、`new Box<CD>()`）才算逃逸。
-   */
-  /**
-   * 已知安全的库泛型（白名单，fail-closed：不在表里的泛型一律按规则判）：React 的 state 容器只经受检的初始值与 setter 写入 T，
+   * 已知安全的泛型（白名单，fail-closed：不在表里的泛型一律按规则判）：React 的 state 容器只经受检的初始值与 setter 写入 T，
    * `useState<TimeRangeInput>({ preset: 'month' })` 读出的 TR 不可能凭空带 brand。新增条目须说明「T 的值只能从受检入口进入」。
    * 边界：`useRef<CalendarDate>()` 无参重载读出的是 `CalendarDate | undefined`、值恒为 undefined（没有值进入，靠收窄兜底）——
    * 这是「零输入但不产出值」，不能据此类推放行真正零输入就返回 T 的 API。
    */
-  const SOUND_GENERICS: Array<{ pkg?: string; file?: string; names: readonly string[] }> = [
-    { pkg: 'react', names: ['useState', 'useReducer', 'useRef', 'createContext', 'useContext', 'useMemo', 'useCallback'] },
+  /*
+   * 登记写法：npm 包写 `{ pkg: 'react', members: [...] }`（匹配 node_modules/<pkg>/ 与 node_modules/@types/<pkg>/）；
+   * 本仓文件写 `{ file: join(SRC, 'lib/foo.ts'), members: [...] }`（与 program 内绝对路径严格相等，相对路径不会匹配）。
+   * members 按 declIdentity 精确到成员；名字粒度覆盖同名的**全部**声明（含重载组），登记前须逐个重载自查。
+   * 对象字面量方法、接口调用签名（`interface Fn { <T>(): T }`）没有可登记的身份——需要时改成具名函数再登记。
+   */
+  const SOUND_GENERICS: Array<{ pkg?: string; file?: string; members: readonly string[] }> = [
+    { pkg: 'react', members: ['useState', 'useReducer', 'useRef', 'createContext', 'useContext', 'useMemo', 'useCallback'] },
   ]
-  /** 声明的可识别名字：自身名 + 所属类名（构造器 / 方法按类登记） */
-  function declNames(decl: ts.Declaration): string[] {
-    const own = ts.getNameOfDeclaration(decl)?.getText()
-    const cls = ts.isClassLike(decl.parent) ? decl.parent.name?.text : undefined
-    const holder = ts.isVariableDeclaration(decl.parent) ? decl.parent.name.getText() : undefined // const f = <T,>() => …
-    return [own, cls, holder].filter((n): n is string => !!n)
+  /**
+   * 声明的精确身份：函数 `name`；类成员 `Class.member`（构造器为 `Class.constructor`）；`const f = <T,>() => …` 取变量名。
+   * 按成员精确登记——登记 `SafeBox.get` 不会顺带放行该类日后新增的其它泛型方法。
+   */
+  function declIdentity(decl: ts.Declaration): string | undefined {
+    if (ts.isClassLike(decl.parent)) {
+      const cls = decl.parent.name?.text ?? '<anonymous>'
+      return ts.isConstructorDeclaration(decl) ? `${cls}.constructor` : `${cls}.${ts.getNameOfDeclaration(decl)?.getText()}`
+    }
+    if ((ts.isArrowFunction(decl) || ts.isFunctionExpression(decl)) && ts.isVariableDeclaration(decl.parent)) return decl.parent.name.getText()
+    return ts.getNameOfDeclaration(decl)?.getText()
   }
   function isSoundGeneric(decl: ts.Declaration): boolean {
     const file = decl.getSourceFile().fileName
-    const names = declNames(decl)
-    return SOUND_GENERICS.some((entry) =>
-      (entry.pkg ? file.includes(`/node_modules/${entry.pkg}/`) || file.includes(`/node_modules/@types/${entry.pkg}/`) : entry.file === file) &&
-      names.some((n) => entry.names.includes(n)))
+    const id = declIdentity(decl)
+    return !!id && SOUND_GENERICS.some((entry) =>
+      (entry.pkg ? new RegExp(String.raw`[\\/]node_modules[\\/](?:@types[\\/])?${entry.pkg}[\\/]`).test(file) : entry.file === file) &&
+      entry.members.includes(id))
   }
-  /** TS 安装目录下的标准库声明文件（按规范化路径识别，不信 hasNoDefaultLib / isSourceFileDefaultLibrary——两者都可被源码伪造） */
-  const isTsStandardLib = (f: ts.SourceFile) => /[\\/]node_modules[\\/]typescript[\\/]lib[\\/]lib\.[^\\/]*\.d\.ts$/.test(f.fileName)
+  /**
+   * TS 安装目录下的标准库声明文件：路径 **且** 编译器认定为默认库，双条件（`/// <reference no-default-lib>` 只能伪造后者，
+   * 在仓内造 `node_modules/typescript/lib/lib.x.d.ts` 只能伪造前者）。残余面：两者同时伪造需要在依赖目录里放文件，评审可见。
+   */
+  const isTsStandardLib = (f: ts.SourceFile) =>
+    /[\\/]node_modules[\\/]typescript[\\/]lib[\\/]lib\.[^\\/]*\.d\.ts$/.test(f.fileName) && program.isSourceFileDefaultLibrary(f)
 
   /**
    * 泛型实例化后返回值带 brand 时，是否放行（闭集，fail-closed）：
@@ -535,6 +546,7 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
     return isSoundGeneric(decl as ts.Declaration)
   }
 
+  /** 调用的输入（实参、方法接收者、tagged template 插值与接收者）里是否已带 brand——**仅用于 TS 标准库泛型**的透传判定 */
   function brandFromInputs(node: ts.Node): boolean {
     const inputs: ts.Expression[] = []
     if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
@@ -781,12 +793,14 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
       'neutral.ts': `export { use as run } from './brand'`,
       'decl.d.ts': `import type { CalendarDate } from './brand'\nexport declare const dd: CalendarDate`,
       // 伪造「默认库」：no-default-lib 标记不能让它获得标准库的信任
-      'spoof.ts': `/// <reference no-default-lib="true"/>\nexport function spoofSmuggle<T>(raw: unknown, witness: T): T { void witness; return raw as T }`,
+      'spoof.ts': `/// <reference no-default-lib="true"/>\nimport type { CalendarDate } from './brand'\nexport function spoofSmuggle<T>(raw: unknown, witness: T): T { void witness; return raw as T }\nexport interface SpoofBox { d: CalendarDate }`,
       'bad.ts': [
         `import { type CalendarDate as CD, type TR as Alias, use, ok } from './brand'`,
         `import { run } from './neutral'`,
         `import { useState } from 'react'`,
-        `import { spoofSmuggle } from './spoof'`,
+        `import { spoofSmuggle, type SpoofBox } from './spoof'`,
+        `import { make as typedOnlyMake } from 'typed-only'`,
+        `import { mint as evilMint } from 'evil'`,
         `type Derived = Parameters<typeof use>[0]`,
         `declare const s: string`,
         `declare const j: any`,
@@ -828,9 +842,14 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
         `export const pImpl: P = new Impl() // @impl-any`,
         `export const pLit: P = { get() { return JSON.parse('x') } } // @literal-any`,
         `declare class DC { d: CD } // @declare-class`,
-        `class SafeBox<T> { constructor(public v: T) {} get(): T { return this.v } }`,
+        `class SafeBox<T> { constructor(public v: T) {} get(): T { return this.v } mint<U>(): U { return null as U } }`,
         `const identity = <T,>(v: T): T => v`,
         `export const safe = ok(s) ? [new SafeBox(s), new SafeBox(s).get(), identity(s)] : [] // @safe-generic`,
+        `export const unsafeMember = ok(s) ? new SafeBox(s).mint<CD>() : null // @listed-class-new-method`,
+        `export const ev = evilMint<CD>() // @unlisted-npm`,
+        `export const libNoInput = [Array.of<CD>(), new Array<CD>()] // @lib-no-input`,
+        `export const sb: SpoofBox = j // @spoof-libtype`,
+        `export const to = typedOnlyMake<CD>() // @types-pkg`,
         `export const st8 = useState<Alias>({ preset: 'month' }) // @sound-lib`,
         `function smuggle<T>(raw: unknown, witness: T): T { void witness; return raw as T }`,
         `export const smug = ok(s) ? smuggle<CD>('invalid', s) : null // @smuggle-witness`,
@@ -871,21 +890,29 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
     mkdirSync(join(dir, 'node_modules/react'), { recursive: true })
     writeFileSync(join(dir, 'node_modules/react/package.json'), '{"name":"react","types":"index.d.ts"}')
     writeFileSync(join(dir, 'node_modules/react/index.d.ts'), 'export declare function useState<S>(initial: S): [S, (v: S) => void]')
+    // 未登记的 npm 包：其泛型不因「来自 node_modules」获得信任
+    mkdirSync(join(dir, 'node_modules/evil'), { recursive: true })
+    writeFileSync(join(dir, 'node_modules/evil/package.json'), '{"name":"evil","types":"index.d.ts"}')
+    writeFileSync(join(dir, 'node_modules/evil/index.d.ts'), 'export declare function mint<T>(): T')
+    mkdirSync(join(dir, 'node_modules/@types/typed-only'), { recursive: true })
+    writeFileSync(join(dir, 'node_modules/@types/typed-only/index.d.ts'), 'export declare function make<T>(): T')
     const p = ts.createProgram([join(dir, 'brand.ts'), join(dir, 'neutral.ts'), join(dir, 'decl.d.ts'), join(dir, 'spoof.ts'), join(dir, 'bad.ts')], {
       strict: true, target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext, moduleResolution: ts.ModuleResolutionKind.Bundler, noEmit: true, skipLibCheck: true,
     })
     expect(p.getSemanticDiagnostics(p.getSourceFile(join(dir, 'bad.ts'))!).map((d: ts.Diagnostic) => ts.flattenDiagnosticMessageText(d.messageText, '\n'))).toEqual([])
     // 中性 re-export 也必须进反向闭包（守护的预筛环节）
     const closure = reverseClosure(p, join(dir, 'brand.ts'))
-    expect(closure instanceof Set ? [...closure].map((f) => relative(dir, f)).sort() : closure).toEqual(['bad.ts', 'brand.ts', 'decl.d.ts', 'neutral.ts'])
+    expect(closure instanceof Set ? [...closure].map((f) => relative(dir, f)).sort() : closure).toEqual(['bad.ts', 'brand.ts', 'decl.d.ts', 'neutral.ts', 'spoof.ts'])
     // .d.ts 进入 scanned（守护的扫描集）
     expect(scanned(p, dir).map((f) => relative(dir, f.fileName))).toContain('decl.d.ts')
     const saved = [program, checker] as const
     program = p
     checker = p.getTypeChecker()
     // 安全泛型须显式登记（白名单语义）；自检用临时条目，结束后移除
-    const fixtureEntry = { file: join(dir, 'bad.ts'), names: ['SafeBox', 'SafeTag', 'identity'] }
-    SOUND_GENERICS.push(fixtureEntry)
+    const fixtureEntry = { file: join(dir, 'bad.ts'), members: ['SafeBox.constructor', 'SafeBox.get', 'SafeTag.constructor', 'SafeTag.tag', 'identity'] }
+    // 只有 @types 包的白名单条目（锁住 node_modules/@types/<pkg>/ 分支）
+    const typesOnlyEntry = { pkg: 'typed-only', members: ['make'] }
+    SOUND_GENERICS.push(fixtureEntry, typesOnlyEntry)
     try {
       const found = escapes(p.getSourceFile(join(dir, 'bad.ts'))!)
       const text = files['bad.ts'].split('\n')
@@ -943,6 +970,11 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
         "泛型实例化带出 brand|spoof-lib",
         "泛型实例化带出 brand|interface-generic",
         "泛型实例化带出 brand|overload-generic",
+        "泛型实例化带出 brand|listed-class-new-method",
+        "泛型实例化带出 brand|unlisted-npm",
+        "泛型实例化带出 brand|lib-no-input",
+        "泛型实例化带出 brand|lib-no-input",
+        "any / never 值落在要求 brand 的上下文|spoof-libtype",
         "泛型实例化带出 brand|smuggle-witness",
         "泛型实例化带出 brand|generic-elem"
       ].sort())
@@ -951,12 +983,15 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
         lineOf('after-suppress') - 1, lineOf('after-suffix') - 1, lineOf('block-last') - 2, lineOf('block-star') - 2,
       ])
       // 安全泛型传递、字符串 / JSDoc 句中提及、正路都不误报
-      expect(found.filter((e) => ['safe-generic', 'sound-lib', 'safe-tag', 'lib-passthrough', 'string', 'doc-mention', 'good', 'mid-nocheck', 'block-nonlast'].some((m) => e.line === lineOf(m)))).toEqual([])
+      expect(found.filter((e) => ['safe-generic', 'sound-lib', 'safe-tag', 'lib-passthrough', 'types-pkg', 'string', 'doc-mention', 'good', 'mid-nocheck', 'block-nonlast'].some((m) => e.line === lineOf(m)))).toEqual([])
       // .d.ts 里的值声明
       const inDecl = escapes(p.getSourceFile(join(dir, 'decl.d.ts'))!)
       expect(inDecl.map((e) => e.kind)).toEqual(['无实现检查的声明携带 brand'])
     } finally {
-      SOUND_GENERICS.splice(SOUND_GENERICS.indexOf(fixtureEntry), 1)
+      for (const entry of [fixtureEntry, typesOnlyEntry]) {
+        const at = SOUND_GENERICS.indexOf(entry)
+        if (at >= 0) SOUND_GENERICS.splice(at, 1)
+      }
       ;[program, checker] = saved
       rmSync(dir, { recursive: true, force: true })
     }
