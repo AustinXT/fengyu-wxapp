@@ -462,8 +462,8 @@ export interface ReceiveShipmentInput {
  *
  * 与 `ReceiveShipmentInput` 的唯一差别是**没有 items** —— 明细由服务端从
  * `getShipmentReceiptProgress` 的 outstanding 算出来，客户端说不了收多少。
- * 需要部分收货 / 登记差异仍走带 items 的 `receiveItemCompanyShipment`
- * / `receiveStoreAllocation`。
+ * 带 items 的 `receiveItemCompanyShipment` / `receiveStoreAllocation` 自 #358 起同样只能整单收
+ * （服务端逐行校验实收 = 待收），只是多了逐行备注与收货日期。
  */
 export interface ReceiveShipmentInFullInput {
   shipmentId: string
@@ -4201,6 +4201,8 @@ async function completeShipmentIfFullyReceived(tx: Tx, shipmentId: string): Prom
   }
 }
 
+const RECEIVE_WHOLE_DOC_MESSAGE = '收货须按待收数量整单确认，不能少收或漏收；实物短少请先不要收货，联系发货方处理'
+
 async function receivePhysicalShipment(
   session: AuthSession,
   input: ReceiveShipmentInput,
@@ -4236,6 +4238,9 @@ async function receivePhysicalShipment(
         throw new ApiError('INVALID_STATE', '分院配货的市场与门店归属不一致')
       }
     }
+    // #358（甲方拍板 A：实物短少一律走撤回）：收货只能整单确认 —— 每行实收 = 待收、
+    // 有待收的行一行不落。整张单的明细先按 id 序一次锁住，再逐行核对。
+    const shipmentItems = await allDocItemsForUpdate(tx, shipmentId)
     const seen = new Set<number>()
     const prepared: Array<{ shipmentItem: DocItemSnapshot; quantity: number; sourceLot: LotSnapshot; price: PriceSnapshot; sku: SkuSnapshot; remark: string | null }> = []
     for (const line of input.items) {
@@ -4246,9 +4251,12 @@ async function receivePhysicalShipment(
       seen.add(shipmentItemId)
       const shipmentItem = await docItemForUpdate(tx, shipmentItemId, shipmentId)
       const quantity = positive(line.receivedQuantity, '实收数量')
-      const received = shipmentItem.fulfilledQuantity ?? 0
-      if (nearlyGreater(quantity, shipmentItem.quantity - received)) {
+      const outstanding = shipmentItem.quantity - (shipmentItem.fulfilledQuantity ?? 0)
+      if (nearlyGreater(quantity, outstanding)) {
         throw new ApiError('CONFLICT', '实收数量不能超过待收数量')
+      }
+      if (nearlyGreater(outstanding, quantity)) {
+        throw new ApiError('INVALID_PARAMS', RECEIVE_WHOLE_DOC_MESSAGE)
       }
       if (!shipmentItem.lotId) throw new ApiError('INVALID_STATE', '发货明细缺少来源批次')
       const sourceLot = await lotForUpdate(tx, shipmentItem.lotId, source.locationId)
@@ -4259,6 +4267,9 @@ async function receivePhysicalShipment(
       assertSkuAvailableToMarket(sku, marketIdForLocation(source))
       assertSkuAvailableToMarket(sku, marketIdForLocation(target))
       prepared.push({ shipmentItem, quantity, sourceLot, price, sku, remark: text(line.remark) })
+    }
+    if (shipmentItems.some((item) => !seen.has(item.id) && nearlyGreater(item.quantity - (item.fulfilledQuantity ?? 0), 0))) {
+      throw new ApiError('INVALID_PARAMS', RECEIVE_WHOLE_DOC_MESSAGE)
     }
     const docId = await generateDocId(tx, inboundDocType)
     const totalQuantity = fixed(prepared.reduce((sum, item) => sum + item.quantity, 0))
@@ -5134,7 +5145,7 @@ export async function receiveStoreAllocation(
  *
  * ⚠️ **TOCTOU 是已知且刻意保留的**：outstanding 在 `getShipmentReceiptProgress`
  * 自己的事务里读，`receivePhysicalShipment` 另起一个事务才写。并发下第二个请求会在
- * `docItemForUpdate`(FOR UPDATE) + `nearlyGreater(quantity, shipmentItem.quantity - received)`
+ * `docItemForUpdate`(FOR UPDATE) + `nearlyGreater(quantity, outstanding)`
  * 处抛 CONFLICT「实收数量不能超过待收数量」—— fail-closed，前端按 stale 处理
  * （提示 + 重取列表）。**不要**为了消除这个窗口去改 `receivePhysicalShipment` 的
  * 事务边界，那是发货收货的核心路径。

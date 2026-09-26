@@ -9,9 +9,18 @@ on:
       # 预构建产物（package.json 的 export-worker 直跑它）：单独被换回旧版时要让新鲜度守护跑一遍（#298）
       - 'fengyu-admin/dist/export-worker.mjs'
       - 'fengyu-staff/cloudfunctions/**/*.js'
-      # 经营分析站的在营口径副本由 staffApi 的 cross-end-store-active-snapshot 守护（#421）；
-      # analyst 自己的 vitest 不进 CI（#382），只改 analyst 的 PR 不加这条就一条守护都不跑。
+      # 经营分析站：analyst 全量 vitest（analyst-tests job，#436）+ staffApi 的
+      # cross-end-store-active-snapshot（#421）。依赖清单 / vitest 与 tsconfig 路径配置
+      # 同样左右测试收集与模块解析，一并触发（理由同下方 admin / 云函数依赖清单）。
       - 'fengyu-analyst/src/**'
+      - 'fengyu-analyst/package.json'
+      - 'fengyu-analyst/package-lock.json'
+      - 'fengyu-analyst/vitest.*'
+      - 'fengyu-analyst/tsconfig.json'
+      - 'fengyu-analyst/.npmrc'
+      # analyst-tests 会在 db/ 里 npm ci（drizzle-orm/pg-core 从那里解析），只升 db 依赖的 PR 也要跑一遍
+      - 'db/package.json'
+      - 'db/package-lock.json'
       - 'fengyu-client/cloudfunctions/**/*.js'
       - 'scripts/lint-cas-guards.mjs'
       - '.claude/skills/remote-deploy/**'
@@ -51,6 +60,9 @@ on:
       # （它们是页面级解码量与"URL 有效但出不来图"的唯一兜底）。
       # 不加这条路径的话，「只删 lazy-load」的 PR 根本不触发 workflow，守护等于不存在。
       - 'fengyu-staff/miniprogram/components/bundle-picker/**'
+      # cross-end-staff-output-note.test.js 读这个页面的 wxml，钉员工排行榜口径说明与 admin
+      # STAFF_OUTPUT_SCOPE_NOTE 逐字一致（#299）。不加这条，「只改 wxml 文案」的 PR 不触发 CI，两端分叉无人拦。
+      - 'fengyu-staff/miniprogram/pages/mgmt-dashboard/**'
       # bucket 白名单与档位上界有**三份**副本：两端云函数的 utils/image.js
       # 加上前端净化器 miniprogram/utils/cart.ts。第三份的守护（cart.test.ts 的
       # 闭环断言，它 require 真实云函数模块比对）此前不在任何 workflow 的触发面里 ——
@@ -138,6 +150,30 @@ jobs:
       # meta-guard 反向锁住。
       - name: Run staffApi full test suite (含全部 cross-end / cross-copy 守护)
         working-directory: fengyu-staff/cloudfunctions/staffApi
+        run: npx vitest run
+
+  # 经营分析站（#436，先落 #382 的 analyst 这一块）：此前 analyst 的 vitest 从不进 CI，
+  # #421 的 AST / 行为守护、#436 的 scope 最后一跳守护都只在本地跑得到。
+  # 跑全量、不点名文件（理由同上面 staffApi job）；全部 mock 了 db，不碰数据库，本地约 2 秒。
+  analyst-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install analyst deps
+        working-directory: fengyu-analyst
+        run: npm ci
+      # analyst 直接 import `../../../db/schema/org`，那里的 `drizzle-orm/pg-core` 按 node 规则
+      # 从 db/ 目录向上找 node_modules —— 只装 analyst 的依赖会整文件加载失败（同 admin job 的说明）。
+      - name: Install db schema deps
+        working-directory: db
+        run: npm ci --omit=dev
+      - name: Run analyst full test suite (含 #421 在营口径 / #436 scope 最后一跳守护)
+        working-directory: fengyu-analyst
         run: npx vitest run
 
   # 三份副本里的第三份（前端净化器）。cart.test.ts 的闭环守护 require 真实云函数
@@ -332,3 +368,10 @@ jobs:
             src/actions/pickup-records.delete.test.ts \
             src/export-worker/registry.test.ts \
             'src/app/(main)/(operations)/pickup-records/_components/pickup-records-page.test.tsx'
+
+      # 员工维度口径说明（#299）：人效板「员工排名榜」5 个指标 Tab 与「按技师人效」显示
+      # STAFF_OUTPUT_SCOPE_NOTE，「门店排名榜」不显示。两端逐字一致在 staffApi 全量里跑，这里补 admin 侧展示位置；
+      # 不进 CI 的话，漏传 note 或把说明误挂到门店榜，GitHub 检查照样全绿。
+      - name: Run staff output note guards (#299)
+        working-directory: fengyu-admin
+        run: npx vitest run 'src/app/(main)/(analytics)/data-center/_components/efficiency/efficiency-board.test.tsx'

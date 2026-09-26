@@ -391,6 +391,20 @@ try {
     }))
 
   setSession(marketASession())
+  // #358（拍板 A：实物短少一律走撤回）：去收货只能整单确认
+  await expectThrow('去收货少收被拒(#358)', /INVALID_PARAMS/, () =>
+    biz.receiveItemCompanyShipment({
+      shipmentId: gfhId,
+      items: [
+        { shipmentItemId: gfhNormal.id, receivedQuantity: 5 },
+        { shipmentItemId: gfhGift.id, receivedQuantity: 2 },
+      ],
+    }))
+  await expectThrow('去收货漏行被拒(#358)', /INVALID_PARAMS/, () =>
+    biz.receiveItemCompanyShipment({
+      shipmentId: gfhId,
+      items: [{ shipmentItemId: gfhNormal.id, receivedQuantity: 6 }],
+    }))
   const { id: mrkId } = await biz.receiveItemCompanyShipment({
     shipmentId: gfhId,
     items: [

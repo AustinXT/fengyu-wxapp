@@ -924,7 +924,7 @@ async function ensureInventoryLotFromSku(client, locationId, item, trace, priceS
        market_actual_unit_price, store_standard_unit_price, store_unit_discount,
        store_actual_unit_price, source_doc_id
      )
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,0,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,0,$13,$14,$15,$16,$17,$18,$19,$20)
      ON CONFLICT (location_id, lot_key)
      DO UPDATE SET
        sku_name = EXCLUDED.sku_name,
@@ -1951,9 +1951,11 @@ async function createDoc(ctx) {
           lot?.isGift ?? Boolean(item.isGift),
           qty,
           lot ? lot.quantityOnHand : bookQuantity,
-          // 门店报货的需求量 / 已配量与 admin 同口径（= 数量 / 0），不收客户端值 —— 它们参与市场汇总与分院配货的可配量（#348）
+          // 门店报货的需求量与 admin 同口径（= 数量），不收客户端值 —— 它参与市场汇总与分院配货的可配量（#348）
           docType === '门店报货' ? qty : item.requestQuantity || null,
-          docType === '门店报货' ? 0 : item.fulfilledQuantity || null,
+          // 已收 / 已履约量只由服务端收货路径回写（#358：收货量 = 发货量 − fulfilled），建单不收客户端值；
+          // 门店报货与 admin 一样落 0（#348，已配量从 0 起算）
+          docType === '门店报货' ? 0 : null,
           standardUnitPrice,
           unitDiscount,
           actualUnitPrice,
@@ -2470,6 +2472,34 @@ async function confirmReceive(ctx) {
     await assertInventoryWriteStoreScope(client, ctx.auth, targetLocation.location_id)
     const inboundType = RECEIVE_INBOUND_TYPE[head.doc_type]
     if (!inboundType) throw new Error('INVALID_STATE: 该单据不支持收货')
+    // #358：只收「发货数量 − 已收」的剩余量。已收口径是来源明细 fulfilled_quantity，与 admin
+    // receivePhysicalShipment / getShipmentReceiptProgress 同源；admin 早先放行过部分收货，
+    // 按 quantity 全量再收一次会被 0043 累计关联守卫 RAISE，整单回滚、门店收不了剩余的货。
+    // FOR UPDATE 与 admin 收货路径互斥（表头已锁，这里再锁明细防别的写入方改 fulfilled）。
+    const itemRes = await client.query(
+      `SELECT id AS source_item_id, lot_id, sku_id, sale_item_id, sku_name, spec_name, supplier, product_series,
+              batch_no, expiry_date, is_gift, quantity, request_quantity,
+              fulfilled_quantity, standard_unit_price, unit_discount, actual_unit_price,
+              supply_chain_unit_cost, market_standard_unit_price,
+              market_unit_discount, market_actual_unit_price, store_standard_unit_price,
+              store_unit_discount, store_actual_unit_price, reason, remark
+         FROM inventory_doc_items
+        WHERE doc_id = $1
+     ORDER BY id
+          FOR UPDATE`,
+      [id],
+    )
+    const receiveItems = itemRes.rows
+      .map((item) => ({
+        item,
+        // numeric(12,2)：按分取整，吸收浮点误差
+        quantity: Math.round((Number(item.quantity) - Number(item.fulfilled_quantity || 0)) * 100) / 100,
+      }))
+      .filter((line) => line.quantity > 0)
+    if (receiveItems.length === 0) throw new Error('INVALID_STATE: 该单据没有待收数量，请刷新后重试')
+    const receiveTotalQuantity = Math.round(
+      receiveItems.reduce((sum, line) => sum + line.quantity, 0) * 100,
+    ) / 100
     inboundDocId = await generateDocNo(client, inboundType)
     await client.query(
       `INSERT INTO inventory_docs (
@@ -2483,26 +2513,16 @@ async function confirmReceive(ctx) {
         head.source_org_node_id,
         head.target_org_node_id,
         shanghaiToday(),
-        head.total_quantity,
-        head.total_amount,
+        receiveTotalQuantity,
+        // 金额由明细触发器（0039 inventory_set_doc_item_amount → inventory_refresh_doc_totals）
+        // 按本次实收数量重算回写表头；这里不再照抄发货单的全量金额。
+        null,
         head.market_id,
         remark || head.remark || null,
         ctx.auth.staffWfId,
       ],
     )
-    const itemRes = await client.query(
-      `SELECT id AS source_item_id, lot_id, sku_id, sale_item_id, sku_name, spec_name, supplier, product_series,
-              batch_no, expiry_date, is_gift, quantity, request_quantity,
-              fulfilled_quantity, standard_unit_price, unit_discount, actual_unit_price,
-              amount, supply_chain_unit_cost, market_standard_unit_price,
-              market_unit_discount, market_actual_unit_price, store_standard_unit_price,
-              store_unit_discount, store_actual_unit_price, reason, remark
-         FROM inventory_doc_items
-        WHERE doc_id = $1
-     ORDER BY id`,
-      [id],
-    )
-    for (const item of itemRes.rows) {
+    for (const { item, quantity: receiveQuantity } of receiveItems) {
       const sourceLot = item.lot_id == null
         ? null
         : await lockInventoryLotById(client, Number(item.lot_id), sourceLocation.location_id)
@@ -2511,7 +2531,7 @@ async function confirmReceive(ctx) {
         batchNo: item.batch_no,
         expiryDate: item.expiry_date,
         isGift: item.is_gift,
-        quantity: item.quantity,
+        quantity: receiveQuantity,
       }, {
         // 有来源批次时保留其真实供应链路；采购订单首入库以订单为来源。
         sourceDocId: sourceLot?.sourceDocId || id,
@@ -2549,14 +2569,16 @@ async function confirmReceive(ctx) {
           lot.batchNo,
           lot.expiryDate,
           lot.isGift,
-          Number(item.quantity),
+          receiveQuantity,
           lot.quantityOnHand,
           item.request_quantity == null ? null : Number(item.request_quantity),
-          item.fulfilled_quantity == null ? null : Number(item.fulfilled_quantity),
+          // 入库明细自身没有下游履约；照抄来源行的已收量没有意义（与 admin 收货路径一致留空）
+          null,
           item.standard_unit_price ?? null,
           item.unit_discount ?? null,
           item.actual_unit_price ?? null,
-          item.amount ?? null,
+          // amount 由 BEFORE INSERT 触发器按 quantity × 价基重算
+          null,
           item.supply_chain_unit_cost ?? lot.supplyChainUnitCost ?? null,
           item.market_standard_unit_price ?? lot.marketStandardUnitPrice ?? null,
           item.market_unit_discount ?? lot.marketUnitDiscount ?? null,
@@ -2573,7 +2595,7 @@ async function confirmReceive(ctx) {
         docId: inboundDocId,
         docItemId: Number(inserted.rows[0].id),
         direction: '入库',
-        quantity: Number(item.quantity),
+        quantity: receiveQuantity,
         createdBy: ctx.auth.staffWfId,
         movementKey: `receive:${id}:item:${inserted.rows[0].id}:入库`,
         remark: remark || null,
@@ -2582,7 +2604,14 @@ async function confirmReceive(ctx) {
         `INSERT INTO inventory_doc_links (
            from_doc_id, to_doc_id, relation_type, from_item_id, to_item_id, quantity
          ) VALUES ($1,$2,'发货收货',$3,$4,$5)`,
-        [id, inboundDocId, Number(item.source_item_id), Number(inserted.rows[0].id), Number(item.quantity)],
+        [id, inboundDocId, Number(item.source_item_id), Number(inserted.rows[0].id), receiveQuantity],
+      )
+      // 回写来源明细已收量，与 admin receivePhysicalShipment 同写法（已收口径单源）
+      await client.query(
+        `UPDATE inventory_doc_items
+            SET fulfilled_quantity = COALESCE(fulfilled_quantity, 0) + $2
+          WHERE id = $1`,
+        [Number(item.source_item_id), receiveQuantity],
       )
     }
     const completed = await client.query(

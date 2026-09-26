@@ -390,13 +390,27 @@ async function queryNewMemberCount(
   return num(first(rows).v)
 }
 
-/** 新增会员对应消费（这群人区间内全部销售消费，D-newMemberSpend=A） */
+/**
+ * 新增会员对应消费（这群人区间内全部销售消费，D-newMemberSpend=A）。
+ *
+ * ★ 归店用 **`c.bound_store_id`（顾客绑定门店）**，与分母 `queryNewMemberCount` 逐字同源
+ * （#439，用户 2026-09-26 拍板方案 A）。语义 = 「这批新会员给本店带来多少钱」，钱跟着人走。
+ *
+ * 此前按 `o.store_id`（订单发生门店）过滤，与分母的 `c.bound_store_id` 是两套归店口径：
+ * 「顾客绑定 A 店、在 B 店消费」时人进 A 的分母、钱进 B 的分子。
+ * 生产实测 6 家门店受影响、最高 ±13.3%（九江大润发 2596 vs 2994）。
+ * 且分子此前**不要求**绑定门店存在/在营而分母要求，于是「绑定店为空或已停用的新会员在在营店消费」
+ * 会让钱进分子却无对应分母 ⇒ 集团虚高、门店维度出现「分母 0 而分子 > 0 ⇒ 页面 `--` 却有业绩」。
+ * 改同源后这条自然消失：`scopeFilterSql` 恒附加「在营门店」条件，`NULL IN (…)` 为 NULL 会被过滤。
+ *
+ * ⚠️ 只改**客单价这一个比率**的分子，业绩类指标的归店一律不动。
+ */
 async function queryNewMemberSpend(
   session: AuthSession,
   scope: DataCenterScope,
   range: ResolvedRange,
 ): Promise<number> {
-  const sc = scopeFilterSql(session, scope, 'o.store_id')
+  const sc = scopeFilterSql(session, scope, 'c.bound_store_id')
   const rows = await db.execute(sql`
     SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
     FROM sale_order_performance_events spe
@@ -772,14 +786,20 @@ async function queryOpsBreakdown(
         AND c.became_member_at::date BETWEEN ${start} AND ${end}
       GROUP BY ${groupId}
     ),
-    -- 新增会员对应消费按实际订单发生门店汇总
+    -- 新增会员对应消费按**顾客绑定门店**汇总 —— 归店 JOIN 与上面 newmem（分母）逐字一致
+    -- （#439 方案 A）。此前按 o.store_id（订单发生门店）归组，与分母两套口径：
+    -- 「绑定 A 店、在 B 店消费」时人进 A 的分母、钱进 B 的分子（实测 6 家门店、最高 ±13.3%）。
+    -- ⚠ 这里不重复写 bound_store_id IS NOT NULL：上面的内连接已排除 NULL，
+    -- 且 WHERE 段必须与 KPI 版 queryNewMemberSpend 逐字相同（既有守护「明细·新会员消费的 WHERE
+    -- 与 KPI 版一致」按此比对，差异只允许出现在 scope 段）。newmem 里那句是历史冗余，不跟。
+    -- ⚠ 本段注释在 SQL 模板字面量内部，禁止出现反引号（会直接截断模板）。
     newmem_spend AS (
       SELECT ${groupId} AS group_id,
              COALESCE(SUM(spe.amount::numeric), 0) AS new_spend
       FROM sale_order_performance_events spe
       JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
-      JOIN skel sk ON sk.store_id = o.store_id
       JOIN client_wechat_users c ON c.user_id = o.client_user_id
+      JOIN skel sk ON sk.store_id = c.bound_store_id
       WHERE c.became_member_at IS NOT NULL
         AND c.became_member_at::date BETWEEN ${start} AND ${end}
         AND spe.sale_order_type IN ('销售单', '转换单')

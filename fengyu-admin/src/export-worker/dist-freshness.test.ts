@@ -334,6 +334,17 @@ const PROBES: Probe[] = [
     exactCountsInModule: true,
   },
   {
+    label: '品项板 · 区间业绩净额，负数冲销不整组丢弃；人数只认正数行（#288）',
+    file: 'src/actions/data-center/product.ts',
+    // 按「谓词/列的起始部分」抓整行、不限取值：把 <> 0 改回 > 0 的行照样被提取，去产物里逐字比对即红
+    pattern:
+      /^(?!.*\$\{)(HAVING SUM\(sipe\.amount.*|OR SUM\(sipe\.amount::numeric\) FILTER .*|AND purchase_received .*|WHERE pa\.day_received .*|ON pa\.client_user_id = x\.client_user_id AND pa\.grp = x\.grp.*|COUNT\(DISTINCT pa\.client_user_id\).*|new_revenue_store AS \(|LEFT JOIN new_revenue_store .*|COALESCE\(nr?\.revenue, 0\) AS new_revenue,)$/,
+    minLines: 16,
+    uniqueLines: 11,
+    exactCountsInModule: true,
+    exactLinesInModule: true,
+  },
+  {
     label: '提成明细 · 平均提成点公式（#375）',
     file: 'src/actions/data-center/commission.ts',
     pattern: /^const averageRate = /,
@@ -606,28 +617,75 @@ describe('dist/export-worker.mjs 客量明细 SQL 整段逐字进入产物（#41
     return out
   }
 
-  it('queryRegActiveBreakdown 的整段模板在产物里逐字可找到', () => {
+  /**
+   * ⚠ `WITH skel AS (${skeleton})` 在 customer.ts 里有**两处** ——
+   * `queryRegActiveBreakdown`（注册客活）与 `queryOpsBreakdown`（消费经营，`newmem` / `newmem_spend` 在这里）。
+   * 早先用 `indexOf` 只取第一处，于是 #439 的归店口径（在第二处）**产物侧零覆盖**：
+   * 把产物里 `newmem_spend` 的骨架 JOIN 换回 `o.store_id`，这条照样绿（红检 R5 实测）。
+   * 现在遍历全部出现处，并断言恰好 2 处（fail-closed：将来多一个明细查询必须显式加进来）。
+   */
+  it('两个明细查询的整段模板在产物里逐字可找到', () => {
     const src = fs.readFileSync(path.join(ADMIN_ROOT, 'src/actions/data-center/customer.ts'), 'utf-8')
-    const from = src.indexOf('WITH skel AS (${skeleton})')
-    const to = src.indexOf('GROUP BY ${groupId}', from)
-    expect(from, '源码里找不到明细 SQL 模板起点').toBeGreaterThan(0)
-    expect(to, '源码里找不到明细 SQL 模板终点').toBeGreaterThan(from)
-    const template = normalizeInterpolations(
-      src.slice(from, to + 'GROUP BY ${groupId}'.length).replace(/\s+/g, ' ').trim(),
+    const starts: number[] = []
+    for (let i = src.indexOf('WITH skel AS (${skeleton})'); i >= 0; i = src.indexOf('WITH skel AS (${skeleton})', i + 1)) {
+      starts.push(i)
+    }
+    expect(starts, '源码里「WITH skel AS (${skeleton})」应恰好 2 处（注册客活 + 消费经营）').toHaveLength(2)
+
+    // 切到**模板真正的收尾反引号**，覆盖 100%。
+    //
+    // ⚠ 早先两版都把终点取在 `GROUP BY ${groupId}` 上，两次都出问题（pr-ready boundary P1）：
+    //   ① 取**第一处** → 撞上 queryOpsBreakdown 的内层 CTE，模板被截成 175 字
+    //   ② 取**最后一处** → 末尾 1384 字（最终 SELECT 的 18 行投影 + 8 个 LEFT JOIN，
+    //      含 `COALESCE(newmem_spend.new_spend, 0) AS new_spend` 与
+    //      `LEFT JOIN newmem_spend ON …`）在射程之外，而 `it` 名却叫"整段模板"；
+    //      且它依赖"后面的 CTE 都还用 `GROUP BY ${groupId}`"——把末四个 CTE 改成
+    //      `GROUP BY group_id`（traffic_cust 已经就是这写法），终点会静默退回 ≈2900，
+    //      覆盖面丢 46% 而长度门限看不出来。
+    // 反引号做边界是安全的：模板内多一个反引号会直接让 tsc 编译失败（本轮实测踩过两次）。
+    const templates = starts.map((from) => {
+      const tplEnd = src.indexOf('`)', from)
+      expect(tplEnd, '源码里找不到 SQL 模板的收尾反引号').toBeGreaterThan(from)
+      return normalizeInterpolations(src.slice(from, tplEnd).replace(/\s+/g, ' ').trim())
+    })
+
+    /**
+     * fail-closed **哨兵**：光靠长度门限没用 —— 上一版写 `> 2000` 而实际模板 4556 / 6811 字，
+     * 中间有两千多字的余量可以让载荷整段脱出比对还照绿（boundary P1-1）。
+     * 这里钉住每段**必须包含自己最末尾的那一行**，切片提前收尾立刻红。
+     */
+    const TAILS = [
+      'LEFT JOIN react ON react.store_id = sk.store_id GROUP BY ${groupId}',
+      'LEFT JOIN svc_all ON svc_all.group_id = gs.group_id',
+    ]
+    // 载荷哨兵：#439 的归店口径与它的输出投影都必须在射程内
+    const PAYLOADS = [
+      'reg AS (',
+      'newmem_spend AS (',
+    ]
+    templates.forEach((t, i) => {
+      expect(t, `第 ${i + 1} 段模板没切到尾（切片提前收尾，覆盖面静默缩小）`).toContain(TAILS[i])
+      expect(t, `第 ${i + 1} 段模板里找不到载荷 ${PAYLOADS[i]}`).toContain(PAYLOADS[i])
+    })
+    expect(templates[1], 'ops 段必须含 new_spend 的输出投影（它在最终 SELECT 里，曾在射程外）').toContain(
+      'COALESCE(newmem_spend.new_spend, 0) AS new_spend',
     )
-    // fail-closed：模板短得离谱说明锚点漂了，不能让这条守护静默通过
-    expect(template.length).toBeGreaterThan(2500)
+    expect(templates[1], 'ops 段必须含 newmem_spend 的 LEFT JOIN（同上）').toContain(
+      'LEFT JOIN newmem_spend ON newmem_spend.group_id = gs.group_id',
+    )
 
     const dist = fs.readFileSync(DIST, 'utf-8')
     const segment = normalizeInterpolations(
       moduleSegments(dist, 'src/actions/data-center/customer.ts').join('\n').replace(/\s+/g, ' '),
     )
+    const missingTemplates = templates.filter((t) => !segment.includes(t))
     expect(
-      segment.includes(template),
+      missingTemplates.length,
       '产物里的客量明细 SQL 与当前源码**不逐字相同** —— 产物不是按当前源码构建的。' +
-        '（逐行探针可能仍全绿：它们只看单行的集合，看不出整段结构）' +
+        `（${missingTemplates.length} / ${templates.length} 段对不上；` +
+        '逐行探针可能仍全绿：它们只看单行的集合，看不出整段结构）' +
         REBUILD_HINT,
-    ).toBe(true)
+    ).toBe(0)
   })
 })
 
