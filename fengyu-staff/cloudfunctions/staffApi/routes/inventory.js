@@ -1569,6 +1569,7 @@ async function docDetail(ctx) {
             d.tracking_no, d.total_quantity, d.remark, d.audit_remark,
             d.confirmed_at, d.approved_at, d.rejected_at, d.created_at, d.updated_at,
             source_loc.name AS source_location_name, source_loc.location_type AS source_location_type,
+            source_loc.location_id AS source_store_loc_id,
             target_loc.name AS target_location_name, target_loc.location_type AS target_location_type
        FROM inventory_docs d
   LEFT JOIN inventory_locations source_loc ON source_loc.org_node_id = d.source_org_node_id
@@ -1601,6 +1602,8 @@ async function docDetail(ctx) {
     sourceOrgNodeId: r.source_org_node_id || null,
     sourceOrgNodeName: r.source_location_name || null,
     sourceOrgNodeType: r.source_location_type || null,
+    // 门店报货草稿（#348）：小程序据此判断「是不是当前门店的草稿」再给继续编辑 / 删除入口
+    sourceLocationId: r.source_store_loc_id || null,
     targetOrgNodeId: r.target_org_node_id || null,
     targetOrgNodeName: r.target_location_name || null,
     targetOrgNodeType: r.target_location_type || null,
@@ -1650,11 +1653,13 @@ async function docDetail(ctx) {
  * 非门店报货 NOT_FOUND；非草稿 INVALID_STATE（已删除 / 已提交分开提示）；换门店 INVALID_PARAMS；
  * 带血缘 / 预留的只可能是存量异常单，一律 INVALID_STATE 交人工处理。
  */
-async function lockStoreRequestDraft(client, draftId, sourceOrgNodeId) {
+async function lockStoreRequestDraft(client, draftId, sourceOrgNodeId, { marketId, expectedUpdatedAt } = {}) {
   const { rows } = await client.query(
-    `SELECT id, doc_type, status, source_org_node_id
+    `SELECT id, doc_type, status, source_org_node_id, market_id,
+            to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS updated_at_iso
        FROM inventory_docs
       WHERE id = $1
+        AND doc_type = '门店报货'
       FOR UPDATE`,
     [draftId],
   )
@@ -1667,6 +1672,18 @@ async function lockStoreRequestDraft(client, draftId, sourceOrgNodeId) {
   }
   if (sourceOrgNodeId !== undefined && draft.source_org_node_id !== sourceOrgNodeId) {
     throw new Error('INVALID_PARAMS: 草稿的报货门店不能修改')
+  }
+  // 草稿存续期间门店改挂了别的市场：单头市场归属不会随状态更新重算（与 admin 同口径）；删除不传 marketId，不受此限
+  if (marketId !== undefined && draft.market_id !== marketId) {
+    throw new Error('INVALID_STATE: 门店已更换所属市场，请删除该草稿后重新报货')
+  }
+  // 草稿乐观锁：打开草稿时的 updatedAt 与库里不一致 = 别人改过（与 admin assertDraftUnchanged 同口径）
+  if (expectedUpdatedAt != null && expectedUpdatedAt !== '') {
+    const expected = Date.parse(expectedUpdatedAt)
+    if (Number.isNaN(expected)) throw new Error('INVALID_PARAMS: 草稿版本格式不正确')
+    if (!draft.updated_at_iso || Date.parse(draft.updated_at_iso) !== expected) {
+      throw new Error('CONFLICT: 草稿已被他人修改，请重新打开后再保存')
+    }
   }
   const linked = await client.query(
     `SELECT (EXISTS (SELECT 1 FROM inventory_doc_links WHERE from_doc_id = $1 OR to_doc_id = $1)
@@ -1692,11 +1709,25 @@ async function createDoc(ctx) {
   if (!isValidDocType(docType) || !isStaffCreateDocType(docType)) {
     throw new Error('INVALID_PARAMS: staff 端不支持创建该库存单据')
   }
+  // draft 只收布尔：'true' / 1 这类真值若按 false 处理会静默落成不可逆的「已完成」
+  if (payload.draft !== undefined && payload.draft !== null && typeof payload.draft !== 'boolean') {
+    throw new Error('INVALID_PARAMS: 草稿参数格式不正确')
+  }
   const asDraft = payload.draft === true
   const draftId = payload.draftId == null ? null : String(payload.draftId).trim()
   if (payload.draftId != null && !draftId) throw new Error('INVALID_PARAMS: 缺少草稿单号')
   if ((asDraft || draftId) && docType !== '门店报货') {
     throw new Error('INVALID_PARAMS: 只有门店报货支持草稿')
+  }
+  // 门店报货同一 SKU 只能一行（与 admin createStoreReplenishmentRequest 同文案）：两行同 SKU 的单
+  // 会让市场汇总 / 分院配货各算一遍，admin 继续编辑时也会被拒
+  if (docType === '门店报货' && Array.isArray(items)) {
+    const seenReportSkus = new Set()
+    for (const item of items) {
+      const skuId = String(item?.skuId || '').trim()
+      if (skuId && seenReportSkus.has(skuId)) throw new Error('INVALID_PARAMS: 同一 SKU 请合并为一条报货明细')
+      seenReportSkus.add(skuId)
+    }
   }
   if (!Array.isArray(items) || items.length === 0) throw new Error('INVALID_PARAMS: 至少需要一条明细')
   assertNoStaffMoneyFields(payload)
@@ -1744,7 +1775,10 @@ async function createDoc(ctx) {
     if (draftId) {
       // 草稿没有血缘 / 预留 / 流水（lockStoreRequestDraft 已核对），明细整体重写；合计由明细 trigger 回填
       // `|| null`：解析不出门店节点时按 null 比对（fail-closed），不能退化成「跳过门店核对」
-      await lockStoreRequestDraft(client, draftId, sourceOrgNodeId || null)
+      await lockStoreRequestDraft(client, draftId, sourceOrgNodeId || null, {
+        marketId: marketId || null,
+        expectedUpdatedAt: payload.expectedUpdatedAt,
+      })
       docId = draftId
       await client.query('DELETE FROM inventory_doc_items WHERE doc_id = $1', [draftId])
       await client.query(
@@ -1935,7 +1969,17 @@ async function createDoc(ctx) {
     }
   })
 
-  ctx.result = { id: docId, draft: asDraft, message: asDraft ? '草稿已保存' : '提交成功' }
+  // 草稿回传新版本号：留在编辑态的页面下一次保存拿它做乐观锁
+  let updatedAt = null
+  if (asDraft) {
+    const versionRows = await pg.query(
+      `SELECT to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS updated_at_iso
+         FROM inventory_docs WHERE id = $1`,
+      [docId],
+    )
+    updatedAt = versionRows[0]?.updated_at_iso || null
+  }
+  ctx.result = { id: docId, draft: asDraft, updatedAt, message: asDraft ? '草稿已保存' : '提交成功' }
   return ctx.result
 }
 
@@ -1967,16 +2011,19 @@ async function deleteDraft(ctx) {
   const reason = String(payload.reason || '').trim() || '删除草稿'
   await pg.transaction(async (client) => {
     await assertWorkfineInventoryInitialized(client)
-    const draft = await lockStoreRequestDraft(client, draftId, undefined)
+    // 先无锁取门店做 scope 断言，再锁单判状态：越权的人拿不到别店单据的锁，也探不出它的状态
     const { rows } = await client.query(
-      `SELECT location_id FROM inventory_locations
-        WHERE org_node_id = $1 AND location_type = '门店'
-        ORDER BY location_id
+      `SELECT loc.location_id
+         FROM inventory_docs d
+         JOIN inventory_locations loc ON loc.org_node_id = d.source_org_node_id AND loc.location_type = '门店'
+        WHERE d.id = $1 AND d.doc_type = '门店报货'
+        ORDER BY loc.location_id
         LIMIT 1`,
-      [draft.source_org_node_id],
+      [draftId],
     )
-    if (!rows[0]) throw new Error('NOT_FOUND: 草稿的报货门店不存在')
+    if (!rows[0]) throw new Error('NOT_FOUND: 门店报货草稿不存在')
     await assertInventoryWriteStoreScope(client, ctx.auth, rows[0].location_id)
+    await lockStoreRequestDraft(client, draftId, undefined)
     await client.query(
       `UPDATE inventory_docs
           SET status = '已取消',

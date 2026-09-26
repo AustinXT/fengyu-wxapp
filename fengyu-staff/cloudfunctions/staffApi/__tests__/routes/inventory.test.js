@@ -2342,7 +2342,10 @@ describe('门店报货草稿（#348）', () => {
     scopeStoreIds: ['store-A'],
     roleBindings: [{ role: 'manager', scopeId: 'node-store-A', scopeType: '门店' }],
   }
-  const DRAFT = { id: 'DBH-260926-0001', doc_type: '门店报货', status: '草稿', source_org_node_id: 'org-store-A' }
+  const DRAFT = {
+    id: 'DBH-260926-0001', doc_type: '门店报货', status: '草稿', source_org_node_id: 'org-store-A',
+    market_id: 'market-A', updated_at_iso: '2026-09-26T01:02:03.456Z',
+  }
 
   function mockDraftEnv({ draft = DRAFT, linked = false, scopedStores = ['store-A'] } = {}) {
     pg.query.mockImplementation(async (query, params) => {
@@ -2362,6 +2365,14 @@ describe('门店报货草稿（#348）', () => {
           const text = String(sql)
           const cutover = cutoverQueryResult(text)
           if (cutover) return cutover
+          if (text.includes('JOIN inventory_locations loc')) {
+            return draft && draft.doc_type === '门店报货'
+              ? { rows: [{ location_id: String(draft.source_org_node_id).replace(/^org-/, '') }], rowCount: 1 }
+              : { rows: [], rowCount: 0 }
+          }
+          if (text.includes('updated_at_iso') && !text.includes('FOR UPDATE')) {
+            return { rows: [{ updated_at_iso: '2026-09-26T02:00:00.000Z' }], rowCount: 1 }
+          }
           if (text.includes('FROM inventory_docs') && text.includes('FOR UPDATE')) {
             return { rows: draft ? [draft] : [], rowCount: draft ? 1 : 0 }
           }
@@ -2470,6 +2481,54 @@ describe('门店报货草稿（#348）', () => {
     const getClient = mockDraftEnv({ draft: { ...DRAFT, status: '已完成' } })
     await expect(inventoryRoutes.deleteDraft(createCtx({ payload: { id: DRAFT.id }, auth: STORE_AUTH }))).rejects.toThrow('INVALID_STATE: 门店报货已提交，不能再修改或删除')
     expect(calls(getClient(), /UPDATE inventory_docs/)).toHaveLength(0)
+  })
+
+  test('draft 只收布尔：\'true\' / 1 这类真值拒绝（不能静默落成已完成）', async () => {
+    for (const draft of ['true', 1, 'false']) {
+      await expect(inventoryRoutes.createDoc(createCtx({ payload: { ...payload, draft }, auth: STORE_AUTH })))
+        .rejects.toThrow('INVALID_PARAMS: 草稿参数格式不正确')
+    }
+  })
+
+  test('门店报货同一 SKU 两行拒绝，与 admin 同文案', async () => {
+    await expect(inventoryRoutes.createDoc(createCtx({
+      payload: { ...payload, items: [{ skuId: 'sku-1', quantity: 1 }, { skuId: 'sku-1', quantity: 2 }] },
+      auth: STORE_AUTH,
+    }))).rejects.toThrow('INVALID_PARAMS: 同一 SKU 请合并为一条报货明细')
+  })
+
+  test('门店已改挂别的市场：更新 / 提交草稿拒绝，不动明细', async () => {
+    const getClient = mockDraftEnv({ draft: { ...DRAFT, market_id: 'market-OLD' } })
+    await expect(inventoryRoutes.submitDraft(createCtx({ payload: { ...payload, draftId: DRAFT.id }, auth: STORE_AUTH })))
+      .rejects.toThrow('INVALID_STATE: 门店已更换所属市场，请删除该草稿后重新报货')
+    expect(calls(getClient(), /DELETE FROM inventory_doc_items/)).toHaveLength(0)
+  })
+
+  test('乐观锁：版本不一致 CONFLICT；一致放行（按时刻比较）', async () => {
+    let getClient = mockDraftEnv()
+    await expect(inventoryRoutes.updateDraft(createCtx({
+      payload: { ...payload, draftId: DRAFT.id, expectedUpdatedAt: '2026-09-26T01:00:00.000Z' }, auth: STORE_AUTH,
+    }))).rejects.toThrow('CONFLICT: 草稿已被他人修改，请重新打开后再保存')
+    expect(calls(getClient(), /DELETE FROM inventory_doc_items/)).toHaveLength(0)
+    getClient = mockDraftEnv()
+    await inventoryRoutes.updateDraft(createCtx({
+      payload: { ...payload, draftId: DRAFT.id, expectedUpdatedAt: '2026-09-26T09:02:03.456+08:00' }, auth: STORE_AUTH,
+    }))
+    expect(calls(getClient(), /DELETE FROM inventory_doc_items/)).toHaveLength(1)
+  })
+
+  test('submitDraft 覆盖客户端带来的 draft:true，确认人非空', async () => {
+    const getClient = mockDraftEnv()
+    await inventoryRoutes.submitDraft(createCtx({ payload: { ...payload, draftId: DRAFT.id, draft: true }, auth: STORE_AUTH }))
+    const [update] = calls(getClient(), /UPDATE inventory_docs/)
+    expect(update[1][1]).toBe('已完成')
+    expect(update[1][5]).toBeTruthy()
+  })
+
+  test('deleteDraft 先断门店权限再锁单：越权时连草稿行都不锁', async () => {
+    const getClient = mockDraftEnv({ draft: { ...DRAFT, source_org_node_id: 'org-store-B', status: '已完成' } })
+    await expect(inventoryRoutes.deleteDraft(createCtx({ payload: { id: DRAFT.id }, auth: STORE_AUTH }))).rejects.toThrow(/^PERMISSION_DENIED: /)
+    expect(calls(getClient(), /FOR UPDATE/).filter(([sql]) => String(sql).includes('inventory_docs'))).toHaveLength(0)
   })
 
   test('新 action 已登记路由与写操作集合', () => {
