@@ -23,6 +23,11 @@
  *   - 无替换模板 ≡ 同文字符串；`{ a }` ≡ `{ a: a }`（有默认值 `{ a = 1 }` 时两侧须同为简写且默认值等价）；
  *   - 顶层 `const` / `let` ≡ `var`（仅顶层；函数内 let / const / var 仍须逐一相同）。
  *
+ * 已知取舍（均为误红方向，fail-closed）：模板字面量按原文比较，等价转义改写（\u0041 → A）也算不等；
+ * 用户代码若恰好写出与打包样板同形的语句（顶层零参 init_x() 调用、var import_x = __toESM(…)）会被当样板处理；
+ * 源码同时存在 a 与 a1 这类名字时，bun 的后缀改名可能与「原名 + 数字」规则交叉配对而误红；
+ * 内部模块的默认导入 / 命名空间导入尚未建模，遇到时直接抛错说明。only 模式只比指定声明，不核对样板序列。
+ *
  * 威胁模型：本比较器只回答「产物是不是按当前源码构建的」（防改了源码忘记重建），**不验证 bun 转换本身的语义正确性**。
  * 顶层 const → var 是 bun 对每个模块都做的固定转换；一份过期产物不可能单靠「const 变 var」这一处差异
  * 掩盖源码的真实改动 —— 源码任何运行时改动都会在别处的结构 / 字面量 / 绑定上显现。因此这里不做 TDZ 执行时序分析
@@ -79,8 +84,22 @@ const isRenamedFrom = (renamed: string, original: string) =>
 const packageSlug = (specifier: string) => specifier.replace(/^@/, '').replace(/[^A-Za-z0-9]/g, '_')
 const isBareSpecifier = (specifier: string) => !specifier.startsWith('.') && !specifier.startsWith('@/') && !specifier.startsWith('@db/')
 
-const isDirective = (statement: ts.Statement) =>
+const isStringStatement = (statement: ts.Statement) =>
   ts.isExpressionStatement(statement) && ts.isStringLiteral(statement.expression)
+
+/**
+ * 指令（"use server" 等）：只认序言位置 —— 在第一条运行时语句之前、跳过打包样板（import / init_x() /
+ * 命名空间声明）后出现的字符串语句。其余位置的裸字符串语句是运行时语句，照常参与比较（不能被当指令滤掉）。
+ */
+function prologueDirectives(statements: readonly ts.Statement[], isBoilerplate: (statement: ts.Statement) => boolean): Set<ts.Statement> {
+  const found = new Set<ts.Statement>()
+  for (const statement of statements) {
+    if (isBoilerplate(statement)) continue
+    if (!isStringStatement(statement)) break
+    found.add(statement)
+  }
+  return found
+}
 
 /** 产物侧 `init_x()` */
 const initCallName = (statement: ts.Statement): string | null => {
@@ -121,8 +140,13 @@ function topLevelDeclaredNames(code: string): Set<string> {
       names.add(statement.name.text)
     }
     if (ts.isVariableStatement(statement)) {
+      // 解构声明（var { a } = o / var [a] = …）的绑定名也要收
+      const collect = (name: ts.BindingName) => {
+        if (ts.isIdentifier(name)) names.add(name.text)
+        else for (const element of name.elements) if (!ts.isOmittedExpression(element)) collect(element.name)
+      }
       for (const declaration of statement.declarationList.declarations) {
-        if (ts.isIdentifier(declaration.name)) names.add(declaration.name.text)
+        collect(declaration.name)
       }
     }
   }
@@ -188,8 +212,17 @@ class Comparator {
         imported: (declaration.propertyName ?? declaration.name).text,
       }
     }
-    if (ts.isImportClause(declaration)) return { kind: 'import', specifier: specifierOf(declaration.parent), imported: 'default' }
-    if (ts.isNamespaceImport(declaration)) return { kind: 'namespace', specifier: specifierOf(declaration.parent.parent) }
+    if (ts.isImportClause(declaration)) {
+      const specifier = specifierOf(declaration.parent)
+      // 内部模块的默认导入在 bun 产物里是被导入模块的某个导出变量（名字不可推导），比较器尚未建模：明确报不支持
+      if (!isBareSpecifier(specifier)) throw new Error(`暂不支持内部模块的默认导入（${identifier.text} from ${specifier}）：请改用具名导入，或先扩展比较器`)
+      return { kind: 'import', specifier, imported: 'default' }
+    }
+    if (ts.isNamespaceImport(declaration)) {
+      const specifier = specifierOf(declaration.parent.parent)
+      if (!isBareSpecifier(specifier)) throw new Error(`暂不支持内部模块的命名空间导入（* as ${identifier.text} from ${specifier}）：请改用具名导入，或先扩展比较器`)
+      return { kind: 'namespace', specifier }
+    }
     // 顶层声明 = 声明节点到 SourceFile 之间没有函数 / 类边界
     let cursor: ts.Node | undefined = declaration.parent
     while (cursor && !ts.isSourceFile(cursor)) {
@@ -479,8 +512,7 @@ const sideEffectImports = (statements: readonly ts.Statement[]) => statements
   .map((statement) => (statement.moduleSpecifier as ts.StringLiteral).text)
   .filter(isBareSpecifier)
 
-const directives = (statements: readonly ts.Statement[]) => statements
-  .filter(isDirective)
+const directiveTexts = (directives: Set<ts.Statement>) => [...directives]
   .map((statement) => ((statement as ts.ExpressionStatement).expression as ts.StringLiteral).text)
   .sort()
 
@@ -491,6 +523,18 @@ const directives = (statements: readonly ts.Statement[]) => statements
 export function compareModuleRuntime(sides: ModuleSides): string[] {
   const src = bind('source.js', sides.sourceCode, true)
   const dist = bind('dist.js', sides.distCode, false)
+
+  // 内部模块的默认导入 / 命名空间导入在 bun 产物里的形态比较器尚未建模：一出现就明确抛错（不论是否被比较到）
+  for (const statement of src.sourceFile.statements) {
+    if (!ts.isImportDeclaration(statement) || !statement.importClause) continue
+    const specifier = (statement.moduleSpecifier as ts.StringLiteral).text
+    if (isBareSpecifier(specifier)) continue
+    const clause = statement.importClause
+    if (clause.name) throw new Error(`暂不支持内部模块的默认导入（${clause.name.text} from ${specifier}）：请改用具名导入，或先扩展比较器`)
+    if (clause.namedBindings && ts.isNamespaceImport(clause.namedBindings)) {
+      throw new Error(`暂不支持内部模块的命名空间导入（* as ${clause.namedBindings.name.text} from ${specifier}）：请改用具名导入，或先扩展比较器`)
+    }
+  }
 
   const distNamespaces = new Map<string, string>()
   const namespaceDeclarations: Array<[string, string]> = []
@@ -506,11 +550,16 @@ export function compareModuleRuntime(sides: ModuleSides): string[] {
   }
   const comparator = new Comparator(src, dist, sides.distSegmentOfImport, distNamespaces)
 
+  // 两侧对称过滤：import、纯转导出 export { … }（无运行时逻辑）、序言指令、打包样板；
+  // export default 表达式（ExportAssignment）含运行时逻辑，保留比较
+  const srcDirectives = prologueDirectives(src.sourceFile.statements, (statement) => ts.isImportDeclaration(statement))
+  const distBoilerplate = (statement: ts.Statement) => ts.isImportDeclaration(statement)
+    || !!initCallName(statement) || !!namespaceDeclaration(statement)
+  const distDirectives = prologueDirectives(dist.sourceFile.statements, distBoilerplate)
   let srcStatements = src.sourceFile.statements
-    .filter((statement) => !ts.isImportDeclaration(statement) && !ts.isExportDeclaration(statement) && !isDirective(statement))
+    .filter((statement) => !ts.isImportDeclaration(statement) && !ts.isExportDeclaration(statement) && !srcDirectives.has(statement))
   let distStatements = dist.sourceFile.statements
-    .filter((statement) => !ts.isImportDeclaration(statement) && !isDirective(statement)
-      && !initCallName(statement) && !namespaceDeclaration(statement))
+    .filter((statement) => !ts.isExportDeclaration(statement) && !distDirectives.has(statement) && !distBoilerplate(statement))
 
   // 产物里不应残留任何内部模块的 import 或带绑定的 import（bun 会把内部模块降为 init_x()、第三方包改成 __toESM）；
   // 残留即不等 —— 不论是否传了 only，都要核对（它们在下面会被过滤出比较范围，不能静默放过）
@@ -580,10 +629,10 @@ export function compareModuleRuntime(sides: ModuleSides): string[] {
     if (JSON.stringify(srcSideEffects) !== JSON.stringify(distSideEffects)) {
       comparator.fail('imports', `副作用导入序列不同：[${srcSideEffects.join(' ')}] / [${distSideEffects.join(' ')}]`)
     }
-    const srcDirectives = directives(src.sourceFile.statements)
-    const distDirectives = directives(dist.sourceFile.statements)
-    if (JSON.stringify(srcDirectives) !== JSON.stringify(distDirectives)) {
-      comparator.fail('directives', `指令不同：[${srcDirectives.join(' ')}] / [${distDirectives.join(' ')}]`)
+    const srcDirectiveTexts = directiveTexts(srcDirectives)
+    const distDirectiveTexts = directiveTexts(distDirectives)
+    if (JSON.stringify(srcDirectiveTexts) !== JSON.stringify(distDirectiveTexts)) {
+      comparator.fail('directives', `指令不同：[${srcDirectiveTexts.join(' ')}] / [${distDirectiveTexts.join(' ')}]`)
     }
   }
 

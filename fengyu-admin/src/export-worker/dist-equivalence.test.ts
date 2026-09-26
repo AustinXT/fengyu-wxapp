@@ -11,6 +11,7 @@ const SEGMENTS: Record<string, string> = {
   './helpers': 'var init_helpers = __esm(() => {});\nfunction helper(x) { return x }\nfunction wrap(f) { return f }\nvar LIMIT = 5;',
   './other': 'function X2() {}',
   './fx': 'var init_fx = __esm(() => {});',
+  './destructured': 'var { alpha, beta: renamed } = source, [gamma] = list;',
 }
 const compare = (sourceCode: string, distCode: string) => compareModuleRuntime({
   sourceCode,
@@ -116,6 +117,13 @@ describe('dist-equivalence：bun 的合法改写判为等价', () => {
 
   it('顶层 const / let ≡ var 无条件等价（bun 固定转换，TDZ 语义差异不在守护的威胁模型内，见比较器文件头）', () => {
     expect(compare('export function f() { return A }\nconst probe = f()\nconst A = 1', 'function f() { return A; }\nvar probe = f();\nvar A = 1;')).toEqual([])
+  })
+
+  it('被导入模块以解构形态声明导出名；纯转导出 export { … } 两侧都不参与比较', () => {
+    expect(compare(
+      'import { alpha, renamed, gamma } from "./destructured"\nexport const a = [alpha, renamed, gamma]\nexport { a as b }',
+      'var a = [alpha, renamed, gamma];\nexport { a as b };',
+    )).toEqual([])
   })
 
   it('only：只比指定声明，两侧各恰好一处', () => {
@@ -275,6 +283,16 @@ describe('dist-equivalence：真实漂移判为不等', () => {
   it('私有名 / BigInt 不同', () => {
     differs('export class C { #x = 1; get() { return this.#x } }', 'class C { #y = 1; get() { return this.#y; } }')
     differs('export const n = 1n', 'var n = 2n;')
+  })
+
+  it('非序言位置的裸字符串语句是运行时语句，不能被当指令滤掉', () => {
+    differs('export const a = 1\n"not a directive"', 'var a = 1;')
+    differs('export const a = 1\n"x"', 'var a = 1;\n"y";')
+  })
+
+  it('内部模块的默认导入 / 命名空间导入尚未建模：明确抛错而不是报误导性的不等', () => {
+    expect(() => compare('import x from "./helpers"\nexport const a = x', 'var a = helper;')).toThrow(/暂不支持内部模块的默认导入/)
+    expect(() => compare('import * as h from "./helpers"\nexport const a = h.helper', 'var a = helper;')).toThrow(/暂不支持内部模块的命名空间导入/)
   })
 
   it('两侧都提取不到运行时语句时抛错，而不是判等价', () => {
