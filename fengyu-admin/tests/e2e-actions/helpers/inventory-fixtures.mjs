@@ -368,7 +368,8 @@ export async function lotQuantity(lotId) {
 export async function docHeader(docId) {
   const rows = await pgQuery(
     `SELECT id, doc_type, status, source_org_node_id, target_org_node_id,
-            market_id, supplier_id, total_quantity, total_amount
+            market_id, supplier_id, total_quantity, total_amount,
+            remark, confirmed_at, cancellation_reason, cancelled_by
        FROM inventory_docs WHERE id = $1`,
     [docId],
   )
