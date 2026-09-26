@@ -3992,7 +3992,8 @@ export const createInventoryCoreDoc = withAnyPermission(
             quantity: String(quantity),
             stockSnapshot: lot ? String(lot.quantityOnHand) : numString(bookQuantity),
             requestQuantity: numString(serverItem.requestQuantity),
-            fulfilledQuantity: numString(serverItem.fulfilledQuantity),
+            // 已收 / 已履约量只由服务端收货路径回写（#358），建单不收客户端值
+            fulfilledQuantity: null,
             standardUnitPrice: numString(standardUnitPrice),
             unitDiscount: numString(unitDiscount),
             actualUnitPrice: numString(actualUnitPrice),
@@ -4222,7 +4223,7 @@ export const confirmInventoryCoreReceive = withAnyPermission(
 
       const itemRows = await tx.execute(sql`
         SELECT item.id AS source_item_id, item.sku_id, item.batch_no, item.expiry_date, item.is_gift, item.quantity,
-               item.standard_unit_price, item.unit_discount, item.actual_unit_price, item.amount,
+               item.fulfilled_quantity, item.standard_unit_price, item.unit_discount, item.actual_unit_price, item.amount,
                item.supply_chain_unit_cost, item.market_standard_unit_price, item.market_unit_discount,
                item.market_actual_unit_price, item.store_standard_unit_price, item.store_unit_discount,
                item.store_actual_unit_price, item.reason, item.remark,
@@ -4241,6 +4242,7 @@ export const confirmInventoryCoreReceive = withAnyPermission(
         expiry_date: string | null
         is_gift: boolean
         quantity: string | number
+        fulfilled_quantity: string | number | null
         standard_unit_price: string | number | null
         unit_discount: string | number | null
         actual_unit_price: string | number | null
@@ -4258,6 +4260,14 @@ export const confirmInventoryCoreReceive = withAnyPermission(
         source_doc_id: string | null
         source_supplier: string | null
       }>) {
+        // 本路径按发货量整行收（调货只能整单收）；来源已有已收量说明走过别的收货路径，
+        // 再按全量收会重复入库 —— fail-closed，与 staffApi confirmReceive 的剩余量口径不冲突（#358）
+        if (Number(item.fulfilled_quantity ?? 0) > 0) {
+          throw new ApiError('CONFLICT', head.doc_type === '分院调货出库'
+            ? '该调货单已有收货记录，剩余数量请在员工小程序确认收货'
+            // 小程序不收市场间调货（STAFF_RECEIVE_DOC_TYPES 只有分院配货 / 分院调货出库）
+            : '该调货单已有收货记录，不能再整单收货，请联系管理员核对')
+        }
         const lot = await ensureLotFromSku(tx, targetLocationId, {
           skuId: item.sku_id,
           batchNo: item.batch_no,
@@ -4330,6 +4340,14 @@ export const confirmInventoryCoreReceive = withAnyPermission(
           toItemId: createdItem.id,
           quantity: String(item.quantity),
         })
+        // 已收口径单源（#358）：来源明细 fulfilled_quantity 与 staffApi confirmReceive、
+        // business.ts receivePhysicalShipment 同写法。调货单只能整单收，且建单不接受客户端
+        // fulfilledQuantity（恒为空），所以这里进来时已收为 0、收后等于发货量。
+        await tx.execute(sql`
+          UPDATE inventory_doc_items
+             SET fulfilled_quantity = COALESCE(fulfilled_quantity, 0) + ${String(item.quantity)}
+           WHERE id = ${Number(item.source_item_id)}
+        `)
       }
 
       await tx

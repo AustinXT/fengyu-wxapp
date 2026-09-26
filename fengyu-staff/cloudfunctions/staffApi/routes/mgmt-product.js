@@ -225,6 +225,8 @@ async function cardHolders(ctx) {
  *   - 单次 SQL：WITH daily_agg → qualifying_days / repurchase_qualifying_days
  *     → first_entry → period_agg → xinzeng/fugou/tiyan
  *   - 寄存单只参与首次进入基线；复购达标与区间业绩只统计销售单/转换单
+ *   - 区间业绩是净额（#288）：退款负数冲销逐笔抵减，净额为负的日子不整组丢弃；
+ *     体验判定只认正数购买日（day_received > 0），负数行只进业绩、不造人
  *   - 最后用 UNION ALL 拆三段（group_kind: 'trial' / 'new' / 'repurchase'）
  *
  * 参数顺序：$1=startDate, $2=endDate, $3=threshold, $4...=scope params
@@ -279,7 +281,10 @@ async function cycleStats(ctx) {
          AND pc.product_kind IS NOT NULL
          AND sipe.performance_date <= $2
        GROUP BY so.client_user_id, so.store_id, pc.product_kind, sipe.performance_date
-      HAVING SUM(sipe.amount::numeric) > 0
+      -- #288：只剔除两列都为 0 的空组；负数净额组必须保留（退款走负数冲销、不删行）。
+      -- 只判 day_received <> 0 不够：寄存单恰好抵平销售单/转换单净额的日子会被误丢。
+      HAVING SUM(sipe.amount::numeric) <> 0
+          OR SUM(sipe.amount::numeric) FILTER (WHERE so.sale_order_type IN ('销售单','转换单')) <> 0
     ),
     qualifying_days AS (
       SELECT client_user_id, store_id, product_kind, purchase_date
@@ -298,12 +303,14 @@ async function cycleStats(ctx) {
         FROM qualifying_days
        GROUP BY client_user_id, product_kind
     ),
+    -- 区间业绩行（#288）：纳入负数净额日，退款冲销逐笔抵减业绩；只排除纯寄存日。
+    -- 负数行只能进业绩、不能造人：判定人数必须再加 day_received > 0。
     period_agg AS (
       SELECT client_user_id, store_id, product_kind, purchase_date,
              purchase_received AS day_received
         FROM daily_agg
        WHERE purchase_date BETWEEN $1 AND $2
-         AND purchase_received > 0
+         AND purchase_received <> 0
     ),
     xinzeng AS (
       SELECT client_user_id, product_kind, entry_date
@@ -321,11 +328,12 @@ async function cycleStats(ctx) {
     tiyan AS (
       SELECT DISTINCT pa.client_user_id, pa.product_kind
         FROM period_agg pa
-       WHERE NOT EXISTS (
-         SELECT 1 FROM first_entry f
-          WHERE f.client_user_id = pa.client_user_id
-            AND f.product_kind   = pa.product_kind
-       )
+       WHERE pa.day_received > 0
+         AND NOT EXISTS (
+           SELECT 1 FROM first_entry f
+            WHERE f.client_user_id = pa.client_user_id
+              AND f.product_kind   = pa.product_kind
+         )
     )
     SELECT 'trial' AS group_kind,
            t.product_kind,

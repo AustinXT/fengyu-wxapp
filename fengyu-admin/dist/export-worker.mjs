@@ -178644,7 +178644,7 @@ var createInventoryCoreDoc = withAnyPermission(["inventory:supply_chain_operate"
         quantity: String(quantity),
         stockSnapshot: lot ? String(lot.quantityOnHand) : numString(bookQuantity),
         requestQuantity: numString(serverItem.requestQuantity),
-        fulfilledQuantity: numString(serverItem.fulfilledQuantity),
+        fulfilledQuantity: null,
         standardUnitPrice: numString(standardUnitPrice),
         unitDiscount: numString(unitDiscount),
         actualUnitPrice: numString(actualUnitPrice),
@@ -178831,7 +178831,7 @@ var confirmInventoryCoreReceive = withAnyPermission([...INVENTORY_CORE_RECEIVE_A
     });
     const itemRows = await tx.execute(import_drizzle_orm58.sql`
         SELECT item.id AS source_item_id, item.sku_id, item.batch_no, item.expiry_date, item.is_gift, item.quantity,
-               item.standard_unit_price, item.unit_discount, item.actual_unit_price, item.amount,
+               item.fulfilled_quantity, item.standard_unit_price, item.unit_discount, item.actual_unit_price, item.amount,
                item.supply_chain_unit_cost, item.market_standard_unit_price, item.market_unit_discount,
                item.market_actual_unit_price, item.store_standard_unit_price, item.store_unit_discount,
                item.store_actual_unit_price, item.reason, item.remark,
@@ -178844,6 +178844,9 @@ var confirmInventoryCoreReceive = withAnyPermission([...INVENTORY_CORE_RECEIVE_A
          ORDER BY item.id
       `);
     for (const item of itemRows) {
+      if (Number(item.fulfilled_quantity ?? 0) > 0) {
+        throw new ApiError("CONFLICT", head.doc_type === "分院调货出库" ? "该调货单已有收货记录，剩余数量请在员工小程序确认收货" : "该调货单已有收货记录，不能再整单收货，请联系管理员核对");
+      }
       const lot = await ensureLotFromSku(tx, targetLocationId, {
         skuId: item.sku_id,
         batchNo: item.batch_no,
@@ -178913,6 +178916,11 @@ var confirmInventoryCoreReceive = withAnyPermission([...INVENTORY_CORE_RECEIVE_A
         toItemId: createdItem.id,
         quantity: String(item.quantity)
       });
+      await tx.execute(import_drizzle_orm58.sql`
+          UPDATE inventory_doc_items
+             SET fulfilled_quantity = COALESCE(fulfilled_quantity, 0) + ${String(item.quantity)}
+           WHERE id = ${Number(item.source_item_id)}
+        `);
     }
     await tx.update(inventoryDocs).set({
       status: "已完成",
@@ -180870,7 +180878,7 @@ function orgAnchorScopeSql(session4, scope, anchorCol = "pb.anchor_market_id") {
     const ids = isAdminScope(session4) ? scope.ids : scope.ids.filter((id) => session4.permissions.scopeStoreIds.includes(id));
     return activeAnchorAmongSql(ids, col);
   }
-  if (isAdminScope(session4))
+  if (isAdminScope(session4) || session4.roles.some((r) => r.scopeType === "总部"))
     return import_drizzle_orm64.sql`TRUE`;
   return visibleActiveAnchorSql(session4, col);
 }
@@ -181626,7 +181634,7 @@ async function queryNewMemberCount(session4, scope, range) {
   return num(first(rows).v);
 }
 async function queryNewMemberSpend(session4, scope, range) {
-  const sc = scopeFilterSql(session4, scope, "o.store_id");
+  const sc = scopeFilterSql(session4, scope, "c.bound_store_id");
   const rows = await db2.execute(import_drizzle_orm69.sql`
     SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
     FROM sale_order_performance_events spe
@@ -181903,14 +181911,20 @@ async function queryOpsBreakdown(session4, scope, range, group, threshold) {
         AND c.became_member_at::date BETWEEN ${start} AND ${end}
       GROUP BY ${groupId}
     ),
-    -- 新增会员对应消费按实际订单发生门店汇总
+    -- 新增会员对应消费按**顾客绑定门店**汇总 —— 归店 JOIN 与上面 newmem（分母）逐字一致
+    -- （#439 方案 A）。此前按 o.store_id（订单发生门店）归组，与分母两套口径：
+    -- 「绑定 A 店、在 B 店消费」时人进 A 的分母、钱进 B 的分子（实测 6 家门店、最高 ±13.3%）。
+    -- ⚠ 这里不重复写 bound_store_id IS NOT NULL：上面的内连接已排除 NULL，
+    -- 且 WHERE 段必须与 KPI 版 queryNewMemberSpend 逐字相同（既有守护「明细·新会员消费的 WHERE
+    -- 与 KPI 版一致」按此比对，差异只允许出现在 scope 段）。newmem 里那句是历史冗余，不跟。
+    -- ⚠ 本段注释在 SQL 模板字面量内部，禁止出现反引号（会直接截断模板）。
     newmem_spend AS (
       SELECT ${groupId} AS group_id,
              COALESCE(SUM(spe.amount::numeric), 0) AS new_spend
       FROM sale_order_performance_events spe
       JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
-      JOIN skel sk ON sk.store_id = o.store_id
       JOIN client_wechat_users c ON c.user_id = o.client_user_id
+      JOIN skel sk ON sk.store_id = c.bound_store_id
       WHERE c.became_member_at IS NOT NULL
         AND c.became_member_at::date BETWEEN ${start} AND ${end}
         AND spe.sale_order_type IN ('销售单', '转换单')
@@ -182240,7 +182254,7 @@ var num2 = (v) => {
   const n = Number(v ?? 0);
   return Number.isFinite(n) ? n : 0;
 };
-var round24 = (v) => Math.round(num2(v) * 100) / 100;
+var round24 = (v) => Math.round(num2(v) * 100) / 100 || 0;
 var first2 = (rows) => rows[0] ?? {};
 var safeDiv2 = (a, b2) => b2 > 0 ? a / b2 : null;
 function resolveGrouping(params) {
@@ -182343,7 +182357,12 @@ async function queryCycle(session4, scope, range, threshold, groupCol, filter, g
         AND ${filter}
         AND sipe.performance_date <= ${range.end}
       GROUP BY so.client_user_id, so.store_id, ${groupCol}, sipe.performance_date
-      HAVING SUM(sipe.amount::numeric) > 0
+      -- #288：只剔除「两列都为 0」的空组（如当日销售与退款恰好抵平）。负数净额组必须保留 ——
+      -- 退款走负数冲销、不删行，此前「> 0」把净额为负的日子整组丢掉，冲销被吞、业绩只进不出。
+      -- 也不能只判 day_received <> 0：寄存单金额恰好抵平销售单/转换单净额的日子（day_received = 0、
+      -- purchase_received <> 0）仍会被误丢。FILTER 无行时为 NULL，NULL <> 0 不成立，与 0 同待遇。
+      HAVING SUM(sipe.amount::numeric) <> 0
+          OR SUM(sipe.amount::numeric) FILTER (WHERE so.sale_order_type IN ('销售单', '转换单')) <> 0
     ),
     qualifying_days AS (
       SELECT client_user_id, store_id, grp, purchase_date
@@ -182360,11 +182379,13 @@ async function queryCycle(session4, scope, range, threshold, groupCol, filter, g
       FROM qualifying_days
       GROUP BY client_user_id, grp
     ),
+    -- 区间业绩行（#288）：纳入负数净额日，退款冲销逐笔抵减业绩；只排除纯寄存日（purchase_received = 0）。
+    -- ⚠️ 负数行只能进业绩、不能「造人」：凡从这里判定人数或归店，都必须再加 day_received > 0。
     period_agg AS (
       SELECT client_user_id, store_id, grp, purchase_date, purchase_received AS day_received
       FROM daily_agg
       WHERE purchase_date BETWEEN ${range.start} AND ${range.end}
-        AND purchase_received > 0
+        AND purchase_received <> 0
     ),
     xinzeng AS (
       SELECT client_user_id, grp, entry_date
@@ -182381,10 +182402,11 @@ async function queryCycle(session4, scope, range, threshold, groupCol, filter, g
     tiyan AS (
       SELECT DISTINCT pa.client_user_id, pa.grp
       FROM period_agg pa
-      WHERE NOT EXISTS (
-        SELECT 1 FROM first_entry f
-        WHERE f.client_user_id = pa.client_user_id AND f.grp = pa.grp
-      )
+      WHERE pa.day_received > 0
+        AND NOT EXISTS (
+          SELECT 1 FROM first_entry f
+          WHERE f.client_user_id = pa.client_user_id AND f.grp = pa.grp
+        )
     ),
     cohort AS (
       ${group === "trial" ? import_drizzle_orm70.sql`SELECT client_user_id, grp FROM tiyan` : group === "new" ? import_drizzle_orm70.sql`SELECT client_user_id, grp FROM xinzeng` : import_drizzle_orm70.sql`SELECT client_user_id, grp FROM fugou`}
@@ -182476,7 +182498,12 @@ async function queryCycleByStore(session4, scope, range, threshold, groupCol, fi
         AND ${filter}
         AND sipe.performance_date <= ${range.end}
       GROUP BY so.client_user_id, so.store_id, ${groupCol}, sipe.performance_date
-      HAVING SUM(sipe.amount::numeric) > 0
+      -- #288：只剔除「两列都为 0」的空组（如当日销售与退款恰好抵平）。负数净额组必须保留 ——
+      -- 退款走负数冲销、不删行，此前「> 0」把净额为负的日子整组丢掉，冲销被吞、业绩只进不出。
+      -- 也不能只判 day_received <> 0：寄存单金额恰好抵平销售单/转换单净额的日子（day_received = 0、
+      -- purchase_received <> 0）仍会被误丢。FILTER 无行时为 NULL，NULL <> 0 不成立，与 0 同待遇。
+      HAVING SUM(sipe.amount::numeric) <> 0
+          OR SUM(sipe.amount::numeric) FILTER (WHERE so.sale_order_type IN ('销售单', '转换单')) <> 0
     ),
     qualifying_days AS (
       SELECT client_user_id, store_id, grp, purchase_date
@@ -182493,11 +182520,13 @@ async function queryCycleByStore(session4, scope, range, threshold, groupCol, fi
       FROM qualifying_days
       GROUP BY client_user_id, grp
     ),
+    -- 区间业绩行（#288）：纳入负数净额日，退款冲销逐笔抵减业绩；只排除纯寄存日（purchase_received = 0）。
+    -- ⚠️ 负数行只能进业绩、不能「造人」：凡从这里判定人数或归店，都必须再加 day_received > 0。
     period_agg AS (
       SELECT client_user_id, store_id, grp, purchase_date, purchase_received AS day_received
       FROM daily_agg
       WHERE purchase_date BETWEEN ${range.start} AND ${range.end}
-        AND purchase_received > 0
+        AND purchase_received <> 0
     ),
     -- 进入达标日 + 当日所在门店，一次取齐（#286）。
     --
@@ -182544,35 +182573,48 @@ async function queryCycleByStore(session4, scope, range, threshold, groupCol, fi
     tiyan AS (
       SELECT DISTINCT pa.client_user_id, pa.grp
       FROM period_agg pa
-      WHERE NOT EXISTS (
-        SELECT 1 FROM first_entry f
-        WHERE f.client_user_id = pa.client_user_id AND f.grp = pa.grp
-      )
+      WHERE pa.day_received > 0
+        AND NOT EXISTS (
+          SELECT 1 FROM first_entry f
+          WHERE f.client_user_id = pa.client_user_id AND f.grp = pa.grp
+        )
     ),
-    -- 期内每个门店每个客群的人数（DISTINCT client per store）+ 业绩（该门店该客群消费）
+    -- 期内每个门店每个客群的人数（DISTINCT client per store）+ 业绩（该门店该客群消费）。
+    -- ⚠️ 人数与业绩的归店口径不同（#288）：人数只认正数购买日（day_received > 0），
+    -- 业绩按 period_agg 全部行求净额。只有退款冲销、没有购买的门店 —— 业绩照扣，但不计人。
     trial_store AS (
       SELECT pa.store_id,
              COUNT(DISTINCT pa.client_user_id) AS cnt
       FROM period_agg pa
       JOIN tiyan t ON t.client_user_id = pa.client_user_id AND t.grp = pa.grp
+      WHERE pa.day_received > 0
       GROUP BY pa.store_id
     ),
     -- ⚠️ 主表必须是 xinzeng（#286）：反过来 FROM period_agg JOIN xinzeng 是内连接，
     -- 「进入达标日金额全部来自寄存单」的顾客不在 period_agg 里，会被整体丢弃（实测漏 65.5%）。
-    -- 期内无销售单/转换单消费的新增顾客落回 entry_store_id；业绩仍只统计真实消费
-    -- （LEFT JOIN 后 pa.day_received 为 NULL，被 SUM 忽略）。
+    -- 期内无正数购买日的新增顾客落回 entry_store_id。
+    -- ON 里的 day_received > 0 只决定人落在哪家店（#288）；它不影响业绩，业绩见 new_revenue_store。
     new_store AS (
       SELECT COALESCE(pa.store_id, x.entry_store_id) AS store_id,
-             COUNT(DISTINCT x.client_user_id) AS cnt,
-             COALESCE(SUM(pa.day_received), 0) AS revenue
+             COUNT(DISTINCT x.client_user_id) AS cnt
       FROM xinzeng x
       LEFT JOIN period_agg pa
-        ON pa.client_user_id = x.client_user_id AND pa.grp = x.grp
+        ON pa.client_user_id = x.client_user_id AND pa.grp = x.grp AND pa.day_received > 0
       GROUP BY COALESCE(pa.store_id, x.entry_store_id)
+    ),
+    -- 新增业绩按消费（含退款冲销）发生的门店归组，净额可为负。
+    -- xinzeng 每个 (client_user_id, grp) 恰一行（entry_store 的 DISTINCT ON），内连接不扇出。
+    new_revenue_store AS (
+      SELECT pa.store_id,
+             SUM(pa.day_received) AS revenue
+      FROM xinzeng x
+      JOIN period_agg pa
+        ON pa.client_user_id = x.client_user_id AND pa.grp = x.grp
+      GROUP BY pa.store_id
     ),
     repurchase_store AS (
       SELECT pa.store_id,
-             COUNT(DISTINCT pa.client_user_id) AS cnt,
+             COUNT(DISTINCT pa.client_user_id) FILTER (WHERE pa.day_received > 0) AS cnt,
              COALESCE(SUM(pa.day_received), 0) AS revenue
       FROM period_agg pa
       JOIN fugou fg ON fg.client_user_id = pa.client_user_id AND fg.grp = pa.grp
@@ -182591,12 +182633,13 @@ async function queryCycleByStore(session4, scope, range, threshold, groupCol, fi
       s.store_id AS store_id,
       COALESCE(t.cnt, 0) AS trial_count,
       COALESCE(n.cnt, 0) AS new_count,
-      COALESCE(n.revenue, 0) AS new_revenue,
+      COALESCE(nr.revenue, 0) AS new_revenue,
       COALESCE(r.cnt, 0) AS repurchase_count,
       COALESCE(r.revenue, 0) AS repurchase_revenue
     FROM store_ids s
     LEFT JOIN trial_store t ON t.store_id = s.store_id
     LEFT JOIN new_store n ON n.store_id = s.store_id
+    LEFT JOIN new_revenue_store nr ON nr.store_id = s.store_id
     LEFT JOIN repurchase_store r ON r.store_id = s.store_id
   `);
   const m = new Map;

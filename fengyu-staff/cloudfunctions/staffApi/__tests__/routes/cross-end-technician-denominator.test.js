@@ -40,6 +40,7 @@
 
 const fs = require('node:fs')
 const path = require('node:path')
+const { parse: babelParse } = require('@babel/parser')
 
 const FILES = {
   staffDashboard: path.resolve(__dirname, '../../routes/mgmt-dashboard.js'),
@@ -57,10 +58,33 @@ const FILES = {
     __dirname,
     '../../../../../fengyu-admin/src/lib/store-status.ts',
   ),
+  // #334：汇总范围「总部」判定的同源链（要件 6b）
+  adminContext: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/data-center/context.ts'),
+  adminRoleGuards: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/session-role-guards.ts'),
+  staffScope: path.resolve(__dirname, '../../utils/scope.js'),
 }
 
 function readFile(filePath) {
   return fs.readFileSync(filePath, 'utf8')
+}
+
+/**
+ * 用真解析器剥注释（同 cross-end-store-status-snapshot.test.js 的 stripCommentsKeepLines）：
+ * 正则剥注释可被字符串里的注释起止符绕过；解析失败直接抛错，不静默回落。
+ */
+function stripComments(src, filePath) {
+  const plugins = /\.tsx?$/.test(filePath) ? ['typescript'] : []
+  let ast
+  try {
+    ast = babelParse(src, { sourceType: 'unambiguous', plugins, errorRecovery: false })
+  } catch (err) {
+    throw new Error(`stripComments 解析失败 ${filePath}: ${err.message}`)
+  }
+  let out = src
+  for (const c of ast.comments) {
+    out = out.slice(0, c.start) + out.slice(c.start, c.end).replace(/[^\n]/g, ' ') + out.slice(c.end)
+  }
+  return out
 }
 
 /** 抽出 `start` 到 `end` 之间的源码片段（end 不含） */
@@ -367,16 +391,14 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
       squeeze(readFile(path.resolve(__dirname, '../../utils/scope.js'))),
       'staff 市场范围必须只放行直接授权（scopeOrgNodeIds），admin 的祖先市场回退才可省',
     ).toContain("if (scopeType === 'market') { const allowed = auth.scopeOrgNodeIds || []")
-    expect(adminAnchorFn, 'admin 侧 all 分支对超管恒真').toMatch(
-      /if \(isAdminScope\(session\)\) return sql`TRUE`/,
-    )
+    // all / authorized 分支的逐字等值与「总部」判定同源见要件 6b（#334）
     /**
      * ⚠️ 必须钉 `return sql`EXISTS (`` 这个完整开头，不能只写 `/EXISTS \(/` ——
      * 后者能被 `NOT EXISTS (` 命中。第 4 轮 GLM 变异实测：在这里加一个 `NOT`，
      * 非超管的集团分母就翻成「锚定市场下**没有**可见启用门店」的补集（生产上约 1 人），
      * 而当时 13 条断言全绿。
      */
-    expect(adminAnchorFn, 'admin 侧非超管 all 分支必须走可见启用门店 EXISTS（且不得取反）').toMatch(
+    expect(adminAnchorFn, 'admin 侧非总部账号的汇总分支必须走可见启用门店 EXISTS（且不得取反）').toMatch(
       /return sql`EXISTS \([\s\S]*vn\.type = '门店'[\s\S]*vn\.is_active = TRUE[\s\S]*vn\.parent_id = \$\{col\}/,
     )
     expect(adminAnchorFn, 'admin 侧 EXISTS 被取反了').not.toMatch(/NOT EXISTS/)
@@ -401,42 +423,63 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
   })
 
   /**
-   * 要件 6b —— **已登记的跨端分叉**（#334）。本条绿 ≠ 两端一致，别这么读。
+   * 要件 6b —— 汇总范围（staff `all` / admin `all`·`authorized`）两端**等价**（#334 落地）。
    *
-   * staff 的 `all` 恒 TRUE；admin 的 `all` 只对**超管**恒 TRUE，非超管走
-   * `EXISTS(锚定市场下存在本账号可见的启用门店)`。差异只在「锚定市场下一家启用门店都没有」时显形：
+   * 历史：本条原是「已登记分叉」哨兵 —— staff 的 `all` 无条件恒真，admin 只对**超管**恒真，
+   * 持总部范围的非超管走 `EXISTS(锚定市场下有可见在营门店)`，对没有门店的市场（品项公司）永远判不出可见：
+   * 2026-09-26 生产复算 5 个能进数据中心的总部非超管账号，admin 集团分母 165 / staff 166，员工榜少 20 人。
+   * #334 方案 A 拍板：admin 改为「超管 **或** 持总部范围 → TRUE」，与 staff、与 admin 自己的
+   * `validateScope` / `getScopeTopLevel` 同一判定。
    *
-   *   2026-09-24 生产只读实测 —— 「品项公司」`org-部门-1780556585278`（`type=市场`、
-   *   直属门店 0 家）下有 **1 名**在职产能技师；落在「总部」类型节点上的**非超管**绑定共
-   *   **14 个**（finance×1 / hr×1 / manager×10 / product×2）。这 14 个账号在 admin 看「集团」
-   *   分母 165、在 staff 看「全部」分母 166；超管两边都是 166。
+   * 为什么等价：staff `all` 能进来的前提是 `validateManagementScope` 的 `hasHeadquartersScope`
+   * （任一绑定 `scopeType === '总部'`），helper 本身不再看账号；admin 在 helper 里自己判同一件事。
+   * 所以要钉的是**三跳**，任一跳漂移两端就重新分叉：
+   *   ① admin 汇总分支的判定逐字（剥注释后整段等值 —— 追加 `&&` / 换成 `every` 都会红）
+   *   ② 该判定与 admin `getScopeTopLevel` / `validateScope` 同一写法（「谁能选集团」与「集团里看谁」不分叉）
+   *   ③ 两端「总部」原语的函数体：admin `isAdminScope`（原 6b 注释登记为「守不住的一跳」，这里补上）、
+   *      staff `hasHeadquartersScope` 与 `validateManagementScope` 的 `all` 分支
    *
-   * 第 1 轮我在这里写过「等价、不构成分叉」，第 2 轮 codex 把它推翻了 —— 前提错在
-   * `isAdminScope` 判的是**超管位**（`roles.some(r => r.isSuperAdmin)`），不是「持总部 scope」。
-   * 之所以把分叉**钉下来**而不是悄悄放过：#283 那批审计的教训是
-   * 「consistency 快照只防漂移不保口径，错误写法会反被钉死」。所以这里把两侧写法连同
-   * **它不一致这件事**一起写进断言 —— 任一侧改动都会红，迫使回来读 #334 而不是顺手抹平。
-   *
-   * #334 落地（两端统一）时，本条应删除，并把要件 6 的 all 分支改成真正的等价断言。
-   *
-   * ⚠️ **本条守不住的一跳（有意，已登记）**：`isAdminScope` 的**函数体**不在本文件读取的
-   * 任何文件里（它在 `fengyu-admin/src/lib/permissions.ts`）。把它改成恒真，
-   * admin 的 all 分支与权限交集会一起对那 14 个非超管总部账号漂移 —— 恰好把 #334 的分叉
-   * 「抹平」，从而绕过本条哨兵，而本文件全绿。它是认证原语（类比 `pg` 本身），
-   * 归 #334 落地时在 admin 侧守护里钉。
+   * ⚠️ 等价的前提（既有差异，非本单引入，已登记）：admin 的 `session.roles` 已被 withPermission 按动作收窄，
+   * staff 判总部用账号**全部**绑定。「总部角色无 data_center:dashboard、另一角色有」的混合账号两端会分叉
+   * （staff 按总部、admin 按门店 / 市场级）。2026-09-26 生产只读核查此类账号 0 个。
    */
-  it('要件 6b：已登记分叉 —— staff 的 all 无条件恒真、admin 的 all 只对超管恒真（#334）', () => {
-    // staff：`all` 不看任何账号上下文（helper 连 auth 都不收）
+  it('要件 6b：汇总范围两端等价 —— 超管或持总部范围 → TRUE（#334）', () => {
+    const PREDICATE = "isAdminScope(session) || session.roles.some((r) => r.scopeType === '总部')"
+
+    // ① admin 汇总分支整段等值（剥注释：注释里复述这行代码不能冒充实现）
+    const adminCode = squeeze(stripComments(readFile(FILES.adminScopeSql), FILES.adminScopeSql))
+    const fn = extractSection(adminCode, 'export function orgAnchorScopeSql(', 'function isGrantedMarketScope(')
+    const STORES_END = 'return activeAnchorAmongSql(ids, col) }'
+    const at = fn.indexOf(STORES_END)
+    expect(at, '多店分支收尾锚点丢失（形态已变，先读本条注释）').toBeGreaterThan(-1)
+    const tail = fn.slice(at + STORES_END.length).trim()
+    expect(tail, 'admin 汇总分支形态漂移').toBe(
+      `if (${PREDICATE}) return sql\`TRUE\` return visibleActiveAnchorSql(session, col) }`,
+    )
+
+    // ② 与「谁能选集团 / 谁越过 scope 校验」同一判定
+    const contextCode = squeeze(stripComments(readFile(FILES.adminContext), FILES.adminContext))
+    expect(contextCode, 'admin getScopeTopLevel 的总部判定漂移').toContain(
+      `if (${PREDICATE}) return 'all'`,
+    )
+    expect(contextCode, 'admin validateScope 的超管 / 总部放行漂移').toContain(
+      "if (isAdminScope(session)) return if (session.roles.some((r) => r.scopeType === '总部')) return",
+    )
+
+    // ③ 两端「总部」原语
+    const guardsCode = squeeze(stripComments(readFile(FILES.adminRoleGuards), FILES.adminRoleGuards))
+    expect(guardsCode, 'admin isAdminScope 函数体漂移').toContain(
+      'export function isAdminScope(session: AuthSession): boolean { return session.roles.some(r => r.isSuperAdmin ?? r.role === \'admin\') }',
+    )
+    const staffScopeCode = squeeze(stripComments(readFile(FILES.staffScope), FILES.staffScope))
+    expect(staffScopeCode, 'staff hasHeadquartersScope 函数体漂移').toContain(
+      "function hasHeadquartersScope(roleBindings) { return Array.isArray(roleBindings) && roleBindings.some((binding) => binding && binding.scopeType === '总部') }",
+    )
+    expect(staffScopeCode, 'staff 的 all 必须只放行持总部范围的账号').toContain(
+      "function validateManagementScope(auth, scopeType, scopeId) { if (scopeType === 'all') { if (!hasHeadquartersScope(auth.roleBindings)) { throw new Error('PERMISSION_DENIED: 无权查看全部市场数据') } return }",
+    )
+    // staff helper 本身不看账号：all 的门禁只在 validateManagementScope（上一条）
     expect(staffAnchorFn).not.toMatch(/auth|session|isAdminScope|scopeStoreIds/)
-    expect(staffAnchorFn).toMatch(/if \(scopeType === 'all'\) return \{ sql: 'TRUE', params: \[\] \}/)
-    // admin：`all` 的恒真挂在超管位上，非超管另有一条按门店判定的分支
-    expect(adminAnchorFn).toMatch(/isAdminScope\(session\)/)
-    expect(adminAnchorFn).toMatch(/session\.permissions\.scopeStoreIds/)
-    /**
-     * 承重事实：admin 那条分支只认**门店**，对「没有门店的市场」永远判不出可见 ——
-     * 这就是分叉的机制本身。若将来它改成按组织节点判定（#334 的修法方向），本断言会红。
-     */
-    expect(adminAnchorFn).toMatch(/FROM stores vs[\s\S]*vs\.store_id IN/)
   })
 
   /**

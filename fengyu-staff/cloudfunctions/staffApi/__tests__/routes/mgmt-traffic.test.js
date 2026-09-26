@@ -121,6 +121,17 @@ function setupDefaultMocks({
   })
 }
 
+/**
+ * #439 的**单一例外**：新会员消费虽然 JOIN 了 sale_orders，却刻意按 `c.bound_store_id` 归店
+ * —— 它是「新会员客单价」的分子，必须与分母 queryNewMemberCount 同源，否则
+ * 「顾客绑定 A 店、在 B 店消费」时人进 A 的分母、钱进 B 的分子（admin 侧同型，两端同步整改）。
+ *
+ * 下面按这个签名把它从「sale/service 类按订单店过滤」那组里**摘出来单独断言**，
+ * 而不是把那组的正则放宽成 `(store_id|bound_store_id)` —— 放宽等于让整组断言失去区分力。
+ */
+const isNewMemberSpendSql = (s) =>
+  /COALESCE\(SUM\(spe\.amount::numeric\), 0\) AS v/.test(s) && /c\.became_member_at::date BETWEEN/.test(s)
+
 describe('mgmtTraffic.summary 入参/权限校验', () => {
   test('缺 period 抛 INVALID_PARAMS', async () => {
     const ctx = makeHqCtx({ scopeType: 'all' })
@@ -625,10 +636,22 @@ describe('mgmtTraffic.summary scope 三档 SQL 拼接', () => {
     const sqlList = pg.query.mock.calls.map((c) => c[0])
 
     // service_orders / sale_orders（不含 client_wechat_users 表的纯 client SQL）类
+    const newMemberSpendSqls = sqlList.filter(isNewMemberSpendSql)
+    expect(newMemberSpendSqls, '新会员消费查询应恰好 1 条（#439 例外的定位前提）').toHaveLength(1)
+    for (const s of newMemberSpendSqls) {
+      // ⚠ 必须在**剥掉 active 段之后**再比：`activeStoreCondition('c.bound_store_id')` 展开本身就是
+      // `c.bound_store_id IN ( SELECT active_store.store_id …`，直接对原文 match 的话
+      // 不论 scope 段用哪个 producer 都绿（pr-ready boundary P2-3）。
+      expect(withoutActive(s)).toMatch(/c\.bound_store_id\s+IN\s*\(/)
+      expect(withoutActive(s)).not.toMatch(/(so|o)\.store_id\s+IN\s*\(/)
+      expectRecursiveDescendantScope(s)
+    }
+
     const saleServiceSqls = sqlList.filter(
       (s) =>
         (/(FROM|JOIN)\s+sale_orders/.test(s) || /(FROM|JOIN)\s+service_orders/.test(s)) &&
-        !/SELECT store_name FROM stores\b/.test(s),
+        !/SELECT store_name FROM stores\b/.test(s) &&
+        !isNewMemberSpendSql(s),
     )
     expect(saleServiceSqls.length).toBeGreaterThan(0)
     for (const s of saleServiceSqls) {
@@ -657,11 +680,21 @@ describe('mgmtTraffic.summary scope 三档 SQL 拼接', () => {
 
     const sqlList = pg.query.mock.calls.map((c) => c[0])
 
+    const newMemberSpendSqls = sqlList.filter(isNewMemberSpendSql)
+    expect(newMemberSpendSqls, '新会员消费查询应恰好 1 条（#439 例外的定位前提）').toHaveLength(1)
+    for (const s of newMemberSpendSqls) {
+      expect(withoutActive(s)).toMatch(/c\.bound_store_id\s*=\s*\$\d/)
+      expect(withoutActive(s)).not.toMatch(/(so|o)\.store_id\s*=\s*\$\d/)
+    }
+
     const saleServiceSqls = sqlList.filter(
       (s) =>
         (/(FROM|JOIN)\s+sale_orders/.test(s) || /(FROM|JOIN)\s+service_orders/.test(s)) &&
-        !/SELECT store_name FROM stores\b/.test(s),
+        !/SELECT store_name FROM stores\b/.test(s) &&
+        !isNewMemberSpendSql(s),
     )
+    // fail-closed：filter 将来被放宽/收窄而把这组排空时，for 会一次都不跑 ⇒ 整组守护静默通过
+    expect(saleServiceSqls.length, 'sale/service 类查询不应为空').toBeGreaterThan(0)
     for (const s of saleServiceSqls) {
       expect(s).toMatch(/(so|o)\.store_id\s*=\s*\$\d/)
       expect(withoutActive(s)).not.toMatch(/store_id\s+IN\s*\(/)
@@ -674,8 +707,9 @@ describe('mgmtTraffic.summary scope 三档 SQL 拼接', () => {
         !/FROM\s+(sale_orders|service_orders)/.test(s) &&
         !/JOIN\s+(sale_orders|service_orders)/.test(s),
     )
+    expect(pureClientSqls.length, '纯 client 类查询不应为空').toBeGreaterThan(0)
     for (const s of pureClientSqls) {
-      expect(s).toMatch(/c\.bound_store_id\s*=\s*\$\d/)
+      expect(withoutActive(s)).toMatch(/c\.bound_store_id\s*=\s*\$\d/)
     }
   })
 })

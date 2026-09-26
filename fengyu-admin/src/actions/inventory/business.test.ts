@@ -104,7 +104,7 @@ describe('整单收货入口的权限闸门（#192）', () => {
   })
 
   it('两个整单入口的权限与各自「带明细」的老入口逐字一致', async () => {
-    // 规格要求：一键收货不得比部分收货更宽松。两两对照，任一侧被改都会红。
+    // 规格要求：一键收货不得比「去收货」（带明细入口，#358 起同样整单）更宽松。两两对照，任一侧被改都会红。
     mockBusiness.receiveItemCompanyShipment.mockResolvedValue({ id: 'MRK-1', shipmentId: 'GFH-1' })
     await receiveItemCompanyShipment({ shipmentId: 'GFH-1', items: [] })
     const marketPartial = vi.mocked(requirePermission).mock.calls.map(([, action]) => action)
