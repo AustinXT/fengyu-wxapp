@@ -1300,7 +1300,7 @@ function buildInboxActionConfig(
       label: '收货备注',
       placeholder: '选填，将记录在入库单上',
       remarkRequired: false,
-      consequence: '将按各明细的待收数量整单收货并生成入库单。收货数量须与发货一致，实物短少请先不要收货，联系发货方撤回后重新发货。',
+      consequence: '将按各明细的待收数量整单收货并生成入库单。收货数量须与发货一致，实物短少请先不要收货，联系发货方处理。',
       confirmText: '确认整单收货',
       // 收货产出一张新入库单，单号是用户下一步要找的东西，别丢
       successMessage: (result) => {
@@ -3510,7 +3510,7 @@ function ShipmentReceiptForm({
           </table>
         </div>
       )}
-      {lines.length > 0 && <p className="text-xs text-[#666666]">收货数量须与发货一致，按待收数量整单确认；实物短少请先不要收货，联系发货方撤回后重新发货。</p>}
+      {lines.length > 0 && <p className="text-xs text-[#666666]">收货数量须与发货一致，按待收数量整单确认；实物短少请先不要收货，联系发货方处理。</p>}
       <RemarkField value={remark} onChange={setRemark} />
       <div className="flex justify-end"><Button type="submit" loading={saving} disabled={!doc || lines.length === 0}>确认整单收货</Button></div>
     </form>

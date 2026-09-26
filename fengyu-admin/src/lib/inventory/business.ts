@@ -3745,7 +3745,7 @@ async function completeShipmentIfFullyReceived(tx: Tx, shipmentId: string): Prom
   }
 }
 
-const RECEIVE_WHOLE_DOC_MESSAGE = '收货须按待收数量整单确认，不能少收或漏收；实物短少请联系发货方撤回后重新发货'
+const RECEIVE_WHOLE_DOC_MESSAGE = '收货须按待收数量整单确认，不能少收或漏收；实物短少请先不要收货，联系发货方处理'
 
 async function receivePhysicalShipment(
   session: AuthSession,
