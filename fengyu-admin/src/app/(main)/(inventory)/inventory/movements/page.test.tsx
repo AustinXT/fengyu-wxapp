@@ -76,6 +76,13 @@ describe('进出明细页 SSR（#360）', () => {
     expect(props.errorMessage).toBe('查询参数重复，请重新输入条件查询')
   })
 
+  it('本页不消费的参数重复（跟踪参数等）不挡查询', async () => {
+    mockList.mockResolvedValue(EMPTY)
+    const props = await renderPage({ location: 'M1', batch: 'B-1', utm: ['a', 'b'] })
+    expect(mockList).toHaveBeenCalledTimes(1)
+    expect(props.errorMessage).toBeNull()
+  })
+
   it('INVALID_PARAMS 转成页面提示；其余错误照常抛出', async () => {
     mockList.mockRejectedValueOnce(new ApiError('INVALID_PARAMS', '开始日期不是有效的日历日期'))
     const props = await renderPage({ location: 'M1', batch: 'B-1', start: '2026-02-31' })
@@ -88,6 +95,8 @@ describe('进出明细页 SSR（#360）', () => {
   it('组件 key 随 sku|batch 变化（软导航后输入框与表格同步）', async () => {
     const first = await Page({ searchParams: Promise.resolve({ location: 'M1', sku: 'A' }) })
     const second = await Page({ searchParams: Promise.resolve({ location: 'M1', batch: 'A' }) })
+    // Next 的 page 文件不允许导出任意函数，key 规则没法抽成纯函数单测，只能从元素树取：
+    // 结构是 <div><Suspense><InventoryMovementsPage key=…/></Suspense></div>，页面再包一层元素时这里要跟着改
     const keyOf = (element: unknown) => {
       const suspense = element as { props: { children: { props: { children: { key: string } } } } }
       return suspense.props.children.props.children.key

@@ -11,6 +11,8 @@ import InventoryMovementsPage from '../_components/inventory-movements-page'
 
 export const dynamic = 'force-dynamic'
 
+const QUERY_KEYS = ['location', 'sku', 'batch', 'start', 'end', 'after', 'before', 'size'] as const
+
 const EMPTY_PAGE: InventoryMovementPage = { rows: [], total: 0, hasPrev: false, hasNext: false }
 
 export default async function Page({
@@ -19,8 +21,9 @@ export default async function Page({
   searchParams: Promise<Record<string, string | string[] | undefined>>
 }) {
   const raw = await searchParams
-  // 同名参数重复（?sku=A&sku=B）时 Next 给数组：不猜取哪个，按非法条件提示
-  const duplicated = Object.values(raw).some(Array.isArray)
+  // 同名参数重复（?sku=A&sku=B）时 Next 给数组：不猜取哪个，按非法条件提示。
+  // 只看本页消费的键 —— 跟踪参数 / returnTo 之类重复不该挡住查询
+  const duplicated = QUERY_KEYS.some((key) => Array.isArray(raw[key]))
   const params: Record<string, string | undefined> = Object.fromEntries(
     Object.entries(raw).map(([key, value]) => [key, Array.isArray(value) ? undefined : value]),
   )

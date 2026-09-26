@@ -1587,11 +1587,12 @@ async function inventoryLocationFilterOptions(
   })
   const options = buildInventoryLocationFilterOptions(rows.map(toRow), scoped)
   if (!includeInactive) return options
-  // 含停用主体时，默认主体仍取在营的（按名称排序可能先排到停用主体）；全都停用才退回任一可选主体
-  const activeDefault = buildInventoryLocationFilterOptions(
-    rows.filter((row) => row.isActive).map(toRow),
-    scoped,
-  ).defaultLocationId
+  // 含停用主体时，默认主体仍取在营的（按名称排序可能先排到停用主体）；全都停用才退回任一可选主体。
+  // 行集保持完整、只把「可选」收窄到在营主体：停用市场下仍有在营门店时，门店要靠这行市场做分组，
+  // 把停用行删掉会让门店掉出选项、默认退回停用市场（codex round-2 P2）
+  const activeIds = new Set(rows.filter((row) => row.isActive).map((row) => row.locationId))
+  const activeScoped = (scoped ?? rows.map((row) => row.locationId)).filter((id) => activeIds.has(id))
+  const activeDefault = buildInventoryLocationFilterOptions(rows.map(toRow), activeScoped).defaultLocationId
   return { ...options, defaultLocationId: activeDefault ?? options.defaultLocationId }
 }
 

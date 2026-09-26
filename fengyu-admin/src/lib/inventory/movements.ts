@@ -255,7 +255,8 @@ export async function listInventoryMovementsForSession(
   const pageRows = probed ? fetched.slice(0, pageSize) : fetched
   if (bound && 'before' in bound) {
     // 倒序取回：多出的探测行在更早一侧 → 还有上一页。界面生成的 before 是下一页首行 id，
-    // 游标之后必有行；手改 URL 取到空页时不再给「下一页」
+    // 游标之后必有行；手改 URL 取到空页时不再给「下一页」。手改成超过最大 id 的游标时会取到最后一页、
+    // 仍给「下一页」，点进去是一个空页（hasPrev/hasNext 都为假，只能重置）—— 只影响手改 URL，不额外查库探测
     pageRows.reverse()
     return { rows: pageRows, total, hasPrev: probed, hasNext: pageRows.length > 0 }
   }

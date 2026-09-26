@@ -1873,6 +1873,42 @@ describe('进出明细主体选项（#360）：保留 scope 内停用主体查�
     expect(where).toHaveBeenCalledWith(undefined)
   })
 
+  it('停用市场下仍有在营门店：默认主体落到在营门店，而不是退回停用市场', async () => {
+    mockGetSession.mockResolvedValue({
+      ...MARKET_SESSION,
+      roles: [{ ...MARKET_SESSION.roles[0], scopeId: 'M0', scopeStoreIds: ['S5'], scopeOrgNodeIds: ['M0', 'N-S5'] }],
+    })
+    mockDb.select.mockReturnValue({
+      from: () => ({
+        where: () => ({
+          orderBy: async () => [
+            { locationId: 'M0', locationType: '市场', name: '九江市场', orgNodeId: 'M0', storeId: null, parentLocationId: 'HQ', isActive: false },
+            { locationId: 'S5', locationType: '门店', name: '浔阳店', orgNodeId: 'N-S5', storeId: 'S5', parentLocationId: 'M0', isActive: true },
+          ],
+        }),
+      }),
+    })
+    const options = await listInventoryMovementLocationFilterOptions()
+    expect(options.markets).toEqual([{
+      locationId: 'M0', name: '九江市场（已停用）', canSelectInventory: true, stores: [{ locationId: 'S5', name: '浔阳店' }],
+    }])
+    expect(options.defaultLocationId).toBe('S5')
+  })
+
+  it('全部主体都停用时，默认退回任一可选主体（不为空）', async () => {
+    mockGetSession.mockResolvedValue(MARKET_SESSION)
+    mockDb.select.mockReturnValue({
+      from: () => ({
+        where: () => ({
+          orderBy: async () => [
+            { locationId: 'M1', locationType: '市场', name: '南昌市场', orgNodeId: 'M1', storeId: null, parentLocationId: 'HQ', isActive: false },
+          ],
+        }),
+      }),
+    })
+    expect((await listInventoryMovementLocationFilterOptions()).defaultLocationId).toBe('M1')
+  })
+
   it('库存查询页的选项仍只取在营主体', async () => {
     mockGetSession.mockResolvedValue(MARKET_SESSION)
     const where = vi.fn()

@@ -408,6 +408,45 @@ describe('dist/export-worker.mjs 新鲜度 · 进出明细导出接线（#360）
       'resolveExportKeysetPage(fetched, limit, (row) => row.id)',
     ]],
   ]
+  /**
+   * bun 对 JS 行的改写是固定几类：import 别名前缀、局部变量加数字后缀、去类型标注、单双引号、行尾 `;` `,`、
+   * 把 `if (…) x` 拆成两行。归一掉这些再比对，就能把「单行 sql`` 条件」与「WHERE ${…} 接线」也纳入闭集
+   * （codex round-2 P2：源码改成 `WHERE TRUE` 而不重建时，只比多行模板正文的探针会照绿）。
+   */
+  const normalizeJs = (line: string) => line.trim()
+    .replace(/import_drizzle_orm\d+\./g, '')
+    .replace(/\b(conditions)\d+\b/g, '$1')
+    .replace(/: SQL\[\]/g, '')
+    .replace(/^if \([^)]*\) (?=conditions\.push)/, '')
+    .replace(/'/g, '"')
+    .replace(/[;,]$/, '')
+  const sqlWiring = (lines: string[]) => lines
+    .map(normalizeJs)
+    .filter((line) => line.includes('sql`') || line.startsWith('WHERE ${') || line.startsWith('return sql'))
+    .sort()
+
+  it('movements.ts 的 sql`` 条件与 WHERE 接线逐行等于源码（归一 bun 改写后）', () => {
+    const file = 'src/lib/inventory/movements.ts'
+    const src = sqlWiring(fs.readFileSync(path.join(ADMIN_ROOT, file), 'utf-8').split('\n'))
+    const dist = sqlWiring(moduleSegments(fs.readFileSync(DIST, 'utf-8'), file))
+    // fail-closed：主体 / 商品编号 / 批号 / 两条日界 / 两条游标 / 排序方向 / 两个 WHERE / 三个 return
+    expect(src.length, `源码里提取到的 sql 接线行数异常，归一规则可能失配`).toBeGreaterThanOrEqual(13)
+    expect(dist, `产物 // ${file} 区段的 sql 接线与源码不一致${REBUILD_HINT}`).toEqual(src)
+  })
+
+  it('registry.ts 的 inventoryMovementColumns 有序列定义逐行等于源码（归一 bun 改写后）', () => {
+    const block = (lines: string[]) => {
+      const start = lines.findIndex((line) => /(const|var) inventoryMovementColumns = mapColumns\(\[/.test(line))
+      const end = lines.findIndex((line, index) => index > start && /^\]\)/.test(line.trim()))
+      return start < 0 || end < 0 ? [] : lines.slice(start + 1, end).map(normalizeJs).filter(Boolean)
+    }
+    const file = 'src/export-worker/registry.ts'
+    const src = block(fs.readFileSync(path.join(ADMIN_ROOT, file), 'utf-8').split('\n'))
+    const dist = block(moduleSegments(fs.readFileSync(DIST, 'utf-8'), file))
+    expect(src.length, '源码里没找到 inventoryMovementColumns 的列定义').toBeGreaterThanOrEqual(15)
+    expect(dist, `产物里进出明细导出列与源码不一致（增删 / 换序 / 错接）${REBUILD_HINT}`).toEqual(src)
+  })
+
   it.each(SEGMENT_FRAGMENTS)('%s 的 #360 片段在产物模块区段内', (file, fragments) => {
     const segment = moduleSegments(fs.readFileSync(DIST, 'utf-8'), file).join('\n')
     expect(segment.length, `产物里找不到 // ${file} 模块区段${REBUILD_HINT}`).toBeGreaterThan(0)

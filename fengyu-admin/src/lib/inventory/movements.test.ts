@@ -340,6 +340,16 @@ describe('进出明细 keyset 翻页（#360）', () => {
     expect(collected).toEqual(IDS)
   })
 
+  it('手改 URL 的 before 游标：小于首行取到空页时两个方向都不给；超过末行取到最后一页', async () => {
+    mockGetSession.mockResolvedValue(STORE_SESSION)
+    useKeysetFakeDb(IDS)
+    const empty = await listInventoryMovements({ locationId: 'S1', batchNo: 'B-1', pageSize: 20, before: '1' })
+    expect(empty).toMatchObject({ rows: [], hasPrev: false, hasNext: false })
+    const tail = await listInventoryMovements({ locationId: 'S1', batchNo: 'B-1', pageSize: 20, before: '999999' })
+    expect(tail.rows.map((r) => r.id)).toEqual(IDS.slice(-20))
+    expect(tail.hasPrev).toBe(true)
+  })
+
   it('页长不在白名单时回落 20', async () => {
     mockGetSession.mockResolvedValue(STORE_SESSION)
     useKeysetFakeDb(IDS)

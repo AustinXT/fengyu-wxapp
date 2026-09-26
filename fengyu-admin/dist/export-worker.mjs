@@ -177104,7 +177104,9 @@ async function inventoryLocationFilterOptions(session4, { includeInactive = fals
   const options = buildInventoryLocationFilterOptions(rows.map(toRow), scoped);
   if (!includeInactive)
     return options;
-  const activeDefault = buildInventoryLocationFilterOptions(rows.filter((row) => row.isActive).map(toRow), scoped).defaultLocationId;
+  const activeIds = new Set(rows.filter((row) => row.isActive).map((row) => row.locationId));
+  const activeScoped = (scoped ?? rows.map((row) => row.locationId)).filter((id) => activeIds.has(id));
+  const activeDefault = buildInventoryLocationFilterOptions(rows.map(toRow), activeScoped).defaultLocationId;
   return { ...options, defaultLocationId: activeDefault ?? options.defaultLocationId };
 }
 async function inventoryDocLocationFilterOptions(session4) {
