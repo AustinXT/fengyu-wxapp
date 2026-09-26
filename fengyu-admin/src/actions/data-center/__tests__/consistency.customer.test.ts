@@ -2668,10 +2668,23 @@ describe('#289 新客客单价 WorkFine 分支（两端逐字一致 + legacy 片
             // `import(\`./reports/${x}\`)` 这类与 helper 无关的正常代码，超出合同）。
             // 刻意把 helper 名拆散到插值两侧的写法属对抗式绕过，按合同不在射程
             const pieces: string[] = []
+            // 只收集**会贡献说明符值**的节点（codex r21 P2：条件表达式的 condition、函数实参等不参与最终路径，
+            // 扫进来会让 `import(kind === 'legacy-spend' ? './a' : './b')` 误红）
             const collect = (m: ts.Node): void => {
               if (ts.isStringLiteral(m) || ts.isNoSubstitutionTemplateLiteral(m)) pieces.push(m.text)
-              else if (ts.isTemplateExpression(m)) pieces.push(m.head.text, ...m.templateSpans.map((sp) => sp.literal.text))
-              ts.forEachChild(m, collect)
+              else if (ts.isTemplateExpression(m)) {
+                pieces.push(m.head.text, ...m.templateSpans.map((sp) => sp.literal.text))
+                for (const sp of m.templateSpans) collect(sp.expression)
+              } else if (ts.isConditionalExpression(m)) {
+                collect(m.whenTrue)
+                collect(m.whenFalse)
+              } else if (ts.isBinaryExpression(m) && [ts.SyntaxKind.PlusToken, ts.SyntaxKind.BarBarToken, ts.SyntaxKind.QuestionQuestionToken].includes(m.operatorToken.kind)) {
+                collect(m.left)
+                collect(m.right)
+              } else if (ts.isParenthesizedExpression(m) || ts.isAsExpression(m) || ts.isTypeAssertionExpression(m) || ts.isNonNullExpression(m) || ts.isSatisfiesExpression(m)) {
+                collect(m.expression)
+              }
+              // 其它（标识符、调用、属性访问等）的运行时值未知，不深入
             }
             collect(specNode)
             if (pieces.some((t) => /legacy-spend/i.test(t))) out.opaque.push(`${rel}:${specNode.getText(sf)}`)
@@ -2933,6 +2946,10 @@ describe('#289 新客客单价 WorkFine 分支（两端逐字一致 + legacy 片
     }
     // 反向：与 helper 无关的正常动态加载不误伤（codex r20 P2）
     expect(helperConsumers(withExtra(eff, "\nexport const __r = (x: string) => import(`./reports/${x}`)\n"), adminSrc)).toEqual(CONSUMER_OK)
+    expect(
+      helperConsumers(withExtra(eff, "\nexport const __r = (kind: string) => import(kind === 'legacy-spend' ? './reports/a' : './reports/b')\n"), adminSrc),
+      '条件部分里出现 helper 名不应误伤（codex r21 P2）',
+    ).toEqual(CONSUMER_OK)
   }, 30_000)
 
   it('文件发现：生产源码扩展名闭集与解析方式', () => {
