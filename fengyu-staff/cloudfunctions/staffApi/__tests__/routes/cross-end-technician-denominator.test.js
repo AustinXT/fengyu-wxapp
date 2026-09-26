@@ -438,6 +438,10 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
    *   ② 该判定与 admin `getScopeTopLevel` / `validateScope` 同一写法（「谁能选集团」与「集团里看谁」不分叉）
    *   ③ 两端「总部」原语的函数体：admin `isAdminScope`（原 6b 注释登记为「守不住的一跳」，这里补上）、
    *      staff `hasHeadquartersScope` 与 `validateManagementScope` 的 `all` 分支
+   *
+   * ⚠️ 等价的前提（既有差异，非本单引入，已登记）：admin 的 `session.roles` 已被 withPermission 按动作收窄，
+   * staff 判总部用账号**全部**绑定。「总部角色无 data_center:dashboard、另一角色有」的混合账号两端会分叉
+   * （staff 按总部、admin 按门店 / 市场级）。2026-09-26 生产只读核查此类账号 0 个。
    */
   it('要件 6b：汇总范围两端等价 —— 超管或持总部范围 → TRUE（#334）', () => {
     const PREDICATE = "isAdminScope(session) || session.roles.some((r) => r.scopeType === '总部')"
@@ -445,7 +449,10 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
     // ① admin 汇总分支整段等值（剥注释：注释里复述这行代码不能冒充实现）
     const adminCode = squeeze(stripComments(readFile(FILES.adminScopeSql), FILES.adminScopeSql))
     const fn = extractSection(adminCode, 'export function orgAnchorScopeSql(', 'function isGrantedMarketScope(')
-    const tail = fn.slice(fn.indexOf('return activeAnchorAmongSql(ids, col) }') + 'return activeAnchorAmongSql(ids, col) }'.length).trim()
+    const STORES_END = 'return activeAnchorAmongSql(ids, col) }'
+    const at = fn.indexOf(STORES_END)
+    expect(at, '多店分支收尾锚点丢失（形态已变，先读本条注释）').toBeGreaterThan(-1)
+    const tail = fn.slice(at + STORES_END.length).trim()
     expect(tail, 'admin 汇总分支形态漂移').toBe(
       `if (${PREDICATE}) return sql\`TRUE\` return visibleActiveAnchorSql(session, col) }`,
     )

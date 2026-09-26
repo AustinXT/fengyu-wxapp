@@ -108,7 +108,8 @@ export function orgAnchorScopeSql(
 
   // all / authorized：超管或持总部范围 → 全开（#334）；其他角色按锚定市场下的可见门店判定。
   // 判定与 getScopeTopLevel / validateScope（context.ts）逐字相同、与 staff `all` 恒真对齐：总部账号本就看全集团，
-  // 锚定市场下有没有在营门店与它无关（品项公司即此例）。session 已被 withPermission 收窄到授予本动作的角色。
+  // 锚定市场下有没有在营门店与它无关（品项公司即此例）。session 已被 withPermission 收窄到授予本动作的角色
+  // （缺角色元数据的旧快照不收窄——那时 validateScope / scopeFilterSql 同样按总部放行，口径一致）。
   if (isAdminScope(session) || session.roles.some((r) => r.scopeType === '总部')) return sql`TRUE`
   return visibleActiveAnchorSql(session, col)
 }
@@ -123,7 +124,7 @@ function isGrantedMarketScope(session: AuthSession, marketId: string): boolean {
 }
 
 /**
- * 锚定市场下存在本账号可见的**在营**门店（非超管 all / authorized 与祖先市场共用）。
+ * 锚定市场下存在本账号可见的**在营**门店（市场 / 门店级账号的 all / authorized 与祖先市场共用）。
  * 无授权门店时恒 FALSE。
  */
 function visibleActiveAnchorSql(session: AuthSession, col: SQL): SQL {

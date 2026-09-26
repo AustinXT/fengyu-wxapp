@@ -197,6 +197,7 @@
 > - 「全部」口径两端等价（#334 起）：staff `all` 恒真（能选 `all` 的只有持总部范围的账号）；admin 的 `all` / `authorized`
 >   对超管**或持总部范围**的账号恒真（与 `validateScope` / `getScopeTopLevel` 同一判定），其他账号走「锚定市场下存在可见在营门店」的 EXISTS。
 >   #334 之前 admin 只对超管恒真，5 个总部非超管账号看集团分母 165（staff 166）、员工榜少品项公司 20 人
+>   ⚠️ 前提：admin 判总部用按动作收窄后的角色，staff 用账号全部绑定；「总部角色无数据中心权限、另一角色有」的混合账号两端会分叉（既有差异，2026-09-26 生产 0 个）
 > - 跨端一致性由 `fengyu-staff/cloudfunctions/staffApi/__tests__/routes/cross-end-technician-denominator.test.js`
 >   的字面量断言守护（抽取自检 + 要件 1~9 含 6b + 单源反向守护，共 13 个 `it`）；
 >   两端是独立副本，改一端必同步另一端
