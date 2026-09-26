@@ -6,7 +6,7 @@
  *   2. 到店客流（区间维度）
  *   3. 会员状态与客活（截面 + 区间 + 本月激活）
  *   4. 会员被经营（6 桶 + 客单价）
- *   5. 新会员经营（数量 / 消费 / trialFootfall）
+ *   5. 新会员经营（数量 / 消费 / trialFootfall）；消费 = 款项流水 + WorkFine 历史单（#289）
  *
  * 口径权威源：notes/references/metrics.md「客量数据子页」章节
  */
@@ -521,6 +521,42 @@ async function queryNewMemberSpend(scopeType, scopeId, period) {
 }
 
 /**
+ * 新会员对应消费 · WorkFine 历史单分支（#289）。与 queryNewMemberSpend 相加 = 新会员消费。
+ *
+ * WorkFine 单在款项流水里没有行，不补这条时「本年」这类跨 2026-07-03 割点的区间低报约 4 成；
+ * 截至 2026-09-26 prod 数据，WorkFine 单归属日期最晚到 2026-08-01，区间起点 ≥ 2026-08-02 时本分支为 0
+ * （数据现状不是约束：历史单拉取不限日期，再拉入更晚的单会随之计入）。
+ * 金额 / 过滤口径照搬本端顾客详情页 legacy_year_stats（mgmt-customer.js / customer.js），
+ * 人群条件与 scope 列（o.store_id）同 queryNewMemberSpend。与线上单时间重叠不去重（2026-09-26 拍板）。
+ *
+ * ⚠️ admin 同口径副本：fengyu-admin customer.ts::queryNewMemberLegacySpend + lib/data-center/workfine-legacy-spend.ts，
+ * 两端逐字一致、legacy 片段四份副本整段等值，由 fengyu-admin consistency.customer.test.ts 守护。
+ */
+async function queryNewMemberLegacySpend(scopeType, scopeId, period) {
+  const sc = buildSaleScope(scopeType, scopeId, 'o', 1)
+  const rows = await pg.query(
+    `SELECT COALESCE(SUM(
+      CASE
+        WHEN EXISTS (SELECT 1 FROM sale_items si WHERE si.sale_order_id = o.sale_order_id)
+        THEN (SELECT SUM(si2.received::numeric) FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
+        ELSE o.received::numeric
+      END
+    ), 0) AS v
+       FROM sale_orders o
+       JOIN client_wechat_users c ON c.user_id = o.client_user_id
+      WHERE ${sc.sql}
+        AND c.became_member_at IS NOT NULL
+        AND c.became_member_at::date BETWEEN ${startDateExpr(period)} AND ${endDateExpr(period)}
+        AND o.status IN ('已支付', '部分支付', '已完成')
+        AND o.sale_order_type IN ('销售单', '转换单')
+        AND o.legacy_source = 'workfine'
+        AND o.performance_attribution_date BETWEEN ${startDateExpr(period)} AND ${endDateExpr(period)}`,
+    sc.params,
+  )
+  return Number(rows[0]?.v || 0)
+}
+
+/**
  * 成交率分母 = 期初未达会员的到店活跃池 ∪ 本期全部新增会员
  * （D-conv-denom=1c，#284 于 2026-09-22 拍板；推翻原 D-2=B）
  *
@@ -602,6 +638,7 @@ async function summary(ctx) {
     memberOps,
     newMemberCount,
     newMemberSpend,
+    newMemberLegacySpend,
     trialFootfall,
     scopeName,
   ] = await Promise.all([
@@ -616,6 +653,7 @@ async function summary(ctx) {
     queryMemberOps(scopeType, scopeId, period),
     queryNewMemberCount(scopeType, scopeId, period),
     queryNewMemberSpend(scopeType, scopeId, period),
+    queryNewMemberLegacySpend(scopeType, scopeId, period),
     queryTrialFootfall(scopeType, scopeId, period),
     resolveScopeName(scopeType, scopeId),
   ])
@@ -643,7 +681,8 @@ async function summary(ctx) {
     memberOps,
     newMembers: {
       count: newMemberCount,
-      spend: Math.round(Number(newMemberSpend) * 100) / 100,
+      // 款项流水 + WorkFine 历史单（#289）；前端「新会员客单价」= spend ÷ count
+      spend: Math.round((Number(newMemberSpend) + Number(newMemberLegacySpend)) * 100) / 100,
       trialFootfall,
     },
     computedAt: new Date().toISOString(),

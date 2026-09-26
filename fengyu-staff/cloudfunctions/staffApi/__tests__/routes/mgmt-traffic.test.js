@@ -593,7 +593,34 @@ describe('mgmtTraffic.summary 新会员经营 + trialFootfall', () => {
     const ctx = makeHqCtx({ period: 'month', scopeType: 'all' })
     await summary(ctx)
 
-    expect(ctx.result.newMembers).toEqual({ count: 7, spend: 7, trialFootfall: 7 })
+    // spend = 款项流水分支 7 + WorkFine 历史单分支 7（#289，默认 mock 标量一律 7）
+    expect(ctx.result.newMembers).toEqual({ count: 7, spend: 14, trialFootfall: 7 })
+  })
+
+  /**
+   * #289：新会员消费 = 款项流水 + WorkFine 历史单（订单级实收），分母（count）不变。
+   * 两条分支取不同金额，任一条没参与相加 / 被当成 count 都会算错；先断言各自恰好命中一次防空跑。
+   */
+  test('#289 newMembers.spend = 款项流水分支 + WorkFine 历史单分支（两分位），count 不受影响', async () => {
+    setupDefaultMocks()
+    const base = pg.query.getMockImplementation()
+    const hits = { spe: 0, legacy: 0 }
+    pg.query.mockImplementation(async (sql, params) => {
+      if (/FROM sale_order_performance_events spe/.test(sql) && /became_member_at::date BETWEEN/.test(sql)) {
+        hits.spe++
+        return [{ v: '3000.105' }]
+      }
+      if (/o\.legacy_source = 'workfine'/.test(sql) && /FROM sale_orders o/.test(sql)) {
+        hits.legacy++
+        return [{ v: '2249.9' }]
+      }
+      return base(sql, params)
+    })
+    const ctx = makeHqCtx({ period: 'year', scopeType: 'all' })
+    await summary(ctx)
+
+    expect(hits).toEqual({ spe: 1, legacy: 1 })
+    expect(ctx.result.newMembers).toEqual({ count: 7, spend: 5250.01, trialFootfall: 7 })
   })
 })
 

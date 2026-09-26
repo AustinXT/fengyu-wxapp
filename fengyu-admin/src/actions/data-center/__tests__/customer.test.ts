@@ -298,6 +298,60 @@ describe('getCustomerBoard 装配', () => {
   })
 
   /**
+   * #289：新客客单价 =（款项流水分支 + WorkFine 历史单分支）÷ 会员新增。
+   * 三条 KPI 查询按 SQL 指纹路由，金额取不同值，谁没参与相加 / 谁被当分母都会算错。
+   * 路由先断言每条都恰好命中过（防正则失配空跑恒绿）。
+   */
+  it('#289 新客客单价 KPI = (款项流水 + WorkFine 历史单) ÷ 会员新增，分母不变', async () => {
+    const hits = { spe: 0, legacy: 0, count: 0 }
+    responder.route = (t) => {
+      if (/became_member_at::date BETWEEN/.test(t) && /FROM sale_order_performance_events spe/.test(t) && !/WITH skel/.test(t)) {
+        hits.spe++
+        return [{ v: 3000.1 }]
+      }
+      if (/o\.legacy_source = 'workfine'/.test(t) && /FROM sale_orders o/.test(t) && !/WITH skel/.test(t)) {
+        hits.legacy++
+        return [{ v: 2249.9 }]
+      }
+      if (/^\s*SELECT COUNT\(\*\) AS v\s+FROM client_wechat_users c\s+WHERE/.test(t) && /became_member_at::date BETWEEN/.test(t)) {
+        hits.count++
+        return [{ v: 3 }]
+      }
+      return undefined
+    }
+    const res = await getCustomerBoard(PARAMS)
+    // 会员新增 KPI 与客单价 KPI 各查一次分母
+    expect(hits).toEqual({ spe: 1, legacy: 1, count: 2 })
+    expect(res.kpis.newMembers.value).toBe(3)
+    // (3000.1 + 2249.9) / 3 = 1750
+    expect(res.kpis.newCustomerAvgTicket.value).toBe(1750)
+  })
+
+  it('#289 WorkFine 分支为 0（区间起点 ≥ 2026-08-02）时结果与只读款项流水一致', async () => {
+    const hits = { spe: 0, legacy: 0, count: 0 }
+    responder.route = (t) => {
+      if (/FROM sale_order_performance_events spe/.test(t) && /became_member_at::date BETWEEN/.test(t) && !/WITH skel/.test(t)) {
+        hits.spe++
+        return [{ v: 2681683.5 }]
+      }
+      if (/o\.legacy_source = 'workfine'/.test(t) && !/WITH skel/.test(t)) {
+        hits.legacy++
+        return [{ v: 0 }]
+      }
+      if (/^\s*SELECT COUNT\(\*\) AS v\s+FROM client_wechat_users c/.test(t) && /became_member_at::date BETWEEN/.test(t)) {
+        hits.count++
+        return [{ v: 325 }]
+      }
+      return undefined
+    }
+    const res = await getCustomerBoard(PARAMS)
+    // 三条都真的被路由到（防正则失配后落到默认 v:0 恒绿）
+    expect(hits).toEqual({ spe: 1, legacy: 1, count: 2 })
+    // prod 2026-08-02 ~ 09-25 实测：325 人，8,251.33 → 8,251.33
+    expect(res.kpis.newCustomerAvgTicket.value).toBe(8251.33)
+  })
+
+  /**
    * #414：客活分子（KPI 2 条 + 明细 2 条）必须都带会员守卫。
    *
    * 这里用**闭集**写法——「凡是含到店天数指纹 `COUNT(DISTINCT vd.visit_date)` 的查询，
