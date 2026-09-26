@@ -496,7 +496,7 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
   /**
    * 已知安全的泛型（白名单，fail-closed：不在表里的泛型一律按规则判）：React 的 state 容器只经受检的初始值与 setter 写入 T，
    * `useState<TimeRangeInput>({ preset: 'month' })` 读出的 TR 不可能凭空带 brand。新增条目须说明「T 的值只能从受检入口进入」。
-   * 边界：`useRef<CalendarDate>()` 无参重载读出的是 `CalendarDate | undefined`、值恒为 undefined（没有值进入，靠收窄兜底）——
+   * 边界：`useState<CalendarDate>()` 无参重载读出的是 `CalendarDate | undefined`、值恒为 undefined（没有值进入，靠收窄兜底）——
    * 这是「零输入但不产出值」，不能据此类推放行真正零输入就返回 T 的 API。
    */
   /*
@@ -511,33 +511,36 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
    * 审过的结论：每个重载的 T 只经受检入参、setter（Dispatch<SetStateAction<S>> / ActionDispatch）、ref.current、Provider value 进入；
    * 零输入的 `useState<S = undefined>()` 读出恒为 undefined。
    */
-  /** react 条目安全性依赖的写入路径类型：setter（Dispatch / SetStateAction / ActionDispatch）、ref、context / provider */
+  /** react 条目安全性依赖的类型：setter（Dispatch / SetStateAction / ActionDispatch）、ref、context 的写入（Provider）与读取（Consumer）链 */
   const REACT_WRITE_PATH_TYPES = [
     'React>Dispatch', 'React>SetStateAction', 'React>ActionDispatch', 'React>AnyActionArg', 'React>RefObject',
     'React>Context', 'React>Provider', 'React>ProviderProps', 'React>ProviderExoticComponent', 'React>ExoticComponent',
+    'React>Consumer', 'React>ConsumerProps', // useContext<T>(ctx) 的可赋值性依赖 Consumer 读取链：children(value: T)
   ]
   const REACT_SIGNATURE_SNAPSHOT: string[] = [
     "@types/react/index.d.ts | React>ActionDispatch | type ActionDispatch<ActionArg extends AnyActionArg> = (...args: ActionArg) => void;",
-    "@types/react/index.d.ts | React>AnyActionArg | type AnyActionArg = [ ] | [ any ];",
-    "@types/react/index.d.ts | React>Context | interface Context<T> extends Provider<T> { Provider: Provider<T>; Consumer: Consumer<T>; displayName?: string | undefined; }",
+    "@types/react/index.d.ts | React>AnyActionArg | type AnyActionArg = [\n] | [\n    any\n];",
+    "@types/react/index.d.ts | React>Consumer | type Consumer<T> = ExoticComponent<ConsumerProps<T>>;",
+    "@types/react/index.d.ts | React>ConsumerProps | interface ConsumerProps<T> {\n    children: (value: T) => ReactNode;\n}",
+    "@types/react/index.d.ts | React>Context | interface Context<T> extends Provider<T> {\n    Provider: Provider<T>;\n    Consumer: Consumer<T>;\n    displayName?: string | undefined;\n}",
     "@types/react/index.d.ts | React>Dispatch | type Dispatch<A> = (value: A) => void;",
-    "@types/react/index.d.ts | React>ExoticComponent | interface ExoticComponent<P = {}> { (props: P): ReactNode; readonly $$typeof: symbol; }",
+    "@types/react/index.d.ts | React>ExoticComponent | interface ExoticComponent<P = {}> {\n    (props: P): ReactNode;\n    readonly $$typeof: symbol;\n}",
     "@types/react/index.d.ts | React>Provider | type Provider<T> = ProviderExoticComponent<ProviderProps<T>>;",
-    "@types/react/index.d.ts | React>ProviderExoticComponent | interface ProviderExoticComponent<P> extends ExoticComponent<P> { }",
-    "@types/react/index.d.ts | React>ProviderProps | interface ProviderProps<T> { value: T; children?: ReactNode | undefined; }",
-    "@types/react/index.d.ts | React>RefObject | interface RefObject<T> { current: T; }",
+    "@types/react/index.d.ts | React>ProviderExoticComponent | interface ProviderExoticComponent<P> extends ExoticComponent<P> {\n}",
+    "@types/react/index.d.ts | React>ProviderProps | interface ProviderProps<T> {\n    value: T;\n    children?: ReactNode | undefined;\n}",
+    "@types/react/index.d.ts | React>RefObject | interface RefObject<T> {\n    current: T;\n}",
     "@types/react/index.d.ts | React>SetStateAction | type SetStateAction<S> = S | ((prevState: S) => S);",
     "@types/react/index.d.ts | React>createContext | function createContext<T>(defaultValue: T): Context<T>;",
     "@types/react/index.d.ts | React>useCallback | function useCallback<T extends Function>(callback: T, deps: DependencyList): T;",
     "@types/react/index.d.ts | React>useContext | function useContext<T>(context: Context<T>): T;",
     "@types/react/index.d.ts | React>useMemo | function useMemo<T>(factory: () => T, deps: DependencyList): T;",
-    "@types/react/index.d.ts | React>useReducer | function useReducer<S, A extends AnyActionArg>(reducer: (prevState: S, ...args: A) => S, initialState: S): [ S, ActionDispatch<A> ];",
-    "@types/react/index.d.ts | React>useReducer | function useReducer<S, I, A extends AnyActionArg>(reducer: (prevState: S, ...args: A) => S, initialArg: I, init: (i: I) => S): [ S, ActionDispatch<A> ];",
+    "@types/react/index.d.ts | React>useReducer | function useReducer<S, A extends AnyActionArg>(reducer: (prevState: S, ...args: A) => S, initialState: S): [\n    S,\n    ActionDispatch<A>\n];",
+    "@types/react/index.d.ts | React>useReducer | function useReducer<S, I, A extends AnyActionArg>(reducer: (prevState: S, ...args: A) => S, initialArg: I, init: (i: I) => S): [\n    S,\n    ActionDispatch<A>\n];",
     "@types/react/index.d.ts | React>useRef | function useRef<T>(initialValue: T | null): RefObject<T | null>;",
     "@types/react/index.d.ts | React>useRef | function useRef<T>(initialValue: T | undefined): RefObject<T | undefined>;",
     "@types/react/index.d.ts | React>useRef | function useRef<T>(initialValue: T): RefObject<T>;",
-    "@types/react/index.d.ts | React>useState | function useState<S = undefined>(): [ S | undefined, Dispatch<SetStateAction<S | undefined>> ];",
-    "@types/react/index.d.ts | React>useState | function useState<S>(initialState: S | (() => S)): [ S, Dispatch<SetStateAction<S>> ];",
+    "@types/react/index.d.ts | React>useState | function useState<S = undefined>(): [\n    S | undefined,\n    Dispatch<SetStateAction<S | undefined>>\n];",
+    "@types/react/index.d.ts | React>useState | function useState<S>(initialState: S | (() => S)): [\n    S,\n    Dispatch<SetStateAction<S>>\n];",
   ]
   const SOUND_GENERICS: Array<{ pkg?: string; file?: string; members: readonly string[] }> = [
     // @types/react 是 `export = React; declare namespace React { function useState… }`，身份带命名空间（有断言锁住已安装声明）
@@ -830,13 +833,12 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
   /**
    * 包内快照：命中登记身份的每个函数声明（含全部重载）+ 写入路径依赖的类型声明（setter / ref / context 的参数类型），
    * 用 printer 重建（去注释、统一格式）——上游只改注释不红，改任何签名或这些依赖类型的结构必红。
+   * 纯语法遍历（declIdentity 不读 checker）。TS 升级若只改了 printer 的输出格式也会红：属预期，核对语义未变后重新生成快照即可。
    */
   const printer = ts.createPrinter({ removeComments: true, newLine: ts.NewLineKind.LineFeed })
   function packageSnapshot(p: ts.Program, pkg: string, members: readonly string[], depTypes: readonly string[]): string[] {
-    const saved = [program, checker] as const
-    program = p
-    checker = p.getTypeChecker()
-    try {
+    p.getTypeChecker() // 触发绑定：新建 Program 的源文件在绑定前没有 parent 指针，declIdentity 要沿 parent 走（不需要切换全局 checker）
+    {
       const pkgFile = (f: ts.SourceFile) => {
         const norm = f.fileName.replace(/\\/g, '/')
         return norm.includes(`/node_modules/${pkg}/`) || norm.includes(`/node_modules/@types/${toTypesName(pkg)}/`)
@@ -850,7 +852,8 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
           if (isFn || isTypeDecl) {
             const id = declIdentity(node as ts.Declaration)
             if (id && (isFn ? members : depTypes).includes(id)) {
-              out.push(`${file} | ${id} | ${printer.printNode(ts.EmitHint.Unspecified, node, sf).replace(/\s+/g, ' ')}`)
+              // 保留 printer 的规范化输出原样（不压缩空白：字符串字面量内部的空白也是结构）
+              out.push(`${file} | ${id} | ${printer.printNode(ts.EmitHint.Unspecified, node, sf)}`)
             }
           }
           ts.forEachChild(node, visit)
@@ -858,8 +861,6 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
         visit(sf)
       }
       return out.sort()
-    } finally {
-      ;[program, checker] = saved
     }
   }
 
@@ -871,25 +872,29 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
     for (const id of [...members, ...REACT_WRITE_PATH_TYPES]) expect(snap.some((line) => line.includes(` | ${id} | `)), id).toBe(true)
   })
 
-  it('自检：包快照只看结构——依赖类型改一处必变，只改注释不变', () => {
+  it('自检：包快照只看结构——依赖类型（写入 / 读取链）改一处必变、字符串内空白必变，只改注释不变', () => {
     const dir = mkdtempSync(join(tmpdir(), 'calendar-date-pkgsnap-'))
-    const variant = (name: string, dispatch: string) => {
+    const CONSUMER = 'interface ConsumerProps<T> { children: (value: T) => unknown }'
+    const variant = (name: string, dispatch: string, consumer = CONSUMER) => {
       const root = join(dir, name)
       mkdirSync(join(root, 'node_modules/react'), { recursive: true })
       writeFileSync(join(root, 'node_modules/react/package.json'), '{"name":"react","types":"index.d.ts"}')
       writeFileSync(join(root, 'node_modules/react/index.d.ts'),
-        `export = React\ndeclare namespace React {\n  ${dispatch}\n  function useState<S>(initial: S): [S, Dispatch<S>]\n}`)
+        `export = React\ndeclare namespace React {\n  ${dispatch}\n  function useState<S>(initial: S): [S, Dispatch<S>]\n  ${consumer}\n}`)
       writeFileSync(join(root, 'use.ts'), `import { useState } from 'react'\nexport const u = useState`)
       const p = ts.createProgram([join(root, 'use.ts')], {
         strict: true, module: ts.ModuleKind.ESNext, moduleResolution: ts.ModuleResolutionKind.Bundler, noEmit: true, skipLibCheck: true,
         types: [], // 不自动带入外层的 @types/react，只看本变体的仿包
       })
-      return packageSnapshot(p, 'react', ['React>useState'], ['React>Dispatch']).map((l) => l.replace(/^[^|]*\|/, ''))
+      return packageSnapshot(p, 'react', ['React>useState'], ['React>Dispatch', 'React>ConsumerProps']).map((l) => l.replace(/^[^|]*\|/, ''))
     }
     try {
       const base = variant('a', 'type Dispatch<A> = (value: A) => void')
-      expect(base).toHaveLength(2)
+      expect(base).toHaveLength(3)
       expect(variant('b', 'type Dispatch<A> = (value: any) => void')).not.toEqual(base) // 只放宽依赖类型
+      expect(variant('d', 'type Dispatch<A> = (value: A) => void', 'interface ConsumerProps<T> { children: (value: any) => unknown }')).not.toEqual(base) // 只放宽读取链
+      expect(variant('e', 'type Dispatch<A> = (value: A) => void', `interface ConsumerProps<T> { children: (value: T) => unknown; tag: 'a  b' }`))
+        .not.toEqual(variant('f', 'type Dispatch<A> = (value: A) => void', `interface ConsumerProps<T> { children: (value: T) => unknown; tag: 'a b' }`)) // 字符串内空白是结构
       // 注释写在声明**内部**（getText 会带上，printer 会去掉）——上游只改注释措辞不应让门禁变红
       expect(variant('c', 'type Dispatch<A> = (/* 只改注释 */ value: A) => void')).toEqual(base)
     } finally {
@@ -1047,13 +1052,17 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
         `export const imh = ih.identity<CD>(s) // @interface-method-same-name`,
         `export const iife = (function identity<T>(raw: unknown): T { return raw as T })<CD>(s) // @named-fn-expr`,
         `export const scoped = scopedMake<CD>() // @scoped-types-pkg`,
-        `const ClsExpr = class { hold<T>(v: T): T { return v } }`,
+        `const ClsExpr = class { hold<T>(v: T): T { return v } make<T>(): T[] { return [] } }`,
+        `export const ceMake = new ClsExpr().make<CD>() // @class-expr-registered-anchor`,
+        `function emptyList<T>(): T[] { return [] }`,
+        `export const el = emptyList<CD>() // @backslash-registered-anchor`,
         `export const ce = ok(s) ? new ClsExpr().hold(s) : null // @class-expr-member`,
         `declare const tlit: { identity<T>(raw: unknown): T }`,
         `export const tlm = tlit.identity<CD>(s) // @type-literal-method`,
         // 类与命名空间合并：命名空间里的安全函数登记为 `Merged>identity`；类静态块里的同名危险函数身份是 `Merged.static{@…}>identity`
         `class Merged { static { const identity = <T,>(): T => null as T; void identity<CD>() } } // @static-block`,
-        `namespace Merged { export function identity<T>(v: T): T { return v } }`,
+        `namespace Merged { export function identity<T>(v: T): T { return v } export function empty<T>(): T[] { return [] } }`,
+        `export const me = Merged.empty<CD>() // @merged-registered-anchor`,
         `export const mns = ok(s) ? Merged.identity(s) : null // @merged-ns-safe`,
         `export const st8 = useState<Alias>({ preset: 'month' }) // @sound-lib`,
         `function smuggle<T>(raw: unknown, witness: T): T { void witness; return raw as T }`,
@@ -1129,9 +1138,9 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
     checker = p.getTypeChecker()
     // 安全泛型须显式登记（白名单语义）；自检用临时条目，结束后移除
     // `Twin.get` 只登记实例方法：同名静态方法 `Twin.static:get` 不得蹭到
-    const fixtureEntry = { file: join(dir, 'bad.ts'), members: ['SafeBox.constructor', 'SafeBox.get', 'SafeTag.constructor', 'SafeTag.tag', 'Twin.get', 'Merged>identity', 'ClsExpr.hold'] }
+    const fixtureEntry = { file: join(dir, 'bad.ts'), members: ['SafeBox.constructor', 'SafeBox.get', 'SafeTag.constructor', 'SafeTag.tag', 'Twin.get', 'Merged>identity', 'Merged>empty', 'ClsExpr.hold', 'ClsExpr.make'] }
     // 按文件登记时路径分隔符两侧都归一：用反斜杠形态登记 `identity` 也必须命中
-    const backslashEntry = { file: join(dir, 'bad.ts').replace(/\//g, '\\'), members: ['identity'] }
+    const backslashEntry = { file: join(dir, 'bad.ts').replace(/\//g, '\\'), members: ['identity', 'emptyList'] }
     // 只有 @types 包的白名单条目（锁住 node_modules/@types/<pkg>/ 分支）
     const typesOnlyEntry = { pkg: 'typed-only', members: ['make'] }
     const scopedEntry = { pkg: '@scope/pkg', members: ['make'] }
@@ -1222,7 +1231,7 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
         lineOf('after-suppress') - 1, lineOf('after-suffix') - 1, lineOf('block-last') - 2, lineOf('block-star') - 2,
       ])
       // 安全泛型传递、字符串 / JSDoc 句中提及、正路都不误报
-      expect(found.filter((e) => ['safe-generic', 'sound-lib', 'safe-tag', 'lib-passthrough', 'types-pkg', 'twin-instance', 'merged-ns-safe', 'scoped-types-pkg', 'class-expr-member', 'string', 'doc-mention', 'good', 'mid-nocheck', 'block-nonlast'].some((m) => e.line === lineOf(m)))).toEqual([])
+      expect(found.filter((e) => ['safe-generic', 'sound-lib', 'safe-tag', 'lib-passthrough', 'types-pkg', 'twin-instance', 'merged-ns-safe', 'scoped-types-pkg', 'class-expr-member', 'class-expr-registered-anchor', 'backslash-registered-anchor', 'merged-registered-anchor', 'string', 'doc-mention', 'good', 'mid-nocheck', 'block-nonlast'].some((m) => e.line === lineOf(m)))).toEqual([])
       // .d.ts 里的值声明
       const inDecl = escapes(p.getSourceFile(join(dir, 'decl.d.ts'))!)
       expect(inDecl.map((e) => e.kind)).toEqual(['无实现检查的声明携带 brand'])
