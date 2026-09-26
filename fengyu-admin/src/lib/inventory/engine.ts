@@ -4245,7 +4245,10 @@ export const confirmInventoryCoreReceive = withAnyPermission(
         // 本路径按发货量整行收（调货只能整单收）；来源已有已收量说明走过别的收货路径，
         // 再按全量收会重复入库 —— fail-closed，与 staffApi confirmReceive 的剩余量口径不冲突（#358）
         if (Number(item.fulfilled_quantity ?? 0) > 0) {
-          throw new ApiError('CONFLICT', '该调货单已有收货记录，剩余数量请在员工小程序确认收货')
+          throw new ApiError('CONFLICT', head.doc_type === '分院调货出库'
+            ? '该调货单已有收货记录，剩余数量请在员工小程序确认收货'
+            // 小程序不收市场间调货（STAFF_RECEIVE_DOC_TYPES 只有分院配货 / 分院调货出库）
+            : '该调货单已有收货记录，不能再整单收货，请联系管理员核对')
         }
         const lot = await ensureLotFromSku(tx, targetLocationId, {
           skuId: item.sku_id,

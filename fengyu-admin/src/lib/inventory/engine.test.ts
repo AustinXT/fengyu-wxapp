@@ -1698,13 +1698,7 @@ describe('库存可用量与收货复核', () => {
     [null, false],
     ['0', false],
   ])('调货收货：来源 fulfilled=%s 时%s拒收', async (fulfilled, rejected) => {
-    const txInsert = vi.fn(() => ({
-      values: vi.fn(() => {
-        const inserted = Promise.resolve([]) as Promise<unknown[]> & { returning?: unknown }
-        inserted.returning = vi.fn(async () => { throw new Error('__REACHED_ITEM_INSERT__') })
-        return inserted
-      }),
-    }))
+    const txInsert = vi.fn(() => ({ values: vi.fn(async () => []) }))
     const txExecute = vi.fn(async (query: unknown) => {
       const sqlText = renderSql(query)
       if (sqlText.includes('FROM inventory_docs') && sqlText.includes('FOR UPDATE')) {
@@ -1714,6 +1708,8 @@ describe('库存可用量与收货复核', () => {
         }]
       }
       if (sqlText.includes('FROM inventory_locations')) return [{ location_id: 'STORE-2' }]
+      // 过闸后第一步是按 SKU 建批次：在这里抛哨兵，证明执行确实越过了已收量闸
+      if (sqlText.includes('FROM inventory_skus')) throw new Error('__REACHED_LOT__')
       if (sqlText.includes('FROM inventory_doc_items item')) {
         return [{
           source_item_id: 7, sku_id: 'SKU-1', batch_no: 'B1', expiry_date: null, is_gift: false,
@@ -1735,8 +1731,7 @@ describe('库存可用量与收货复核', () => {
     if (rejected) {
       await expect(attempt).rejects.toThrow('CONFLICT: 该调货单已有收货记录')
     } else {
-      // 过闸后走到建批次 / 明细（mock 在此之后不再模拟），不会是已收量闸的报错
-      await expect(attempt).rejects.not.toThrow('该调货单已有收货记录')
+      await expect(attempt).rejects.toThrow('__REACHED_LOT__')
     }
   })
 })
