@@ -512,10 +512,11 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
    * 零输入的 `useState<S = undefined>()` 读出恒为 undefined。
    */
   /** react 条目安全性依赖的类型：setter（Dispatch / SetStateAction / ActionDispatch）、ref、context 的写入（Provider）与读取（Consumer）链 */
-  const REACT_WRITE_PATH_TYPES = [
+  const REACT_DEPENDENT_TYPES = [
     'React>Dispatch', 'React>SetStateAction', 'React>ActionDispatch', 'React>AnyActionArg', 'React>RefObject',
     'React>Context', 'React>Provider', 'React>ProviderProps', 'React>ProviderExoticComponent', 'React>ExoticComponent',
-    'React>Consumer', 'React>ConsumerProps', // useContext<T>(ctx) 的可赋值性依赖 Consumer 读取链：children(value: T)
+    // Context<T> 结构（含 Consumer 链里 T 的流出位 children(value: T)）一变即红，逼回重审 createContext / useContext 的 T 来源论证
+    'React>Consumer', 'React>ConsumerProps',
   ]
   const REACT_SIGNATURE_SNAPSHOT: string[] = [
     "@types/react/index.d.ts | React>ActionDispatch | type ActionDispatch<ActionArg extends AnyActionArg> = (...args: ActionArg) => void;",
@@ -837,39 +838,39 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
    */
   const printer = ts.createPrinter({ removeComments: true, newLine: ts.NewLineKind.LineFeed })
   function packageSnapshot(p: ts.Program, pkg: string, members: readonly string[], depTypes: readonly string[]): string[] {
-    p.getTypeChecker() // 触发绑定：新建 Program 的源文件在绑定前没有 parent 指针，declIdentity 要沿 parent 走（不需要切换全局 checker）
-    {
-      const pkgFile = (f: ts.SourceFile) => {
-        const norm = f.fileName.replace(/\\/g, '/')
-        return norm.includes(`/node_modules/${pkg}/`) || norm.includes(`/node_modules/@types/${toTypesName(pkg)}/`)
-      }
-      const out: string[] = []
-      for (const sf of p.getSourceFiles().filter(pkgFile)) {
-        const file = sf.fileName.replace(/\\/g, '/').split('/node_modules/').pop()
-        const visit = (node: ts.Node) => {
-          const isFn = ts.isFunctionLike(node) && !ts.isFunctionTypeNode(node) && !!ts.getNameOfDeclaration(node as ts.Declaration)
-          const isTypeDecl = ts.isTypeAliasDeclaration(node) || ts.isInterfaceDeclaration(node)
-          if (isFn || isTypeDecl) {
-            const id = declIdentity(node as ts.Declaration)
-            if (id && (isFn ? members : depTypes).includes(id)) {
-              // 保留 printer 的规范化输出原样（不压缩空白：字符串字面量内部的空白也是结构）
-              out.push(`${file} | ${id} | ${printer.printNode(ts.EmitHint.Unspecified, node, sf)}`)
-            }
-          }
-          ts.forEachChild(node, visit)
-        }
-        visit(sf)
-      }
-      return out.sort()
+    // 触发绑定：新建 Program 的源文件在绑定前没有 parent 指针，declIdentity 要沿 parent 走（依赖「建 checker 即绑定」这一 TS 行为；
+    // 若包快照自检的结果长度归零 / 身份退化成裸名，优先怀疑这里的绑定没有触发）
+    p.getTypeChecker()
+    const pkgFile = (f: ts.SourceFile) => {
+      const norm = f.fileName.replace(/\\/g, '/')
+      return norm.includes(`/node_modules/${pkg}/`) || norm.includes(`/node_modules/@types/${toTypesName(pkg)}/`)
     }
+    const out: string[] = []
+    for (const sf of p.getSourceFiles().filter(pkgFile)) {
+      const file = sf.fileName.replace(/\\/g, '/').split('/node_modules/').pop()
+      const visit = (node: ts.Node) => {
+        const isFn = ts.isFunctionLike(node) && !ts.isFunctionTypeNode(node) && !!ts.getNameOfDeclaration(node as ts.Declaration)
+        const isTypeDecl = ts.isTypeAliasDeclaration(node) || ts.isInterfaceDeclaration(node)
+        if (isFn || isTypeDecl) {
+          const id = declIdentity(node as ts.Declaration)
+          if (id && (isFn ? members : depTypes).includes(id)) {
+            // 保留 printer 的规范化输出原样（不压缩空白：字符串字面量内部的空白也是结构）
+            out.push(`${file} | ${id} | ${printer.printNode(ts.EmitHint.Unspecified, node, sf)}`)
+          }
+        }
+        ts.forEachChild(node, visit)
+      }
+      visit(sf)
+    }
+    return out.sort()
   }
 
   it('白名单不过期：react 包全部声明文件里登记身份的签名（含全部重载）与写入路径依赖类型，与快照逐字相等', () => {
     const members = SOUND_GENERICS.find((e) => e.pkg === 'react')!.members
-    const snap = packageSnapshot(program, 'react', members, REACT_WRITE_PATH_TYPES)
+    const snap = packageSnapshot(program, 'react', members, REACT_DEPENDENT_TYPES)
     expect(snap).toEqual(REACT_SIGNATURE_SNAPSHOT)
     // 每个登记身份与依赖类型都至少有一个真实声明（登记名写错 / React 改了结构 → 红）
-    for (const id of [...members, ...REACT_WRITE_PATH_TYPES]) expect(snap.some((line) => line.includes(` | ${id} | `)), id).toBe(true)
+    for (const id of [...members, ...REACT_DEPENDENT_TYPES]) expect(snap.some((line) => line.includes(` | ${id} | `)), id).toBe(true)
   })
 
   it('自检：包快照只看结构——依赖类型（写入 / 读取链）改一处必变、字符串内空白必变，只改注释不变', () => {
