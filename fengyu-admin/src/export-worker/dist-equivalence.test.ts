@@ -114,6 +114,13 @@ describe('dist-equivalence：bun 的合法改写判为等价', () => {
     )).toEqual([])
   })
 
+  it('顶层 const ≡ var：常量表上的方法调用不会落回本模块函数，不触发 fail-closed', () => {
+    expect(compare(
+      "const T = ['a', 'b']\nconst U = T.filter(Boolean)\nfunction label(): number { return V }\nconst V = 1\nexport const w = [U, label()]",
+      'var T = ["a", "b"];\nvar U = T.filter(Boolean);\nfunction label() { return V; }\nvar V = 1;\nvar w = [U, label()];',
+    )).toEqual([])
+  })
+
   it('顶层 const ≡ var：初始化器里的引用若延后执行（const A = () => A）不算 TDZ', () => {
     expect(compare('const A = (): unknown => A\nexport const b = A', 'var A = () => A;\nvar b = A;')).toEqual([])
   })
@@ -222,6 +229,8 @@ describe('dist-equivalence：真实漂移判为不等', () => {
     )
     // 内部副作用导入在产物里被原样保留成 import（而不是降为 init）也算不等
     differs('import "./fx"\nexport const a = 1', 'import"./fx";\nvar a = 1;')
+    // 产物同时有正确的 init_fx() 和残留的 import "./fx"：残留不能被过滤掉
+    expect(compare('import "./fx"\nexport const a = 1', 'init_fx();\nimport"./fx";\nvar a = 1;').join('\n')).toMatch(/产物残留非预期的 import/)
     differs('import "server-only"\nexport const a = 1', 'var a = 1;')
     differs('"use server"\nexport const a = 1', 'var a = 1;')
   })
@@ -277,6 +286,16 @@ describe('dist-equivalence：真实漂移判为不等', () => {
     const tdz = /可能在初始化完成之前被执行读取/
     expect(compare('const A = read()\nfunction read(): unknown { return A }\nexport const b = A', 'var A = read();\nfunction read() { return A; }\nvar b = A;').join('\n')).toMatch(tdz)
     // 回调传给未知函数：不能证明延后执行，保守按急切执行（宁可误红不可漏报）
+    // 函数别名链：const alias = read; const A = alias()
+    expect(compare(
+      'function read(): unknown { return A }\nconst alias = read\nconst A = alias()\nexport const b = A',
+      'function read() { return A; }\nvar alias = read;\nvar A = alias();\nvar b = A;',
+    ).join('\n')).toMatch(tdz)
+    // 解析不出的本地可调用对象（本地对象上的方法）：fail-closed
+    expect(compare(
+      'function read(): unknown { return A }\nconst o = { f: read }\nconst A = o.f()\nexport const b = A',
+      'function read() { return A; }\nvar o = { f: read };\nvar A = o.f();\nvar b = A;',
+    ).join('\n')).toMatch(tdz)
     expect(compare('import { wrap } from "./helpers"\nconst A = wrap(() => A)\nexport const b = A', 'init_helpers();\nvar A = wrap(() => A);\nvar b = A;')).toEqual([
       'A/VariableDeclarationList: 顶层 A 可能在初始化完成之前被执行读取，const/let → var 不等价',
     ])
