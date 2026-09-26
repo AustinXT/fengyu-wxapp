@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import ts from 'typescript'
 import { describe, it, expect, beforeAll } from 'vitest'
 
 /**
@@ -380,6 +381,174 @@ describe('dist/export-worker.mjs 新鲜度 · 提货记录导出接线（#341）
     expect(segment.length, `产物里找不到 // ${file} 模块区段${REBUILD_HINT}`).toBeGreaterThan(0)
     const missing = fragments.filter((fragment) => !segment.includes(fragment))
     expect(missing, `产物 // ${file} 区段缺少以下 #341 片段（产物不是按当前源码构建的）${REBUILD_HINT}`).toEqual([])
+  })
+})
+
+/**
+ * #308 自定义区间日历校验与服务端复检：**源码 ↔ 产物逐 token 比对**（不是钉产物片段）。
+ *
+ * 做法：源码经 `ts.transpileModule` 去掉类型后，与产物对应模块区段里的**同名声明**各自切 token 比较。
+ * 归一化只抹掉 bun 会改、但不改语义的东西：分号、尾逗号、字符串引号、顶层 const→var、声明内部的局部绑定名
+ * （按首次出现顺序编号，所以 bun 把 `date` 改成 `date5` 不影响）；外部标识符与属性名一律原文比。
+ * 源码逻辑有任何变动而没重建产物 → token 序列不同 → 红；反之产物被改也红。
+ *
+ * ⚠ bun 若对某条声明做了额外变换（如去冗余括号），会误红（fail-closed）——`queryDataCenter` 整函数就因此
+ *   只比对其中那条复检 if 语句。顶层声明被 bun 因同名冲突改名（`X` → `X2`）时按名找不到，同样报红，按提示处理。
+ */
+function tokenize(code: string): string[] {
+  // 按 AST 角色处理标识符：
+  //   - 声明**内部**的局部绑定（参数、局部变量、解构绑定名、内层函数名、catch 变量）按首次出现编号——bun 只改它们的名字；
+  //     顶层声明的名字（含顶层解构）原文比，与外部标识符同等对待（互换两个顶层名必须可见）
+  //   - 属性名 / 对象键 / 解构键原文比；简写 `{ a }`（对象字面量或解构）一律展开成 `a : <值>` 再比，
+  //     这样 bun 把 `{ a }` 输出成 `{ a: a2 }` 不影响，而改了键名必然可见
+  //   - 其余外部标识符（被调函数、常量、全局构造器）原文比
+  const sf = ts.createSourceFile('x.js', code, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS)
+  const locals = new Set<string>()
+  const keyAt = new Set<number>() // 这些位置上的标识符是「键」，原文输出
+  const shorthandAt = new Map<number, string>() // 简写：位置 → 键名（输出 `键 : 值`）
+  const collectBinding = (name: ts.BindingName) => {
+    if (ts.isIdentifier(name)) locals.add(name.text)
+    else for (const el of name.elements) if (!ts.isOmittedExpression(el)) collectBinding(el.name)
+  }
+  const visit = (node: ts.Node, depth: number) => {
+    if (ts.isParameter(node) && depth > 0) collectBinding(node.name)
+    else if (ts.isVariableDeclaration(node) && depth > 0) collectBinding(node.name)
+    else if ((ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node)) && depth > 0 && node.name) locals.add(node.name.text)
+    else if (ts.isCatchClause(node) && node.variableDeclaration) collectBinding(node.variableDeclaration.name)
+    if (ts.isPropertyAssignment(node) && ts.isIdentifier(node.name)) keyAt.add(node.name.getStart(sf))
+    if (ts.isShorthandPropertyAssignment(node)) shorthandAt.set(node.name.getStart(sf), node.name.text)
+    if (ts.isBindingElement(node)) {
+      if (node.propertyName && ts.isIdentifier(node.propertyName)) keyAt.add(node.propertyName.getStart(sf))
+      else if (!node.propertyName && !node.dotDotDotToken && ts.isIdentifier(node.name) && ts.isObjectBindingPattern(node.parent)) {
+        shorthandAt.set(node.name.getStart(sf), node.name.text) // `{ ...rest }` 没有固定键，不当简写
+      }
+    }
+    if ((ts.isMethodDeclaration(node) || ts.isPropertyDeclaration(node)) && ts.isIdentifier(node.name)) keyAt.add(node.name.getStart(sf))
+    // 参数属于其函数体这一层：函数节点本身就把 depth 加一
+    const inner = ts.isFunctionLike(node) || ts.isBlock(node) ? depth + 1 : depth
+    ts.forEachChild(node, (child) => visit(child, inner))
+  }
+  visit(sf, 0)
+
+  const sc = ts.createScanner(ts.ScriptTarget.Latest, true, ts.LanguageVariant.Standard, code)
+  const ids = new Map<string, string>()
+  const norm = (t: string) => {
+    if (!locals.has(t)) return t
+    if (!ids.has(t)) ids.set(t, `$${ids.size}`)
+    return ids.get(t)!
+  }
+  const out: string[] = []
+  for (let k = sc.scan(); k !== ts.SyntaxKind.EndOfFileToken; k = sc.scan()) {
+    if (k === ts.SyntaxKind.SemicolonToken) continue
+    const prev = out[out.length - 1]
+    const pos = sc.getTokenStart()
+    if (k === ts.SyntaxKind.Identifier) {
+      const t = sc.getTokenText()
+      if (prev === '.' || prev === '?.' || keyAt.has(pos)) out.push(t)
+      else if (shorthandAt.has(pos)) out.push(shorthandAt.get(pos)!, ':', norm(t))
+      else out.push(norm(t))
+    } else if (k === ts.SyntaxKind.StringLiteral) out.push(JSON.stringify(sc.getTokenValue()))
+    else out.push(sc.getTokenText())
+  }
+  const noTrailingComma = out.filter((t, i) => !(t === ',' && ['}', ')', ']'].includes(out[i + 1])))
+  const body = noTrailingComma[0] === 'export' ? noTrailingComma.slice(1) : noTrailingComma
+  // 顶层 `export const X` 在产物里是 `var X`：只归一开头这一个声明关键字
+  return ['const', 'let', 'var'].includes(body[0]) ? ['var', ...body.slice(1)] : body
+}
+
+/** 顶层同名声明（函数或变量语句）的源码文本 */
+function declText(code: string, name: string): string | null {
+  const sf = ts.createSourceFile('x.js', code, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS)
+  for (const st of sf.statements) {
+    if (ts.isFunctionDeclaration(st) && st.name?.text === name) return st.getText(sf)
+    if (ts.isVariableStatement(st) && st.declarationList.declarations.some((d) => d.name.getText(sf) === name)) return st.getText(sf)
+  }
+  return null
+}
+
+/** 函数体内、条件里调用了 `callee` 的第一条 if 语句（及其在函数体语句中的位置） */
+function ifStatementCalling(fnText: string, callee: string): { text: string; index: number; stmts: string[] } | null {
+  const sf = ts.createSourceFile('x.js', fnText, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS)
+  const fn = sf.statements.find(ts.isFunctionDeclaration)
+  const stmts = fn?.body?.statements ?? []
+  const index = stmts.findIndex((st) => ts.isIfStatement(st) && new RegExp(String.raw`\b${callee}\(`).test(st.expression.getText(sf)))
+  return index < 0 ? null : { text: stmts[index].getText(sf), index, stmts: stmts.map((st) => st.getText(sf)) }
+}
+
+function transpiledSource(file: string): string {
+  const src = fs.readFileSync(path.join(ADMIN_ROOT, file), 'utf-8')
+  return ts.transpileModule(src, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText
+}
+
+describe('dist/export-worker.mjs 新鲜度 · 自定义区间校验（#308，源码 ↔ 产物逐 token）', () => {
+  const DECLS: Array<[file: string, name: string]> = [
+    ['src/lib/calendar-date.ts', 'CALENDAR_MIN_YEAR'],
+    ['src/lib/calendar-date.ts', 'CALENDAR_MAX_YEAR'],
+    ['src/lib/calendar-date.ts', 'DATE_RE'],
+    ['src/lib/calendar-date.ts', 'isValidCalendarDate'],
+    ['src/lib/data-center/params.ts', 'FIXED_PRESETS'],
+    ['src/lib/data-center/params.ts', 'isFixedPreset'],
+    ['src/lib/data-center/params.ts', 'toCustomRange'],
+    ['src/lib/data-center/params.ts', 'isValidCustomRange'],
+    ['src/lib/data-center/params.ts', 'toTimeRangeInput'],
+    ['src/lib/data-center/params.ts', 'parseTimeRange'],
+    ['src/lib/data-center/context.ts', 'prepareBoardContext'],
+  ]
+  it.each(DECLS)('%s · %s 与产物一致', (file, name) => {
+    const src = declText(transpiledSource(file), name)
+    expect(src, `源码 ${file} 里找不到顶层声明 ${name}（改名了？同步这张表）`).not.toBeNull()
+    const built = declText(moduleSegments(fs.readFileSync(DIST, 'utf-8'), file).join('\n'), name)
+    expect(built, `产物 // ${file} 区段里找不到 ${name}${REBUILD_HINT}`).not.toBeNull()
+    expect(tokenize(built!), `产物里的 ${name} 与源码不一致（产物不是按当前源码构建的）${REBUILD_HINT}`).toEqual(tokenize(src!))
+  })
+
+  it('导出入口 queryDataCenter：复检 if 语句与源码一致，且位于 parseBoardParams 之前', () => {
+    const file = 'src/export-worker/registry.ts'
+    const src = ifStatementCalling(declText(transpiledSource(file), 'queryDataCenter')!, 'isValidCustomRange')
+    expect(src, '源码 queryDataCenter 里找不到 isValidCustomRange 复检').not.toBeNull()
+    const builtFn = declText(moduleSegments(fs.readFileSync(DIST, 'utf-8'), file).join('\n'), 'queryDataCenter')
+    expect(builtFn, `产物里找不到 queryDataCenter${REBUILD_HINT}`).not.toBeNull()
+    const built = ifStatementCalling(builtFn!, 'isValidCustomRange')
+    expect(built, `产物 queryDataCenter 里没有 isValidCustomRange 复检${REBUILD_HINT}`).not.toBeNull()
+    expect(tokenize(built!.text)).toEqual(tokenize(src!.text))
+    const parseAt = built!.stmts.findIndex((st) => /\bparseBoardParams\(/.test(st))
+    expect(parseAt, '产物 queryDataCenter 里找不到 parseBoardParams').toBeGreaterThan(-1)
+    expect(built!.index).toBeLessThan(parseAt)
+  })
+
+  it('归一化自检：局部改名 / 分号 / 引号 / 尾逗号不影响，逻辑改动必须可见', () => {
+    const base = tokenize(`function f(a, b) { const d = new Date(a); return d.getUTCDate() === b && 'x' }`)
+    expect(tokenize(`function f(a, b) {\n  const d5 = new Date(a);\n  return d5.getUTCDate() === b && "x";\n}`)).toEqual(base)
+    expect(tokenize(`function f(a, b,) { const d = new Date(a,); return d.getUTCDate() === b && 'x' }`)).toEqual(base)
+    for (const changed of [
+      `function f(a, b) { const d = new Date(a); return d.getUTCDate() >= b && 'x' }`,
+      `function f(a, b) { const d = new Date(b); return d.getUTCDate() === b && 'x' }`,
+      `function f(a, b) { const d = new Date(a); return d.getUTCDay() === b && 'x' }`,
+      `function f(a, b) { const d = new Date(a); return d.getUTCDate() === b && 'y' }`,
+      `function f(a, b) { const d = new Temporal(a); return d.getUTCDate() === b && 'x' }`, // 换全局构造器
+    ]) expect(tokenize(changed), changed).not.toEqual(base)
+    // 外部标识符不归一：互换两个常量、换一个被调函数都必须可见
+    const range = tokenize(`function g(y) { return y < CALENDAR_MIN_YEAR || y > CALENDAR_MAX_YEAR || check(y) }`)
+    expect(tokenize(`function g(y) { return y < CALENDAR_MAX_YEAR || y > CALENDAR_MIN_YEAR || check(y) }`)).not.toEqual(range)
+    expect(tokenize(`function g(y) { return y < CALENDAR_MIN_YEAR || y > CALENDAR_MAX_YEAR || other(y) }`)).not.toEqual(range)
+    // 局部绑定（参数、解构、局部变量）改名不影响
+    expect(tokenize(`function g(yy) { return yy < CALENDAR_MIN_YEAR || yy > CALENDAR_MAX_YEAR || check(yy) }`)).toEqual(range)
+    expect(tokenize(`function h(p, [c]) { const x = p.a + c; return x }`)).toEqual(
+      tokenize(`function h(p2, [c2]) { const x2 = p2.a + c2; return x2 }`),
+    )
+    // 键名：对象简写 / 显式键 / 解构键改了必须可见；bun 式的简写展开（`{ a }` → `{ a: a2 }`）必须相等
+    const obj = tokenize(`function k(a) { const { b, c: d } = a; return { a, b, e: d } }`)
+    expect(tokenize(`function k(a2) { const { b: b2, c: d2 } = a2; return { a: a2, b: b2, e: d2 } }`)).toEqual(obj)
+    for (const changed of [
+      `function k(z) { const { b, c: d } = z; return { z, b, e: d } }`, // 简写键变了
+      `function k(a) { const { b, c: d } = a; return { a, b, f: d } }`, // 显式键变了
+      `function k(a) { const { b, x: d } = a; return { a, b, e: d } }`, // 解构键变了
+      `function k(a) { const { x, c: d } = a; return { a, b: x, e: d } }`, // 解构简写键变了
+    ]) expect(tokenize(changed), changed).not.toEqual(obj)
+    // 对象 rest 改名等价（没有固定键）
+    expect(tokenize(`function r(a) { const { b, ...rest } = a; return rest }`)).toEqual(tokenize(`function r(a2) { const { b, ...rest2 } = a2; return rest2 }`))
+    // 顶层解构名不归一：互换可见
+    expect(tokenize(`const { a, b } = X`)).not.toEqual(tokenize(`const { b, a } = X`))
   })
 })
 

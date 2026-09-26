@@ -37,7 +37,7 @@ import {
   getDataCenterRankingConfig,
   type DataCenterMetricColumn,
 } from '@/lib/data-center/columns'
-import { parseBoardParams } from '@/lib/data-center/params'
+import { isValidCustomRange, parseBoardParams } from '@/lib/data-center/params'
 import { countLeftFrozen, toWorkerExportColumns } from '@/lib/data-center/matrix-export'
 import {
   OPERATING_MASTER_COLUMNS,
@@ -662,6 +662,10 @@ async function queryDataCenter(
   // ⚠ 报表视图必须最先分发：下面的旧板块按视图名前缀判断，报表视图若撞上 `sales-` 等前缀会被派给
   // 板块取数、静默导错内容（registry.test 守护「报表视图不走板块取数」+「视图名 report- 前缀」）
   if (isDataCenterReportExportView(payload.view)) return queryReport(payload.view, raw)
+  // 导出参数在服务端解析：自定义区间非法报 INVALID_PARAMS，不像 URL 层那样回落本月（#308）
+  if (raw.preset === 'custom' && !isValidCustomRange(raw.start, raw.end)) {
+    throw new Error('INVALID_PARAMS: 导出的时间范围无效（须为合法日期且开始不晚于结束）')
+  }
   const base = parseBoardParams(raw)
   const view: DataCenterBoardExportView = payload.view
   if (view.startsWith('sales-')) {

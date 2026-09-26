@@ -14,6 +14,7 @@
  */
 import { addDays, resolveTimeRange, shanghaiToday } from './time-range'
 import type { ResolvedRange } from './types'
+import { isValidCalendarDate } from '@/lib/calendar-date'
 
 export const REPORT_RANGE_PRESETS = ['lastMonth', 'thisMonth', 'last30', 'custom'] as const
 export type ReportRangePreset = (typeof REPORT_RANGE_PRESETS)[number]
@@ -59,24 +60,10 @@ export interface ReportMonthPeriod {
 
 export type ReportPeriod = ReportRangePeriod | ReportMonthPeriod
 
-const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/
 const MONTH_RE = /^(\d{4})-(\d{2})$/
-/** 年份限定 4 位且在合理区间：`time-range.ts` 的字典序比较与 fmt() 都以 4 位年份为前提（见其 minDate 注释）。 */
+/** 单月参数的年份区间（只管 `month=YYYY-MM`；日期的日历校验统一走 `@/lib/calendar-date`，#308）。 */
 const MIN_YEAR = 2000
 const MAX_YEAR = 2099
-
-/**
- * 日历合法性校验：`2026-02-30`、`2026-13-01` 这类只过位数、不过日历的值一律拒绝。
- * 板块页的 `parseTimeRange` 只校验位数（#308），报表页不复用它，这里自带校验绕开该缺陷。
- */
-export function isValidCalendarDate(value: string | undefined): value is string {
-  const match = value?.match(DATE_RE)
-  if (!match) return false
-  const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])]
-  if (year < MIN_YEAR || year > MAX_YEAR) return false
-  const date = new Date(Date.UTC(year, month - 1, day))
-  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
-}
 
 export function isValidMonth(value: string | undefined): value is string {
   const match = value?.match(MONTH_RE)

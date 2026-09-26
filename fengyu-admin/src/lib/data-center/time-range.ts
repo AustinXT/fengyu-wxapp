@@ -124,9 +124,10 @@ function daysInclusive(start: string, end: string): number {
  * ⚠️ 前提是**年份恰为 4 位**：`fmt()` 对年份不做 padStart，年份 <1000 或 >9999 时
  * 输出不再定长（`"10000-01-01" < "9999-12-31"` 会被判成真），字典序就崩了。
  * 本函数当前唯一调用点在 month 分支，两个实参都锚定 `shanghaiToday()` 的真实当前年份，安全。
- * 但**别把它复用到 custom 分支**：`params.ts` 的 `DATE_RE` 接受 `0000`–`0999`，
- * `?preset=custom&start=0001-01-01` 实测会让 `addDays` 产出 `"0-12-31"` / `"NaN-NaN-NaN"`
- * ——即"年份不足 4 位"在 custom 路径上**是可达的**，只是不经过本函数。要复用先改成基于 Date.parse 比较。
+ * custom 分支的入参自 #308 起由 `@/lib/calendar-date` 把年份卡在 1900–2100（URL 层 parseTimeRange
+ * + 服务端 prepareBoardContext / 导出两道复检），`0001-01-01` 这类输入已进不来；但 custom 的环比区间
+ * 会往前推一个区间长度，最长约推到 1699 年——仍是 4 位，故字典序前提在现有校验下成立。
+ * 若将来放宽年份范围，先改成基于 Date.parse 比较再复用。
  */
 function minDate(a: string, b: string): string {
   return a < b ? a : b

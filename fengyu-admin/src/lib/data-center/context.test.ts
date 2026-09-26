@@ -30,6 +30,7 @@ vi.mock('@/lib/permissions', () => ({
 
 import { getScopeTopLevel, validateScope, resolveScopeName, prepareBoardContext } from './context'
 import type { AuthSession, RoleType } from '@/lib/types'
+import { toCustomRange } from './params'
 
 function makeSession(
   roles: Array<{ role: RoleType; scopeType: '总部' | '市场' | '门店' }>,
@@ -173,6 +174,48 @@ describe('prepareBoardContext', () => {
       id: null,
       name: '全部授权门店',
     })
+  })
+})
+
+describe('prepareBoardContext · 时间参数服务端复检（#308）', () => {
+  it.each([
+    ['2 月 30 日', { preset: 'custom', start: '2026-02-30', end: '2026-03-01' }],
+    ['0001 年', { preset: 'custom', start: '0001-01-01', end: '0001-01-02' }],
+    ['倒挂', { preset: 'custom', start: '2026-02-01', end: '2026-01-01' }],
+    ['缺 end', { preset: 'custom', start: '2026-01-01' }],
+    ['预设不在白名单', { preset: 'decade' }],
+    ['缺 timeRange', undefined],
+  ])('%s → INVALID_PARAMS（不回落本月）', async (_, timeRange) => {
+    mockIsAdminScope.mockReturnValue(true)
+    await expect(
+      prepareBoardContext(makeSession([]), { scope: { type: 'all' }, timeRange: timeRange as never }),
+    ).rejects.toThrow(/^INVALID_PARAMS: /)
+  })
+
+  it('越权优先于时间校验：无权范围 + 非法时间 → PERMISSION_DENIED', async () => {
+    mockIsAdminScope.mockReturnValue(false)
+    await expect(
+      prepareBoardContext(makeSession([{ role: 'manager', scopeType: '门店' }], ['S1']), {
+        scope: { type: 'all' },
+        timeRange: { preset: 'custom', start: '2026-02-30', end: '2026-03-01' } as never,
+      }),
+    ).rejects.toThrow(/PERMISSION_DENIED/)
+  })
+
+  it('合法 custom（年份上下界）照常构建 meta，区间无 NaN 且不倒挂', async () => {
+    mockIsAdminScope.mockReturnValue(true)
+    for (const [start, end] of [['1900-01-01', '1900-03-31'], ['2100-12-01', '2100-12-31'], ['1900-01-01', '2100-12-31']]) {
+      const ctx = await prepareBoardContext(makeSession([]), {
+        scope: { type: 'all' },
+        timeRange: toCustomRange(start, end)!,
+      })
+      expect(ctx.meta.timeRange).toMatchObject({ start, end })
+      for (const r of [ctx.meta.timeRange, ctx.meta.timeRange.previous!, ctx.meta.timeRange.lastYear!]) {
+        expect(r.start).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+        expect(r.end).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+        expect(r.start <= r.end).toBe(true)
+      }
+    }
   })
 })
 

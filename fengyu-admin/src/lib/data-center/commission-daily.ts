@@ -5,7 +5,7 @@
  * 保证页面看到的与导出件是同一套参数口径。SQL 在 `commission-sql.ts`，列定义在 `commission-columns.ts`。
  */
 import { firstQueryValue } from './params'
-import { isValidCalendarDate } from './report-period'
+import { isValidCalendarDate } from '@/lib/calendar-date'
 import type { SearchQuery } from './entry'
 import { DATA_CENTER_REPORTS } from './reports'
 
