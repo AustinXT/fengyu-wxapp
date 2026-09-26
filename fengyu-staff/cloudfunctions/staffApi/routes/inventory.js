@@ -1645,12 +1645,58 @@ async function docDetail(ctx) {
   return ctx.result
 }
 
+/**
+ * 门店报货草稿（#348）：锁住并校验一张本门店的门店报货草稿。与 admin `lockStoreReplenishmentDraft` 同口径：
+ * 非门店报货 NOT_FOUND；非草稿 INVALID_STATE（已删除 / 已提交分开提示）；换门店 INVALID_PARAMS；
+ * 带血缘 / 预留的只可能是存量异常单，一律 INVALID_STATE 交人工处理。
+ */
+async function lockStoreRequestDraft(client, draftId, sourceOrgNodeId) {
+  const { rows } = await client.query(
+    `SELECT id, doc_type, status, source_org_node_id
+       FROM inventory_docs
+      WHERE id = $1
+      FOR UPDATE`,
+    [draftId],
+  )
+  const draft = rows[0]
+  if (!draft || draft.doc_type !== '门店报货') throw new Error('NOT_FOUND: 门店报货草稿不存在')
+  if (draft.status !== '草稿') {
+    throw new Error(draft.status === '已取消'
+      ? 'INVALID_STATE: 该门店报货草稿已删除'
+      : 'INVALID_STATE: 门店报货已提交，不能再修改或删除')
+  }
+  if (sourceOrgNodeId !== undefined && draft.source_org_node_id !== sourceOrgNodeId) {
+    throw new Error('INVALID_PARAMS: 草稿的报货门店不能修改')
+  }
+  const linked = await client.query(
+    `SELECT (EXISTS (SELECT 1 FROM inventory_doc_links WHERE from_doc_id = $1 OR to_doc_id = $1)
+          OR EXISTS (SELECT 1 FROM inventory_stock_reservations WHERE request_doc_id = $1)) AS linked`,
+    [draftId],
+  )
+  if (linked.rows[0]?.linked) {
+    throw new Error('INVALID_STATE: 该草稿已有上下游关联，不能按草稿修改或删除，请联系管理员处理')
+  }
+  return draft
+}
+
+/**
+ * 建单 + 门店报货草稿（#348）共用一条写路径，明细校验只有一份：
+ * - `draft: true` → 单头状态「草稿」、不确认（仅门店报货）；草稿不进任何下游（admin 汇总 / 市场报货 / 分院配货只认已完成）
+ * - `draftId` → 在该草稿上原单号写入：明细整体重写；`draft: true` 仍是草稿，否则转「已完成」（提交，之后锁定）
+ * `updateDraft` / `submitDraft` 只是固定这两个参数的入口。
+ */
 async function createDoc(ctx) {
   await requireStaffBound()(ctx, async () => {})
   const payload = ctx.event.payload || {}
   const { docType, items = [] } = payload
   if (!isValidDocType(docType) || !isStaffCreateDocType(docType)) {
     throw new Error('INVALID_PARAMS: staff 端不支持创建该库存单据')
+  }
+  const asDraft = payload.draft === true
+  const draftId = payload.draftId == null ? null : String(payload.draftId).trim()
+  if (payload.draftId != null && !draftId) throw new Error('INVALID_PARAMS: 缺少草稿单号')
+  if ((asDraft || draftId) && docType !== '门店报货') {
+    throw new Error('INVALID_PARAMS: 只有门店报货支持草稿')
   }
   if (!Array.isArray(items) || items.length === 0) throw new Error('INVALID_PARAMS: 至少需要一条明细')
   assertNoStaffMoneyFields(payload)
@@ -1679,7 +1725,7 @@ async function createDoc(ctx) {
       stocktakeSkuIds.push(skuId)
     }
   }
-  const status = defaultDocStatus(docType)
+  const status = asDraft ? '草稿' : defaultDocStatus(docType)
   // 同一批次的待审批退货需按稳定顺序锁库存，降低多明细并发提交的死锁概率。
   const orderedItems = docType === '院退货'
     ? [...items].sort((left, right) => Number(left.lotId) - Number(right.lotId))
@@ -1695,6 +1741,33 @@ async function createDoc(ctx) {
 
   await pg.transaction(async (client) => {
     await assertWorkfineInventoryInitialized(client)
+    if (draftId) {
+      // 草稿没有血缘 / 预留 / 流水（lockStoreRequestDraft 已核对），明细整体重写；合计由明细 trigger 回填
+      // `|| null`：解析不出门店节点时按 null 比对（fail-closed），不能退化成「跳过门店核对」
+      await lockStoreRequestDraft(client, draftId, sourceOrgNodeId || null)
+      docId = draftId
+      await client.query('DELETE FROM inventory_doc_items WHERE doc_id = $1', [draftId])
+      await client.query(
+        `UPDATE inventory_docs
+            SET status = $2,
+                doc_date = $3,
+                total_quantity = $4,
+                remark = $5,
+                confirmed_by = $6,
+                confirmed_at = CASE WHEN $7::boolean THEN NOW() ELSE NULL END,
+                updated_at = NOW()
+          WHERE id = $1`,
+        [
+          draftId,
+          status,
+          payload.docDate || shanghaiToday(),
+          totalQuantity,
+          payload.remark || null,
+          status === '已完成' ? ctx.auth.staffWfId : null,
+          status === '已完成',
+        ],
+      )
+    } else {
     docId = await generateDocNo(client, docType)
     await client.query(
       `INSERT INTO inventory_docs (
@@ -1729,6 +1802,7 @@ async function createDoc(ctx) {
         marketId,
       ],
     )
+    }
     // 盘点单账面数：**一次 GROUP BY 取齐**，不逐行查。
     // 两个理由：① 少 N 次事务内往返，事务持有时间短；② 同一张单所有行的账面数取自
     // **同一个语句快照**（逐条 SELECT 在 READ COMMITTED 下各取各的快照，一张「账面 vs 实盘」
@@ -1809,8 +1883,9 @@ async function createDoc(ctx) {
           lot?.isGift ?? Boolean(item.isGift),
           qty,
           lot ? lot.quantityOnHand : bookQuantity,
-          item.requestQuantity || null,
-          item.fulfilledQuantity || null,
+          // 门店报货的需求量 / 已配量与 admin 同口径（= 数量 / 0），不收客户端值 —— 它们参与市场汇总与分院配货的可配量（#348）
+          docType === '门店报货' ? qty : item.requestQuantity || null,
+          docType === '门店报货' ? 0 : item.fulfilledQuantity || null,
           standardUnitPrice,
           unitDiscount,
           actualUnitPrice,
@@ -1860,7 +1935,60 @@ async function createDoc(ctx) {
     }
   })
 
-  ctx.result = { id: docId, message: '提交成功' }
+  ctx.result = { id: docId, draft: asDraft, message: asDraft ? '草稿已保存' : '提交成功' }
+  return ctx.result
+}
+
+/** 更新门店报货草稿（#348）：payload 与 createDoc 相同，另带 `draftId`；仍是草稿。 */
+async function updateDraft(ctx) {
+  const payload = ctx.event.payload || {}
+  if (!payload.draftId) throw new Error('INVALID_PARAMS: 缺少草稿单号')
+  ctx.event.payload = { ...payload, draft: true }
+  return createDoc(ctx)
+}
+
+/** 提交门店报货草稿（#348）：按当前明细重写并转「已完成」，之后锁定（提交即终态）。 */
+async function submitDraft(ctx) {
+  const payload = ctx.event.payload || {}
+  if (!payload.draftId) throw new Error('INVALID_PARAMS: 缺少草稿单号')
+  ctx.event.payload = { ...payload, draft: false }
+  return createDoc(ctx)
+}
+
+/**
+ * 删除门店报货草稿（#348）= 草稿 → 已取消（不物理删除：单号按当天最大号 +1 生成，删了会被复用；且保留审计）。
+ * 只能删本人有门店库存写权限的门店的草稿；不校验门店是否启用。
+ */
+async function deleteDraft(ctx) {
+  await requireStaffBound()(ctx, async () => {})
+  const payload = ctx.event.payload || {}
+  const draftId = String(payload.id || payload.draftId || '').trim()
+  if (!draftId) throw new Error('INVALID_PARAMS: 缺少草稿单号')
+  const reason = String(payload.reason || '').trim() || '删除草稿'
+  await pg.transaction(async (client) => {
+    await assertWorkfineInventoryInitialized(client)
+    const draft = await lockStoreRequestDraft(client, draftId, undefined)
+    const { rows } = await client.query(
+      `SELECT location_id FROM inventory_locations
+        WHERE org_node_id = $1 AND location_type = '门店'
+        ORDER BY location_id
+        LIMIT 1`,
+      [draft.source_org_node_id],
+    )
+    if (!rows[0]) throw new Error('NOT_FOUND: 草稿的报货门店不存在')
+    await assertInventoryWriteStoreScope(client, ctx.auth, rows[0].location_id)
+    await client.query(
+      `UPDATE inventory_docs
+          SET status = '已取消',
+              cancellation_reason = $2,
+              cancelled_by = $3,
+              cancelled_at = NOW(),
+              updated_at = NOW()
+        WHERE id = $1`,
+      [draftId, reason, ctx.auth.staffWfId],
+    )
+  })
+  ctx.result = { id: draftId, message: '草稿已删除' }
   return ctx.result
 }
 
@@ -2443,6 +2571,9 @@ module.exports = {
   docList,
   docDetail,
   createDoc,
+  updateDraft,
+  submitDraft,
+  deleteDraft,
   confirmReceive,
   approveDoc,
   rejectDoc,

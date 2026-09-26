@@ -2330,3 +2330,153 @@ describe('inventory 库存主体解析确定性（#251）', () => {
     expect(sql).not.toMatch(/LIMIT 1\b/)
   })
 })
+
+/**
+ * 门店报货草稿（#348 · 348a）。createDoc(draft) / updateDraft / submitDraft 共用一条写路径，deleteDraft 单独一个入口；
+ * 只能操作本店的门店报货草稿，SQL 全参数化，错误前缀在白名单内。
+ */
+describe('门店报货草稿（#348）', () => {
+  const STORE_AUTH = {
+    storeId: 'store-A',
+    effectiveStoreId: 'store-A',
+    scopeStoreIds: ['store-A'],
+    roleBindings: [{ role: 'manager', scopeId: 'node-store-A', scopeType: '门店' }],
+  }
+  const DRAFT = { id: 'DBH-260926-0001', doc_type: '门店报货', status: '草稿', source_org_node_id: 'org-store-A' }
+
+  function mockDraftEnv({ draft = DRAFT, linked = false, scopedStores = ['store-A'] } = {}) {
+    pg.query.mockImplementation(async (query, params) => {
+      const sql = String(query)
+      if (sql.includes('WITH RECURSIVE descendants')) return scopedStores.map((storeId) => ({ store_id: storeId }))
+      if (sql.includes('FROM inventory_locations') && sql.includes('WHERE location_id = $1')) {
+        return [params[0] === 'market-A'
+          ? { location_id: 'market-A', org_node_id: 'market-A', location_type: '市场', parent_location_id: null, is_active: true }
+          : { location_id: params[0], org_node_id: `org-${params[0]}`, location_type: '门店', parent_location_id: 'market-A', is_active: true }]
+      }
+      return []
+    })
+    let client
+    pg.transaction.mockImplementationOnce(async (cb) => {
+      client = {
+        query: vi.fn(async (sql, params = []) => {
+          const text = String(sql)
+          const cutover = cutoverQueryResult(text)
+          if (cutover) return cutover
+          if (text.includes('FROM inventory_docs') && text.includes('FOR UPDATE')) {
+            return { rows: draft ? [draft] : [], rowCount: draft ? 1 : 0 }
+          }
+          if (text.includes('AS linked')) return { rows: [{ linked }], rowCount: 1 }
+          if (text.includes('WITH RECURSIVE descendants')) {
+            return { rows: scopedStores.map((storeId) => ({ store_id: storeId })), rowCount: scopedStores.length }
+          }
+          if (text.includes('FROM inventory_skus')) {
+            return {
+              rows: [{
+                sku_id: params[0], product_name: '测试商品', spec_name: null, supplier: null, product_series: null,
+                source_type: '供应链', owner_market_id: null,
+              }],
+              rowCount: 1,
+            }
+          }
+          if (text.includes('FROM inventory_locations') && text.includes('org_node_id = $1')) {
+            return { rows: [{ location_id: String(params[0]).replace(/^org-/, '') }], rowCount: 1 }
+          }
+          if (text.includes('FROM inventory_locations') && text.includes('WHERE location_id = $1')) {
+            return { rows: [{ location_id: params[0], location_type: '门店', parent_location_id: 'market-A' }], rowCount: 1 }
+          }
+          if (text.includes('INSERT INTO inventory_doc_items')) return { rows: [{ id: 101 }], rowCount: 1 }
+          return { rows: [], rowCount: 1 }
+        }),
+      }
+      return cb(client)
+    })
+    return () => client
+  }
+  const payload = { docType: '门店报货', sourceOrgNodeId: 'store-A', items: [{ skuId: 'sku-1', quantity: 2 }] }
+  const calls = (client, pattern) => client.query.mock.calls.filter(([sql]) => pattern.test(String(sql)))
+
+  test('createDoc(draft) 建草稿：单头状态草稿、不确认；需求量 = 数量、已配 = 0（不收客户端值）', async () => {
+    const getClient = mockDraftEnv()
+    const ctx = createCtx({ payload: { ...payload, draft: true, items: [{ skuId: 'sku-1', quantity: 2, requestQuantity: 99, fulfilledQuantity: 5 }] }, auth: STORE_AUTH })
+    const result = await inventoryRoutes.createDoc(ctx)
+    expect(result).toMatchObject({ draft: true, message: '草稿已保存' })
+    const [insertDoc] = calls(getClient(), /INSERT INTO inventory_docs/)
+    expect(insertDoc[1][2]).toBe('草稿')
+    expect(insertDoc[1][18]).toBeNull()
+    expect(insertDoc[1][19]).toBe(false)
+    const [insertItem] = calls(getClient(), /INSERT INTO inventory_doc_items/)
+    expect(insertItem[1][13]).toBe(2)
+    expect(insertItem[1][14]).toBe(0)
+  })
+
+  test('只有门店报货支持草稿', async () => {
+    const ctx = createCtx({ payload: { docType: '院产品报损', sourceOrgNodeId: 'store-A', draft: true, items: [{ lotId: 1, quantity: 1, reason: '破损' }] }, auth: STORE_AUTH })
+    await expect(inventoryRoutes.createDoc(ctx)).rejects.toThrow('INVALID_PARAMS: 只有门店报货支持草稿')
+  })
+
+  test('updateDraft：锁草稿后重写明细，仍是草稿；submitDraft：转已完成并确认', async () => {
+    let getClient = mockDraftEnv()
+    await inventoryRoutes.updateDraft(createCtx({ payload: { ...payload, draftId: DRAFT.id }, auth: STORE_AUTH }))
+    let client = getClient()
+    expect(calls(client, /DELETE FROM inventory_doc_items WHERE doc_id = \$1/)[0][1]).toEqual([DRAFT.id])
+    let [update] = calls(client, /UPDATE inventory_docs/)
+    expect(update[1].slice(0, 2)).toEqual([DRAFT.id, '草稿'])
+    expect(update[1][5]).toBeNull()
+    expect(calls(client, /INSERT INTO inventory_docs/)).toHaveLength(0)
+
+    getClient = mockDraftEnv()
+    const result = await inventoryRoutes.submitDraft(createCtx({ payload: { ...payload, draftId: DRAFT.id }, auth: STORE_AUTH }))
+    expect(result).toMatchObject({ id: DRAFT.id, message: '提交成功' })
+    client = getClient()
+    ;[update] = calls(client, /UPDATE inventory_docs/)
+    expect(update[1][1]).toBe('已完成')
+    expect(update[1][6]).toBe(true)
+  })
+
+  test.each([
+    ['已提交', { ...DRAFT, status: '已完成' }, false, 'INVALID_STATE: 门店报货已提交，不能再修改或删除'],
+    ['已删除', { ...DRAFT, status: '已取消' }, false, 'INVALID_STATE: 该门店报货草稿已删除'],
+    ['别的单据类型', { ...DRAFT, doc_type: '院退货' }, false, 'NOT_FOUND: 门店报货草稿不存在'],
+    ['别的门店的草稿', { ...DRAFT, source_org_node_id: 'org-store-B' }, false, 'INVALID_PARAMS: 草稿的报货门店不能修改'],
+    ['带上下游关联', DRAFT, true, 'INVALID_STATE: 该草稿已有上下游关联'],
+  ])('updateDraft 拒绝%s，且不动明细', async (_label, draft, linked, error) => {
+    const getClient = mockDraftEnv({ draft, linked })
+    await expect(inventoryRoutes.updateDraft(createCtx({ payload: { ...payload, draftId: DRAFT.id }, auth: STORE_AUTH }))).rejects.toThrow(error)
+    expect(calls(getClient(), /DELETE FROM inventory_doc_items/)).toHaveLength(0)
+  })
+
+  test('updateDraft / submitDraft 缺草稿单号 INVALID_PARAMS', async () => {
+    await expect(inventoryRoutes.updateDraft(createCtx({ payload, auth: STORE_AUTH }))).rejects.toThrow('INVALID_PARAMS: 缺少草稿单号')
+    await expect(inventoryRoutes.submitDraft(createCtx({ payload, auth: STORE_AUTH }))).rejects.toThrow('INVALID_PARAMS: 缺少草稿单号')
+  })
+
+  test('deleteDraft：本店草稿 → 已取消（原因、删除人、updated_at），参数化', async () => {
+    const getClient = mockDraftEnv()
+    const result = await inventoryRoutes.deleteDraft(createCtx({ payload: { id: DRAFT.id, reason: '报错了' }, auth: STORE_AUTH }))
+    expect(result).toMatchObject({ id: DRAFT.id, message: '草稿已删除' })
+    const [update] = calls(getClient(), /UPDATE inventory_docs/)
+    expect(update[0]).toContain("status = '已取消'")
+    expect(update[0]).toContain('updated_at = NOW()')
+    expect(update[1]).toEqual([DRAFT.id, '报错了', expect.anything()])
+  })
+
+  test('deleteDraft：别的门店的草稿（不在本人写权限范围）PERMISSION_DENIED，不改单', async () => {
+    const getClient = mockDraftEnv({ draft: { ...DRAFT, source_org_node_id: 'org-store-B' }, scopedStores: ['store-A'] })
+    await expect(inventoryRoutes.deleteDraft(createCtx({ payload: { id: DRAFT.id }, auth: STORE_AUTH }))).rejects.toThrow(/^PERMISSION_DENIED: /)
+    expect(calls(getClient(), /UPDATE inventory_docs/)).toHaveLength(0)
+  })
+
+  test('deleteDraft：已提交不能删', async () => {
+    const getClient = mockDraftEnv({ draft: { ...DRAFT, status: '已完成' } })
+    await expect(inventoryRoutes.deleteDraft(createCtx({ payload: { id: DRAFT.id }, auth: STORE_AUTH }))).rejects.toThrow('INVALID_STATE: 门店报货已提交，不能再修改或删除')
+    expect(calls(getClient(), /UPDATE inventory_docs/)).toHaveLength(0)
+  })
+
+  test('新 action 已登记路由与写操作集合', () => {
+    const indexSrc = require('node:fs').readFileSync(require('node:path').resolve(__dirname, '../../index.js'), 'utf8')
+    for (const action of ['inventory.updateDraft', 'inventory.submitDraft', 'inventory.deleteDraft']) {
+      expect(indexSrc).toContain(`'${action}': () => require('./routes/inventory')`)
+      expect(indexSrc.split(`'${action}'`).length - 1, action).toBe(2)
+    }
+  })
+})
