@@ -180509,7 +180509,7 @@ function orgAnchorScopeSql(session4, scope, anchorCol = "pb.anchor_market_id") {
     const ids = isAdminScope(session4) ? scope.ids : scope.ids.filter((id) => session4.permissions.scopeStoreIds.includes(id));
     return activeAnchorAmongSql(ids, col);
   }
-  if (isAdminScope(session4))
+  if (isAdminScope(session4) || session4.roles.some((r) => r.scopeType === "总部"))
     return import_drizzle_orm62.sql`TRUE`;
   return visibleActiveAnchorSql(session4, col);
 }
