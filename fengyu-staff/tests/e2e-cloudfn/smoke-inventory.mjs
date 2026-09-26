@@ -16,12 +16,13 @@
  * 所以默认夹具账面恒 0（只能验证「无批次落 0」）。在**私有 docker 库**上设
  * SMOKE_INVENTORY_SEED_STOCK=<私有库库名>，会绕过余额守护给两个 SKU 灌非零余额（SKU1 两个批次 5+3，
  * SKU2 一个批次 4），验证账面 = 多批次汇总、实盘 0 记盘亏。
+ * #358 确认收货只收剩余量（仅私有库，会写删不掉的流水）：分院配货已收 3/10 → 入 7、血缘 7、fulfilled 10。
  * 私有库判定不只看 localhost（SSH 端口转发的共享库也是 localhost）：还要求连上的 current_database()
  * 与该变量值相同，且不是共享库名 fengyu_wxapp。
  */
 import './setup.mjs'
 import {
-  NS, TEST_STORE_ID, TEST_STORE_ORG_ID, TEST_MANAGER_OPENID, TEST_MANAGER_EMP_ID,
+  NS, TEST_STORE_ID, TEST_STORE_ORG_ID, TEST_MARKET_ORG_ID, TEST_MANAGER_OPENID, TEST_MANAGER_EMP_ID,
   pgQuery, closePool, getPool, testPhone,
 } from './setup.mjs'
 import { invokeStaffApi } from './helpers/invoke.mjs'
@@ -209,6 +210,7 @@ async function main() {
   }
 
   await stocktakeFlow(errors)
+  await receiveRemainderFlow(errors)
 
   if (errors.length) {
     rec('  ✗ FAIL')
@@ -394,6 +396,91 @@ async function stocktakeFlow(errors) {
   }
   if (errors.length === before) {
     rec(`  ✓ 门店盘点 ${docId}（库存员身份，账面 ${book1}/${book2}${seeded ? '，多批次汇总' : ''}）：候选含非可报货 SKU、账面=在手汇总、无流水、列表/详情可见；重复 SKU / 留空被拒`)
+  }
+}
+
+/**
+ * #358 仅私有库：admin 早先放行过部分收货的分院配货（A 发 10 已收 3、B 发 4 已收满），
+ * 小程序 confirmReceive 只收剩余 7 —— 血缘 7、来源 fulfilled 回写 10、单据已完成、流水 +7。
+ * 会写 append-only 的 inventory_movements，共享库上删不掉，所以只在点名私有库时跑。
+ * 同时是 ensureInventoryLotFromSku 列序（#358 修的 42804）在真 PG 上的唯一覆盖。
+ */
+async function receiveRemainderFlow(errors) {
+  if (!(await isPrivateSeedRun())) {
+    rec('  · 未设 SMOKE_INVENTORY_SEED_STOCK=<私有库名>：跳过确认收货剩余量（会写删不掉的流水）')
+    return
+  }
+  const before = errors.length
+  const fphId = `${NS}_INV_FPH_358`
+  const oldInboundId = `${NS}_INV_YRK_358`
+  const [srcLot] = await pgQuery(
+    `INSERT INTO inventory_stock_lots (location_id, sku_id, lot_key, sku_name, spec_name, batch_no,
+       expiry_date_key, is_gift, quantity_on_hand, market_actual_unit_price, store_standard_unit_price, store_actual_unit_price)
+     VALUES ($1, $2, $2 || '|FPH358', $3, '默认规格', 'FPH358', '', false, 0, 40, 100, 100)
+     ON CONFLICT (location_id, lot_key) DO UPDATE SET updated_at = NOW()
+     RETURNING id`,
+    [TEST_MARKET_ORG_ID, INV_SKU_ID, `${NS}_采购商品`],
+  )
+  const insertDoc = (id, docType, status) => pgQuery(
+    `INSERT INTO inventory_docs (id, doc_type, status, source_org_node_id, target_org_node_id, market_id, doc_date, total_quantity, created_by)
+     VALUES ($1, $2, $3, $4, $5, $4, CURRENT_DATE, 0, $6)`,
+    [id, docType, status, TEST_MARKET_ORG_ID, TEST_STORE_ORG_ID, TEST_MANAGER_EMP_ID],
+  )
+  await insertDoc(fphId, '分院配货', '待收货')
+  await insertDoc(oldInboundId, '院入库', '已完成')
+  const itemIds = []
+  for (const [quantity, fulfilled] of [[10, 3], [4, 4]]) {
+    const [row] = await pgQuery(
+      `INSERT INTO inventory_doc_items (doc_id, lot_id, sku_id, sku_name, spec_name, batch_no, is_gift, quantity,
+         stock_snapshot, fulfilled_quantity, standard_unit_price, unit_discount, actual_unit_price,
+         store_standard_unit_price, store_unit_discount, store_actual_unit_price, market_actual_unit_price)
+       VALUES ($1, $2, $3, $4, '默认规格', 'FPH358', false, $5, 0, $6, 100, 0, 100, 100, 0, 100, 40) RETURNING id`,
+      [fphId, srcLot.id, INV_SKU_ID, `${NS}_采购商品`, quantity, fulfilled],
+    )
+    const [old] = await pgQuery(
+      `INSERT INTO inventory_doc_items (doc_id, sku_id, sku_name, is_gift, quantity, stock_snapshot, actual_unit_price)
+       VALUES ($1, $2, $3, false, $4, 0, 100) RETURNING id`,
+      [oldInboundId, INV_SKU_ID, `${NS}_采购商品`, fulfilled],
+    )
+    await pgQuery(
+      `INSERT INTO inventory_doc_links (from_doc_id, to_doc_id, relation_type, from_item_id, to_item_id, quantity)
+       VALUES ($1, $2, '发货收货', $3, $4, $5)`,
+      [fphId, oldInboundId, row.id, old.id, fulfilled],
+    )
+    itemIds.push(Number(row.id))
+  }
+
+  const r = await invokeStaffApi('inventory.confirmReceive', { _testOpenid: TEST_MANAGER_OPENID, id: fphId })
+  if (r.code !== 0) {
+    errors.push(`confirmReceive 剩余量 code=${r.code} msg=${r.message}`)
+    return
+  }
+  const inboundId = r.data?.inboundDocId
+  const [head] = await pgQuery('SELECT total_quantity, total_amount FROM inventory_docs WHERE id = $1', [inboundId])
+  if (Number(head?.total_quantity) !== 7 || Number(head?.total_amount) !== 700) {
+    errors.push(`入库单表头应为 7 件 / 700 元，实际 ${head?.total_quantity} / ${head?.total_amount}`)
+  }
+  const links = await pgQuery(
+    `SELECT from_item_id, quantity FROM inventory_doc_links WHERE to_doc_id = $1 AND relation_type = '发货收货'`,
+    [inboundId],
+  )
+  if (links.length !== 1 || Number(links[0].from_item_id) !== itemIds[0] || Number(links[0].quantity) !== 7) {
+    errors.push(`发货收货血缘应只有 A 行 7，实际 ${JSON.stringify(links)}`)
+  }
+  const source = await pgQuery('SELECT fulfilled_quantity FROM inventory_doc_items WHERE doc_id = $1 ORDER BY id', [fphId])
+  if (source.map((row) => Number(row.fulfilled_quantity)).join(',') !== '10,4') {
+    errors.push(`来源 fulfilled 应回写为 10,4，实际 ${source.map((row) => row.fulfilled_quantity).join(',')}`)
+  }
+  const [fph] = await pgQuery('SELECT status FROM inventory_docs WHERE id = $1', [fphId])
+  if (fph?.status !== '已完成') errors.push(`分院配货应已完成，实际 ${fph?.status}`)
+  const moves = await pgQuery('SELECT quantity_delta FROM inventory_movements WHERE doc_id = $1', [inboundId])
+  if (moves.length !== 1 || Number(moves[0].quantity_delta) !== 7) {
+    errors.push(`入库流水应为 +7 一条，实际 ${JSON.stringify(moves)}`)
+  }
+  const again = await invokeStaffApi('inventory.confirmReceive', { _testOpenid: TEST_MANAGER_OPENID, id: fphId })
+  if (again.code === 0) errors.push('已完成的分院配货再收货应被拒')
+  if (errors.length === before) {
+    rec(`  ✓ 确认收货只收剩余量（#358）：${fphId} 已收 3/10 → 入 7、血缘 7、fulfilled 10、单据已完成、流水 +7；再收被拒`)
   }
 }
 

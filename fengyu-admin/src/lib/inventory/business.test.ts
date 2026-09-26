@@ -3469,7 +3469,10 @@ describe('整单收货入口 receiveXxxInFull（#192）', () => {
       if (rendered.includes('FROM inventory_stock_lots')) return [shipmentSourceLotRow()]
       if (rendered.includes('FROM inventory_skus')) return [marketSkuRow('SKU-1')]
       if (rendered.includes('FROM inventory_doc_items')) {
-        const id = Number(sqlParams(query)[0])
+        // #358 整单闸：先按 doc_id 锁整张单的明细（参数是单号），再逐行按明细 id 锁
+        const param = sqlParams(query)[0]
+        if (typeof param === 'string' && Number.isNaN(Number(param))) return [...downstreamItems.values()]
+        const id = Number(param)
         itemIds.push(id)
         const row = downstreamItems.get(id)
         return row ? [row] : []
@@ -3572,6 +3575,53 @@ describe('整单收货入口 receiveXxxInFull（#192）', () => {
     mockReceiveTransaction(new Map([[1, shipmentItemRow(1, '10', '9')]]))
     await expect(receiveItemCompanyShipmentInFull(SESSION, { shipmentId: 'GFH-1' }))
       .rejects.toThrow('实收数量不能超过待收数量')
+  })
+
+  /*
+   * #358（甲方拍板 A：实物短少一律走撤回）：带 items 的「去收货」同样只能整单收。
+   * 三条一起钉：少收拒、漏行拒、足额整单放行（走到建单号的哨兵）—— 只钉前两条的话，
+   * 把闸门写成「一律拒绝」也全绿。
+   */
+  describe('去收货只能整单确认（#358）', () => {
+    const items = [
+      shipmentItemRow(1, '10', '3'), // 待收 7（admin 早先放行过的部分收货存量）
+      shipmentItemRow(2, '5', '5'), // 已收满
+      shipmentItemRow(3, '8', '0'), // 待收 8
+    ]
+
+    it('某行实收少于待收 → INVALID_PARAMS，不建单', async () => {
+      mockBothSyncProbes()
+      mockReceiveTransaction(new Map(items.map((row) => [row.id, row])))
+      await expect(receiveItemCompanyShipment(SESSION, {
+        shipmentId: 'GFH-1',
+        items: [
+          { shipmentItemId: 1, receivedQuantity: 6.99 },
+          { shipmentItemId: 3, receivedQuantity: 8 },
+        ],
+      })).rejects.toThrow(/^INVALID_PARAMS: 收货须按待收数量整单确认/)
+    })
+
+    it('漏掉仍有待收的行 → INVALID_PARAMS，不建单', async () => {
+      mockBothSyncProbes()
+      mockReceiveTransaction(new Map(items.map((row) => [row.id, row])))
+      await expect(receiveItemCompanyShipment(SESSION, {
+        shipmentId: 'GFH-1',
+        items: [{ shipmentItemId: 1, receivedQuantity: 7 }],
+      })).rejects.toThrow(/^INVALID_PARAMS: 收货须按待收数量整单确认/)
+    })
+
+    it('每行实收 = 待收、已收满的行不传 → 过闸（走到建单号）', async () => {
+      mockBothSyncProbes()
+      const { itemIds } = mockReceiveTransaction(new Map(items.map((row) => [row.id, row])))
+      await expect(receiveItemCompanyShipment(SESSION, {
+        shipmentId: 'GFH-1',
+        items: [
+          { shipmentItemId: 1, receivedQuantity: 7 },
+          { shipmentItemId: 3, receivedQuantity: 8 },
+        ],
+      })).rejects.toThrow(SENTINEL)
+      expect(itemIds).toEqual([1, 3])
+    })
   })
 })
 

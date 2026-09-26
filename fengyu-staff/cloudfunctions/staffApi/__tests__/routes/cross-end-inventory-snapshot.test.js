@@ -681,3 +681,109 @@ describe('SKU 归属谓词 staff ↔ admin 同口径', () => {
     expect(report).toContain('assertSkuAvailableToMarket(sku, marketId)')
   })
 })
+
+/**
+ * §8 收货已收口径与建批次 SQL（#358）。
+ *
+ * ① 「发货收货」血缘的三个写入方（admin receivePhysicalShipment / admin 通用收货
+ *    confirmInventoryCoreReceive / staff confirmReceive）都必须回写来源明细 fulfilled_quantity；
+ *    staff 收货量 = 发货量 − fulfilled（admin 由 getShipmentReceiptProgress / 整单闸同口径）。
+ * ② fulfilled 只由服务端收货路径写：两端通用建单不得把客户端 fulfilledQuantity 落库
+ *    （否则调接口就能改收货量、让库存凭空消失）。
+ * ③ 建批次 INSERT 的三份副本列与 VALUES 逐位对齐：staff 曾 `$11,0,$12` 错位 1.5 个月，
+ *    is_gift 吃到 0、quantity_on_hand 吃到布尔，真 PG 42804，小程序收货从未成功；mock 单测看不出。
+ */
+describe('§8 收货已收口径与建批次 SQL 两端守护（#358）', () => {
+  const staffJs = fs.readFileSync(FILES.staffInventoryJs, 'utf8')
+  const adminEngine = fs.readFileSync(FILES.adminEngineTs, 'utf8')
+  const adminBusiness = fs.readFileSync(FILES.adminBusinessTs, 'utf8')
+
+  function sliceBetween(src, start, endMarker) {
+    const from = src.indexOf(start)
+    if (from < 0) throw new Error(`未找到 ${start}`)
+    const to = src.indexOf(endMarker, from + start.length)
+    return src.slice(from, to < 0 ? undefined : to)
+  }
+  const FULFILLED_INCREMENT = /SET fulfilled_quantity = COALESCE\(fulfilled_quantity, 0\) \+/
+
+  test('① 三个「发货收货」写入方都回写来源 fulfilled_quantity', () => {
+    const writers = {
+      'staff confirmReceive': sliceBetween(staffJs, 'async function confirmReceive(', '\nasync function '),
+      'admin receivePhysicalShipment': sliceBetween(adminBusiness, 'async function receivePhysicalShipment(', '\nexport async function '),
+      'admin confirmInventoryCoreReceive': sliceBetween(adminEngine, 'export const confirmInventoryCoreReceive', '\nexport '),
+    }
+    for (const [name, body] of Object.entries(writers)) {
+      expect(body, `${name} 必须写「发货收货」血缘`).toContain('发货收货')
+      expect(body, `${name} 必须回写来源 fulfilled_quantity`).toMatch(FULFILLED_INCREMENT)
+    }
+    // 闭集：全仓写「发货收货」血缘的只有这三处（新增写入方须登记到上表）
+    const count = (src) => (src.match(/relationType: '发货收货'|'发货收货',\$3|VALUES \(\$1,\$2,'发货收货'/g) || []).length
+    expect(count(staffJs) + count(adminEngine) + count(adminBusiness)).toBe(3)
+    expect(writers['staff confirmReceive']).toContain('Number(item.quantity) - Number(item.fulfilled_quantity || 0)')
+  })
+
+  test('② 两端通用建单不落客户端 fulfilledQuantity', () => {
+    const staffCreate = sliceBetween(staffJs, 'async function createDoc(', '\nasync function ')
+    expect(staffCreate).not.toMatch(/item\.fulfilledQuantity/)
+    const adminCreate = sliceBetween(adminEngine, 'export const createInventoryCoreDoc', '\nexport ')
+    expect(adminCreate).not.toMatch(/serverItem\.fulfilledQuantity|item\.fulfilledQuantity/)
+    expect(adminCreate).toContain('fulfilledQuantity: null,')
+  })
+
+  /** 按顶层逗号切分（跳过 () {} 与模板插值内部的逗号） */
+  function splitTopLevel(text) {
+    const parts = []
+    let depth = 0
+    let current = ''
+    for (const ch of text) {
+      if ('({['.includes(ch)) depth += 1
+      if (')}]'.includes(ch)) depth -= 1
+      if (ch === ',' && depth === 0) {
+        parts.push(current.trim())
+        current = ''
+      } else {
+        current += ch
+      }
+    }
+    if (current.trim()) parts.push(current.trim())
+    return parts
+  }
+  /** 取 `INSERT INTO inventory_stock_lots (列) VALUES (值)` 的列表与值表（平衡括号截取） */
+  function lotInserts(src) {
+    const result = []
+    let from = 0
+    for (;;) {
+      const at = src.indexOf('INSERT INTO inventory_stock_lots (', from)
+      if (at < 0) return result
+      const colsStart = at + 'INSERT INTO inventory_stock_lots ('.length
+      const colsEnd = src.indexOf(')', colsStart)
+      const valuesAt = src.indexOf('VALUES (', colsEnd)
+      let depth = 1
+      let i = valuesAt + 'VALUES ('.length
+      const valuesStart = i
+      for (; depth > 0; i += 1) {
+        if (src[i] === '(') depth += 1
+        if (src[i] === ')') depth -= 1
+      }
+      result.push({
+        columns: splitTopLevel(src.slice(colsStart, colsEnd)),
+        values: splitTopLevel(src.slice(valuesStart, i - 1)),
+      })
+      from = i
+    }
+  }
+
+  test.each([
+    ['staff routes/inventory.js', () => staffJs],
+    ['admin engine.ts', () => adminEngine],
+    ['admin business.ts', () => adminBusiness],
+  ])('③ %s 建批次 INSERT 列与值逐位对齐，quantity_on_hand 恒 0', (_name, source) => {
+    const inserts = lotInserts(source())
+    expect(inserts.length).toBeGreaterThan(0)
+    for (const { columns, values } of inserts) {
+      expect(values).toHaveLength(columns.length)
+      expect(values[columns.indexOf('quantity_on_hand')]).toBe('0')
+      expect(values[columns.indexOf('is_gift')]).not.toBe('0')
+    }
+  })
+})

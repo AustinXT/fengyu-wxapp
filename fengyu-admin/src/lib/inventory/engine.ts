@@ -3974,7 +3974,8 @@ export const createInventoryCoreDoc = withAnyPermission(
             quantity: String(quantity),
             stockSnapshot: lot ? String(lot.quantityOnHand) : numString(bookQuantity),
             requestQuantity: numString(serverItem.requestQuantity),
-            fulfilledQuantity: numString(serverItem.fulfilledQuantity),
+            // 已收 / 已履约量只由服务端收货路径回写（#358），建单不收客户端值
+            fulfilledQuantity: null,
             standardUnitPrice: numString(standardUnitPrice),
             unitDiscount: numString(unitDiscount),
             actualUnitPrice: numString(actualUnitPrice),
@@ -4312,6 +4313,14 @@ export const confirmInventoryCoreReceive = withAnyPermission(
           toItemId: createdItem.id,
           quantity: String(item.quantity),
         })
+        // 已收口径单源（#358）：来源明细 fulfilled_quantity 与 staffApi confirmReceive、
+        // business.ts receivePhysicalShipment 同写法。调货单只能整单收，且建单不接受客户端
+        // fulfilledQuantity（恒为空），所以这里进来时已收为 0、收后等于发货量。
+        await tx.execute(sql`
+          UPDATE inventory_doc_items
+             SET fulfilled_quantity = COALESCE(fulfilled_quantity, 0) + ${String(item.quantity)}
+           WHERE id = ${Number(item.source_item_id)}
+        `)
       }
 
       await tx

@@ -162,6 +162,17 @@ describe('办理台表单一致性（#135）', () => {
     expect(picker).toMatch(/<span className="sr-only">（必填）<\/span>/)
   })
 
+  it('收货表单「本次实收」只读、按待收整单提交（#358 拍板 A）', () => {
+    const form = block('function ShipmentReceiptForm(', 'interface SupplyChainPurchaseReceiptDraftLine')
+    // 只读展示待收量，没有可改数量的 onChange
+    expect(form).toContain('aria-label={`本次实收 ${rowName}`} readOnly value={String(line.outstandingQuantity)}')
+    expect(form).not.toMatch(/receivedInput/)
+    // 提交的数量就是待收量，不经任何可编辑状态
+    expect(form).toMatch(/receivedQuantity: line\.outstandingQuantity,/)
+    // 文案不再引导去改数
+    expect(source).not.toMatch(/部分收货或登记差异/)
+  })
+
   it('数值输入是 type=number 且带 min/step/max，不留 inputMode="decimal"', () => {
     // ⚠️ HTML 的 min 属性对 type=text **完全无效**。issue 原文说「补 min="0"」，
     // 但照字面只加 min 而不改 type，能让 UX 扫描器转绿却零实际效果 —— 假修复。
@@ -173,7 +184,8 @@ describe('办理台表单一致性（#135）', () => {
     // 22 → 23（#344：转换目标行新增「单价」）
     // 23 → 24（#336b：新发货表单每行一个数量框，正常 / 赠送共用一个 Input，标签按行属性切换）
     // 24 → 25（#346：供应链采购入库行新增「单价优惠」）
-    expect(numberInputs.length).toBe(25)
+    // 25 → 24（#358：收货表单「本次实收」改只读文本框，整单按待收收货）
+    expect(numberInputs.length).toBe(24)
     for (const attrs of numberInputs) {
       expect(attrs).toMatch(/min="0(\.01)?"/)
       expect(attrs).toMatch(/step="0\.01"/)
@@ -196,7 +208,8 @@ describe('办理台表单一致性（#135）', () => {
     // 15 → 13（#336a：品项公司发货表单暂为占位；#336b 新表单逐行显式校验，不再有 nonnegative 字段）
     // 13 → 14（#344：转换目标「单价」允许 0（赠送转换 / 自填 0 价），走 nonnegativeNumber → min="0"）
     // 14 → 15（#346：入库「单价优惠」允许 0 / 留空，走 nonnegativeNumber → min="0"）
-    expect(loose.length).toBe(15)
+    // 15 → 14（#358：收货「本次实收」只读，不再是可填的数值框）
+    expect(loose.length).toBe(14)
 
     // 抽样两个方向，防止整体计数对了但分配错了
     const store = block('function StoreRequestForm(', 'function ItemCompanyReplenishmentForm(')
