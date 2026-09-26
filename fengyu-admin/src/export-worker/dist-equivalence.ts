@@ -26,7 +26,10 @@
  * 已知取舍（均为误红方向，fail-closed）：模板字面量按原文比较，等价转义改写（\u0041 → A）也算不等；
  * 用户代码若恰好写出与打包样板同形的语句（顶层零参 init_x() 调用、var import_x = __toESM(…)）会被当样板处理；
  * 源码同时存在 a 与 a1 这类名字时，bun 的后缀改名可能与「原名 + 数字」规则交叉配对而误红；
- * 内部模块的默认导入 / 命名空间导入尚未建模，遇到时直接抛错说明。only 模式只比指定声明，不核对样板序列。
+ * 内部模块的默认导入 / 命名空间导入、带来源的再导出尚未建模，遇到时直接抛错说明。only 模式只比指定声明，不核对样板序列。
+ * `void 0` 与 `undefined` 未做归一（当前 bun 产物不使用 void 0；若将来出现会误红而不是漏报）。
+ * 不守护模块的导出面：只改导出名单（增删 export { … }）而实现不变时检测不到 —— 产物的导出信息在 bundle
+ * 尾部的 export 语句里，不在模块区段内，属架构性留白；导出名单的正确性由 tsc 与调用方的类型检查保证。
  *
  * 威胁模型：本比较器只回答「产物是不是按当前源码构建的」（防改了源码忘记重建），**不验证 bun 转换本身的语义正确性**。
  * 顶层 const → var 是 bun 对每个模块都做的固定转换；一份过期产物不可能单靠「const 变 var」这一处差异
@@ -447,7 +450,9 @@ class Comparator {
       return
     }
     if (ts.isNumericLiteral(srcNode) && ts.isNumericLiteral(distNode)) {
-      if (Number(srcNode.text) !== Number(distNode.text)) this.fail(path, `数字不同：${srcNode.text} / ${distNode.text}`)
+      // 数字分隔符（1_000）先去掉再按值比较，否则 Number('1_000') 是 NaN、恒判不等
+      const value = (text: string) => Number(text.replace(/_/g, ''))
+      if (value(srcNode.text) !== value(distNode.text)) this.fail(path, `数字不同：${srcNode.text} / ${distNode.text}`)
       return
     }
     if (ts.isBigIntLiteral(srcNode) && ts.isBigIntLiteral(distNode)) {
@@ -579,13 +584,13 @@ export function compareModuleRuntime(sides: ModuleSides): string[] {
   if (sides.only) {
     const declares = (statement: ts.Statement, name: string, allowSuffix: boolean) => {
       const matches = (declared: string) => (allowSuffix ? isRenamedFrom(declared, name) : declared === name)
-      if (ts.isFunctionDeclaration(statement) && statement.name) return matches(statement.name.text)
+      if ((ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement)) && statement.name) return matches(statement.name.text)
       return ts.isVariableStatement(statement) && statement.declarationList.declarations
         .some((item) => ts.isIdentifier(item.name) && matches(item.name.text))
     }
     const pick = (statements: readonly ts.Statement[], allowSuffix: boolean, side: string) => sides.only!.map((name) => {
       const found = statements.filter((statement) => declares(statement, name, allowSuffix))
-      if (found.length !== 1) throw new Error(`${side}里 ${name} 的顶层声明找到 ${found.length} 处（应恰为 1）`)
+      if (found.length !== 1) throw new Error(`${side}里 ${name} 的顶层声明找到 ${found.length} 处（应恰为 1；only 只支持 var / let / const / function / class 声明）`)
       return found[0]
     })
     srcStatements = pick(srcStatements, false, '源码')
@@ -618,16 +623,24 @@ export function compareModuleRuntime(sides: ModuleSides): string[] {
     if (new Set(declaredNames).size !== declaredNames.length) {
       comparator.fail('namespaces', `命名空间变量重复声明：[${declaredNames.join(' ')}]`)
     }
+    // 保序：命名空间声明之间的相对顺序就是 require 的执行顺序（与 init 序列同一口径）
+    const matchesPackage = ([name, required]: [string, string], specifier: string) => {
+      const slug = packageSlug(specifier)
+      return isRenamedFrom(name, `import_${slug}`) && isRenamedFrom(required, `require_${slug}`)
+    }
     const unmatched = [...namespaceDeclarations]
     for (const specifier of expectedPackages) {
-      const slug = packageSlug(specifier)
-      const index = unmatched.findIndex(([name, required]) =>
-        isRenamedFrom(name, `import_${slug}`) && isRenamedFrom(required, `require_${slug}`))
-      if (index < 0) comparator.fail('namespaces', `源码导入的包 ${specifier} 在产物里没有对应的 __toESM(require_${slug}(), 1) 声明`)
+      const index = unmatched.findIndex((declaration) => matchesPackage(declaration, specifier))
+      if (index < 0) comparator.fail('namespaces', `源码导入的包 ${specifier} 在产物里没有对应的 __toESM(require_${packageSlug(specifier)}(), 1) 声明`)
       else unmatched.splice(index, 1)
     }
     if (unmatched.length > 0) {
       comparator.fail('namespaces', `产物多出源码没有导入的命名空间声明：[${unmatched.map(([name, required]) => `${name}=${required}`).join(' ')}]`)
+    } else if (
+      namespaceDeclarations.length === expectedPackages.length
+      && !expectedPackages.every((specifier, index) => matchesPackage(namespaceDeclarations[index], specifier))
+    ) {
+      comparator.fail('namespaces', `命名空间声明顺序与源码导入顺序不同：[${namespaceDeclarations.map(([name]) => name).join(' ')}] / [${expectedPackages.join(' ')}]`)
     }
     const srcSideEffects = sideEffectImports(src.sourceFile.statements)
     const distSideEffects = sideEffectImports(dist.sourceFile.statements)

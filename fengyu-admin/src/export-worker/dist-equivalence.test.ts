@@ -96,8 +96,10 @@ describe('dist-equivalence：bun 的合法改写判为等价', () => {
     )).toEqual([])
   })
 
-  it('BigInt 按值：1n ≡ 0x1n ≡ 1_0n / 10', () => {
+  it('BigInt 按值：1n ≡ 0x1n ≡ 1_0n / 10；数字分隔符按值：1_000 ≡ 1000', () => {
     expect(compare('export const a = 1n\nexport const b = 1_0n', 'var a = 0x1n;\nvar b = 10n;')).toEqual([])
+    expect(compare('export const a = 1_000\nexport const b = 1_000', 'var a = 1000;\nvar b = 1_000;')).toEqual([])
+    expect(compare('export const a = 1_000', 'var a = 1_001;')).not.toEqual([])
   })
 
   it('init 调用与副作用导入各自保序；副作用导入可与 init 交错', () => {
@@ -134,6 +136,13 @@ describe('dist-equivalence：bun 的合法改写判为等价', () => {
       only: names,
     })
     expect(only(['b'], 'var a = 99;\nvar b2 = 2;')).toEqual([])
+    // only 支持类声明
+    expect(compareModuleRuntime({
+      sourceCode: 'export class K { m(): number { return 1 } }',
+      distCode: 'class K2 { m() { return 1; } }',
+      distSegmentOfImport: () => null,
+      only: ['K'],
+    })).toEqual([])
     expect(only(['b'], 'var b2 = 3;')).not.toEqual([])
     expect(() => only(['c'], 'var c = 1;')).toThrow(/源码里 c 的顶层声明找到 0 处/)
     expect(() => only(['b'], 'var a = 1;')).toThrow(/产物里 b 的顶层声明找到 0 处/)
@@ -262,6 +271,12 @@ describe('dist-equivalence：真实漂移判为不等', () => {
     differs(source, 'var import_drizzle_orm1 = __toESM(require_drizzle_orm(sideEffect), 1);\n' + use)
     differs(source, 'var import_drizzle_orm1 = __toESM(require_drizzle_orm(), 0);\n' + use)
     differs(source, 'var import_drizzle_orm1 = __toESM(require_drizzle_orm());\n' + use)
+    // 两个包的导入顺序对调：require 执行顺序不同
+    const two = 'import { sql } from "drizzle-orm"\nimport { z } from "zod"\nexport const q = [sql, z]'
+    const zod = 'var import_zod1 = __toESM(require_zod(), 1);\n'
+    const refs = 'var q = [import_drizzle_orm1.sql, import_zod1.z];'
+    expect(compare(two, ok + zod + refs)).toEqual([])
+    expect(compare(two, zod + ok + refs).join('\n')).toMatch(/命名空间声明顺序与源码导入顺序不同/)
   })
 
   it('(0, obj.method)() 丢 this、(0, eval)() 是间接 eval，都不等于直接调用', () => {
