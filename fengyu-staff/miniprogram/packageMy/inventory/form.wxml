@@ -110,6 +110,11 @@
   </van-popup>
 
   <view class="submit-bar">
-    <button class="submit-button" bindtap="onSubmit" loading="{{submitting}}" disabled="{{submitting || loadingOptions}}">提交单据</button>
+    <!-- 门店报货可存草稿（#348）：草稿不进入市场汇总与分院配货，提交后锁定不能再改 -->
+    <view wx:if="{{draftId}}" class="draft-tip">正在编辑草稿 {{draftId}}，提交后不能再修改</view>
+    <view class="submit-actions">
+      <button wx:if="{{canDraft}}" class="draft-button" bindtap="onSaveDraft" disabled="{{submitting || loadingOptions || loadingDraft}}">存草稿</button>
+      <button class="submit-button" bindtap="onSubmit" loading="{{submitting}}" disabled="{{submitting || loadingOptions || loadingDraft}}">提交单据</button>
+    </view>
   </view>
 </view>
