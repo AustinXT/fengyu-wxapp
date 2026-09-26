@@ -506,19 +506,38 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
    * members 按 declIdentity 精确到「词法容器链 + 成员」；同一身份覆盖其**全部**重载声明，登记前须逐个重载自查。
    * 对象字面量方法、接口调用签名（`interface Fn { <T>(): T }`）没有可登记的身份——需要时改成具名函数再登记。
    */
-  /** SOUND_GENERICS 里 react 条目放行的全部签名（React 升级改动任何一个重载都要回来重审；审过的结论：每个重载的 T 都只从受检入参 / setter 进入，零输入的 `useState<S = undefined>()` 读出恒为 undefined） */
+  /**
+   * SOUND_GENERICS 里 react 条目放行的全部签名 + 写入路径依赖类型（React 升级改动任何一处结构都要回来重审）。
+   * 审过的结论：每个重载的 T 只经受检入参、setter（Dispatch<SetStateAction<S>> / ActionDispatch）、ref.current、Provider value 进入；
+   * 零输入的 `useState<S = undefined>()` 读出恒为 undefined。
+   */
+  /** react 条目安全性依赖的写入路径类型：setter（Dispatch / SetStateAction / ActionDispatch）、ref、context / provider */
+  const REACT_WRITE_PATH_TYPES = [
+    'React>Dispatch', 'React>SetStateAction', 'React>ActionDispatch', 'React>AnyActionArg', 'React>RefObject',
+    'React>Context', 'React>Provider', 'React>ProviderProps', 'React>ProviderExoticComponent', 'React>ExoticComponent',
+  ]
   const REACT_SIGNATURE_SNAPSHOT: string[] = [
-    "@types/react/index.d.ts | React>createContext | function createContext<T>( // If you thought this should be optional, see // https://github.com/DefinitelyTyped/DefinitelyTyped/pull/24509#issuecomment-382213106 defaultValue: T, ): Context<T>;",
+    "@types/react/index.d.ts | React>ActionDispatch | type ActionDispatch<ActionArg extends AnyActionArg> = (...args: ActionArg) => void;",
+    "@types/react/index.d.ts | React>AnyActionArg | type AnyActionArg = [ ] | [ any ];",
+    "@types/react/index.d.ts | React>Context | interface Context<T> extends Provider<T> { Provider: Provider<T>; Consumer: Consumer<T>; displayName?: string | undefined; }",
+    "@types/react/index.d.ts | React>Dispatch | type Dispatch<A> = (value: A) => void;",
+    "@types/react/index.d.ts | React>ExoticComponent | interface ExoticComponent<P = {}> { (props: P): ReactNode; readonly $$typeof: symbol; }",
+    "@types/react/index.d.ts | React>Provider | type Provider<T> = ProviderExoticComponent<ProviderProps<T>>;",
+    "@types/react/index.d.ts | React>ProviderExoticComponent | interface ProviderExoticComponent<P> extends ExoticComponent<P> { }",
+    "@types/react/index.d.ts | React>ProviderProps | interface ProviderProps<T> { value: T; children?: ReactNode | undefined; }",
+    "@types/react/index.d.ts | React>RefObject | interface RefObject<T> { current: T; }",
+    "@types/react/index.d.ts | React>SetStateAction | type SetStateAction<S> = S | ((prevState: S) => S);",
+    "@types/react/index.d.ts | React>createContext | function createContext<T>(defaultValue: T): Context<T>;",
     "@types/react/index.d.ts | React>useCallback | function useCallback<T extends Function>(callback: T, deps: DependencyList): T;",
-    "@types/react/index.d.ts | React>useContext | function useContext<T>(context: Context<T> /*, (not public API) observedBits?: number|boolean */): T;",
+    "@types/react/index.d.ts | React>useContext | function useContext<T>(context: Context<T>): T;",
     "@types/react/index.d.ts | React>useMemo | function useMemo<T>(factory: () => T, deps: DependencyList): T;",
-    "@types/react/index.d.ts | React>useReducer | function useReducer<S, A extends AnyActionArg>( reducer: (prevState: S, ...args: A) => S, initialState: S, ): [S, ActionDispatch<A>];",
-    "@types/react/index.d.ts | React>useReducer | function useReducer<S, I, A extends AnyActionArg>( reducer: (prevState: S, ...args: A) => S, initialArg: I, init: (i: I) => S, ): [S, ActionDispatch<A>];",
+    "@types/react/index.d.ts | React>useReducer | function useReducer<S, A extends AnyActionArg>(reducer: (prevState: S, ...args: A) => S, initialState: S): [ S, ActionDispatch<A> ];",
+    "@types/react/index.d.ts | React>useReducer | function useReducer<S, I, A extends AnyActionArg>(reducer: (prevState: S, ...args: A) => S, initialArg: I, init: (i: I) => S): [ S, ActionDispatch<A> ];",
     "@types/react/index.d.ts | React>useRef | function useRef<T>(initialValue: T | null): RefObject<T | null>;",
     "@types/react/index.d.ts | React>useRef | function useRef<T>(initialValue: T | undefined): RefObject<T | undefined>;",
     "@types/react/index.d.ts | React>useRef | function useRef<T>(initialValue: T): RefObject<T>;",
-    "@types/react/index.d.ts | React>useState | function useState<S = undefined>(): [S | undefined, Dispatch<SetStateAction<S | undefined>>];",
-    "@types/react/index.d.ts | React>useState | function useState<S>(initialState: S | (() => S)): [S, Dispatch<SetStateAction<S>>];",
+    "@types/react/index.d.ts | React>useState | function useState<S = undefined>(): [ S | undefined, Dispatch<SetStateAction<S | undefined>> ];",
+    "@types/react/index.d.ts | React>useState | function useState<S>(initialState: S | (() => S)): [ S, Dispatch<SetStateAction<S>> ];",
   ]
   const SOUND_GENERICS: Array<{ pkg?: string; file?: string; members: readonly string[] }> = [
     // @types/react 是 `export = React; declare namespace React { function useState… }`，身份带命名空间（有断言锁住已安装声明）
@@ -808,37 +827,75 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
    * 白名单条目放行的是「该身份的**全部**声明（含所有重载、跨声明文件的补充）」，所以把 Program 里 react 包全部声明文件中
    * 命中登记身份的每一个签名钉成快照：React 升级新增 / 改动任何一个重载（包括零输入重载）都会让这里变红，逼回来重审白名单。
    */
-  const signatureSnapshot = (entryPkg: string) => {
-    const entry = SOUND_GENERICS.find((e) => e.pkg === entryPkg)!
-    const pkgFile = (f: ts.SourceFile) => {
-      const norm = f.fileName.replace(/\\/g, '/')
-      return norm.includes(`/node_modules/${entryPkg}/`) || norm.includes(`/node_modules/@types/${toTypesName(entryPkg)}/`)
-    }
-    const out: string[] = []
-    for (const sf of program.getSourceFiles().filter(pkgFile)) {
-      const visit = (node: ts.Node) => {
-        if (ts.isFunctionLike(node) && !ts.isFunctionTypeNode(node) && ts.getNameOfDeclaration(node as ts.Declaration)) {
-          const id = declIdentity(node as ts.Declaration)
-          if (id && entry.members.includes(id)) {
-            const file = sf.fileName.replace(/\\/g, '/').split('/node_modules/').pop()
-            out.push(`${file} | ${id} | ${node.getText(sf).replace(/\s+/g, ' ')}`)
-          }
-        }
-        ts.forEachChild(node, visit)
+  /**
+   * 包内快照：命中登记身份的每个函数声明（含全部重载）+ 写入路径依赖的类型声明（setter / ref / context 的参数类型），
+   * 用 printer 重建（去注释、统一格式）——上游只改注释不红，改任何签名或这些依赖类型的结构必红。
+   */
+  const printer = ts.createPrinter({ removeComments: true, newLine: ts.NewLineKind.LineFeed })
+  function packageSnapshot(p: ts.Program, pkg: string, members: readonly string[], depTypes: readonly string[]): string[] {
+    const saved = [program, checker] as const
+    program = p
+    checker = p.getTypeChecker()
+    try {
+      const pkgFile = (f: ts.SourceFile) => {
+        const norm = f.fileName.replace(/\\/g, '/')
+        return norm.includes(`/node_modules/${pkg}/`) || norm.includes(`/node_modules/@types/${toTypesName(pkg)}/`)
       }
-      visit(sf)
+      const out: string[] = []
+      for (const sf of p.getSourceFiles().filter(pkgFile)) {
+        const file = sf.fileName.replace(/\\/g, '/').split('/node_modules/').pop()
+        const visit = (node: ts.Node) => {
+          const isFn = ts.isFunctionLike(node) && !ts.isFunctionTypeNode(node) && !!ts.getNameOfDeclaration(node as ts.Declaration)
+          const isTypeDecl = ts.isTypeAliasDeclaration(node) || ts.isInterfaceDeclaration(node)
+          if (isFn || isTypeDecl) {
+            const id = declIdentity(node as ts.Declaration)
+            if (id && (isFn ? members : depTypes).includes(id)) {
+              out.push(`${file} | ${id} | ${printer.printNode(ts.EmitHint.Unspecified, node, sf).replace(/\s+/g, ' ')}`)
+            }
+          }
+          ts.forEachChild(node, visit)
+        }
+        visit(sf)
+      }
+      return out.sort()
+    } finally {
+      ;[program, checker] = saved
     }
-    return out.sort()
   }
 
-  it('白名单不过期：react 包全部声明文件里命中登记身份的签名（含全部重载）与快照逐字相等', () => {
-    const snap = signatureSnapshot('react')
+  it('白名单不过期：react 包全部声明文件里登记身份的签名（含全部重载）与写入路径依赖类型，与快照逐字相等', () => {
+    const members = SOUND_GENERICS.find((e) => e.pkg === 'react')!.members
+    const snap = packageSnapshot(program, 'react', members, REACT_WRITE_PATH_TYPES)
     expect(snap).toEqual(REACT_SIGNATURE_SNAPSHOT)
-    // 每个登记身份都至少有一个真实声明（登记名写错 / React 改了结构 → 红）
-    for (const id of SOUND_GENERICS.find((e) => e.pkg === 'react')!.members) {
-      expect(snap.some((line) => line.includes(` | ${id} | `)), id).toBe(true)
-    }
+    // 每个登记身份与依赖类型都至少有一个真实声明（登记名写错 / React 改了结构 → 红）
+    for (const id of [...members, ...REACT_WRITE_PATH_TYPES]) expect(snap.some((line) => line.includes(` | ${id} | `)), id).toBe(true)
   })
+
+  it('自检：包快照只看结构——依赖类型改一处必变，只改注释不变', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'calendar-date-pkgsnap-'))
+    const variant = (name: string, dispatch: string) => {
+      const root = join(dir, name)
+      mkdirSync(join(root, 'node_modules/react'), { recursive: true })
+      writeFileSync(join(root, 'node_modules/react/package.json'), '{"name":"react","types":"index.d.ts"}')
+      writeFileSync(join(root, 'node_modules/react/index.d.ts'),
+        `export = React\ndeclare namespace React {\n  ${dispatch}\n  function useState<S>(initial: S): [S, Dispatch<S>]\n}`)
+      writeFileSync(join(root, 'use.ts'), `import { useState } from 'react'\nexport const u = useState`)
+      const p = ts.createProgram([join(root, 'use.ts')], {
+        strict: true, module: ts.ModuleKind.ESNext, moduleResolution: ts.ModuleResolutionKind.Bundler, noEmit: true, skipLibCheck: true,
+        types: [], // 不自动带入外层的 @types/react，只看本变体的仿包
+      })
+      return packageSnapshot(p, 'react', ['React>useState'], ['React>Dispatch']).map((l) => l.replace(/^[^|]*\|/, ''))
+    }
+    try {
+      const base = variant('a', 'type Dispatch<A> = (value: A) => void')
+      expect(base).toHaveLength(2)
+      expect(variant('b', 'type Dispatch<A> = (value: any) => void')).not.toEqual(base) // 只放宽依赖类型
+      // 注释写在声明**内部**（getText 会带上，printer 会去掉）——上游只改注释措辞不应让门禁变红
+      expect(variant('c', 'type Dispatch<A> = (/* 只改注释 */ value: A) => void')).toEqual(base)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }, 60_000)
 
   it('自检：闭包里出现全局增强 / 模块增强时退回全量扫描；三斜线引用进闭包', () => {
     const dir = mkdtempSync(join(tmpdir(), 'calendar-date-global-'))
