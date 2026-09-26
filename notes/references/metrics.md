@@ -899,6 +899,7 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 | 2026-09-25 | **数据中心范围支持门店多选（#376）**：新增「多店」范围 `scope=stores&scopeId=a,b`（单 key 逗号串，升序去重，≤200 家）。规范化：全选 → 总部 `all` / 非总部 `authorized`；恰好勾满单个市场 → `market`（范围面板里勾满只有 1 家店的市场也记为 `market`，与旧下拉「选市场」一致）；其余 1 家 → `store`；含停用门店不折叠。服务端所选门店须全在授权门店内，否则 `PERMISSION_DENIED`。无门店员工按「锚定市场下至少有一家所选在营门店」可见（⚠️ 单店仍恒不可见，1 家与 2 家之间有此跳变，是拍板语义；变体：所选多店部分停用、只剩 1 家在营时仍按多店判定，锚定员工可见）。所选全部停用 → #293 空态；部分停用 → 只算在营部分并提示。超管 `all` ≠ 全部在营门店的 `stores`（后者不含品项公司等无门店市场的锚定员工），故全选必须折叠成 `all`。dev 库对账：全选 / 勾满单市场与改造前 authorized / market 在 4 板块 + 5 新页逐项一致 |
 | 2026-09-25 | **无门店市场账号开放数据中心（#399）**：只授权到无在营门店市场（如 hr@品项公司）的非总部账号，默认范围落到该市场（此前整屏「暂无可查看范围」），人效榜按 `anchor_market_id` 看锚定员工，门店口径板块按实为 0；范围下拉改为「可切换范围 ≤1 才锁」（可见在营门店 + 直接授权的无门店市场）。「直接授权」= 角色范围覆盖该市场节点（`scopeOrgNodeIds`），门店级账号的祖先市场不算：不参与默认 / 锁定，且 admin `orgAnchorScopeSql` 市场分支对祖先市场另叠可见在营门店条件（与 authorized 同口径）。⚠️ 已知：该范围下人均类 KPI 分子为门店口径（恒 0）、分母含锚定技师，显示 0（口径待定，见 follow-up） |
 | 2026-09-25 | **经营分析站（fengyu-analyst）在营门店口径跟随 #401（#421）**：范围下拉由门店关店标记改为**只看 `org_nodes.is_active`**；复购 / 渗透 / 新客漏斗取数统一叠在营门店过滤（`scopeFilterSql`），「全部」范围也剔除门店为空 / 悬空的行（与 admin 一致）。**「首次」判定用全历史**：新客首单、复购首次进入的基线含停用门店的历史单（`scopeRangeSql`，仍只在所选范围内），归属门店须在营——否则在停用门店买过的老顾客换到在营门店会被误判为新客；新客首单、复购首次达标日同日在多家门店发生时优先归属在营门店（按日粒度，避免同日先去停用门店的顾客被整行剔除）。到店 / 入会金额 / 年贡献 / 复购达标日只计在营门店。门店级账号的门店全部停用时不再列出其市场（显示「暂无可查看的数据范围」）。第三份独立副本 `fengyu-analyst/src/lib/store-status.ts`，由 staff `cross-end-store-active-snapshot.test.js`（三端整段等值 + analyst 接线）与 `cross-end-store-status-snapshot.test.js`（analyst 全部源码 is_closed 闭集 + 单源）守护（staffApi 全量在 CI 跑；analyst 自身 vitest 未进 CI，#382）。prod 2026-08 影响：下拉少九江中辉店、南昌龙大店；全集团渗透会员数 1947→1946，其余指标不变 |
+| 2026-09-26 | **品项板新增/复购业绩改净额（#288）**：`daily_agg` 的 `HAVING` 由 `> 0` 改为「两列都为 0 才剔除」，`period_agg` 由 `purchase_received > 0` 改为 `<> 0` —— 退款负数冲销不再因当日净额 ≤ 0 被整组丢弃（原先约 62% 的冲销被吞）。体验判定与人数归店只认正数购买日（负数行只进业绩、不造人；否则 prod 实测体验多出 60 人）；admin 明细新增拆成 `new_store`（人数）与 `new_revenue_store`（业绩）。admin 与 staffApi 同步。2026-01-01~09-22 集团 prod：新增业绩 −11.99%、复购业绩 −6.93%，人数不变 |
 | **2026-09-14** | **款项业绩归属日期收口（#137，迁移 0039 + 0040）**。视图 `sale_order_performance_events.performance_date` 改为**直读** `sale_order_payments.performance_attribution_date`，**查询侧不再有任何回退分支**；取值规则全部下沉到写入侧两个 trigger。0040 给该列加了 **CHECK 约束** `chk_sop_attribution_date_present`（列本身**不是** `NOT NULL`，Drizzle schema 里仍是 nullable）。<br>**影响面**：原文「首次支付取订单归属日、回款/退款取自身 `paid_at`」的表述在全文档失效——每一笔款项都有自己的归属日期。金额类指标按类型分流：**业绩/现金流类**（总业绩、分客型业绩、员工业绩、销售提成）走 `[spe.performance_date]`；**子项类**（生美业绩、产品出库、品项周期业绩）走 `[sipe.performance_date]`；**实耗 / 生美实耗 / 服务提成**仍走 `[service_date]`，不受本次收口影响。<br>⚠ **部署前置**：先 apply 0039 + 0040 再部署各端，否则未迁库时首次支付行归属日为 NULL，会被三值逻辑吞掉正数主体。 |
 | **2026-09-16** | **口径变更登记（#138 / #139 / #140 / #141）**，四条均为「从 `paid_at` 切到归属日期」：<br>· **#138** 客量数据子页 §4/§5：会员被经营 6 档分桶、会员客单价、新会员对应消费改按款项流水归属（`SUM(spe.amount) @ performance_date`；旧实现为 `SUM(o.received - COALESCE(o.refunded_amount,0)) @ o.paid_at::date` ∩ `o.status='已支付'`，旧文档曾误记为 `paid_amount`，该列已 DROP）。dev 实测 2026-08 经营人数 321→324、会员总数 470→413、消费合计 +7.78 万；含退款负行故 `spend` 可为负（本期净消费，不 clamp）。<br>· **#139** staff 订单列表 / 营业额分配列表的日期筛选固定按 `performance_attribution_date`。<br>· **#140** admin 工作台「今日实付 / 今日退款 / 昨日实付」改按 `spe.performance_date`（`total_paid_amount` 无日期条件不受影响）。⚠ 财务注意：这三项不再与银行流水逐日对齐。<br>· **#141** staff 顾客档案「年度消费」/ 列表「年消费」改按 `performance_attribution_date`（半开年区间）；**月度消费日历仍按 `paid_at`**，两个口径并存且有意。<br>同轮订正三处存量滞后表述：销售数据页总述、分客型业绩 `[sop.paid_at_period]`、分客型产品出库与品项维度汇总的 `SUM(si.received) @ paid_at`（实现早已是 `SUM(sipe.amount) @ sipe.performance_date`）；员工排行榜「复用 `[paid_at_period]`」。<br>另补登记一条历史遗漏：实耗 / 生美实耗 / 项目数等**消耗类**指标两端都套了 `excludeDepositRefundSql()` 剔除寄存单退款专用服务单（admin 19 处 / staff 12 处，由 `consistency.deposit-refund-filter.test.ts` 守护 31 处中的 29 处，且只校验文件级调用次数）——**客流 / 到店 / 服务人次 / 保有会员 / 提成不剔除**（寄存退款是真到店、假消耗）。本文档此前从未登记，照公式抄会多算。 |
 | **2026-09-22** | **环比基期（上期）长度首次登记（#283）**，见文末「数据中心（admin）板块专属指标」节。此前全文只登记了「上期」这个概念、从未定义其长度，`time-range.ts` 遂把本节「时间窗口补充」里 staff 端的**三选一并列维度**「上月=上月初~上月末」误当成环比分母，于是 `本周`/`本月` 两个 preset 拿 N 天的当期比整周/整月的基期（同文件 `今日`/`自定义` 恒等长，`今年` 另有跨闰年偏差）。现明确：**基期按日历同期对齐、不得无条件取完整上一周期**，`本周`→上周同一星期几、`本月`→上月同一日。同轮登记三条日历固有例外（`本月` 上月天数不足时 clamp 到上月末短 1~3 天；`今年` 的环比/同比基期跨闰年 ±1 天；`本周`/`自定义` 的**同比**基期跨闰年 ±1 天且星期漂移——后两条源自 `addYears` 的 2/29 归一化，**均尚未修复**）。并明确**同比基期与环比基期同受「不得长于当期」约束**（二者同走一个 `deltaPct`）。另补登记 `delta%` 的「算不出」情形含**基期 `<= 0`** 与**非有限值**（负基期会让符号翻转）。⚠ 「本月」与「自定义同起止日」的环比值本就不同，属语义差异非缺陷。 |
@@ -1075,7 +1076,7 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 | **entry_date（首次进入日）** | 某 client 在某 product_kind 下，全历史（截至 $endDate）中最早的进入达标日（跨门店合并） |
 | **品项进入（xinzeng/newEntry）** | entry_date 落在 `[startDate, endDate]` 内的顾客 |
 | **复购（fugou）** | 本期品项进入 cohort 中，entry_date 后在 `[startDate, endDate]` 内再次有复购达标日的顾客（threshold 与进入共用） |
-| **体验（tiyan）** | 在 `[startDate, endDate]` 内有销售单/转换单购买，但全历史（截至 endDate）从未有进入达标日的顾客 |
+| **体验（tiyan）** | 在 `[startDate, endDate]` 内有销售单/转换单购买（当日净额 > 0 的正数购买日），但全历史（截至 endDate）从未有进入达标日的顾客 |
 
 > **同一天合并规则**：同一顾客 + 同一门店 + 同一 product_kind + 同一日期的多笔消费先合并；进入基线汇总三类订单，复购达标仅汇总销售单/转换单，再分别对比 threshold。
 > **金额口径**：使用 `sale_item_performance_events.amount` 逐笔子项业绩事件（该视图按 sale_item 汇总恒等于 `sale_items.received`，回款/退款已逐笔入账）。寄存单只用于进入基线，不计入体验/进入/复购的区间业绩。
@@ -1106,7 +1107,8 @@ WITH daily_agg AS (
     AND pc.product_kind IS NOT NULL
     AND sipe.performance_date <= $endDate
   GROUP BY so.client_user_id, so.store_id, pc.product_kind, sipe.performance_date
-  HAVING SUM(sipe.amount::numeric) > 0
+  HAVING SUM(sipe.amount::numeric) <> 0         -- #288：只剔除两列都为 0 的空组，负数净额日保留
+      OR SUM(sipe.amount::numeric) FILTER (WHERE so.sale_order_type IN ('销售单','转换单')) <> 0
 ),
 qualifying_days AS (
   SELECT client_user_id, store_id, product_kind, purchase_date
@@ -1121,12 +1123,12 @@ first_entry AS (                              -- entry_date：全历史最早进
   FROM qualifying_days
   GROUP BY client_user_id, product_kind
 ),
-period_agg AS (                               -- 期内真实购买每日聚合（排除寄存金额）
+period_agg AS (                               -- 期内真实购买每日净额（排除寄存金额；含退款冲销负数日，#288）
   SELECT client_user_id, store_id, product_kind, purchase_date,
          purchase_received AS day_received
   FROM daily_agg
   WHERE purchase_date BETWEEN $startDate AND $endDate
-    AND purchase_received > 0
+    AND purchase_received <> 0                  -- 只排除纯寄存日；负数日必须保留
 ),
 xinzeng AS (                                  -- 新增：entry_date 在期内
   SELECT client_user_id, product_kind, entry_date FROM first_entry
@@ -1140,14 +1142,15 @@ fugou AS (                                    -- 复购：本期进入 cohort，
   WHERE q.purchase_date BETWEEN $startDate AND $endDate
     AND q.purchase_date > x.entry_date
 ),
-tiyan AS (                                    -- 体验：期内有购买但全历史无达标日
+tiyan AS (                                    -- 体验：期内有正数购买日但全历史无达标日
   SELECT DISTINCT pa.client_user_id, pa.product_kind
   FROM period_agg pa
-  WHERE NOT EXISTS (
-    SELECT 1 FROM first_entry f
-    WHERE f.client_user_id = pa.client_user_id
-      AND f.product_kind   = pa.product_kind
-  )
+  WHERE pa.day_received > 0                     -- #288：负数冲销行只进业绩、不造体验客
+    AND NOT EXISTS (
+      SELECT 1 FROM first_entry f
+      WHERE f.client_user_id = pa.client_user_id
+        AND f.product_kind   = pa.product_kind
+    )
 )
 ```
 
@@ -1158,7 +1161,7 @@ tiyan AS (                                    -- 体验：期内有购买但全�
 | 体验客单价（trialAvgTicket） | `trialRevenue / trialCount` | 派生；防除零 → `--` |
 | 品项进入人数（newCount）per product_kind | `COUNT(DISTINCT xinzeng.client_user_id)` | CTE `xinzeng` |
 | 进入业绩（newRevenue）per product_kind | `SUM(period_agg.day_received)` WHERE client ∈ xinzeng | `xinzeng` JOIN `period_agg` |
-| 进入客单价（newAvgTicket） | `newRevenue / newCount` | 派生；防除零 → `--` |
+| 进入客单价（newAvgTicket） | `newRevenue / newCount` | 派生；防除零 → `--`；业绩为负时可为负（#288） |
 | 复购人数（repurchaseCount）per product_kind | `COUNT(DISTINCT fugou.client_user_id)` | CTE `fugou` |
 | 复购业绩（repurchaseRevenue）per product_kind | `SUM(period_agg.day_received)` WHERE client ∈ fugou | `fugou` JOIN `period_agg` |
 | 复购客单价（repurchaseAvgTicket） | `repurchaseRevenue / repurchaseCount` | 派生；防除零 → `--` |
@@ -1168,6 +1171,20 @@ tiyan AS (                                    -- 体验：期内有购买但全�
 > **各类业绩口径**：为该客群在 period 内该 product_kind 的销售单/转换单购买 `SUM(sipe.amount)`（非仅达标当日，排除寄存单），
 > 体现"该客群对期内收入的贡献"。
 > ⚠ **2026-09-14 订正**：原写 `SUM(received)` 已失效，与本节其余部分一样改走子项业绩事件视图。
+> ⚠ **2026-09-26 订正（#288）**：区间业绩是**净额** —— 退款走负数冲销、不删行，冲销逐笔抵减业绩。
+> 原 `HAVING SUM(...) > 0` + `period_agg ... purchase_received > 0` 会把「当日净额 ≤ 0」的
+> (顾客, 门店, 品项, 日) 整组丢弃：同一批退款约 38% 被净入、62% 被吞，取决于当日净额符号（审计附录 A11）。
+> 现在只剔除「两列都为 0」的空组与纯寄存日（`purchase_received = 0`）；HAVING 不能只判 `day_received <> 0`，
+> 否则寄存单恰好抵平销售单/转换单净额的日子（prod 实测 14 组）仍会被误丢。
+> 负数事件不只是退款：转换单**转出行**（`received` 为负，冲减原品项）与 legacy 残差同样计入。2026-01-01~09-22 prod
+> 销售单/转换单负数事件：退款 -92.5 万、转换单转出 -126.2 万、回款 -1.8 万 —— 转换只把价值从原品项挪到新品项，净额口径下不在新品项凭空多算。
+> 寄存单大额冲销压过当日购买（`day_received ≤ 0 < purchase_received`）的组现在保留，按其 `purchase_received` 参与复购达标与人数判定（prod 全历史 0 组）。
+> 业绩为负、人数 > 0 时客单价为负；只有冲销、没有购买的门店会出现「人数 0、业绩为负」的明细行（客单价 `--`）。
+> 期内只有冲销、且不属于体验/进入/复购任一客群的顾客（如上期体验客本期退款），其冲销不在任何客群业绩里扣 —— 客群口径本身的边界。
+> **负数行只进业绩、不造人**：体验判定只认正数购买日；admin 明细的门店归店同理 ——
+> 人数只按正数购买日（新增无正数购买日时落 entry 门店），业绩按全部行（含冲销）归到发生门店，净额可为负。
+> 2026-01-01~09-22 集团 prod 实测：新增业绩 818.29 万 → 730.69 万（原虚高 11.99%），复购业绩 439.28 万 → 410.80 万
+> （原虚高 6.93%），体验/新增/复购人数均不变；门店级最高南昌梦时代 +30.1%、自贡贡井店 +29.6%、南昌江信店虚高 9.40 万。
 > **性能注意**：`daily_agg` 全历史扫描（`purchase_date <= $endDate`，无下界），随运营时长增长。
 > 索引建议**只能建在底层表上**——`sale_item_performance_events` 是普通 `pgView`，不能直接建索引，
 > 且 `sale_item_performance_events.performance_date` 的**底表来源有两个分支**：
