@@ -582,7 +582,7 @@ admin 取 `fengyu-admin/src/lib/data-center/spend-buckets.ts` 的 `SPEND_BUCKET_
 | 指标 | 公式 | 数据源 | 筛选条件 |
 |------|------|--------|----------|
 | 新增会员数（newMemberCount） | `COUNT(*)` | `client_wechat_users` | `became_member_at::date BETWEEN $startDate AND $endDate` ∩ scope（`bound_store_id`） |
-| 新增会员对应消费（newMemberSpend） | `SUM(spe.amount)` | `sale_order_performance_events spe` JOIN `sale_orders` | JOIN 上面的新增会员；`spe.sale_order_type IN ('销售单','转换单')` ∩ `spe.status='已支付'` ∩ `spe.change_type IN ('首次支付','回款','退款')` ∩ `spe.legacy_source IS DISTINCT FROM 'workfine'` ∩ `[spe.performance_date]` ∩ scope（`store_id`）。**2026-09-16（#138）起同 §4 口径**，旧实现为 `SUM(o.received - COALESCE(o.refunded_amount,0)) @ o.paid_at::date` ∩ `o.status='已支付'`（旧文档误记为 `paid_amount`，该列已 DROP） |
+| 新增会员对应消费（newMemberSpend） | `SUM(spe.amount)` | `sale_order_performance_events spe` JOIN `sale_orders` | JOIN 上面的新增会员；`spe.sale_order_type IN ('销售单','转换单')` ∩ `spe.status='已支付'` ∩ `spe.change_type IN ('首次支付','回款','退款')` ∩ `spe.legacy_source IS DISTINCT FROM 'workfine'` ∩ `[spe.performance_date]` ∩ scope（**`c.bound_store_id`，与分母「新增会员数」同源；#439 自 2026-09-26 起，此前是 `o.store_id`**）。**2026-09-16（#138）起同 §4 口径**，旧实现为 `SUM(o.received - COALESCE(o.refunded_amount,0)) @ o.paid_at::date` ∩ `o.status='已支付'`（旧文档误记为 `paid_amount`，该列已 DROP） |
 | 新增会员客单价（newMemberAvgTicket） | `newMemberSpend / newMemberCount` | 派生；防除零 → `--` |
 | 新增会员成交率（newMemberConvRate） | `newMemberCount / trialFootfall × 100%` | 派生；防除零 → `--` |
 
@@ -660,6 +660,46 @@ FROM (
    `buildSaleScope` / `buildClientScope` 自 #401 起都恒叠加在营门店过滤（`org_nodes.is_active = TRUE`，两端
    `store-status` helper 独立副本 + 字面量守护）；`bound_store_id IS NULL` 的会员两端都不计（`NULL IN (...)` 不成立）。
    **各端内部分子/分母配对是自洽的**（同一个 scope helper 同时作用于分子与分母 ②），子集关系两端都成立。
+
+#### D-newMemberAvgTicket-store：新客客单价的分子分母**归店同源**（#439，2026-09-26 拍板方案 A）
+
+**改前（错的）**：分母「新增会员数」按 `c.bound_store_id`（顾客绑定门店），
+分子「新增会员对应消费」按 `o.store_id`（订单发生门店）—— 同一个比率两套归店口径。
+「顾客绑定 A 店、在 B 店消费」时**人进 A 的分母、钱进 B 的分子**。
+
+生产实测（2026-01-01 ~ 09-25，集团 scope）**6 家门店受影响，最高 ±13.3%**：
+
+| 门店 | 新增会员 | 改前客单价 | 改后（同源） | 偏差 |
+|---|---|---|---|---|
+| 九江大润发 | 5 | 2,596 | 2,994 | **−13.3%** |
+| 南昌丽景店 | 11 | 5,106 | 4,797 | +6.4% |
+| 南昌九龙湖 | 16 | 2,998 | 3,211 | −6.6% |
+| 南昌英伦店 | 15 | 4,297 | 4,431 | −3.0% |
+| 九江梦想店 | 15 | 8,545 | 8,413 | +1.6% |
+| 南昌万科店 | 54 | 3,623 | 3,586 | +1.0% |
+
+**改后**：分子改按 `c.bound_store_id`，与分母逐字同源。语义 = 「这批新会员给**本店**带来多少钱」，钱跟着人走。
+**admin 与 staff 两端同步**（staff 客量页 wxml 的「新会员客单价」= `spend / count`，同型同改）。
+
+**顺带关掉一个纯缺陷**：分子此前**不要求**绑定门店存在/在营，而分母要求。
+于是「绑定店为空或已停用的新会员在在营店消费」会让钱进分子却无对应分母 ⇒
+**集团客单价虚高** + **门店维度出现「分母 0 而分子 > 0」⇒ 页面显示 `--` 却有真实业绩**
+（`safeDiv` 把分母 0 静默吞成 null）。改同源后自然消失（`scopeFilterSql` 恒附加在营条件，`NULL IN (…)` 为 NULL 被过滤）。
+实测改前孤儿 0 人 0 元、分母 0 但有分子 0 家 —— 靠数据侥幸，不是代码保证。
+
+⚠️ **它不会显形为 > 100%**（客单价无上限），所以 #287 / #414 那种「一眼看出」的信号在这里不存在，
+只能靠守护钉死 —— 这也是它拖到 #414 的 sibling 审计才被发现的原因。
+
+> **验收看不变量不看绝对值**：上表绝对值每日漂移（实测同一门店两小时内 8545 → 8611），
+> 但**两种口径的差额恒定**（该店恒为 133）。判对错看
+> ①「集团 KPI 客单价改前 = 改后」（实测 **5724.57 = 5724.57**，证明这是门店间重新归集不是总量变化）
+> ② 上表 6 家门店差额归零 ③ 集团 = Σ 各门店（实测逐店分子合计 = 总额）。
+
+> 只改**客单价这一个比率**的分子，业绩类指标的归店一律不动。
+> D-3=A（消费不区分入会前后）不受影响，本条只定归店维度 —— 那是 D-3 从未涉及的。
+
+**守护**：`consistency.customer.test.ts` 第 10 组（派生式：从分母现读归店列/骨架 JOIN，
+再断言分子一致；admin KPI / admin 明细 / staff 三处 + 4 条反向变异）。
 
 > ⚠️ **已知限制（待拍板，#284 遗留）**：① 分支的判定 `became_member_at::date BETWEEN start AND end`
 > **带上界**，于是「在该区间之后才转化」的人会被排除出该历史区间的活跃池 —— 因为 `customer_type`
@@ -904,6 +944,7 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 | 2026-09-24 | **D-card-same-source 确立（#287）**：持卡占比分子分母此前**两个维度都不同源** —— ① 分子统计全部顾客、分母只统计会员（分子里 60.8% 的人永不可能进分母）；② 分子按 `so.store_id`（订单所属门店）归店、分母按 `c.bound_store_id`（顾客绑定门店）归店。集团占比恒 **253%**、单店最高 **2600%**、40 家在营门店 36 家 > 100%。**只修 ① 不够**（实测仍 7 家 > 100%、最高 104.55%）；两条都修后 **0 家 > 100%、最高正好 100.00%**，admin 侧集团 **1917 / 1931 = 99.27%**（2026-09-24 实测，含 `activeStoreCondition`；数字每日漂移，**验收看不变量不看绝对值**）。写法上 admin 用「分母壳 + `EXISTS`」、staff 因需 `GROUP BY pc.product_kind` 用「会员表驱动 + `COUNT(DISTINCT c.user_id)`」，两端 scope 均走 `bound_store_id`。⚠️ 该列修正后各店在 95.83%~100% 之间、**已失去区分度，勿用于门店排名**（旧列的店间方差全部来自非会员数量）。两端同步：`product.ts::queryCardHolders/queryCardHoldersByStore` + `mgmt-product.js::cardSql` |
 | 2026-09-25 | **一次/二次客活改按到店天数（#298）**：由服务单行数 `COUNT(*)` 改为 `COUNT(DISTINCT service_date)`，去重键 `(client_user_id, service_date)`，日期轴拍板为 `service_date`；admin 数据中心（KPI + 明细）与 staff mgmt-traffic 同步。补登 `monthly_activity` 口径（此前在本文档完全缺席，是两套定义分叉的根因）。prod 2026-09-01~09-24 集团一次/二次 527/982 → 590/919，63 人由「二次」回到「一次」 |
 | 2026-09-25 | **经营数据主表补齐 E–I、K–M、S–U、Y（#373）**：保有会员按「保有会员-*」时点还原（= 客量板有效保有会员，绑定门店）；被经营 = 当期（当月 / 年初至今）销售 + 转换单款项 ≥ 会员门槛、按下单门店；客流改「服务到店天数」、售前 = 当天核销体验项、Y = X/U。prod 自贡 2026-08 实测（2026-09-25）：E/F/H = 237/226/168，K/L = 82/77（含充值则 L = 83），S/T/U = 1,642/89/1,553（与 issue 参考值一致） |
+| 2026-09-26 | **新客客单价分子分母归店同源（#439，用户拍板方案 A）**：分母「新增会员数」按 `c.bound_store_id`、分子「新增会员对应消费」按 `o.store_id`，同一个比率两套归店口径 —— 「绑定 A 店、在 B 店消费」时人进 A 的分母、钱进 B 的分子。生产实测 **6 家门店受影响、最高 ±13.3%**（九江大润发 2596 vs 2994）。分子改按 `c.bound_store_id` 与分母逐字同源，**admin + staff 两端同步**（staff 客量页 wxml 的「新会员客单价」= spend / count，同型）。**集团 KPI 客单价改前 = 改后（实测 5724.57 = 5724.57）**，这是门店间重新归集不是总量变化。顺带关掉纯缺陷：分子此前不要求绑定门店存在/在营而分母要求 ⇒ 集团虚高 + 门店「分母 0 而分子 >0 显示 `--` 却有业绩」（实测孤儿 0 人 0 元，靠数据侥幸）。⚠️ 该缺陷**不会显形为 >100%**（客单价无上限），只能靠守护钉死。口径详见本文 D-newMemberAvgTicket-store；与 #289（同指标、时间轴割点根因）同改两处分子，merge 有冲突 |
 | 2026-09-25 | **1次/2次达成率分母改为会员注册数（#414，用户拍板）**：原分母 `retained`（保有会员，末 90 天窗口）与分子是同一批人 —— 生产实测两池各 1889、双向差集 0，36 家有数据门店 `1次达成率+2次达成率` **精确恒等 100.0%**，两列不携带「达成」信息。改用 `registered`（会员注册截面）。同轮给分子（KPI `queryActive` + 明细 `visit_count`）补上与分母逐字相同的会员守卫 `became_member_at IS NOT NULL AND ::date <= endDate` —— `customer_status` 是 cron 的**当前**截面、不随 `endDate` 回溯，缺守卫时「入会晚于区间终点」的人进分子不进分母（2026-07-08~07-31 实测 36 人，九江丽都店 7/7 = 100.0%；补后单店最高 62.7%、集团 24.3%）。**`endDate = 今天` 时 admin 当期数字一人不变**，只修历史区间；staff 同步补同一条守卫（仅 `lastMonth` 受影响：一次 511→486 / 二次 894→847，合计 −72 人），**merge 后须同批 deploy staffApi**。明细/导出表头改为「1次达成率(÷会员注册)」。另登记两处**当时未显形**的同源缺陷：窗口错配（服务单最早 2026-07-08，**2026-10-06 起**选跨度 > 90 天的区间会 >100%；模拟 78 天:30 天几何实测 29/36 家 >100%、最高 135.3%、集团 117.5%）与归店维度（跨店服务 27 人，影响 3 家各 1 人在 1次/2次 档间移动）。口径详见本文 D-visit-rate-denom |
 | 2026-09-25 | **客量板会员门槛读配置（#292）**：会员被经营 6 档的最低档下界与「会员经营人数」门槛由写死的 `1990` 改读 `system_configs.new_member_threshold`（与品项板同源），1w/3w/6w/10w 收敛到 `SPEND_BUCKET_FLOORS`；admin 与 staffApi 同步。prod/dev 当前配置均为 1990，上线后数字不变。标签保持写死；门槛须 < 1w（不加校验，仅文档化） |
 | 2026-09-25 | **数据中心「在营门店」口径收敛（#401）**：取数、范围下拉、#293 停用空态统一**只看 `org_nodes.is_active`**；`stores.is_closed` / `closed_at` 只作营业时间轴（门店数按 `closed_at` 时点历史化），不作统计范围——否则关店会抹掉关店前全部历史业绩。关店不联动停用节点。单源：admin `lib/store-status.ts` / staff `utils/store-status.js`（独立副本，`cross-end-store-status-snapshot.test.js` 守护：is_closed 闭集 + closed_at 白名单 + mgmt-*.js 分类闭集）。连带：①「只关店、节点仍启用」的门店进入两端范围下拉；② staff 客量页 / 品项页补在营过滤（此前不排除停用门店，与 admin 分叉）；③ staff 月店均月末 0 店返回 `null`（前端 `--`）。「可营业」口径（前台门店列表 / 库存位 / 提货）不变 |
