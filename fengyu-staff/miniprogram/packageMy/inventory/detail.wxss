@@ -185,3 +185,23 @@
   font-size: 28rpx;
   line-height: 80rpx;
 }
+
+/* 门店报货草稿（#348） */
+.draft-actions {
+  display: flex;
+  gap: 16rpx;
+}
+
+.draft-delete-button {
+  flex: 1;
+  border: 1rpx solid #D94040;
+  border-radius: 6rpx;
+  background: #FFFFFF;
+  color: #D94040;
+  font-size: 28rpx;
+  line-height: 78rpx;
+}
+
+.draft-edit-button {
+  flex: 2;
+}

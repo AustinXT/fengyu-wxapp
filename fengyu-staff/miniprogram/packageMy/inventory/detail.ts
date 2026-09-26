@@ -1,7 +1,7 @@
-// packageMy/inventory/detail.ts — 库存单据详情（只读）
+// packageMy/inventory/detail.ts — 库存单据详情（只读；门店报货草稿可继续编辑 / 删除，#348）
 import { callStaffApi } from '../../utils/cloud'
 import { formatDateTime } from '../../utils/formatters'
-import { canOperateStoreInventory } from '../../utils/role'
+import { canOperateStoreInventory, getCurrentStoreId } from '../../utils/role'
 import { isStocktakeDocType, stocktakeDiffDisplay, stocktakeSummary } from '../../utils/stocktake'
 
 const STATUS_KEY_MAP: Record<string, string> = {
@@ -46,6 +46,8 @@ interface InventoryDetail {
   statusKey?: string
   sourceOrgNodeId: string | null
   sourceOrgNodeName: string | null
+  /** 发起门店的库存主体 id（门店 = store_id），判断草稿是不是当前门店的（#348） */
+  sourceLocationId?: string | null
   targetOrgNodeId: string | null
   targetOrgNodeName: string | null
   docDate: string
@@ -68,6 +70,8 @@ Page({
     detail: null as InventoryDetail | null,
     loading: true,
     canReceive: false,
+    // 门店报货草稿（#348）：继续编辑 / 删除草稿入口；云端 updateDraft/submitDraft/deleteDraft 同样只认本店草稿
+    canEditDraft: false,
     submitting: false,
     isStocktake: false,
     stocktakeSummary: '',
@@ -79,13 +83,18 @@ Page({
     this.load()
   },
 
+  _loadSeq: 0,
+
   async load() {
     if (!this.data.id) return
+    // 请求序号：onShow 刷新与删除后的刷新可能并发，迟到的旧响应不能把「已取消」改回「草稿」
+    const seq = ++this._loadSeq
     this.setData({ loading: true })
     try {
       const detail = await callStaffApi<InventoryDetail>('inventory.docDetail', {
         id: this.data.id,
       })
+      if (seq !== this._loadSeq) return
       const isStocktake = Boolean(detail && isStocktakeDocType(detail.docType))
       // 缺字段一律按 null（未记账面）处理，不能让 undefined 参与减法算出 NaN
       const stocktakeItems = isStocktake && detail
@@ -111,16 +120,61 @@ Page({
         && detail.status === '待收货'
         && ['分院配货', '分院调货出库'].includes(detail.docType),
       )
+      // 只给「当前门店」的草稿：云端 updateDraft/submitDraft 按当前门店核对单头门店，别店草稿点进去必报错
+      const canEditDraft = Boolean(
+        canOperateStoreInventory() && detail && detail.docType === '门店报货' && detail.status === '草稿'
+        && detail.sourceLocationId && detail.sourceLocationId === getCurrentStoreId(),
+      )
       this.setData({
         detail: formatted,
         loading: false,
         canReceive,
+        canEditDraft,
         isStocktake,
         stocktakeSummary: isStocktake ? stocktakeSummary(stocktakeItems) : '',
       })
     } catch (err: any) {
+      if (seq !== this._loadSeq) return
       this.setData({ loading: false })
       wx.showToast({ title: err?.message || '加载失败', icon: 'none' })
+    }
+  },
+
+  onShow() {
+    // 从编辑页提交 / 存草稿返回时刷新（首次进入由 onLoad 加载）
+    if (this.data.detail) this.load()
+  },
+
+  onEditDraftTap() {
+    if (!this.data.canEditDraft) return
+    wx.navigateTo({
+      url: `/packageMy/inventory/form?docType=${encodeURIComponent('门店报货')}&id=${encodeURIComponent(this.data.id)}`,
+    })
+  },
+
+  onDeleteDraftTap() {
+    if (!this.data.canEditDraft || this.data.submitting) return
+    wx.showModal({
+      title: '删除草稿',
+      content: '删除后该草稿作废（单据保留为已取消），不能恢复。',
+      confirmColor: '#C0322A',
+      success: (result) => {
+        if (result.confirm) this.deleteDraft()
+      },
+    })
+  },
+
+  async deleteDraft() {
+    if (this.data.submitting || !this.data.id) return
+    this.setData({ submitting: true })
+    try {
+      await callStaffApi<{ id: string }>('inventory.deleteDraft', { id: this.data.id })
+      wx.showToast({ title: '草稿已删除', icon: 'success' })
+      await this.load()
+    } catch (err: any) {
+      wx.showToast({ title: err?.message || '删除失败', icon: 'none' })
+    } finally {
+      this.setData({ submitting: false })
     }
   },
 

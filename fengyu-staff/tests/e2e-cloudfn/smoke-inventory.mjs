@@ -211,6 +211,7 @@ async function main() {
   }
 
   await stocktakeFlow(errors)
+  await storeRequestDraftFlow(errors)
   await receiveRemainderFlow(errors)
 
   if (errors.length) {
@@ -397,6 +398,93 @@ async function stocktakeFlow(errors) {
   }
   if (errors.length === before) {
     rec(`  ✓ 门店盘点 ${docId}（库存员身份，账面 ${book1}/${book2}${seeded ? '，多批次汇总' : ''}）：候选含非可报货 SKU、账面=在手汇总、无流水、列表/详情可见；重复 SKU / 留空被拒`)
+  }
+}
+
+/**
+ * 门店报货草稿（#348）：库存员身份走 createDoc(draft) → updateDraft → submitDraft，另一张 deleteDraft。
+ * 门店报货不产生流水，cleanupTestData 能按 created_by 收干净。依赖 stocktakeFlow 已建好库存员与期初状态。
+ */
+async function storeRequestDraftFlow(errors) {
+  const before = errors.length
+  const call = (action, payload) => invokeStaffApi(action, {
+    _testOpenid: INV_OPERATOR_OPENID,
+    _loginLevel: 'store',
+    _currentStoreId: TEST_STORE_ID,
+    docType: '门店报货',
+    storeId: TEST_STORE_ID,
+    ...payload,
+  })
+  const head = async (id) => (await pgQuery(
+    `SELECT status, confirmed_at, cancellation_reason FROM inventory_docs WHERE id = $1`, [id],
+  ))[0]
+  const lines = async (id) => pgQuery(
+    `SELECT quantity::numeric AS quantity, request_quantity::numeric AS request_quantity, fulfilled_quantity::numeric AS fulfilled_quantity
+       FROM inventory_doc_items WHERE doc_id = $1`, [id],
+  )
+
+  const rDraft = await call('inventory.createDoc', { draft: true, items: [{ skuId: INV_SKU_ID, quantity: 2, requestQuantity: 99 }] })
+  if (rDraft.code !== 0) {
+    errors.push(`门店报货存草稿 code=${rDraft.code} msg=${rDraft.message}`)
+    return
+  }
+  const draftId = rDraft.data?.id
+  const h1 = await head(draftId)
+  const l1 = await lines(draftId)
+  if (h1?.status !== '草稿' || h1?.confirmed_at !== null) errors.push(`草稿单头应为 草稿 / 未确认：${JSON.stringify(h1)}`)
+  if (l1.length !== 1 || Number(l1[0].request_quantity) !== 2 || Number(l1[0].fulfilled_quantity) !== 0) {
+    errors.push(`草稿明细需求量应 = 数量 2、已配 0（不收客户端值）：${JSON.stringify(l1)}`)
+  }
+
+  const version1 = rDraft.data?.updatedAt
+  if (!version1) errors.push(`存草稿应回传版本号 updatedAt：${JSON.stringify(rDraft.data)}`)
+  const rNoVersion = await call('inventory.updateDraft', { draftId, items: [{ skuId: INV_SKU_ID, quantity: 3 }] })
+  if (rNoVersion.code !== -400 || !String(rNoVersion.message).includes('缺少草稿版本')) {
+    errors.push(`不带版本更新草稿应 -400「缺少草稿版本」，实际 code=${rNoVersion.code} msg=${rNoVersion.message}`)
+  }
+  const rUpdate = await call('inventory.updateDraft', { draftId, expectedUpdatedAt: version1, items: [{ skuId: INV_SKU_ID, quantity: 3 }] })
+  const version2 = rUpdate.data?.updatedAt
+  const l2 = await lines(draftId)
+  if (rUpdate.code !== 0 || (await head(draftId))?.status !== '草稿' || l2.length !== 1 || Number(l2[0].quantity) !== 3) {
+    errors.push(`更新草稿应仍是草稿且明细重写为 3：code=${rUpdate.code} msg=${rUpdate.message} ${JSON.stringify(l2)}`)
+  }
+  const rOtherType = await call('inventory.createDoc', { docType: '院产品报损', draft: true, items: [{ skuId: INV_SKU_ID, quantity: 1, reason: 'x' }] })
+  if (rOtherType.code !== -400 || !String(rOtherType.message).includes('只有门店报货支持草稿')) {
+    errors.push(`非门店报货存草稿应 -400「只有门店报货支持草稿」，实际 code=${rOtherType.code} msg=${rOtherType.message}`)
+  }
+
+  const rStale = await call('inventory.submitDraft', { draftId, expectedUpdatedAt: version1, items: [{ skuId: INV_SKU_ID, quantity: 3 }] })
+  if (!String(rStale.message).includes('草稿已被他人修改')) {
+    errors.push(`拿旧版本提交应 CONFLICT「草稿已被他人修改」，实际 code=${rStale.code} msg=${rStale.message}`)
+  }
+  const rSubmit = await call('inventory.submitDraft', { draftId, expectedUpdatedAt: version2, items: [{ skuId: INV_SKU_ID, quantity: 3 }] })
+  const h3 = await head(draftId)
+  if (rSubmit.code !== 0 || rSubmit.data?.id !== draftId || h3?.status !== '已完成' || !h3?.confirmed_at) {
+    errors.push(`提交草稿应原单号转已完成并确认：code=${rSubmit.code} msg=${rSubmit.message} ${JSON.stringify(h3)}`)
+  }
+  const rAgain = await call('inventory.updateDraft', { draftId, items: [{ skuId: INV_SKU_ID, quantity: 1 }] })
+  if (rAgain.code !== -400 || !String(rAgain.message).includes('门店报货已提交，不能再修改或删除')) {
+    errors.push(`已提交再改应 INVALID_STATE「门店报货已提交」，实际 code=${rAgain.code} msg=${rAgain.message}`)
+  }
+  const rDelSubmitted = await invokeStaffApi('inventory.deleteDraft', { _testOpenid: INV_OPERATOR_OPENID, id: draftId })
+  if (rDelSubmitted.code !== -400 || !String(rDelSubmitted.message).includes('门店报货已提交，不能再修改或删除')) {
+    errors.push(`已提交不能删除应 INVALID_STATE「门店报货已提交」，实际 code=${rDelSubmitted.code} msg=${rDelSubmitted.message}`)
+  }
+
+  const rDrop = await call('inventory.createDoc', { draft: true, items: [{ skuId: INV_SKU_ID, quantity: 1 }] })
+  const dropId = rDrop.data?.id
+  const rDel = await invokeStaffApi('inventory.deleteDraft', { _testOpenid: INV_OPERATOR_OPENID, id: dropId, reason: `${NS}_报错` })
+  const hDrop = dropId ? await head(dropId) : null
+  if (rDel.code !== 0 || hDrop?.status !== '已取消' || hDrop?.cancellation_reason !== `${NS}_报错`) {
+    errors.push(`删除草稿应转已取消并记原因：code=${rDel.code} msg=${rDel.message} ${JSON.stringify(hDrop)}`)
+  }
+  const rList = await invokeStaffApi('inventory.docList', {
+    _testOpenid: INV_OPERATOR_OPENID, docTypes: ['门店报货'], page: 1, pageSize: 50,
+  })
+  const listed = (rList.data?.items || []).find((item) => item.id === draftId)
+  if (!listed || listed.status !== '已完成') errors.push(`门店报货列表应含已提交的 ${draftId}：${JSON.stringify(listed ?? null)}`)
+  if (errors.length === before) {
+    rec(`  ✓ 门店报货草稿 ${draftId}：存草稿（需求量=数量）→ 更新 → 提交（原单号已完成）→ 再改/删被拒；另一张删除=已取消`)
   }
 }
 

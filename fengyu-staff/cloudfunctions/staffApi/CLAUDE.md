@@ -29,7 +29,7 @@ staffApi/
 │   ├── coupon.js     # available
 │   ├── service.js    # create, start, complete, confirm, cancel, list, detail, counts
 │   ├── card.js       # rechargeSkus, recharge（充值卡独立开单路由）
-│   ├── inventory.js  # list, detail（只读；门店库存 4 类单据：procurement/sale/transfer/scrap）
+│   ├── inventory.js  # 门店库存：列表/详情、建单 createDoc、收货/审批、门店报货草稿 updateDraft/submitDraft/deleteDraft（#348）
 │   └── mgmt-dashboard.js # scopeOptions, summary, storeRanking, staffRanking
 └── utils/
 ```

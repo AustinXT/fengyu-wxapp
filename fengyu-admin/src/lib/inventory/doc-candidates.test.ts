@@ -232,10 +232,11 @@ describe('候选查询的类型 / 状态 / 剩余量口径', () => {
     expect(params).toContain('门店报货')
   })
 
-  it('建单来源选「显示全部」后去掉剩余量条件，但仍排除已取消', async () => {
+  it('建单来源选「显示全部」后去掉剩余量条件，但仍只认已完成（门店报货草稿不进候选，#348）', async () => {
     const { text, params } = await whereOf({ purpose: 'store-allocation-source', includeExhausted: true })
     expect(text).not.toContain('EXISTS')
-    expect(params).toContain('已取消')
+    expect(params).toContain('已完成')
+    expect(params).not.toContain('草稿')
   })
 
   it('供应链采购入库恒要求有未入库行，includeExhausted 不放宽它', async () => {
@@ -427,7 +428,7 @@ describe('批量取详情（getInventoryCoreDocsByIds）', () => {
 })
 
 describe('门店未配报货 SKU（#337 拍板 A 的提示数据）', () => {
-  it('与 store-allocation-source 候选同一套条件（scope / 类型 / 已取消排除 / 门店收窄），行级未配量与建单守卫同口径', async () => {
+  it('与 store-allocation-source 候选同一套条件（scope / 类型 / 只认已完成 / 门店收窄），行级未配量与建单守卫同口径', async () => {
     mockDb.execute
       .mockResolvedValueOnce([{ drifted: false }] as never)
       .mockResolvedValueOnce([{ sku_id: 'SKU-1', remaining_quantity: '3.00', doc_ids: ['DBH-1', 'DBH-2'] }] as never)
@@ -439,11 +440,12 @@ describe('门店未配报货 SKU（#337 拍板 A 的提示数据）', () => {
     // scope：两端 OR + 动作端（报货单的接收市场）收窄
     expect(query.text).toMatch(/"inventory_docs"\."target_org_node_id" in \(\$\d+, \$\d+\)/)
     expect(query.text).toMatch(/"inventory_docs"\."source_org_node_id" = \$\d+/)
-    expect(query.text).toMatch(/"inventory_docs"\."status" <> \$\d+/)
+    // 报货单头只认已完成（#348：草稿不提示「建议引用」）
+    expect(query.text).toMatch(/"inventory_docs"\."status" in \(\$\d+\)/)
     // 已配量只数「门店报货配货」且目标单未取消 —— 自选行不写血缘，天然不计入
     expect(query.text).toContain('cand_link.relation_type = $')
     expect(query.text).toContain("cand_link_doc.status <> '已取消'")
-    expect(query.params).toEqual(expect.arrayContaining(['门店报货', '已取消', 'ORG-S1', '门店报货配货', 'MKT-A', 'NODE-A1']))
+    expect(query.params).toEqual(expect.arrayContaining(['门店报货', '已完成', 'ORG-S1', '门店报货配货', 'MKT-A', 'NODE-A1']))
   })
 
   it('越权空 scope 恒为空条件；缺门店 / 类型不对按参数错误且不碰库', async () => {

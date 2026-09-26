@@ -683,6 +683,57 @@ describe('SKU 归属谓词 staff ↔ admin 同口径', () => {
 })
 
 /**
+ * 门店报货草稿锁（#348）：admin lockStoreReplenishmentDraft（+ assertDraftUnchanged）与 staff lockStoreRequestDraft
+ * 两份独立副本，报错集合（前缀 + 文案）按出现顺序整段等值；血缘 / 预留判据同 SQL 意图。任一端改文案、调顺序、漏一条都红。
+ */
+describe('门店报货草稿锁 staff ↔ admin 同口径（#348）', () => {
+  const staffSrc = readFile(FILES.staffInventoryJs)
+  const adminBusiness = readFile(FILES.adminBusinessTs)
+  function body(src, name) {
+    const m = src.match(new RegExp(`(?:export )?(?:async )?function ${name}\\([\\s\\S]*?\\n\\}`))
+    if (!m) throw new Error(`未找到 ${name}`)
+    return m[0]
+  }
+  // admin 的文案可能写成三元（按状态分两条）：取前缀后到右括号之间的字面量，跳过 `=== '…'` 比较里的那个
+  const adminMessages = (src) => [...src.matchAll(/new ApiError\(\s*'([A-Z_]+)',([\s\S]*?)\)/g)]
+    .flatMap((m) => [...m[2].matchAll(/(=== )?'([^']+)'/g)].filter((q) => !q[1]).map((q) => `${m[1]}: ${q[2]}`))
+  const staffMessages = (src) => [...src.matchAll(/'([A-Z_]+): ([^']+)'/g)].map((m) => `${m[1]}: ${m[2]}`)
+
+  test('报错集合整段等值（类型 → 状态 → 门店 → 市场 → 版本 → 关联）', () => {
+    const admin = adminMessages(body(adminBusiness, 'lockStoreReplenishmentDraft'))
+    const adminVersion = adminMessages(body(adminBusiness, 'assertDraftUnchanged'))
+    // admin 把版本校验拆在 assertDraftUnchanged，按调用位置插回「市场」之后
+    const marketIndex = admin.findIndex((message) => message.includes('门店已更换所属市场'))
+    const adminOrdered = [...admin.slice(0, marketIndex + 1), ...adminVersion, ...admin.slice(marketIndex + 1)]
+    expect(staffMessages(body(staffSrc, 'lockStoreRequestDraft'))).toEqual(adminOrdered)
+    expect(adminOrdered).toEqual([
+      'NOT_FOUND: 门店报货草稿不存在',
+      'INVALID_STATE: 该门店报货草稿已删除',
+      'INVALID_STATE: 门店报货已提交，不能再修改或删除',
+      'INVALID_PARAMS: 草稿的报货门店不能修改',
+      'INVALID_STATE: 门店已更换所属市场，请删除该草稿后重新报货',
+      'INVALID_PARAMS: 缺少草稿版本，请重新打开草稿后再保存',
+      'INVALID_PARAMS: 草稿版本格式不正确',
+      'CONFLICT: 草稿已被他人修改，请重新打开后再保存',
+      'INVALID_STATE: 该草稿已有上下游关联，不能按草稿修改或删除，请联系管理员处理',
+    ])
+  })
+
+  test('关联判据两端都查血缘（from/to）与预留', () => {
+    for (const src of [body(adminBusiness, 'lockStoreReplenishmentDraft'), body(staffSrc, 'lockStoreRequestDraft')]) {
+      const flat = src.replace(/\s+/g, ' ')
+      expect(flat).toMatch(/FROM inventory_doc_links WHERE from_doc_id = \S+ OR to_doc_id = \S+/)
+      expect(flat).toMatch(/FROM inventory_stock_reservations WHERE request_doc_id = /)
+    }
+  })
+
+  test('门店报货同一 SKU 合并：两端同文案', () => {
+    expect(body(adminBusiness, 'createStoreReplenishmentRequest')).toContain("'同一 SKU 请合并为一条报货明细'")
+    expect(body(staffSrc, 'createDoc')).toContain("'INVALID_PARAMS: 同一 SKU 请合并为一条报货明细'")
+  })
+})
+
+/**
  * §8 收货已收口径与建批次 SQL（#358）。
  *
  * ① 「发货收货」血缘的三个写入方（admin receivePhysicalShipment / admin 通用收货
