@@ -8,7 +8,7 @@ import { compareModuleRuntime } from './dist-equivalence'
 /** 被导入模块在产物里的区段：只需声明出来的顶层名字 */
 const SEGMENTS: Record<string, string> = {
   '@/db': 'var globalForDb, client, db2;\nvar init_db2 = __esm(() => {});',
-  './helpers': 'function helper(x) { return x }\nvar LIMIT = 5;',
+  './helpers': 'var init_helpers = __esm(() => {});\nfunction helper(x) { return x }\nvar LIMIT = 5;',
   './other': 'function X2() {}',
 }
 const compare = (sourceCode: string, distCode: string) => compareModuleRuntime({
@@ -64,6 +64,7 @@ describe('dist-equivalence：bun 的合法改写判为等价', () => {
        import { helper } from './helpers'
        export async function q(id: string) { return db.execute(sql\`SELECT \${id}\`).then(helper) }`,
       `init_db2();
+       init_helpers();
        var import_drizzle_orm60 = __toESM(require_drizzle_orm(), 1);
        async function q(id) { return db2.execute(import_drizzle_orm60.sql\`SELECT \${id}\`).then((0, helper)); }`,
     )).toEqual([])
@@ -76,6 +77,35 @@ describe('dist-equivalence：bun 的合法改写判为等价', () => {
       `var DATE_PATTERN2 = /^\\d+$/;
        function g(locationId2) { return { locationId: locationId2, tag: "plain", ok: DATE_PATTERN2.test(locationId2) }; }`,
     )).toEqual([])
+  })
+
+  it('命名空间导入 import * as ns ↔ import_pkgN；默认导入 ↔ import_pkgN.default；顶层 let ≡ var；BigInt 同值', () => {
+    expect(compare(
+      `import * as z from 'zod'
+       import dayjs from 'dayjs'
+       let COUNT = 1n
+       export const s = z.string()
+       export const d = dayjs(COUNT)`,
+      `var import_zod3 = __toESM(require_zod(), 1);
+       var import_dayjs2 = __toESM(require_dayjs(), 1);
+       var COUNT = 1n;
+       var s = import_zod3.string();
+       var d = (0, import_dayjs2.default)(COUNT);`,
+    )).toEqual([])
+  })
+
+  it('only：只比指定声明，两侧各恰好一处', () => {
+    const only = (names: string[], distCode: string) => compareModuleRuntime({
+      sourceCode: 'export const a = 1\nexport const b = 2',
+      distCode,
+      distSegmentOfImport: () => null,
+      only: names,
+    })
+    expect(only(['b'], 'var a = 99;\nvar b2 = 2;')).toEqual([])
+    expect(only(['b'], 'var b2 = 3;')).not.toEqual([])
+    expect(() => only(['c'], 'var c = 1;')).toThrow(/源码里 c 的顶层声明找到 0 处/)
+    expect(() => only(['b'], 'var a = 1;')).toThrow(/产物里 b 的顶层声明找到 0 处/)
+    expect(() => only(['b'], 'var b = 2;\nvar b2 = 2;')).toThrow(/产物里 b 的顶层声明找到 2 处/)
   })
 
   it('"use server" 与 init_*() 样板不参与比较', () => {
@@ -140,6 +170,44 @@ describe('dist-equivalence：真实漂移判为不等', () => {
     differs('export const a = 1\nexport const b = 2', 'var a = 1;')
     differs('export function f(a: number) { return a }', 'function f(a, b) { return a; }')
     differs('export function f() { const a = 1; return a }', 'function f() { let a = 1; return a; }')
+  })
+
+  it('打包样板：漏调 / 多调 / 调错 init；副作用导入不同；指令不同', () => {
+    const source = 'import { helper } from "./helpers"\nexport const a = helper(1)'
+    differs(source, 'var a = helper(1);')
+    differs(source, 'init_helpers();\ninit_db2();\nvar a = helper(1);')
+    differs(source, 'init_helper();\nvar a = helper(1);')
+    differs('import "server-only"\nexport const a = 1', 'var a = 1;')
+    differs('"use server"\nexport const a = 1', 'var a = 1;')
+  })
+
+  it('命名空间：变量未在本区段声明 / 来自别的 require / 前缀对不上', () => {
+    differs('import { sql } from "drizzle-orm"\nexport const q = sql`x`', 'var q = import_drizzle_orm999.sql`x`;')
+    differs('import { sql } from "drizzle-orm"\nexport const q = sql`x`', 'var import_drizzle_orm1 = __toESM(require_zod(), 1);\nvar q = import_drizzle_orm1.sql`x`;')
+    differs('import { sql } from "drizzle-orm"\nexport const q = sql`x`', 'var import_zod1 = __toESM(require_zod(), 1);\nvar q = import_zod1.sql`x`;')
+    differs('import { sql } from "drizzle-orm"\nexport const q = sql`x`', 'var import_drizzle_orm1 = __toESM(require_drizzle_orm(), 1);\nvar q = import_drizzle_orm1.raw`x`;')
+  })
+
+  it('(0, obj.method)() 丢 this，不等于 obj.method()', () => {
+    differs('export function f(o: { m(): void }) { return o.m() }', 'function f(o) { return (0, o.m)(); }')
+  })
+
+  it('return undefined 中的 undefined 被遮蔽时不等于 return', () => {
+    differs('export function f(undefined: number) { return undefined }', 'function f(undefined) { return; }')
+  })
+
+  it('带默认值的简写属性：默认值不同 / 形态不同', () => {
+    differs('export function f(o: object) { let a; ({ a = 1 } = o as never); return a }', 'function f(o) { let a; ({ a = 2 } = o); return a; }')
+    differs('export function f(o: object) { let a; ({ a = 1 } = o as never); return a }', 'function f(o) { let a; ({ a: a } = o); return a; }')
+  })
+
+  it('顶层 const 在声明前被引用时，与 var 不等价（TDZ 抛错 vs undefined）', () => {
+    differs('export function f() { return A }\nconst probe = f()\nconst A = 1', 'function f() { return A; }\nvar probe = f();\nvar A = 1;')
+  })
+
+  it('私有名 / BigInt 不同', () => {
+    differs('export class C { #x = 1; get() { return this.#x } }', 'class C { #y = 1; get() { return this.#y; } }')
+    differs('export const n = 1n', 'var n = 2n;')
   })
 
   it('两侧都提取不到运行时语句时抛错，而不是判等价', () => {

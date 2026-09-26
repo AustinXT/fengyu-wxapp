@@ -378,11 +378,10 @@ describe('dist/export-worker.mjs 新鲜度 · 提货记录导出接线（#341）
 
 /** #360 进出明细导出的 JS 接线（类型登记 / registry 分支与列 / keyset 游标）。写法同上：按产物里的写法找。 */
 describe('dist/export-worker.mjs 新鲜度 · 进出明细导出接线（#360）', () => {
-  // 只剩类型登记与 registry 分支两处文本锚点（收缩到最小语义串，不含尾逗号 / 排版）；
-  // movements 模块全文与导出列由下方语义等价比较覆盖
+  // 只剩类型登记一处文本锚点（最小语义串，不含排版字符）；movements 模块全文、导出列与
+  // registry 分发（createExportContent 的 case 分支体）都由下方语义等价比较覆盖
   const SEGMENT_FRAGMENTS: Array<[string, string[]]> = [
-    ['src/lib/export-job-types.ts', ['"inventory-movements"', '"inventory-movements": ["inventory:export"]', '"inventory-movements": "进出明细"']],
-    ['src/export-worker/registry.ts', ['case "inventory-movements":', 'sheetName: "进出明细"']],
+    ['src/lib/export-job-types.ts', ['"inventory-movements"', '"inventory:export"', '"进出明细"']],
   ]
   /**
    * 源码模块 ↔ 产物里 bun 改写后的同一模块做**语义等价**比较（规则与正反例见 dist-equivalence.ts / .test.ts）。
@@ -421,10 +420,10 @@ describe('dist/export-worker.mjs 新鲜度 · 进出明细导出接线（#360）
     expect(equivalenceIssues(file), `产物 // ${file} 区段与源码不等价（产物不是按当前源码构建的）${REBUILD_HINT}`).toEqual([])
   })
 
-  it('registry.ts 的 inventoryMovementColumns 与产物语义等价', () => {
+  it('registry.ts 的 inventoryMovementColumns 与分发函数 createExportContent（含 case 分支体接线）与产物语义等价', () => {
     const file = 'src/export-worker/registry.ts'
     expect(
-      equivalenceIssues(file, ['inventoryMovementColumns']),
+      equivalenceIssues(file, ['inventoryMovementColumns', 'createExportContent']),
       `产物里进出明细导出列与源码不一致（增删 / 换序 / 错接）${REBUILD_HINT}`,
     ).toEqual([])
   })
