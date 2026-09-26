@@ -190,7 +190,7 @@ export function parseTimeRange(raw: { preset?: string; start?: string; end?: str
   const p = raw.preset
   const custom = p === 'custom' ? toCustomRange(raw.start, raw.end) : null
   if (custom) return custom
-  if (p === 'today' || p === 'week' || p === 'year') return { preset: p }
+  if (isFixedPreset(p)) return { preset: p } // 与服务端同一份白名单（FIXED_PRESETS）
   return { preset: 'month' } // 默认本月
 }
 

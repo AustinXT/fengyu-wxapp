@@ -159618,7 +159618,7 @@ function parseTimeRange(raw) {
   const custom4 = p === "custom" ? toCustomRange(raw.start, raw.end) : null;
   if (custom4)
     return custom4;
-  if (p === "today" || p === "week" || p === "year")
+  if (isFixedPreset(p))
     return { preset: p };
   return { preset: "month" };
 }

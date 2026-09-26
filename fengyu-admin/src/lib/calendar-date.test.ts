@@ -281,80 +281,119 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
   }, 60_000)
 
   /**
-   * 类型结构里（联合 / 交叉成员、属性类型、类型实参）是否出现 calendarDateBrand 键。
-   * 限深 MAX_DEPTH（泛型会无限实例化出新类型对象）；业务里最深一条「BoardParams → timeRange → 联合成员 → start → CalendarDate」4 层。
-   * 只缓存未被截断的结论。不遍历函数签名（实测 OOM）；逆变位置由 requiresBrand 有界处理。
+   * 类型结构里（联合 / 交叉成员、属性类型、索引签名、类型实参）是否出现 calendarDateBrand 键。
+   * 每次查询做一遍带 visited 的 DFS（对环精确）；只缓存根结论与已确认的 true。不遍历函数签名（逆变位置由 requiresBrand 处理）。
+   * 递归深度触顶（泛型无限实例化）直接抛错——fail-closed，不把「没看完」当成「没有」。
    */
-  const MAX_DEPTH = 6
-  const brandCache = new Map<ts.Type, boolean>()
-  function carriesBrand(type: ts.Type): boolean {
-    return walkBrand(type, 0, new Set()).hit
+  const DEPTH_CAP = 40
+  const brandTrue = new Set<ts.Type>()
+  const brandRoot = new Map<ts.Type, boolean>()
+  const typeOfSymbol = (sym: ts.Symbol) => {
+    const decl = sym.valueDeclaration ?? sym.declarations?.[0]
+    return decl ? checker.getTypeOfSymbolAtLocation(sym, decl) : undefined
   }
-  function walkBrand(type: ts.Type, depth: number, path: Set<ts.Type>): { hit: boolean; complete: boolean } {
-    const cache = brandCache
-    const cached = cache.get(type)
-    if (cached !== undefined) return { hit: cached, complete: true }
-    if (path.has(type)) return { hit: false, complete: true }
-    if (depth >= MAX_DEPTH) return { hit: false, complete: false }
-    path.add(type)
-    let complete = true
-    const visit = (t: ts.Type | undefined) => {
-      if (!t) return false
-      const r = walkBrand(t, depth + 1, path)
-      if (!r.complete) complete = false
-      return r.hit
+  function structuralChildren(type: ts.Type): ts.Type[] {
+    const out: ts.Type[] = []
+    if (type.isUnionOrIntersection()) out.push(...type.types)
+    for (const prop of type.getProperties()) {
+      const t = typeOfSymbol(prop)
+      if (t) out.push(t)
     }
-    const typeOf = (sym: ts.Symbol) => {
-      const decl = sym.valueDeclaration ?? sym.declarations?.[0]
-      return decl ? checker.getTypeOfSymbolAtLocation(sym, decl) : undefined
+    for (const info of checker.getIndexInfosOfType(type)) out.push(info.type)
+    if (type.flags & ts.TypeFlags.Object && (type as ts.ObjectType).objectFlags & ts.ObjectFlags.Reference) {
+      out.push(...checker.getTypeArguments(type as ts.TypeReference))
     }
-    const hit =
-      (type.isUnionOrIntersection() && type.types.some(visit)) ||
-      type.getProperties().some((prop) => prop.escapedName.toString().startsWith('__@calendarDateBrand') || visit(typeOf(prop))) ||
-      (!!(type.flags & ts.TypeFlags.Object) && !!((type as ts.ObjectType).objectFlags & ts.ObjectFlags.Reference) &&
-        checker.getTypeArguments(type as ts.TypeReference).some(visit))
-    path.delete(type)
-    if (hit || complete) cache.set(type, hit)
-    return { hit, complete: hit || complete }
+    return out
   }
+  const hasBrandKey = (type: ts.Type) => type.getProperties().some((p) => p.escapedName.toString().startsWith('__@calendarDateBrand'))
+  function carriesBrand(root: ts.Type): boolean {
+    const cached = brandRoot.get(root)
+    if (cached !== undefined) return cached
+    const visited = new Set<ts.Type>()
+    const dfs = (type: ts.Type, depth: number): boolean => {
+      if (brandTrue.has(type)) return true
+      if (visited.has(type)) return false
+      if (depth > DEPTH_CAP) throw new Error(`类型结构深度超过 ${DEPTH_CAP}，守护无法判定（fail-closed）：${checker.typeToString(root)}`)
+      visited.add(type)
+      const hit = hasBrandKey(type) || structuralChildren(type).some((t) => dfs(t, depth + 1))
+      if (hit) brandTrue.add(type)
+      return hit
+    }
+    const result = dfs(root, 0)
+    brandRoot.set(root, result)
+    return result
+  }
+
   /**
-   * 类型是否「要求调用方提供 brand」：自身可调用且某参数携带 brand，或其第一层属性里有这样的方法。
+   * 类型是否「要求调用方提供 brand」：结构里（同 carriesBrand 的边）任何一处可调用 / 可构造、且某参数携带 brand。
    * 把这种东西断言成不要求 brand 的类型，就能再喂原始串——逆变位置是断言剥 brand 唯一有害的方向
-   * （把带 brand 的值断言成普通类型只是丢了信息，造不出 brand）。有界检查，不做深层签名遍历（深层遍历实测 OOM / 50s+）。
+   * （把带 brand 的值断言成普通类型只是丢了信息，造不出 brand）。
    */
-  function requiresBrand(type: ts.Type): boolean {
-    const paramsCarry = (t: ts.Type) =>
-      [...t.getCallSignatures(), ...t.getConstructSignatures()].some((sig) =>
-        sig.getParameters().some((p) => {
-          const decl = p.valueDeclaration ?? p.declarations?.[0]
-          return !!decl && carriesBrand(checker.getTypeOfSymbolAtLocation(p, decl))
-        }),
+  const requiresRoot = new Map<ts.Type, boolean>()
+  function requiresBrand(root: ts.Type): boolean {
+    const cached = requiresRoot.get(root)
+    if (cached !== undefined) return cached
+    const visited = new Set<ts.Type>()
+    const dfs = (type: ts.Type, depth: number): boolean => {
+      if (visited.has(type)) return false
+      if (depth > DEPTH_CAP) throw new Error(`类型结构深度超过 ${DEPTH_CAP}，守护无法判定（fail-closed）：${checker.typeToString(root)}`)
+      visited.add(type)
+      const paramsCarry = [...type.getCallSignatures(), ...type.getConstructSignatures()].some((sig) =>
+        sig.getParameters().some((p) => { const t = typeOfSymbol(p); return !!t && carriesBrand(t) }),
       )
-    if (paramsCarry(type)) return true
-    if (type.isUnionOrIntersection()) return type.types.some(requiresBrand)
-    return type.getProperties().some((prop) => {
-      const decl = prop.valueDeclaration ?? prop.declarations?.[0]
-      return !!decl && paramsCarry(checker.getTypeOfSymbolAtLocation(prop, decl))
-    })
+      return paramsCarry || structuralChildren(type).some((t) => dfs(t, depth + 1))
+    }
+    const result = dfs(root, 0)
+    requiresRoot.set(root, result)
+    return result
+  }
+
+  /**
+   * 洗白判定：上下文类型 ctx 携带 brand 时，沿 ctx 里通向 brand 的路径并行看表达式类型 expr，
+   * 路径上任何一处 expr 是 any / never 即为洗白（`const o = { start: j }; use(o)` 里 j:any 就是这样漏进来的）。
+   * 其余位置 tsc 已校验过可赋值，expr 在 brand 处必然也是 CalendarDate。
+   */
+  const LAUNDERED = ts.TypeFlags.Any | ts.TypeFlags.Never
+  function launders(ctx: ts.Type, expr: ts.Type, depth = 0, seen = new Set<string>()): boolean {
+    if (expr.flags & LAUNDERED) return carriesBrand(ctx)
+    if (!carriesBrand(ctx) || hasBrandKey(ctx)) return false
+    const key = `${(ctx as { id?: number }).id}:${(expr as { id?: number }).id}`
+    if (seen.has(key)) return false
+    if (depth > DEPTH_CAP) throw new Error(`洗白判定深度超过 ${DEPTH_CAP}（fail-closed）：${checker.typeToString(ctx)}`)
+    seen.add(key)
+    const next = (c: ts.Type, e: ts.Type) => launders(c, e, depth + 1, seen)
+    if (expr.isUnion()) return expr.types.some((e) => next(ctx, e))
+    if (ctx.isUnionOrIntersection()) return ctx.types.some((c) => next(c, expr))
+    for (const prop of ctx.getProperties()) {
+      const c = typeOfSymbol(prop)
+      const eProp = checker.getPropertyOfType(expr, prop.escapedName.toString())
+      const e = eProp && typeOfSymbol(eProp)
+      if (c && e && next(c, e)) return true
+    }
+    for (const info of checker.getIndexInfosOfType(ctx)) {
+      for (const eProp of expr.getProperties()) {
+        const e = typeOfSymbol(eProp)
+        if (e && next(info.type, e)) return true
+      }
+      for (const eInfo of checker.getIndexInfosOfType(expr)) if (next(info.type, eInfo.type)) return true
+    }
+    const isRef = (t: ts.Type) => !!(t.flags & ts.TypeFlags.Object && (t as ts.ObjectType).objectFlags & ts.ObjectFlags.Reference)
+    if (isRef(ctx) && isRef(expr)) {
+      const ca = checker.getTypeArguments(ctx as ts.TypeReference)
+      const ea = checker.getTypeArguments(expr as ts.TypeReference)
+      if (ca.some((c, i) => ea[i] && next(c, ea[i]))) return true
+    }
+    return false
   }
 
   const LOOSE = ts.TypeFlags.Any | ts.TypeFlags.Never | ts.TypeFlags.Unknown
-  const LAUNDERED = ts.TypeFlags.Any | ts.TypeFlags.Never
 
   interface Escape { file: string; line: number; kind: string; text: string }
-
-  /** 被调方有类型参数（显式带 `<…>` 或声明带泛型）才需要解析签名——大多数调用不是泛型，省掉签名解析与返回类型遍历 */
-  function isGenericCallee(node: ts.CallExpression | ts.NewExpression): boolean {
-    if (node.typeArguments?.length) return true
-    const sym = checker.getSymbolAtLocation(ts.isPropertyAccessExpression(node.expression) ? node.expression.name : node.expression)
-    const target = sym && sym.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(sym) : sym
-    return !!target?.declarations?.some((d) => ts.isFunctionLike(d) && !!d.typeParameters?.length)
-  }
 
   /**
    * 表达式是否处在「上下文类型位置」（TS 只在这些位置给表达式上下文类型，闭集）：变量 / 参数 / 属性初始化器、
    * 调用与 new 的实参、return、赋值右侧、数组元素、对象属性值（含简写与展开）、JSX 属性与子节点、条件 / 逻辑运算分支、
-   * 箭头函数表达式体、`satisfies`、await / yield 操作数、括号内。只在这些位置取类型，避免对每个节点都做类型计算（实测 100s+）。
+   * 箭头函数表达式体、`satisfies`、await / yield 操作数、括号内。只在这些位置取类型，避免对每个节点都做类型计算。
    */
   function inContextualPosition(node: ts.Expression): boolean {
     const p = node.parent
@@ -376,14 +415,35 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
     return false
   }
 
+  /** 源码里真实的注释区间（AST 收集，字符串字面量里的同形文本不算） */
+  function commentRanges(sf: ts.SourceFile): ts.CommentRange[] {
+    const seen = new Map<number, ts.CommentRange>()
+    const add = (ranges: ts.CommentRange[] | undefined) => ranges?.forEach((r) => seen.set(r.pos, r))
+    const visit = (node: ts.Node) => {
+      add(ts.getLeadingCommentRanges(sf.text, node.pos))
+      add(ts.getTrailingCommentRanges(sf.text, node.end))
+      ts.forEachChild(node, visit)
+    }
+    visit(sf)
+    add(ts.getLeadingCommentRanges(sf.text, sf.endOfFileToken.pos))
+    return [...seen.values()]
+  }
+
   function escapes(sf: ts.SourceFile): Escape[] {
     const out: Escape[] = []
     const at = (node: ts.Node, kind: string, text = node.getText(sf).slice(0, 80)) => {
       out.push({ file: relative(SRC, sf.fileName), line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1, kind, text })
     }
     // ⑥ 抑制注释：@ts-ignore / @ts-expect-error / @ts-nocheck 能让任意值落进 branded 位置而 tsc 不报
-    for (const m of sf.text.matchAll(/@ts-(?:ignore|expect-error|nocheck)\b/g)) {
-      out.push({ file: relative(SRC, sf.fileName), line: sf.getLineAndCharacterOfPosition(m.index!).line + 1, kind: '类型检查抑制注释', text: m[0] })
+    for (const r of commentRanges(sf)) {
+      const m = /@ts-(?:ignore|expect-error|nocheck)\b/.exec(sf.text.slice(r.pos, r.end))
+      if (m) out.push({ file: relative(SRC, sf.fileName), line: sf.getLineAndCharacterOfPosition(r.pos).line + 1, kind: '类型检查抑制注释', text: m[0] })
+    }
+    const declaredTypeCarries = (node: ts.Node) => {
+      const name = ts.getNameOfDeclaration(node as ts.Declaration)
+      const sym = name && checker.getSymbolAtLocation(name)
+      const t = sym ? typeOfSymbol(sym) : undefined
+      return !!t && (carriesBrand(t) || [...t.getCallSignatures()].some((sig) => carriesBrand(sig.getReturnType())))
     }
     const visit = (node: ts.Node) => {
       if (ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)) {
@@ -396,13 +456,11 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
           at(node, '断言剥掉 brand 要求')
         }
       } else if (ts.isExpression(node) && inContextualPosition(node)) {
-        if (checker.getTypeAtLocation(node).flags & LAUNDERED) {
-          const ctx = checker.getContextualType(node)
-          if (ctx && carriesBrand(ctx)) at(node, 'any / never 值落在要求 brand 的上下文')
-        }
+        const ctx = checker.getContextualType(node)
+        if (ctx && carriesBrand(ctx) && launders(ctx, checker.getTypeAtLocation(node))) at(node, 'any / never 值落在要求 brand 的上下文')
       }
-      // ⑤ 泛型实例化带出 brand：声明的返回类型本身不带 brand，实例化后却带了（`mint<CalendarDate>(raw)`、推断同理）
-      if ((ts.isCallExpression(node) || ts.isNewExpression(node)) && isGenericCallee(node)) {
+      // ⑤ 泛型实例化带出 brand：声明的返回类型本身不带 brand，实例化后却带了（`mint<CalendarDate>(raw)`、推断、别名、元素访问同理）
+      if (ts.isCallExpression(node) || ts.isNewExpression(node) || ts.isTaggedTemplateExpression(node)) {
         const sig = checker.getResolvedSignature(node)
         const decl = sig?.getDeclaration()
         if (sig && decl && decl.typeParameters?.length && carriesBrand(sig.getReturnType())) {
@@ -410,6 +468,12 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
           if (declared && !carriesBrand(declared.getReturnType())) at(node, '泛型实例化带出 brand')
         }
       }
+      // ⑦ 不受实现检查的声明：无函数体的签名（重载 / declare）、环境声明、`!` 明确赋值断言——类型里带 brand 就等于凭空认定
+      const bodiless = (ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node)) && !node.body
+      const ambient = (ts.isVariableDeclaration(node) || ts.isFunctionDeclaration(node) || ts.isPropertyDeclaration(node) || ts.isClassDeclaration(node)) &&
+        (sf.isDeclarationFile || !!(ts.getCombinedModifierFlags(node as ts.Declaration) & ts.ModifierFlags.Ambient))
+      const definite = (ts.isVariableDeclaration(node) || ts.isPropertyDeclaration(node)) && !!node.exclamationToken
+      if ((bodiless || ambient || definite) && declaredTypeCarries(node)) at(node, '无实现检查的声明携带 brand')
       if (ts.isTypePredicateNode(node) && node.type && carriesBrand(checker.getTypeFromTypeNode(node.type))) {
         at(node, '产出 brand 的类型谓词')
       }
@@ -419,20 +483,21 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
     return out
   }
 
-  const scanned = () =>
-    program.getSourceFiles().filter((sf) => {
-      const rel = relative(SRC, sf.fileName)
-      return !rel.startsWith('..') && !/\.(?:test|spec)\.tsx?$/.test(rel) && !rel.includes('__tests__') && !rel.endsWith('.d.ts')
+  const scanned = (p: ts.Program, root: string) =>
+    p.getSourceFiles().filter((sf) => {
+      const rel = relative(root, sf.fileName)
+      return !rel.startsWith('..') && !/\.(?:test|spec)\.tsx?$/.test(rel) && !rel.includes('__tests__')
     })
 
   /**
    * 预筛（为了速度，且可靠）：`CalendarDate` 只在 calendar-date.ts 声明（导出闭集 + unique symbol），任何携带 brand 的类型都源自它；
-   * 一个文件要接触到这类类型，必须沿 import / re-export / 动态 import 链传递地引用到 calendar-date.ts。
-   * 所以只查它的**反向依赖闭包**（当前约 405 个文件，整条用例约 20s）。
+   * 一个文件要接触到这类类型，必须沿 import / re-export / import type / 动态 import 链传递地引用到它。
+   * 所以只查它的**反向依赖闭包**（当前约 400 个文件）。
    */
-  function reverseClosureOfCalendarDate(files: readonly ts.SourceFile[]): Set<string> {
+  function reverseClosure(p: ts.Program, rootFile: string): Set<string> {
+    const c = p.getTypeChecker()
     const importers = new Map<string, string[]>()
-    for (const sf of program.getSourceFiles()) {
+    for (const sf of p.getSourceFiles()) {
       const specs: ts.Expression[] = []
       const collect = (node: ts.Node) => {
         if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier) specs.push(node.moduleSpecifier)
@@ -442,7 +507,7 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
       }
       collect(sf)
       for (const spec of specs) {
-        const target = checker.getSymbolAtLocation(spec)?.valueDeclaration
+        const target = c.getSymbolAtLocation(spec)?.valueDeclaration
         if (target && ts.isSourceFile(target)) {
           const list = importers.get(target.fileName) ?? []
           list.push(sf.fileName)
@@ -450,35 +515,30 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
         }
       }
     }
-    const root = join(SRC, 'lib/calendar-date.ts')
-    const seen = new Set([root])
-    for (const queue = [root]; queue.length; ) {
+    const seen = new Set([rootFile])
+    for (const queue = [rootFile]; queue.length; ) {
       for (const f of importers.get(queue.pop()!) ?? []) if (!seen.has(f)) (seen.add(f), queue.push(f))
     }
-    void files
     return seen
   }
 
   it('全 src 非测试源码里，能产出 CalendarDate 的只有 calendar-date.ts 那一个类型谓词', () => {
-    const files = scanned()
-    expect(files.map((f) => relative(SRC, f.fileName))).toEqual(expect.arrayContaining([
-      'lib/data-center/params.ts', 'lib/data-center/context.ts', 'export-worker/registry.ts', 'lib/calendar-date.ts',
-    ]))
+    const files = scanned(program, SRC)
     expect(files.length, '扫描范围异常缩小').toBeGreaterThan(500)
-    // 期望按 AST 身份比对（行号只用于失败时定位，不进期望值）
-    const closure = reverseClosureOfCalendarDate(files)
+    const closure = reverseClosure(program, join(SRC, 'lib/calendar-date.ts'))
     const checkedFiles = files.filter((f) => closure.has(f.fileName))
     expect(checkedFiles.map((f) => relative(SRC, f.fileName))).toEqual(expect.arrayContaining([
       'lib/data-center/params.ts', 'lib/data-center/context.ts', 'export-worker/registry.ts', 'lib/calendar-date.ts',
       'actions/data-center/sales.ts', 'app/(main)/(analytics)/data-center/_components/sales/sales-board.tsx',
     ]))
+    // 期望按 AST 身份比对（行号只用于失败时定位，不进期望值）
     const offenders = checkedFiles.flatMap(escapes)
     expect(offenders.map(({ file, kind, text }) => ({ file, kind, text })), JSON.stringify(offenders, null, 2)).toEqual([
       { file: 'lib/calendar-date.ts', kind: '产出 brand 的类型谓词', text: 'value is CalendarDate' },
     ])
   }, 180_000)
 
-  it('自检：各类逃逸写法（别名 / typeof 派生 / 泛型铸造 / 两跳洗白 / 中性 re-export / 抑制注释）都能识别，正路不误报', () => {
+  it('自检：各类逃逸写法（别名 / 派生 / 泛型铸造含别名与元素访问 / 洗白含中间对象 / 重载与环境声明 / 中性 re-export / 抑制注释）都能识别，正路不误报', () => {
     const dir = mkdtempSync(join(tmpdir(), 'calendar-date-guard-'))
     const files: Record<string, string> = {
       'brand.ts': `declare const calendarDateBrand: unique symbol
@@ -507,12 +567,23 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
         `// @ts-expect-error`, // 17 抑制注释
         `export const i = use({ preset: 'custom', start: 1, end: 2 })`,
         `export const k = (use as (t: unknown) => unknown)({ preset: 'custom', start: s, end: s })`, // 19 逆变剥 brand
-        `export const good = ok(s) ? use({ preset: 'custom', start: s, end: s }) : use({ preset: 'month' })`, // 20 正路
+        `const alias = mintG; export const l = use({ preset: 'custom', start: alias(s), end: alias(s) })`, // 20 泛型经别名
+        `const box = { mint: mintG }; export const m = use({ preset: 'custom', start: box['mint'](s), end: box['mint'](s) })`, // 21 泛型经元素访问
+        `const id = <T,>(): T => null as T; export const o = use({ preset: 'custom', start: id(), end: id() })`, // 22 箭头 const 泛型
+        `function over(): CD; function over() { return JSON.parse('1') }`, // 23 重载签名
+        `declare const amb: CD`, // 24 环境声明
+        `const lo = { preset: 'custom' as const, start: j, end: j }; export const q = use(lo)`, // 25 经中间对象洗白
+        `class Holder { d!: CD }`, // 26 明确赋值断言
+        `export const txt = '@ts-ignore 字符串里不算'`, // 27 非注释
+        `export const good = ok(s) ? use({ preset: 'custom', start: s, end: s }) : use({ preset: 'month' })`, // 28 正路
       ].join('\n'),
     }
     for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text)
     const p = ts.createProgram([join(dir, 'brand.ts'), join(dir, 'neutral.ts'), join(dir, 'bad.ts')], { strict: true, target: ts.ScriptTarget.ES2022, noEmit: true, skipLibCheck: true })
     expect(p.getSemanticDiagnostics(p.getSourceFile(join(dir, 'bad.ts'))!).map((d: ts.Diagnostic) => ts.flattenDiagnosticMessageText(d.messageText, '\n'))).toEqual([])
+    // 中性 re-export 也必须进反向闭包（守护的预筛环节）
+    const closure = reverseClosure(p, join(dir, 'brand.ts'))
+    expect([...closure].map((f) => relative(dir, f)).sort()).toEqual(['bad.ts', 'brand.ts', 'neutral.ts'])
     const saved = checker
     checker = p.getTypeChecker()
     try {
@@ -520,12 +591,14 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
       const lines = (kind: string) => found.filter((e) => e.kind === kind).map((e) => e.line)
       expect(lines('断言成携带 brand 的类型')).toEqual([8, 9, 10])
       expect(lines('宽松断言落在要求 brand 的上下文')).toEqual([10, 11, 11, 16, 16])
-      expect(lines('any / never 值落在要求 brand 的上下文')).toEqual([12, 15, 15])
+      // 11 / 15 / 16 另有一条命中的是整个对象字面量实参（镜像遍历判出其中含 never），与逐值命中并存
+      expect(lines('any / never 值落在要求 brand 的上下文')).toEqual([11, 12, 15, 15, 15, 16, 25])
       expect(lines('产出 brand 的类型谓词')).toEqual([13])
-      expect(lines('泛型实例化带出 brand')).toEqual([14, 14])
+      expect(lines('泛型实例化带出 brand')).toEqual([14, 14, 20, 20, 21, 21, 22, 22])
       expect(lines('类型检查抑制注释')).toEqual([17])
       expect(lines('断言剥掉 brand 要求')).toEqual([19])
-      expect(found.filter((e) => e.line === 20)).toEqual([]) // 正路不误报
+      expect(lines('无实现检查的声明携带 brand')).toEqual([23, 24, 26])
+      expect(found.filter((e) => e.line === 27 || e.line === 28)).toEqual([]) // 字符串里的同形文本、正路都不误报
     } finally {
       checker = saved
       rmSync(dir, { recursive: true, force: true })

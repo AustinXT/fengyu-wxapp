@@ -385,19 +385,33 @@ describe('dist/export-worker.mjs 新鲜度 · 提货记录导出接线（#341）
  *   只比对其中那条复检 if 语句。顶层声明被 bun 因同名冲突改名（`X` → `X2`）时按名找不到，同样报红，按提示处理。
  */
 function tokenize(code: string): string[] {
-  // 只归一声明**内部**的局部绑定（参数、局部变量、解构元素、内层函数名、catch 变量）——bun 只会改它们的名字；
-  // 外部标识符（被调函数、常量、全局构造器）原文比对：换一个被调函数、互换两个常量都必须可见。
+  // 按 AST 角色处理标识符：
+  //   - 声明**内部**的局部绑定（参数、局部变量、解构绑定名、内层函数名、catch 变量）按首次出现编号——bun 只改它们的名字；
+  //     顶层声明的名字（含顶层解构）原文比，与外部标识符同等对待（互换两个顶层名必须可见）
+  //   - 属性名 / 对象键 / 解构键原文比；简写 `{ a }`（对象字面量或解构）一律展开成 `a : <值>` 再比，
+  //     这样 bun 把 `{ a }` 输出成 `{ a: a2 }` 不影响，而改了键名必然可见
+  //   - 其余外部标识符（被调函数、常量、全局构造器）原文比
   const sf = ts.createSourceFile('x.js', code, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS)
   const locals = new Set<string>()
+  const keyAt = new Set<number>() // 这些位置上的标识符是「键」，原文输出
+  const shorthandAt = new Map<number, string>() // 简写：位置 → 键名（输出 `键 : 值`）
   const collectBinding = (name: ts.BindingName) => {
     if (ts.isIdentifier(name)) locals.add(name.text)
     else for (const el of name.elements) if (!ts.isOmittedExpression(el)) collectBinding(el.name)
   }
   const visit = (node: ts.Node, depth: number) => {
-    if (ts.isParameter(node) || ts.isBindingElement(node)) collectBinding(node.name)
+    if (ts.isParameter(node) && depth > 0) collectBinding(node.name)
     else if (ts.isVariableDeclaration(node) && depth > 0) collectBinding(node.name)
     else if ((ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node)) && depth > 0 && node.name) locals.add(node.name.text)
     else if (ts.isCatchClause(node) && node.variableDeclaration) collectBinding(node.variableDeclaration.name)
+    if (ts.isPropertyAssignment(node) && ts.isIdentifier(node.name)) keyAt.add(node.name.getStart(sf))
+    if (ts.isShorthandPropertyAssignment(node)) shorthandAt.set(node.name.getStart(sf), node.name.text)
+    if (ts.isBindingElement(node)) {
+      if (node.propertyName && ts.isIdentifier(node.propertyName)) keyAt.add(node.propertyName.getStart(sf))
+      else if (!node.propertyName && ts.isIdentifier(node.name) && ts.isObjectBindingPattern(node.parent)) shorthandAt.set(node.name.getStart(sf), node.name.text)
+    }
+    if ((ts.isMethodDeclaration(node) || ts.isPropertyDeclaration(node)) && ts.isIdentifier(node.name)) keyAt.add(node.name.getStart(sf))
+    // 参数属于其函数体这一层：函数节点本身就把 depth 加一
     const inner = ts.isFunctionLike(node) || ts.isBlock(node) ? depth + 1 : depth
     ts.forEachChild(node, (child) => visit(child, inner))
   }
@@ -405,14 +419,21 @@ function tokenize(code: string): string[] {
 
   const sc = ts.createScanner(ts.ScriptTarget.Latest, true, ts.LanguageVariant.Standard, code)
   const ids = new Map<string, string>()
+  const norm = (t: string) => {
+    if (!locals.has(t)) return t
+    if (!ids.has(t)) ids.set(t, `$${ids.size}`)
+    return ids.get(t)!
+  }
   const out: string[] = []
   for (let k = sc.scan(); k !== ts.SyntaxKind.EndOfFileToken; k = sc.scan()) {
     if (k === ts.SyntaxKind.SemicolonToken) continue
     const prev = out[out.length - 1]
-    if (k === ts.SyntaxKind.Identifier && prev !== '.' && prev !== '?.' && locals.has(sc.getTokenText())) {
+    const pos = sc.getTokenStart()
+    if (k === ts.SyntaxKind.Identifier) {
       const t = sc.getTokenText()
-      if (!ids.has(t)) ids.set(t, `$${ids.size}`)
-      out.push(ids.get(t)!)
+      if (prev === '.' || prev === '?.' || keyAt.has(pos)) out.push(t)
+      else if (shorthandAt.has(pos)) out.push(shorthandAt.get(pos)!, ':', norm(t))
+      else out.push(norm(t))
     } else if (k === ts.SyntaxKind.StringLiteral) out.push(JSON.stringify(sc.getTokenValue()))
     else out.push(sc.getTokenText())
   }
@@ -502,6 +523,17 @@ describe('dist/export-worker.mjs 新鲜度 · 自定义区间校验（#308，源
     expect(tokenize(`function h(p, [c]) { const x = p.a + c; return x }`)).toEqual(
       tokenize(`function h(p2, [c2]) { const x2 = p2.a + c2; return x2 }`),
     )
+    // 键名：对象简写 / 显式键 / 解构键改了必须可见；bun 式的简写展开（`{ a }` → `{ a: a2 }`）必须相等
+    const obj = tokenize(`function k(a) { const { b, c: d } = a; return { a, b, e: d } }`)
+    expect(tokenize(`function k(a2) { const { b: b2, c: d2 } = a2; return { a: a2, b: b2, e: d2 } }`)).toEqual(obj)
+    for (const changed of [
+      `function k(z) { const { b, c: d } = z; return { z, b, e: d } }`, // 简写键变了
+      `function k(a) { const { b, c: d } = a; return { a, b, f: d } }`, // 显式键变了
+      `function k(a) { const { b, x: d } = a; return { a, b, e: d } }`, // 解构键变了
+      `function k(a) { const { x, c: d } = a; return { a, b: x, e: d } }`, // 解构简写键变了
+    ]) expect(tokenize(changed), changed).not.toEqual(obj)
+    // 顶层解构名不归一：互换可见
+    expect(tokenize(`const { a, b } = X`)).not.toEqual(tokenize(`const { b, a } = X`))
   })
 })
 
