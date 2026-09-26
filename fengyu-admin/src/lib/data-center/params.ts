@@ -3,7 +3,7 @@
  * 容错：非法值一律回退默认（month / all / 开启对比），不抛错。
  */
 import { isValidCalendarDate } from '@/lib/calendar-date'
-import type { BoardParams, DataCenterScope, TimeRangeInput } from './types'
+import type { BoardParams, DataCenterScope, TimeRangeInput, TimeRangePreset } from './types'
 
 export const DATA_CENTER_TABS = ['sales', 'customer', 'efficiency', 'product'] as const
 export type DataCenterTab = (typeof DATA_CENTER_TABS)[number]
@@ -163,8 +163,15 @@ export function isValidCustomRange(start: unknown, end: unknown): boolean {
   return toCustomRange(start, end) !== null
 }
 
+/** 非自定义预设白名单：以 Record 穷举，TimeRangePreset 增删预设时 tsc 会逼着这里同步。 */
+const FIXED_PRESETS: Record<Exclude<TimeRangePreset, 'custom'>, true> = { today: true, week: true, month: true, year: true }
+
+function isFixedPreset(preset: unknown): preset is Exclude<TimeRangePreset, 'custom'> {
+  return typeof preset === 'string' && Object.hasOwn(FIXED_PRESETS, preset)
+}
+
 /**
- * 服务端边界的时间参数解析（#308）：预设逐个字面量比对后原样重建（原型链属性名如 `toString` 自然不中），custom 须经 `toCustomRange`（单源日历校验 + 不倒挂），
+ * 服务端边界的时间参数解析（#308）：非自定义预设按 FIXED_PRESETS 白名单（Object.hasOwn，原型链属性名不中）原样重建，custom 须经 `toCustomRange`（单源日历校验 + 不倒挂），
  * 其余一律 null——调用方据 null 报 INVALID_PARAMS。
  * server action 直接收客户端传来的 timeRange 对象、不经过 parseTimeRange，必须在 prepareBoardContext 再解析一次——
  * 否则 `2026-02-30` 会让 resolveTimeRange 算出 NaN 天数 / `NaN-NaN-NaN` 区间进 SQL（做法同 #376 的多店复检）。
@@ -174,7 +181,7 @@ export function toTimeRangeInput(tr: unknown): TimeRangeInput | null {
   if (typeof tr !== 'object' || tr === null) return null
   const { preset, start, end } = tr as { preset?: unknown; start?: unknown; end?: unknown }
   if (preset === 'custom') return toCustomRange(start, end)
-  if (preset === 'today' || preset === 'week' || preset === 'month' || preset === 'year') return { preset }
+  if (isFixedPreset(preset)) return { preset }
   return null
 }
 

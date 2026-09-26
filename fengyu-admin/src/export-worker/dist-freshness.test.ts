@@ -377,22 +377,39 @@ describe('dist/export-worker.mjs 新鲜度 · 提货记录导出接线（#341）
  * #308 自定义区间日历校验与服务端复检：**源码 ↔ 产物逐 token 比对**（不是钉产物片段）。
  *
  * 做法：源码经 `ts.transpileModule` 去掉类型后，与产物对应模块区段里的**同名声明**各自切 token 比较。
- * 归一化只抹掉 bun 会改、但不改语义的东西：分号、尾逗号、字符串引号、顶层 const→var、局部标识符名（按首次出现顺序编号，
- * 所以 bun 把 `date` 改成 `date5` 不影响；属性名 `.x` 不改名，按原文比）。
+ * 归一化只抹掉 bun 会改、但不改语义的东西：分号、尾逗号、字符串引号、顶层 const→var、声明内部的局部绑定名
+ * （按首次出现顺序编号，所以 bun 把 `date` 改成 `date5` 不影响）；外部标识符与属性名一律原文比。
  * 源码逻辑有任何变动而没重建产物 → token 序列不同 → 红；反之产物被改也红。
  *
  * ⚠ bun 若对某条声明做了额外变换（如去冗余括号），会误红（fail-closed）——`queryDataCenter` 整函数就因此
  *   只比对其中那条复检 if 语句。顶层声明被 bun 因同名冲突改名（`X` → `X2`）时按名找不到，同样报红，按提示处理。
  */
 function tokenize(code: string): string[] {
+  // 只归一声明**内部**的局部绑定（参数、局部变量、解构元素、内层函数名、catch 变量）——bun 只会改它们的名字；
+  // 外部标识符（被调函数、常量、全局构造器）原文比对：换一个被调函数、互换两个常量都必须可见。
+  const sf = ts.createSourceFile('x.js', code, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS)
+  const locals = new Set<string>()
+  const collectBinding = (name: ts.BindingName) => {
+    if (ts.isIdentifier(name)) locals.add(name.text)
+    else for (const el of name.elements) if (!ts.isOmittedExpression(el)) collectBinding(el.name)
+  }
+  const visit = (node: ts.Node, depth: number) => {
+    if (ts.isParameter(node) || ts.isBindingElement(node)) collectBinding(node.name)
+    else if (ts.isVariableDeclaration(node) && depth > 0) collectBinding(node.name)
+    else if ((ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node)) && depth > 0 && node.name) locals.add(node.name.text)
+    else if (ts.isCatchClause(node) && node.variableDeclaration) collectBinding(node.variableDeclaration.name)
+    const inner = ts.isFunctionLike(node) || ts.isBlock(node) ? depth + 1 : depth
+    ts.forEachChild(node, (child) => visit(child, inner))
+  }
+  visit(sf, 0)
+
   const sc = ts.createScanner(ts.ScriptTarget.Latest, true, ts.LanguageVariant.Standard, code)
   const ids = new Map<string, string>()
   const out: string[] = []
   for (let k = sc.scan(); k !== ts.SyntaxKind.EndOfFileToken; k = sc.scan()) {
     if (k === ts.SyntaxKind.SemicolonToken) continue
     const prev = out[out.length - 1]
-    if (k === ts.SyntaxKind.Identifier && (prev === '.' || prev === '?.')) out.push(sc.getTokenText())
-    else if (k === ts.SyntaxKind.Identifier) {
+    if (k === ts.SyntaxKind.Identifier && prev !== '.' && prev !== '?.' && locals.has(sc.getTokenText())) {
       const t = sc.getTokenText()
       if (!ids.has(t)) ids.set(t, `$${ids.size}`)
       out.push(ids.get(t)!)
@@ -435,6 +452,8 @@ describe('dist/export-worker.mjs 新鲜度 · 自定义区间校验（#308，源
     ['src/lib/calendar-date.ts', 'CALENDAR_MAX_YEAR'],
     ['src/lib/calendar-date.ts', 'DATE_RE'],
     ['src/lib/calendar-date.ts', 'isValidCalendarDate'],
+    ['src/lib/data-center/params.ts', 'FIXED_PRESETS'],
+    ['src/lib/data-center/params.ts', 'isFixedPreset'],
     ['src/lib/data-center/params.ts', 'toCustomRange'],
     ['src/lib/data-center/params.ts', 'isValidCustomRange'],
     ['src/lib/data-center/params.ts', 'toTimeRangeInput'],
@@ -472,7 +491,17 @@ describe('dist/export-worker.mjs 新鲜度 · 自定义区间校验（#308，源
       `function f(a, b) { const d = new Date(b); return d.getUTCDate() === b && 'x' }`,
       `function f(a, b) { const d = new Date(a); return d.getUTCDay() === b && 'x' }`,
       `function f(a, b) { const d = new Date(a); return d.getUTCDate() === b && 'y' }`,
+      `function f(a, b) { const d = new Temporal(a); return d.getUTCDate() === b && 'x' }`, // 换全局构造器
     ]) expect(tokenize(changed), changed).not.toEqual(base)
+    // 外部标识符不归一：互换两个常量、换一个被调函数都必须可见
+    const range = tokenize(`function g(y) { return y < CALENDAR_MIN_YEAR || y > CALENDAR_MAX_YEAR || check(y) }`)
+    expect(tokenize(`function g(y) { return y < CALENDAR_MAX_YEAR || y > CALENDAR_MIN_YEAR || check(y) }`)).not.toEqual(range)
+    expect(tokenize(`function g(y) { return y < CALENDAR_MIN_YEAR || y > CALENDAR_MAX_YEAR || other(y) }`)).not.toEqual(range)
+    // 局部绑定（参数、解构、局部变量）改名不影响
+    expect(tokenize(`function g(yy) { return yy < CALENDAR_MIN_YEAR || yy > CALENDAR_MAX_YEAR || check(yy) }`)).toEqual(range)
+    expect(tokenize(`function h(p, [c]) { const x = p.a + c; return x }`)).toEqual(
+      tokenize(`function h(p2, [c2]) { const x2 = p2.a + c2; return x2 }`),
+    )
   })
 })
 

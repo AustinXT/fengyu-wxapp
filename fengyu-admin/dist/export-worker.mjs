@@ -159599,13 +159599,17 @@ function toCustomRange(start, end) {
 function isValidCustomRange(start, end) {
   return toCustomRange(start, end) !== null;
 }
+var FIXED_PRESETS = { today: true, week: true, month: true, year: true };
+function isFixedPreset(preset) {
+  return typeof preset === "string" && Object.hasOwn(FIXED_PRESETS, preset);
+}
 function toTimeRangeInput(tr) {
   if (typeof tr !== "object" || tr === null)
     return null;
   const { preset, start, end } = tr;
   if (preset === "custom")
     return toCustomRange(start, end);
-  if (preset === "today" || preset === "week" || preset === "month" || preset === "year")
+  if (isFixedPreset(preset))
     return { preset };
   return null;
 }
