@@ -272,6 +272,8 @@
       <!-- 排行榜表格 -->
       <view class="ranking-table">
         <view class="ranking-table-title">员工排行榜</view>
+        <!-- #299 口径说明，与 admin STAFF_OUTPUT_SCOPE_NOTE 逐字一致（cross-end-staff-output-note.test.js 守护） -->
+        <view class="ranking-table-note">数值为员工个人全域产出</view>
 
         <view class="ranking-table-header">
           <view class="col col-rank">排名</view>

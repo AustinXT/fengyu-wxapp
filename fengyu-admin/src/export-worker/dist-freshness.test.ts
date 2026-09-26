@@ -334,6 +334,17 @@ const PROBES: Probe[] = [
     exactCountsInModule: true,
   },
   {
+    label: '品项板 · 区间业绩净额，负数冲销不整组丢弃；人数只认正数行（#288）',
+    file: 'src/actions/data-center/product.ts',
+    // 按「谓词/列的起始部分」抓整行、不限取值：把 <> 0 改回 > 0 的行照样被提取，去产物里逐字比对即红
+    pattern:
+      /^(?!.*\$\{)(HAVING SUM\(sipe\.amount.*|OR SUM\(sipe\.amount::numeric\) FILTER .*|AND purchase_received .*|WHERE pa\.day_received .*|ON pa\.client_user_id = x\.client_user_id AND pa\.grp = x\.grp.*|COUNT\(DISTINCT pa\.client_user_id\).*|new_revenue_store AS \(|LEFT JOIN new_revenue_store .*|COALESCE\(nr?\.revenue, 0\) AS new_revenue,)$/,
+    minLines: 16,
+    uniqueLines: 11,
+    exactCountsInModule: true,
+    exactLinesInModule: true,
+  },
+  {
     label: '提成明细 · 平均提成点公式（#375）',
     file: 'src/actions/data-center/commission.ts',
     pattern: /^const averageRate = /,

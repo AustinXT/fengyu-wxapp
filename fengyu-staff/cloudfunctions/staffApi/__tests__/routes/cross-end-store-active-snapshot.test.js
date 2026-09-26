@@ -22,8 +22,8 @@ const path = require('node:path')
 
 const STAFF = path.resolve(__dirname, '../..')
 const ADMIN = path.resolve(__dirname, '../../../../../fengyu-admin/src')
-// 经营分析站（#421 跟随 #401）：独立部署，第三份副本。analyst 自己的 vitest 不进 CI（#382），
-// 这里在 staff 全量套件（CI 必跑）里补一道源码级守护；完整守护见 analyst src/lib/__tests__/store-status-cross-end.test.ts
+// 经营分析站（#421 跟随 #401）：独立部署，第三份副本。这里在 staff 全量套件里补一道源码级守护；
+// 完整守护见 analyst src/lib/__tests__/store-status-cross-end.test.ts（#436 起由 CI analyst-tests job 跑）
 const ANALYST = path.resolve(__dirname, '../../../../../fengyu-analyst/src')
 
 const read = (p) => fs.readFileSync(p, 'utf8')
@@ -48,11 +48,12 @@ function onlySqlTemplate(section) {
 }
 
 /**
- * 经营分析站决定「哪些门店计入」的 7 个文件的整份全文快照（见 test 5）。
+ * 经营分析站决定「哪些门店计入」的 7 个文件 + 助手全量门店名单（#436）的整份全文快照（见 test 5）。
+ * 名单文件的语义断言见 analyst `scope-last-hop.test.ts`。
  * 改动后按失败输出的 actual 更新——更新前先跑 analyst 本地守护（store-status-cross-end / analyst-scope 测试）。
  */
 const ANALYST_FILE_SHA = {
-  'lib/store-status.ts': 'ea3b4fb11e2216b5',
+  'lib/store-status.ts': 'ab763f58ed4993c4',
   'lib/analyst-scope.ts': 'fa90128b93554c6f',
   'lib/repurchase.ts': '055550992fab536d',
   'lib/new-customer-funnel.ts': 'aa58831a62d68c7c',
@@ -60,6 +61,8 @@ const ANALYST_FILE_SHA = {
   // 账号可见门店（须含停用门店，首次基线依赖）与 roles→全局判定的输入源（GLM round-2 P2）
   'lib/permissions.ts': '5a7a96011d83b241',
   'lib/auth.ts': 'd07c3178e77fbdc4',
+  // 助手识别「点名不可见门店 / 市场」的全量名单：须不看在营、不看权限，否则停用门店静默回落（#436 GLM round-1 P2）
+  'lib/assistant-org-names.ts': '0c28d2ce4dc66526',
 }
 
 describe('门店在营判定跨端字面量守护（#400）', () => {
@@ -125,7 +128,7 @@ describe('门店在营判定跨端字面量守护（#400）', () => {
 
   test('5. analyst 在营口径的取数层（#421）：范围下拉 / scope SQL / 三板块查询模块整份原文快照 + 使用点闭集', () => {
     /**
-     * CI 里覆盖经营分析站的只有这一条（analyst 自身 vitest 不进 CI，#382）。
+     * #421 时 analyst 自身 vitest 不进 CI，这一条是当时唯一的 CI 防线；#436 起 analyst 全量进 CI 后保留为冗余。
      * 不挑子串、也不按函数切片（切片会被「注释包住旧函数、另写一个同名实现」或
      * 「别名 import 指向别的模块」绕过——codex round-2），直接把决定「哪些门店计入」的
      * 文件（清单见 `ANALYST_FILE_SHA`）**整份原文**（含 import、注释）钉 sha256：任何改动都会红。
@@ -134,8 +137,8 @@ describe('门店在营判定跨端字面量守护（#400）', () => {
      * 哈希取原始字节（只把 CRLF 规范成 LF）：换行在 JS 里有语义（ASI，`return` 后换行即返回 undefined），
      * 不能做空白归一（codex round-3 P2）。
      *
-     * ⚠️ 覆盖范围只到查询模块：页面 / 智能助手 / 导出路由把已校验 scope 传进这些函数的「最后一跳」
-     *    是既有接线，不在本条守护内（#421 评审登记的范围外发现）。
+     * 覆盖范围只到查询模块：页面 / 智能助手 / 导出路由把已校验 scope 传进这些函数的「最后一跳」
+     * 由 analyst `src/lib/__tests__/scope-last-hop.test.ts` 守护（#436）。
      */
     const crypto = require('node:crypto')
     const sha = (text) => crypto.createHash('sha256').update(text.replace(/\r\n/g, '\n')).digest('hex').slice(0, 16)
@@ -166,6 +169,7 @@ describe('门店在营判定跨端字面量守护（#400）', () => {
       'app/api/health/route.ts',
       'lib/analyst-scope.ts',
       'lib/assistant-chat-store.ts',
+      'lib/assistant-org-names.ts', // 助手识别不可见门店 / 市场名称（#436），不取数
       'lib/assistant-product-terms.ts',
       'lib/auth.ts',
       'lib/member-threshold.ts',
