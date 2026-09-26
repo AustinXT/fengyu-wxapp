@@ -353,7 +353,16 @@ export const INVENTORY_OPERATION_DOC_QUERY: Record<InventoryOperationId, Invento
   'self-purchase': { produced: { docTypes: ['自采产品入库'] } },
 
   // —— 门店 ——
-  'store-request': { produced: { docTypes: ['门店报货'] } },
+  'store-request': {
+    // 同 market-report（#348）：produced 只列已完成，草稿在 inbox，删除的草稿（已取消）不回到办理台
+    produced: { docTypes: ['门店报货'], statuses: ['已完成'] },
+    /*
+     * 「草稿」（#348）：本门店存了未提交的门店报货单。对齐 `lockStoreReplenishmentDraft`：
+     * 非门店报货 NOT_FOUND、`draft.status !== '草稿'` → INVALID_STATE；
+     * 编辑 / 提交 / 删除都断 `assertLocationWritable(session, store)`，store 即单头 source ⇒ scopeRole=source。
+     */
+    inbox: { docTypes: ['门店报货'], statuses: ['草稿'], scopeRole: 'source' },
+  },
   'store-receipt': {
     produced: { docTypes: ['院入库'] },
     /*
@@ -492,8 +501,9 @@ export function resolveOperationDocQuery(operationId: string): InventoryOperatio
 /**
  * 待办区一行上可能出现的动作种类。
  *
- * 草稿（#348）：市场报货起可存草稿，配「继续编辑」（跳回表单回填）与「删除草稿」（草稿 → 已取消）。
- * 草稿只由专用服务产出（`saveMarketReplenishmentDraft`），通用建单（engine `defaultStatusForDoc`）
+ * 草稿（#348）：市场报货与门店报货可存草稿，配「继续编辑」（跳回表单回填）与「删除草稿」（草稿 → 已取消）。
+ * 两个动作按业务分派到各自的 Server Action（办理台 `DRAFT_DELETE_ACTIONS`），不能跨业务复用同一个 action。
+ * 草稿只由专用服务产出（`saveMarketReplenishmentDraft` / `createStoreReplenishmentRequest(asDraft)`），通用建单（engine `defaultStatusForDoc`）
  * 仍然只产出 待审批 / 待收货 / 已完成，单测钉住。
  */
 export const INVENTORY_INBOX_ACTION_KINDS = [
@@ -550,6 +560,7 @@ export const INVENTORY_OPERATION_INBOX_ACTIONS = {
   'company-shipment': ['report-ship-goto'],
   // 草稿编辑要回表单重新汇总门店需求、重新取价，只能跳转；删除走确认弹窗（#348）
   'market-report': ['draft-edit-goto', 'draft-delete'],
+  'store-request': ['draft-edit-goto', 'draft-delete'],
 } as const satisfies Partial<Record<InventoryOperationId, readonly InventoryInboxActionKind[]>>
 
 /** 通用业务 → 待办行内动作。键集合必须与 `INVENTORY_GENERIC_OPERATION_INBOX` 一致（单测钉住）。 */

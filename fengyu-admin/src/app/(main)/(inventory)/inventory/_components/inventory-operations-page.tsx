@@ -33,7 +33,9 @@ import {
   createMarketReplenishment,
   createMarketStaffPurchase,
   deleteMarketReplenishmentDraft,
+  deleteStoreReplenishmentDraft,
   saveMarketReplenishmentDraft,
+  saveStoreReplenishmentDraft,
   createSupplyChainStaffPurchase,
   createPurchaseOrder,
   createMarketReportSummary,
@@ -1119,7 +1121,7 @@ function OperationWorkspace({
               )}
             />
           )}
-          {operation === 'store-request' && <StoreRequestForm locations={locations} onSuccess={handleSuccess} />}
+          {operation === 'store-request' && <StoreRequestForm locations={locations} prefill={prefill} onSuccess={handleSuccess} onBusyChange={setFormBusy} />}
           {operation === 'market-report' && <MarketReportForm locations={locations} marketPriceLocationIds={marketPriceLocationIds} prefill={prefill} onSuccess={handleSuccess} onBusyChange={setFormBusy} />}
           {operation === 'item-company-request' && <ItemCompanyReplenishmentForm locations={locations} onSuccess={handleSuccess} />}
           {operation === 'purchase-order' && <PurchaseOrderForm locations={locations} canViewPrice={canViewPrice} onSuccess={handleSuccess} />}
@@ -1247,6 +1249,19 @@ const FULL_RECEIVE_ACTIONS: ReadonlyMap<
 ])
 
 /**
+ * 删除草稿（#348）→ 按业务分派到**各自**的 Server Action（权限不同：市场报货 market_operate / 门店报货 store_operate，
+ * 单据类型也不同）。同一个 `draft-delete` kind 挂在两张卡上，必须按卡片分派，不能共用一个 action。
+ * `Map` 而不是对象字面量：理由同 FULL_RECEIVE_ACTIONS。
+ */
+const DRAFT_DELETE_ACTIONS: ReadonlyMap<
+  string,
+  (input: { draftId: string; reason: string | null }) => Promise<{ id: string }>
+> = new Map([
+  ['market-report', deleteMarketReplenishmentDraft],
+  ['store-request', deleteStoreReplenishmentDraft],
+])
+
+/**
  * 待办行内动作的弹窗配置。
  *
  * 做成工厂而不是模块级常量，只为了 `shipment-receive-full` 一条 —— 它要按业务选
@@ -1368,17 +1383,22 @@ function buildInboxActionConfig(
       run: (docId, remark) => confirmInventoryCoreReceive(docId, remark),
     },
     'draft-delete': {
-      title: '删除市场报货草稿？',
+      title: operation === 'store-request' ? '删除门店报货草稿？' : '删除市场报货草稿？',
       label: '删除原因',
       placeholder: '选填，将记录在单据上',
-      // business.ts 的 deleteMarketReplenishmentDraft：reason 可选，缺省记「删除草稿」
+      // business.ts 的 delete*ReplenishmentDraft：reason 可选，缺省记「删除草稿」
       remarkRequired: false,
       consequence: '草稿将转为已取消，不再出现在办理台，也不会进入任何下游；单据中心仍可查到。',
       confirmText: '确认删除',
       confirmVariant: 'destructive',
       successMessage: () => '草稿已删除',
       errorFallback: '删除草稿失败',
-      run: (docId, remark) => deleteMarketReplenishmentDraft({ draftId: docId, reason: remark || null }),
+      run: (docId, remark) => {
+        const remove = DRAFT_DELETE_ACTIONS.get(operation)
+        // fail-closed：只有两张报货卡配了草稿，其余业务宁可报错也不乱调（同 FULL_RECEIVE_ACTIONS）
+        if (!remove) throw new Error('当前业务没有草稿删除入口')
+        return remove({ draftId: docId, reason: remark || null })
+      },
     },
   }
 }
@@ -1709,7 +1729,9 @@ export function OperationDocsTab({
                 ? '待发货：仍有未发量的市场报货单'
                 : operation === 'market-report'
                   ? '草稿：存了未提交的市场报货单，提交后才进入下游'
-                  : '上游已提交、等你审批或收货的单据'}
+                  : operation === 'store-request'
+                    ? '草稿：存了未提交的门店报货单，提交后市场才能汇总、配货'
+                    : '上游已提交、等你审批或收货的单据'}
             </span>
           </div>
           {inboxEmpty ? (
@@ -1797,10 +1819,16 @@ interface SimpleSkuLine {
 
 function StoreRequestForm({
   locations,
+  prefill,
   onSuccess,
+  onBusyChange,
 }: {
   locations: InventoryLocationRow[]
+  /** 待办区「继续编辑」（#348）：把一张门店报货草稿回填进表单。 */
+  prefill?: OperationFormPrefill | null
   onSuccess: (message: string) => void
+  /** 存草稿 / 提交 / 回填在途时上报工作区（同 MarketReportForm）。 */
+  onBusyChange?: (busy: boolean) => void
 }) {
   const stores = locations.filter((location) => location.locationType === '门店' && location.isActive)
   const markets = locations.filter((location) => location.locationType === '市场' && location.isActive)
@@ -1810,6 +1838,15 @@ function StoreRequestForm({
   const [remark, setRemark] = useState('')
   const [lines, setLines] = useState<SimpleSkuLine[]>([{ skuId: '', quantity: '1', remark: '' }])
   const [saving, setSaving] = useState(false)
+  const [loadingDraft, setLoadingDraft] = useState(false)
+  /** 正在编辑的草稿单号（#348）。非空时报货门店锁定，「提交」在该草稿上转已完成。 */
+  const [draftId, setDraftId] = useState<string | null>(null)
+  /** 表单世代（同 MarketReportForm）：迟到的回填 / 存草稿响应在世代变化后丢弃。 */
+  const epochRef = useRef(0)
+  useEffect(() => {
+    onBusyChange?.(saving || loadingDraft)
+  }, [saving, loadingDraft, onBusyChange])
+  useEffect(() => () => onBusyChange?.(false), [onBusyChange])
 
   function updateLine(index: number, patch: Partial<SimpleSkuLine>) {
     setLines((previous) => previous.map((line, lineIndex) => lineIndex === index ? { ...line, ...patch } : line))
@@ -1824,7 +1861,60 @@ function StoreRequestForm({
     setMarketId(nextMarketId)
   }
 
-  async function submit() {
+  function resetForm() {
+    epochRef.current += 1
+    setLoadingDraft(false)
+    setDraftId(null)
+    setDocDate(today)
+    setRemark('')
+    setLines([{ skuId: '', quantity: '1', remark: '' }])
+  }
+
+  const loadDraftRef = useRef<(id: string) => Promise<void>>(async () => {})
+  loadDraftRef.current = async (id: string) => {
+    const epoch = ++epochRef.current
+    setLoadingDraft(true)
+    try {
+      const detail = await getInventoryCoreDocById(id)
+      if (epoch !== epochRef.current) return
+      if (!detail || detail.docType !== '门店报货' || detail.status !== '草稿') {
+        toast.error(`单据 ${id} 不是可编辑的门店报货草稿`)
+        return
+      }
+      const store = stores.find((location) => (
+        location.orgNodeId === detail.sourceOrgNodeId || location.locationId === detail.sourceOrgNodeId
+      ))
+      if (!store) {
+        toast.error('草稿的报货门店已停用或不在你的范围内，只能删除该草稿')
+        return
+      }
+      // 跨天续编：报货日期回到今天（同 MarketReportForm）
+      const draftDate = detail.docDate.slice(0, 10)
+      const currentDate = today()
+      if (draftDate < currentDate) toast.info(`报货日期已从草稿的 ${draftDate} 更新为今天`)
+      setDraftId(detail.id)
+      setStoreId(store.locationId)
+      setMarketId(store.parentLocationId ?? '')
+      setDocDate(draftDate < currentDate ? currentDate : draftDate)
+      setRemark(detail.remark ?? '')
+      setLines(detail.items.length > 0
+        ? detail.items.map((item) => ({ skuId: item.skuId, quantity: String(item.quantity), remark: item.remark ?? '' }))
+        : [{ skuId: '', quantity: '1', remark: '' }])
+      toast.info(`正在编辑草稿 ${detail.id}`)
+    } catch (error) {
+      if (epoch === epochRef.current) toast.error(actionErrorMessage(error, '加载门店报货草稿失败'))
+    } finally {
+      if (epoch === epochRef.current) setLoadingDraft(false)
+    }
+  }
+  const prefillToken = prefill?.token
+  useEffect(() => {
+    if (prefill?.docId) void loadDraftRef.current(prefill.docId)
+    // 依赖只挂 token（同 useDocumentPrefill）
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefillToken])
+
+  async function submit(asDraft = false) {
     if (saving) return
     if (!storeId || !marketId) {
       toast.error('请选择报货门店和市场')
@@ -1839,19 +1929,29 @@ function StoreRequestForm({
       toast.error('请完整填写商品和报货数量')
       return
     }
+    const epoch = epochRef.current
     setSaving(true)
     try {
-      const result = await createStoreReplenishmentRequest({
+      const input = {
         storeId,
         marketId,
         docDate: optionalText(docDate),
         remark: optionalText(remark),
         items: items.map((item) => ({ ...item, quantity: item.quantity! })),
-      })
-      onSuccess(`门店报货单已创建：${result.id}`)
-      setLines([{ skuId: '', quantity: '1', remark: '' }])
+        draftId,
+      }
+      if (asDraft) {
+        const result = await saveStoreReplenishmentDraft(input)
+        // 存完留在编辑态；世代变了（期间回填了别的草稿 / 退出编辑）就不写回单号
+        if (epoch === epochRef.current) setDraftId(result.id)
+        onSuccess(`门店报货草稿已保存：${result.id}（未提交，市场暂不可汇总）`)
+      } else {
+        const result = await createStoreReplenishmentRequest(input)
+        onSuccess(draftId ? `门店报货草稿已提交：${result.id}` : `门店报货单已创建：${result.id}`)
+        if (epoch === epochRef.current) resetForm()
+      }
     } catch (error) {
-      toast.error(actionErrorMessage(error, '创建门店报货失败'))
+      toast.error(actionErrorMessage(error, asDraft ? '保存门店报货草稿失败' : draftId ? '提交门店报货草稿失败' : '创建门店报货失败'))
     } finally {
       setSaving(false)
     }
@@ -1859,6 +1959,15 @@ function StoreRequestForm({
 
   return (
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
+      {draftId && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-[var(--radius)] border border-[#F0D9B5] bg-[#FFF8EC] px-3 py-2 text-sm">
+          <span>
+            正在编辑草稿 <span className="font-mono">{draftId}</span>
+            <span className="ml-2 text-xs text-[#888888]">草稿不进入市场汇总与分院配货；提交后锁定不能再改。</span>
+          </span>
+          <Button type="button" variant="ghost" size="sm" onClick={resetForm} disabled={saving}>退出编辑</Button>
+        </div>
+      )}
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
         <FormField label="报货门店" required>
           <InventorySubjectSelect
@@ -1866,6 +1975,8 @@ function StoreRequestForm({
             value={storeId}
             onChange={selectStore}
             placeholder="请选择门店"
+            // 草稿的报货门店不可改（服务端 lockStoreReplenishmentDraft 同口径）
+            disabled={draftId !== null}
           />
         </FormField>
         <FormField label="所属市场" required>
@@ -1880,6 +1991,7 @@ function StoreRequestForm({
             }}
             placeholder="请选择市场"
             autoSelect={false}
+            disabled={draftId !== null}
           />
         </FormField>
         <FormField label="报货日期">
@@ -1913,8 +2025,10 @@ function StoreRequestForm({
       </div>
 
       <RemarkField value={remark} onChange={setRemark} />
-      <div className="flex justify-end">
-        <Button type="submit" loading={saving}>创建门店报货单</Button>
+      <div className="flex justify-end gap-2">
+        {/* 存草稿（#348）：不进入市场汇总与分院配货，可在「单据 → 待我处理」继续编辑或删除 */}
+        <Button type="button" variant="outline" loading={saving} disabled={loadingDraft} onClick={() => void submit(true)}>存草稿</Button>
+        <Button type="submit" loading={saving} disabled={loadingDraft}>{draftId ? '提交门店报货单' : '创建门店报货单'}</Button>
       </div>
     </form>
   )

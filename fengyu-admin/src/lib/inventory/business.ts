@@ -206,6 +206,11 @@ export interface CreateStoreReplenishmentInput {
   docDate?: string | null
   remark?: string | null
   items: StoreReplenishmentLineInput[]
+  /**
+   * 门店报货草稿（#348）：传入则在该草稿上原单号写入 —— 存草稿时覆盖明细、仍是草稿；
+   * 提交时转「已完成」。缺省为新建。
+   */
+  draftId?: string | null
 }
 
 export interface StoreReplenishmentSummaryLine {
@@ -2094,12 +2099,20 @@ function refreshInventoryPaths(): void {
 }
 
 /** 门店只能为自身市场创建需求，报货本身不产生库存流水。 */
+/**
+ * 门店报货：新建 / 存草稿 / 提交草稿共用一条写路径（#348），校验只有一份 ——
+ * 草稿与正式单的明细口径（可报货 SKU、归属本市场、数量为正、同 SKU 合并）完全一致，
+ * 差别只在单头状态：草稿不确认、不进任何下游（汇总 / 在途 / 市场报货引用 / 分院配货都只认「已完成」）。
+ */
 export async function createStoreReplenishmentRequest(
   session: AuthSession,
   input: CreateStoreReplenishmentInput,
+  options: { asDraft?: boolean } = {},
 ): Promise<{ id: string }> {
   const storeId = required(input.storeId, '门店')
   const marketId = required(input.marketId, '市场')
+  const draftId = input.draftId == null ? null : required(input.draftId, '草稿单号')
+  const asDraft = options.asDraft === true
   if (!Array.isArray(input.items) || input.items.length === 0) {
     throw new ApiError('INVALID_PARAMS', '门店报货至少需要一条明细')
   }
@@ -2114,6 +2127,8 @@ export async function createStoreReplenishmentRequest(
       throw new ApiError('INVALID_PARAMS', '门店只能向所属市场报货')
     }
     assertLocationWritable(session, store)
+    // 锁序：门店 → 市场 → 草稿单（与新建一致，先主体后单据）
+    if (draftId) await lockStoreReplenishmentDraft(tx, draftId, store)
     const skuIds = new Set<string>()
     const prepared: Array<{ sku: SkuSnapshot; quantity: number; remark: string | null }> = []
     for (const item of input.items) {
@@ -2128,21 +2143,37 @@ export async function createStoreReplenishmentRequest(
         remark: text(item.remark),
       })
     }
-    const docId = await generateDocId(tx, '门店报货')
     const total = prepared.reduce((sum, item) => sum + item.quantity, 0)
-    await insertDocHeader(tx, {
-      id: docId,
-      docType: '门店报货',
-      status: '已完成',
-      sourceOrgNodeId: storeId,
-      targetOrgNodeId: marketId,
-      marketId,
-      docDate: input.docDate,
-      totalQuantity: total,
-      remark: input.remark,
-      createdBy: session.employeeId,
-      confirmed: true,
-    })
+    let docId: string
+    if (draftId) {
+      // 草稿没有血缘 / 预留 / 流水（lockStoreReplenishmentDraft 已核对），明细整体重写；合计由明细 trigger 回填
+      docId = draftId
+      await tx.execute(sql`DELETE FROM inventory_doc_items WHERE doc_id = ${draftId}`)
+      await tx.execute(sql`
+        UPDATE inventory_docs
+           SET status = ${asDraft ? '草稿' : '已完成'},
+               doc_date = ${dateOrToday(input.docDate)},
+               remark = ${text(input.remark)},
+               confirmed_by = ${asDraft ? null : session.employeeId},
+               confirmed_at = ${asDraft ? null : sql`NOW()`}
+         WHERE id = ${draftId}
+      `)
+    } else {
+      docId = await generateDocId(tx, '门店报货')
+      await insertDocHeader(tx, {
+        id: docId,
+        docType: '门店报货',
+        status: asDraft ? '草稿' : '已完成',
+        sourceOrgNodeId: storeId,
+        targetOrgNodeId: marketId,
+        marketId,
+        docDate: input.docDate,
+        totalQuantity: total,
+        remark: input.remark,
+        createdBy: session.employeeId,
+        confirmed: !asDraft,
+      })
+    }
     for (const item of prepared) {
       await insertDocItem(tx, {
         docId,
@@ -2166,9 +2197,112 @@ export async function createStoreReplenishmentRequest(
     }
     return docId
   })
-  await logOperation(session, 'inventory.store_request.create', 'inventory_docs', id, { storeId, marketId })
+  await logOperation(
+    session,
+    asDraft
+      ? 'inventory.store_request.save_draft'
+      : draftId ? 'inventory.store_request.submit_draft' : 'inventory.store_request.create',
+    'inventory_docs',
+    id,
+    { storeId, marketId, draftId },
+  )
   refreshInventoryPaths()
   return { id }
+}
+
+/** 存门店报货草稿（#348）：新建或覆盖，与新建 / 提交同一条写路径。 */
+export async function saveStoreReplenishmentDraft(
+  session: AuthSession,
+  input: CreateStoreReplenishmentInput,
+): Promise<{ id: string }> {
+  return createStoreReplenishmentRequest(session, input, { asDraft: true })
+}
+
+/**
+ * 锁住并校验一张门店报货草稿（#348）。调用方须已按「门店 → 市场」取过主体锁。
+ * ⚠️ createStoreAllocation 是「报货单 → 市场 → 门店」的既有反序；不成环靠事务开头 cutover 全局锁
+ * （staffApi 取 FOR KEY SHARE，与 admin 的 FOR UPDATE 互斥），放宽那把锁之前先统一锁序。
+ * 草稿的报货门店不可改；带血缘 / 预留的只可能是存量异常单，一律交人工处理。
+ */
+async function lockStoreReplenishmentDraft(tx: Tx, draftId: string, store: Location): Promise<DocHeader> {
+  const draft = await docForUpdate(tx, draftId)
+  if (draft.docType !== '门店报货') throw new ApiError('NOT_FOUND', '门店报货草稿不存在')
+  if (draft.status !== '草稿') {
+    throw new ApiError(
+      'INVALID_STATE',
+      draft.status === '已取消' ? '该门店报货草稿已删除' : '门店报货已提交，不能再修改或删除',
+    )
+  }
+  if (draft.sourceOrgNodeId !== store.orgNodeId) {
+    throw new ApiError('INVALID_PARAMS', '草稿的报货门店不能修改')
+  }
+  const [linked] = rows<{ linked: boolean }>(await tx.execute(sql`
+    SELECT EXISTS (
+      SELECT 1 FROM inventory_doc_links WHERE from_doc_id = ${draftId} OR to_doc_id = ${draftId}
+    ) OR EXISTS (
+      SELECT 1 FROM inventory_stock_reservations WHERE request_doc_id = ${draftId}
+    ) AS linked
+  `))
+  if (linked?.linked) {
+    throw new ApiError('INVALID_STATE', '该草稿已有上下游关联，不能按草稿修改或删除，请联系管理员处理')
+  }
+  return draft
+}
+
+/**
+ * 删除门店报货草稿（#348）= 草稿 → 已取消（理由同 deleteMarketReplenishmentDraft：单号不复用、留审计）。
+ * 不校验门店是否启用（停用门店的草稿也要清得掉），scope 照断。
+ */
+export async function deleteStoreReplenishmentDraft(
+  session: AuthSession,
+  input: { draftId: string; reason?: string | null },
+): Promise<{ id: string }> {
+  const draftId = required(input.draftId, '草稿单号')
+  const reason = text(input.reason) ?? '删除草稿'
+  await syncLocations()
+  const storeOrgNodeId = await db.transaction(async (tx) => {
+    await assertInventoryBusinessWritable(tx)
+    const [peek] = rows<{ source_org_node_id: string | null }>(await tx.execute(sql`
+      SELECT source_org_node_id FROM inventory_docs WHERE id = ${draftId} AND doc_type = '门店报货'
+    `))
+    if (!peek?.source_org_node_id) throw new ApiError('NOT_FOUND', '门店报货草稿不存在')
+    const [storeRow] = rows<{ location_id: string; org_node_id: string; location_type: LocationType; name: string; parent_location_id: string | null }>(
+      await tx.execute(sql`
+        SELECT location_id, org_node_id, location_type, name, parent_location_id
+          FROM inventory_locations
+         WHERE org_node_id = ${peek.source_org_node_id}
+         ORDER BY location_id
+         LIMIT 1
+         FOR UPDATE
+      `),
+    )
+    if (!storeRow) throw new ApiError('NOT_FOUND', '库存主体不存在')
+    const store: Location = {
+      locationId: storeRow.location_id,
+      orgNodeId: storeRow.org_node_id,
+      locationType: storeRow.location_type,
+      name: storeRow.name,
+      parentLocationId: storeRow.parent_location_id,
+    }
+    assertLocationWritable(session, store)
+    await lockStoreReplenishmentDraft(tx, draftId, store)
+    await tx.execute(sql`
+      UPDATE inventory_docs
+         SET status = '已取消',
+             cancellation_reason = ${reason},
+             cancelled_by = ${session.employeeId},
+             cancelled_at = NOW(),
+             updated_at = NOW()
+       WHERE id = ${draftId}
+    `)
+    return store.orgNodeId
+  })
+  await logOperation(session, 'inventory.store_request.delete_draft', 'inventory_docs', draftId, {
+    storeOrgNodeId,
+    reason,
+  })
+  refreshInventoryPaths()
+  return { id: draftId }
 }
 
 /**
@@ -2306,7 +2440,7 @@ async function loadStoreReplenishmentCoverage(
         FROM inventory_docs request_doc
         JOIN inventory_doc_items request_item ON request_item.doc_id = request_doc.id
        WHERE request_doc.doc_type = '门店报货'
-         AND request_doc.status <> '已取消'
+         AND request_doc.status = '已完成'
          AND request_doc.market_id = ${marketId}
          AND request_item.sku_id IN (${skuFilter})
        GROUP BY request_item.sku_id
@@ -2399,7 +2533,7 @@ export async function summarizeStoreReplenishmentRequests(
              AND market_request.status <> '已取消'
         ) summarized ON true
        WHERE d.doc_type = '门店报货'
-         AND d.status <> '已取消'
+         AND d.status = '已完成'
          AND d.market_id = ${marketId}
          AND (${startDate}::date IS NULL OR d.doc_date >= ${startDate})
          AND (${endDate}::date IS NULL OR d.doc_date <= ${endDate})
@@ -2600,7 +2734,8 @@ export async function createMarketReplenishment(
         const requestHeader = await docForUpdate(tx, item.docId)
         if (
           requestHeader.docType !== '门店报货' ||
-          requestHeader.status === '已取消' ||
+          // 只认已完成：门店报货草稿（#348）未提交，不能被市场报货引用
+          requestHeader.status !== '已完成' ||
           requestHeader.marketId !== marketId ||
           item.skuId !== skuId
         ) {
@@ -4648,7 +4783,8 @@ export async function createStoreAllocation(
     const requestSkuIds = new Set<string>()
     if (storeRequestId) {
       const request = await docForUpdate(tx, storeRequestId)
-      if (request.docType !== '门店报货' || request.status === '已取消') {
+      // 只认已完成：门店报货草稿（#348）未提交，不能被分院配货引用
+      if (request.docType !== '门店报货' || request.status !== '已完成') {
         throw new ApiError('INVALID_STATE', '分院配货必须引用有效门店报货单')
       }
       storeEndpointId = required(request.sourceOrgNodeId, '门店报货主体')
