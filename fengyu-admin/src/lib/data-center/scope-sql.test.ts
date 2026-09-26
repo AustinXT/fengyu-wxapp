@@ -145,13 +145,13 @@ describe('orgAnchorScopeSql — 无门店员工（直挂组织节点）的可见
     expect(params).toEqual(['mkt-A'])
   })
 
-  it('admin + scope=all → TRUE（品项公司等总部直属节点仅此路径可见）', () => {
+  it('admin + scope=all → TRUE（品项公司等无门店市场的直挂员工可见；总部非超管同理，见下方 #334）', () => {
     const session = makeSession([{ role: 'admin', scopeType: '总部' }], [])
     const { raw } = render(orgAnchorScopeSql(session, ALL))
     expect(raw.trim().toUpperCase()).toBe('TRUE')
   })
 
-  it('非 admin + scope=all → EXISTS(锚定市场下有本账号可见的在营门店)', () => {
+  it('市场级账号 + scope=all → EXISTS(锚定市场下有本账号可见的在营门店)', () => {
     const session = makeSession([{ role: 'manager', scopeType: '市场' }], ['S1', 'S2'])
     const { sql, params } = render(orgAnchorScopeSql(session, ALL))
     expect(sql).toContain('exists (')
