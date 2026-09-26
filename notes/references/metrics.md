@@ -107,6 +107,17 @@
 
 ## 员工排行榜归属
 
+> ⚠️ **scope 决定谁出现、归属决定数字（#299，2026-09-23 拍板：不是缺陷，不改 SQL）**：scope 只作用于产能员工池
+> （staff `producerEmployeesCte` / admin `producerCte`），决定哪些员工上榜；金额 / 计数类 CTE（staff 6 个 `staffRanking*`、
+> admin Part D `revenue_by_emp` 等、Part E `revenue_by_emp_cat` / `consume_by_emp_cat` 等全部员工级 CTE）**不按 scope 过滤**，
+> 数值为员工个人全域产出（含在其他门店、停用门店的业绩 / 服务）。因此**员工榜合计 ≠ 所选范围的门店合计，属预期**。
+> 同样适用于 admin「按技师人效」明细，以及 #423 无门店市场场景（如 hr@品项公司 看到品项老师在所有门店的分配额）。
+> 下方变更记录 2026-08-08「员工排行榜……同步过滤、停用门店返回零数据」指的是**产能员工池**（谁上榜）按在营门店过滤，
+> 不是金额按门店过滤；提成日报页脚（#375「员工排行榜展示的是个人全域产出」）与本条同义。
+> 页面说明文案两端逐字一致：「数值为员工个人全域产出」——admin `STAFF_OUTPUT_SCOPE_NOTE`
+> （`src/lib/data-center/staff-output-note.ts`，员工排名榜 + 按技师人效）与 staff `mgmt-dashboard.wxml` 员工排行榜，
+> 由 staffApi `cross-end-staff-output-note.test.js` 守护；导出件「导出说明」随 #296 复用同一常量。
+
 > 用于 `mgmtDashboard.staffRanking` 接口的归属字段约定（设计稿见 ticket [`mgmt-staff-ranking-INDEX`](../tickets/2026-04-25-mgmt-staff-ranking-INDEX.md)）。
 > 时间锚点固定为 `NOW()`，period ∈ `month` / `lastMonth` / `year`（与门店排行榜一致，复用
 > `[spe.performance_date_period]` / `[service_date_period]` / `[became_member_at_period]` 缩写）。
@@ -1261,7 +1272,7 @@ tiyan AS (                                    -- 体验：期内有正数购买�
 > | 粒度 | 公式 | 用在哪 |
 > |---|---|---|
 > | 门店/全局（不分组到人） | `SUM(sale_order_performance_events.amount)` ∩ 已支付 ∩ `change_type IN ('首次支付','回款','退款')` ∩ `sale_order_type IN ('销售单','转换单','充值单')` ∩ `legacy_source IS DISTINCT FROM 'workfine'` ∩ `[spe.performance_date]` | 人效板 KPI 大卡、按市场人效、门店排名榜；销售板总业绩；staff 大卡 |
-> | 员工（`GROUP BY employee_id`） | `SUM(sale_payment_item_allocations.allocated_amount)` ∩ `is_void=FALSE` ∩ 销售单/转换单 ∩ 已支付回款分配 | 员工排行榜、按技师人效明细（见上方 §员工排行榜归属） |
+> | 员工（`GROUP BY employee_id`，全域，不按 scope 过滤） | `SUM(sale_payment_item_allocations.allocated_amount)` ∩ `is_void=FALSE` ∩ 销售单/转换单 ∩ 已支付回款分配 | 员工排行榜、按技师人效明细（见上方 §员工排行榜归属，#299） |
 >
 > **为什么不能混用**：`allocated_amount` 是**角色归属额**不是钱。写入侧按 `(sale_item_id, role_type)`
 > **分池**校验「池内 Σratio ≤ 1」，单 receipt 挂几个角色就有几个独立的 100% 池 —— ratio 合计

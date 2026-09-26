@@ -51,6 +51,9 @@ on:
       # （它们是页面级解码量与"URL 有效但出不来图"的唯一兜底）。
       # 不加这条路径的话，「只删 lazy-load」的 PR 根本不触发 workflow，守护等于不存在。
       - 'fengyu-staff/miniprogram/components/bundle-picker/**'
+      # cross-end-staff-output-note.test.js 读这个页面的 wxml，钉员工排行榜口径说明与 admin
+      # STAFF_OUTPUT_SCOPE_NOTE 逐字一致（#299）。不加这条，「只改 wxml 文案」的 PR 不触发 CI，两端分叉无人拦。
+      - 'fengyu-staff/miniprogram/pages/mgmt-dashboard/**'
       # bucket 白名单与档位上界有**三份**副本：两端云函数的 utils/image.js
       # 加上前端净化器 miniprogram/utils/cart.ts。第三份的守护（cart.test.ts 的
       # 闭环断言，它 require 真实云函数模块比对）此前不在任何 workflow 的触发面里 ——
@@ -332,3 +335,10 @@ jobs:
             src/actions/pickup-records.delete.test.ts \
             src/export-worker/registry.test.ts \
             'src/app/(main)/(operations)/pickup-records/_components/pickup-records-page.test.tsx'
+
+      # 员工维度口径说明（#299）：人效板「员工排名榜」5 个指标 Tab 与「按技师人效」显示
+      # STAFF_OUTPUT_SCOPE_NOTE，「门店排名榜」不显示。两端逐字一致在 staffApi 全量里跑，这里补 admin 侧展示位置；
+      # 不进 CI 的话，漏传 note 或把说明误挂到门店榜，GitHub 检查照样全绿。
+      - name: Run staff output note guards (#299)
+        working-directory: fengyu-admin
+        run: npx vitest run 'src/app/(main)/(analytics)/data-center/_components/efficiency/efficiency-board.test.tsx'
