@@ -30,6 +30,7 @@ vi.mock('@/lib/permissions', () => ({
 
 import { getScopeTopLevel, validateScope, resolveScopeName, prepareBoardContext } from './context'
 import type { AuthSession, RoleType } from '@/lib/types'
+import { toCustomRange } from './params'
 
 function makeSession(
   roles: Array<{ role: RoleType; scopeType: '总部' | '市场' | '门店' }>,
@@ -196,7 +197,7 @@ describe('prepareBoardContext · 时间参数服务端复检（#308）', () => {
     await expect(
       prepareBoardContext(makeSession([{ role: 'manager', scopeType: '门店' }], ['S1']), {
         scope: { type: 'all' },
-        timeRange: { preset: 'custom', start: '2026-02-30', end: '2026-03-01' },
+        timeRange: { preset: 'custom', start: '2026-02-30', end: '2026-03-01' } as never,
       }),
     ).rejects.toThrow(/PERMISSION_DENIED/)
   })
@@ -206,7 +207,7 @@ describe('prepareBoardContext · 时间参数服务端复检（#308）', () => {
     for (const [start, end] of [['1900-01-01', '1900-03-31'], ['2100-12-01', '2100-12-31'], ['1900-01-01', '2100-12-31']]) {
       const ctx = await prepareBoardContext(makeSession([]), {
         scope: { type: 'all' },
-        timeRange: { preset: 'custom', start, end },
+        timeRange: toCustomRange(start, end)!,
       })
       expect(ctx.meta.timeRange).toMatchObject({ start, end })
       for (const r of [ctx.meta.timeRange, ctx.meta.timeRange.previous!, ctx.meta.timeRange.lastYear!]) {

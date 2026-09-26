@@ -34,6 +34,7 @@ import { getEfficiencyBoard } from '../efficiency'
 import { getProductBoard } from '../product'
 import { createExportContent } from '@/export-worker/registry'
 import type { BoardParams } from '@/lib/data-center/types'
+import { toCustomRange } from '@/lib/data-center/params'
 
 const HQ: AuthSession = {
   employeeId: 'FY-ADMIN', name: '管理员', phone: '1',
@@ -110,7 +111,7 @@ describe('#308 看板 action：非法 timeRange → INVALID_PARAMS，且未发�
   )
   it.each(cases)('%s', async (_, fn, start, end) => {
     const err = await errorOf(() =>
-      fn({ scope: { type: 'all' }, timeRange: { preset: 'custom', start, end }, withComparison: true }),
+      fn({ scope: { type: 'all' }, timeRange: { preset: 'custom', start, end } as never, withComparison: true }),
     )
     expect(err).toMatch(/^INVALID_PARAMS: /)
     expect(queries).toEqual([])
@@ -141,7 +142,7 @@ describe('#308 看板 action：合法区间照常取数，SQL 参数无 NaN / �
   )
   it.each(cases)('%s', async (_, fn, start, end) => {
     const err = await errorOf(() =>
-      fn({ scope: { type: 'all' }, timeRange: { preset: 'custom', start, end }, withComparison: true }),
+      fn({ scope: { type: 'all' }, timeRange: toCustomRange(start, end)!, withComparison: true }),
     )
     expect(err).toBeNull()
     expectSaneParams()

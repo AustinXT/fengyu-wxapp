@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest'
-import { readdirSync, readFileSync } from 'node:fs'
+import { beforeAll, describe, expect, it } from 'vitest'
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import ts from 'typescript'
 import { join, relative, resolve } from 'node:path'
 import { CALENDAR_MAX_YEAR, CALENDAR_MIN_YEAR, isValidCalendarDate } from './calendar-date'
@@ -226,26 +227,150 @@ describe('单源守护：数据中心一侧不许再长出日历校验（#308「
     expect(localDefs, `${file} 本地又定义了 ${name}`).toBe(0)
   }
 
-  it('calendar-date.ts 的导出恰为闭集 {年份上下界, isValidCalendarDate}（单源本体里不许再长出平行校验）', () => {
+  it('calendar-date.ts 的导出恰为闭集 {年份上下界, CalendarDate, isValidCalendarDate}（单源本体里不许再长出平行校验）', () => {
     const sf = parse(join(SRC, 'lib/calendar-date.ts'))
     const exported = sf.statements.flatMap((st) => {
       const isExport = ts.canHaveModifiers(st) && ts.getModifiers(st)?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword)
       if (ts.isExportDeclaration(st) || ts.isExportAssignment(st)) return ['<re-export>']
       if (!isExport) return []
       if (ts.isFunctionDeclaration(st)) return [st.name?.text ?? '<default>']
+      if (ts.isTypeAliasDeclaration(st)) return [st.name.text]
       if (ts.isVariableStatement(st)) return st.declarationList.declarations.map((d) => d.name.getText(sf))
       return [`<${ts.SyntaxKind[st.kind]}>`]
     })
-    expect(exported.sort()).toEqual(['CALENDAR_MAX_YEAR', 'CALENDAR_MIN_YEAR', 'isValidCalendarDate'])
+    expect(exported.sort()).toEqual(['CALENDAR_MAX_YEAR', 'CALENDAR_MIN_YEAR', 'CalendarDate', 'isValidCalendarDate'])
   })
 
   it.each([
     ['lib/data-center/params.ts', 'isValidCalendarDate', '@/lib/calendar-date'],
     ['lib/data-center/report-period.ts', 'isValidCalendarDate', '@/lib/calendar-date'],
     ['lib/data-center/commission-daily.ts', 'isValidCalendarDate', '@/lib/calendar-date'],
-    ['lib/data-center/context.ts', 'isValidTimeRangeInput', './params'],
+    ['lib/data-center/context.ts', 'toTimeRangeInput', './params'],
     ['export-worker/registry.ts', 'isValidCustomRange', '@/lib/data-center/params'],
   ])('%s 调用单源的 %s（from %s）', (file, name, from) => {
     expectUsesImported(file, name, from)
+  })
+})
+
+/**
+ * branded 类型的逃逸口守护（#308）：`CalendarDate` 只能经 `isValidCalendarDate` 的类型谓词得到，
+ * custom `TimeRangeInput` 又只接受 `CalendarDate`——于是「进 resolveTimeRange 的日期必经单源校验」由 tsc 强制。
+ *
+ * 用 TypeChecker 做**语义**判定（按名字匹配会被 `import { X as Y }`、类型别名、`Parameters<typeof f>` 绕过）：
+ * 判断一个类型是否「携带 brand」= 其结构里（联合 / 交叉成员、属性类型、类型实参，递归）出现 `calendarDateBrand` 键。
+ * 能把非法日期送进这类位置的写法在语法上是闭集：
+ *   ① 类型断言（`as T` / `<T>x`）的目标类型携带 brand；
+ *   ② 断言成 any / never / unknown 后落在要求 brand 的上下文里；
+ *   ③ any 类型的表达式直接落在要求 brand 的上下文里（JSON.parse 之类）；
+ *   ④ 别处另写产出 brand 的类型谓词（`x is T` / `asserts x is T`）。
+ * 扫描 src 下全部非测试源码中「引用了数据中心或 calendar-date 模块」的文件——要接触这些类型必须 import 它们。
+ */
+describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
+  const ADMIN = resolve(__dirname, '../..')
+  const SRC = resolve(__dirname, '..')
+  let program: ts.Program
+  let checker: ts.TypeChecker
+
+  beforeAll(() => {
+    const cfg = ts.getParsedCommandLineOfConfigFile(join(ADMIN, 'tsconfig.json'), {}, {
+      ...ts.sys,
+      onUnRecoverableConfigFileDiagnostic: (d) => { throw new Error(ts.flattenDiagnosticMessageText(d.messageText, '\n')) },
+    })!
+    program = ts.createProgram({ rootNames: cfg.fileNames, options: { ...cfg.options, noEmit: true } })
+    checker = program.getTypeChecker()
+  }, 60_000)
+
+  function carriesBrand(type: ts.Type, depth = 0, seen = new Set<ts.Type>()): boolean {
+    if (depth > 5 || seen.has(type)) return false
+    seen.add(type)
+    if (type.isUnionOrIntersection() && type.types.some((t) => carriesBrand(t, depth + 1, seen))) return true
+    for (const prop of type.getProperties()) {
+      if (prop.escapedName.toString().startsWith('__@calendarDateBrand')) return true
+      const decl = prop.valueDeclaration ?? prop.declarations?.[0]
+      if (decl && carriesBrand(checker.getTypeOfSymbolAtLocation(prop, decl), depth + 1, seen)) return true
+    }
+    if (type.flags & ts.TypeFlags.Object && (type as ts.ObjectType).objectFlags & ts.ObjectFlags.Reference) {
+      if (checker.getTypeArguments(type as ts.TypeReference).some((t) => carriesBrand(t, depth + 1, seen))) return true
+    }
+    return false
+  }
+  const LOOSE = ts.TypeFlags.Any | ts.TypeFlags.Never | ts.TypeFlags.Unknown
+
+  function escapes(sf: ts.SourceFile): string[] {
+    const out: string[] = []
+    const at = (node: ts.Node, what: string) => {
+      const { line } = sf.getLineAndCharacterOfPosition(node.getStart(sf))
+      out.push(`${relative(SRC, sf.fileName)}:${line + 1} ${what} ${node.getText(sf).slice(0, 80)}`)
+    }
+    const visit = (node: ts.Node) => {
+      if (ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)) {
+        const target = checker.getTypeFromTypeNode(node.type)
+        if (carriesBrand(target)) at(node, '断言成携带 brand 的类型')
+        else if (target.flags & LOOSE) {
+          const ctx = checker.getContextualType(node)
+          if (ctx && carriesBrand(ctx)) at(node, '宽松断言落在要求 brand 的上下文')
+        }
+      } else if (ts.isExpression(node) && !ts.isAsExpression(node.parent) && !ts.isTypeAssertionExpression(node.parent)) {
+        const ctx = checker.getContextualType(node)
+        if (ctx && checker.getTypeAtLocation(node).flags & ts.TypeFlags.Any && carriesBrand(ctx)) at(node, 'any 值落在要求 brand 的上下文')
+      }
+      if (ts.isTypePredicateNode(node) && node.type && carriesBrand(checker.getTypeFromTypeNode(node.type))) {
+        at(node, '产出 brand 的类型谓词')
+      }
+      ts.forEachChild(node, visit)
+    }
+    visit(sf)
+    return out
+  }
+
+  const relevant = (sf: ts.SourceFile) => {
+    const rel = relative(SRC, sf.fileName)
+    if (rel.startsWith('..') || /\.(?:test|spec)\.tsx?$/.test(rel) || rel.includes('__tests__') || rel.endsWith('.d.ts')) return false
+    return /data-center|calendar-date/.test(rel) || /['"][^'"]*(?:data-center|calendar-date)[^'"]*['"]/.test(sf.text)
+  }
+
+  it('除 calendar-date.ts 的唯一类型谓词外，没有任何写法能凭空产出 CalendarDate', () => {
+    const files = program.getSourceFiles().filter(relevant)
+    expect(files.map((f) => relative(SRC, f.fileName))).toEqual(expect.arrayContaining([
+      'lib/data-center/params.ts', 'lib/data-center/context.ts', 'export-worker/registry.ts', 'lib/calendar-date.ts',
+    ]))
+    const offenders = files.flatMap(escapes)
+    expect(offenders).toEqual(['lib/calendar-date.ts:30 产出 brand 的类型谓词 value is CalendarDate'])
+  }, 120_000)
+
+  it('自检：各类逃逸写法（含别名 / typeof 派生）都能识别，正路写法不误报', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'calendar-date-guard-'))
+    const files: Record<string, string> = {
+      'brand.ts': `declare const calendarDateBrand: unique symbol
+        export type CalendarDate = string & { readonly [calendarDateBrand]: true }
+        export type TR = { preset: 'month' } | { preset: 'custom'; start: CalendarDate; end: CalendarDate }
+        export function ok(v: unknown): v is CalendarDate { return typeof v === 'string' }
+        export function use(t: TR) { return t }`,
+      'bad.ts': `import { type CalendarDate as CD, type TR as Alias, use, ok } from './brand'
+        type Derived = Parameters<typeof use>[0]
+        declare const s: string
+        declare const j: any
+        export const a = s as CD
+        export const b = { preset: 'custom', start: s, end: s } as Alias
+        export const c = { preset: 'custom', start: s, end: s } as unknown as Derived
+        export const d = use({ preset: 'custom', start: s as never, end: s as any })
+        export const e = use(j)
+        export function mint(v: unknown): v is CD { return true }
+        export const good = ok(s) ? use({ preset: 'custom', start: s, end: s }) : use({ preset: 'month' })`,
+    }
+    for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text)
+    const p = ts.createProgram([join(dir, 'brand.ts'), join(dir, 'bad.ts')], { strict: true, target: ts.ScriptTarget.ES2022, noEmit: true, skipLibCheck: true })
+    expect(p.getSemanticDiagnostics(p.getSourceFile(join(dir, 'bad.ts'))!).map((d: ts.Diagnostic) => ts.flattenDiagnosticMessageText(d.messageText, '\n'))).toEqual([])
+    const saved = checker
+    checker = p.getTypeChecker()
+    try {
+      const found = escapes(p.getSourceFile(join(dir, 'bad.ts'))!).map((e) => e.replace(/^.*?:(\d+) /, '$1 '))
+      // a(5) / b(6) / c(7) / d(8，never 与 any 各一) / e(9) / mint(10) 行都命中；good 行（第 11 行）不应出现
+      expect([...new Set(found.map((f) => Number(f.split(' ')[0])))]).toEqual([5, 6, 7, 8, 9, 10])
+      expect(found.filter((f) => f.startsWith('8 ') && f.includes('宽松断言'))).toHaveLength(2)
+    } finally {
+      checker = saved
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

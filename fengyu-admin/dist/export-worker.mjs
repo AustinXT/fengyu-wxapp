@@ -159593,23 +159593,27 @@ function scopeToParams(scope) {
     return { scope: "stores", scopeId: [...scope.ids].sort().join(",") };
   return { scope: scope.type, scopeId: scope.id };
 }
-var TIME_RANGE_PRESETS = { today: true, week: true, month: true, year: true, custom: true };
-function isValidCustomRange(start, end) {
-  return isValidCalendarDate(start) && isValidCalendarDate(end) && start <= end;
+function toCustomRange(start, end) {
+  return isValidCalendarDate(start) && isValidCalendarDate(end) && start <= end ? { preset: "custom", start, end } : null;
 }
-function isValidTimeRangeInput(tr) {
+function isValidCustomRange(start, end) {
+  return toCustomRange(start, end) !== null;
+}
+function toTimeRangeInput(tr) {
   if (typeof tr !== "object" || tr === null)
-    return false;
+    return null;
   const { preset, start, end } = tr;
-  if (typeof preset !== "string" || !Object.hasOwn(TIME_RANGE_PRESETS, preset))
-    return false;
-  return preset !== "custom" || isValidCustomRange(start, end);
+  if (preset === "custom")
+    return toCustomRange(start, end);
+  if (preset === "today" || preset === "week" || preset === "month" || preset === "year")
+    return { preset };
+  return null;
 }
 function parseTimeRange(raw) {
-  const { preset: p, start, end } = raw;
-  if (p === "custom" && start && end && isValidCustomRange(start, end)) {
-    return { preset: "custom", start, end };
-  }
+  const p = raw.preset;
+  const custom4 = p === "custom" ? toCustomRange(raw.start, raw.end) : null;
+  if (custom4)
+    return custom4;
   if (p === "today" || p === "week" || p === "year")
     return { preset: p };
   return { preset: "month" };
@@ -180464,10 +180468,11 @@ function scopeIdOf(scope) {
 }
 async function prepareBoardContext(session4, params) {
   await validateScope(session4, params.scope);
-  if (!isValidTimeRangeInput(params.timeRange)) {
+  const timeRange = toTimeRangeInput(params.timeRange);
+  if (!timeRange) {
     throw new Error("INVALID_PARAMS: 时间范围无效（须为合法日期且开始不晚于结束）");
   }
-  const tr = resolveTimeRange(params.timeRange);
+  const tr = resolveTimeRange(timeRange);
   const scopeName = await resolveScopeName(params.scope);
   return {
     scope: params.scope,

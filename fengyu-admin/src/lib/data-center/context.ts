@@ -18,7 +18,7 @@ import type { BoardMeta, BoardParams, DataCenterScope } from './types'
 import { resolveTimeRange } from './time-range'
 import { toComparisonRanges, type ComparisonRanges } from './comparison'
 import { multiStoreName } from './scope-options'
-import { isValidStoresScopeIds, isValidTimeRangeInput, MAX_SCOPE_STORES } from './params'
+import { isValidStoresScopeIds, MAX_SCOPE_STORES, toTimeRangeInput } from './params'
 
 /** 账号能选的最高 scope 层级（驱动筛选器禁用「全部」等） */
 export function getScopeTopLevel(session: AuthSession): 'all' | 'market' | 'store' {
@@ -129,10 +129,11 @@ export async function prepareBoardContext(
   await validateScope(session, params.scope)
   // 时间参数的服务端复检（#308）：action 收的是客户端原始对象、不经过 parseTimeRange。
   // URL 层对非法值回落本月；到这里还非法只可能是构造出来的请求，报错比静默回落更好排查。
-  if (!isValidTimeRangeInput(params.timeRange)) {
+  const timeRange = toTimeRangeInput(params.timeRange)
+  if (!timeRange) {
     throw new Error('INVALID_PARAMS: 时间范围无效（须为合法日期且开始不晚于结束）')
   }
-  const tr = resolveTimeRange(params.timeRange)
+  const tr = resolveTimeRange(timeRange)
   const scopeName = await resolveScopeName(params.scope)
   return {
     scope: params.scope,

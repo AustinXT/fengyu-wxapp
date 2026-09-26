@@ -15,11 +15,19 @@ export const CALENDAR_MAX_YEAR = 2100
 
 const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/
 
+declare const calendarDateBrand: unique symbol
+/**
+ * 通过本模块校验的 YYYY-MM-DD（branded）。**只能**经 `isValidCalendarDate` 的类型谓词得到——
+ * 数据中心 `TimeRangeInput` 的自定义区间要求这个类型，于是「进 resolveTimeRange 的日期必经单源校验」由 tsc 强制。
+ * 本模块之外禁止 `as CalendarDate` 之类的断言（calendar-date.test 的 AST 守护）。
+ */
+export type CalendarDate = string & { readonly [calendarDateBrand]: true }
+
 /**
  * `2026-02-30`、`2026-13-01`、`2026-00-01`、`0001-01-01` 这类只过位数、不过日历（或年份越界）的值一律拒绝。
  * 入参是 unknown：服务端边界直接拿客户端传来的对象字段来校验。
  */
-export function isValidCalendarDate(value: unknown): value is string {
+export function isValidCalendarDate(value: unknown): value is CalendarDate {
   if (typeof value !== 'string') return false
   const match = value.match(DATE_RE)
   if (!match) return false

@@ -8,7 +8,7 @@ import {
   singleValueQuery,
   parseScope,
   parseTimeRange,
-  isValidTimeRangeInput,
+  toTimeRangeInput,
   parseBoardParams,
   parseStoreIdList,
   scopeFromStoreIds,
@@ -130,10 +130,16 @@ describe('parseTimeRange', () => {
 
 })
 
-describe('isValidTimeRangeInput（#308 服务端复检）', () => {
-  it('预设白名单放行；custom 须合法且不倒挂', () => {
-    for (const p of ['today', 'week', 'month', 'year'] as const) expect(isValidTimeRangeInput({ preset: p })).toBe(true)
-    expect(isValidTimeRangeInput({ preset: 'custom', start: '2026-01-01', end: '2026-01-01' })).toBe(true)
+describe('toTimeRangeInput（#308 服务端复检）', () => {
+  it('预设白名单原样重建；custom 须合法且不倒挂；多余字段丢弃', () => {
+    for (const p of ['today', 'week', 'month', 'year'] as const) {
+      expect(toTimeRangeInput({ preset: p, start: 'x', extra: 1 })).toEqual({ preset: p })
+    }
+    expect(toTimeRangeInput({ preset: 'custom', start: '2026-01-01', end: '2026-01-01', extra: 1 })).toEqual({
+      preset: 'custom',
+      start: '2026-01-01',
+      end: '2026-01-01',
+    })
   })
 
   it('非法形状一律拒绝', () => {
@@ -152,7 +158,7 @@ describe('isValidTimeRangeInput（#308 服务端复检）', () => {
       { preset: 'custom', start: '2026-02-01', end: '2026-01-01' },
       { preset: 'custom', start: 20260101, end: 20260131 },
     ]
-    for (const tr of bad) expect(isValidTimeRangeInput(tr), JSON.stringify(tr)).toBe(false)
+    for (const tr of bad) expect(toTimeRangeInput(tr), JSON.stringify(tr)).toBeNull()
   })
 })
 
