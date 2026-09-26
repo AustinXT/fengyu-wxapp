@@ -335,28 +335,8 @@ const PROBES: Probe[] = [
     uniqueLines: 4,
     exactCountsInModule: true,
   },
-  {
-    // 页面与导出共用同一段 SQL：多行模板正文逐字比对（bun 原样保留模板串）。覆盖投影、对方主体 CASE、
-    // 全部 JOIN、商品编号子查询、排序 / LIMIT 与上海时间 —— 单删 product_code、把 JOIN 换键都会红。
-    // `WHERE ${…}` 两行不入闭集：插值里的 JS 标识符会被 bun 改写（sql → import_drizzle_ormN.sql）
-    label: '进出明细取数 SQL · 多行模板正文（#360，列表 / 计数 / 导出共用）',
-    file: 'src/lib/inventory/movements.ts',
-    pattern: /^(SELECT (m\.id,|COUNT|sku\.)|WHERE sku\.|(m|lot)\.[a-z_]+,$|doc\.doc_type,$|CASE$|WHEN doc\.|ELSE COALESCE|END AS |operator\.name AS|to_char\(|(LEFT )?JOIN |FROM inventory_movements|ORDER BY m\.id|LIMIT \$\{limit\})/,
-    minLines: 36,
-    uniqueLines: 34,
-    exactCountsInModule: true,
-    exactLinesInModule: true,
-  },
-  {
-    // 单行 sql`…` 条件（主体 / 批号 / 上海日界 / keyset 游标）：bun 会改写这些 JS 行（加分号、改 import 别名），
-    // 只能取模板正文按「包含 + 频次」比对 —— 把日界 `<` 改成 `<=`、游标 `>` 改成 `>=` 都会让正文失配
-    label: '进出明细取数 SQL · 单行条件（#360）',
-    file: 'src/lib/inventory/movements.ts',
-    pattern: /conditions(\.push\(sql`|: SQL\[\] = \[sql`)(m\.(location_id|created_at|id) |lot\.batch_no)/,
-    minLines: 6,
-    uniqueLines: 6,
-    exactCountsInModule: true,
-  },
+  // #360 进出明细的 SQL 不走本表的逐行探针：模板插值 `${filters.x}` / `${bound.after}` 里的局部变量
+  // 会被 bun 合法改名，逐行文本比对必误红；改由下方「进出明细导出接线（#360）」里的 AST 结构比对整体守护。
   {
     label: '提成明细 · 平均提成点公式（#375）',
     file: 'src/actions/data-center/commission.ts',
@@ -411,94 +391,137 @@ describe('dist/export-worker.mjs 新鲜度 · 进出明细导出接线（#360）
     ]],
   ]
   /**
-   * 把「源码里的某个函数 / 常量」与「产物里 bun 改写后的同一段」做 **AST 规范化打印** 后整体比对
-   * （codex round-2~4：逐行文本归一既会 fail-open —— 删行尾标点连 SQL 模板里的也删了 ——
-   * 又会误红 —— 行尾 / 块注释 bun 会删而源码侧还在）。做法：
-   *   - 源码先 transpileModule（去类型、去注释），两侧都用 TS 解析成 AST；
-   *   - 只改写 bun 的三类固定差异：`import_drizzle_ormN.x` → `x`、局部变量 `conditionsN` → `conditions`、字符串引号；
-   *   - printer（removeComments）统一输出 —— 分号、`if` 拆行、尾逗号、模板外注释全部由打印器抹平；
-   *   - **模板字面量（SQL 原文，含其中的 `--` 注释）逐字保留**，SQL 里多一个分号、少一个逗号都会红。
-   * bun 若改变局部变量改名策略（例如别的变量也加后缀），这里会**误红而非漏报** —— fail-closed。
+   * 把「源码里的函数 / 常量」与「产物里 bun 改写后的同一段」做 **AST 结构化序列化** 后整体比对
+   * （codex / GLM round-2~5：逐行文本归一会 fail-open 或误红，打印器又保留原始换行与括号）。
+   *
+   * 序列化只看语法树：节点类型 + 子节点 —— 换行、分号、尾逗号、模板外注释天然不在树里；
+   * 括号节点透明（优先级由树形本身体现，`(a+b)*c` 与 `a+b*c` 树不同，不会混淆）；
+   * **模板字面量取原文（rawText）逐字比对**，SQL 里多一个分号、少一个逗号、改一行 `--` 注释都会红。
+   *
+   * bun 的改写只在三处归一，都按「绑定」而不是按文本：
+   *   - 局部绑定（参数 / 变量声明）按声明顺序 alpha-renaming 成 `$0 $1 …`，只改引用、不碰属性名；
+   *   - 模块级自由标识符：产物里 `X\d+` 且源码自由标识符集合里有 `X`（没有 `X\d+`）才视为同一绑定（`db` → `db2`）；
+   *   - `import_xxxN.name` → `name`（bun 的命名空间导入）；`return undefined` 与 `return` 等价。
+   * 提取不到目标直接抛错（两侧都提取失败不会 '' === '' 放行）。
+   * ⚠ 误红的排查顺序：先核对 bun 版本并按提示重建；重建后仍红，再看是不是出现了新的改写形态。
    */
-  const canonicalize = (code: string, kind: ts.ScriptKind, names: readonly string[]): string[] => {
-    const js = kind === ts.ScriptKind.TS
+  const parseModule = (code: string, kind: ts.ScriptKind) => ts.createSourceFile(
+    'canonical.js',
+    kind === ts.ScriptKind.TS
       ? ts.transpileModule(code, {
         compilerOptions: { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.ESNext, removeComments: true },
       }).outputText
-      : code
-    const sourceFile = ts.createSourceFile('canonical.js', js, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS)
-    const rewrite: ts.TransformerFactory<ts.Node> = (context) => (root) => {
-      const visit = (node: ts.Node): ts.Node => {
-        if (
-          ts.isPropertyAccessExpression(node)
-          && ts.isIdentifier(node.expression)
-          && /^import_drizzle_orm\d+$/.test(node.expression.text)
-        ) {
-          return ts.factory.createIdentifier(node.name.text)
-        }
-        if (ts.isIdentifier(node) && /^conditions\d+$/.test(node.text)) return ts.factory.createIdentifier('conditions')
-        if (ts.isStringLiteral(node)) return ts.factory.createStringLiteral(node.text)
-        // 尾逗号：printer 按原样保留，bun 会去掉 —— 两侧统一去掉（只动 JS 语法层，模板原文不受影响）
-        const visited = ts.visitEachChild(node, visit, context)
-        const plain = <T extends ts.Node>(list: ts.NodeArray<T>) => ts.factory.createNodeArray([...list], false)
-        if (ts.isArrayLiteralExpression(visited)) return ts.factory.updateArrayLiteralExpression(visited, plain(visited.elements))
-        if (ts.isObjectLiteralExpression(visited)) return ts.factory.updateObjectLiteralExpression(visited, plain(visited.properties))
-        if (ts.isCallExpression(visited)) {
-          return ts.factory.updateCallExpression(visited, visited.expression, visited.typeArguments, plain(visited.arguments))
-        }
-        return visited
+      : code,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.JS,
+  )
+  const findTarget = (sourceFile: ts.SourceFile, name: string, side: string): ts.Node => {
+    for (const statement of sourceFile.statements) {
+      if (ts.isFunctionDeclaration(statement) && statement.name?.text === name) return statement
+      if (ts.isVariableStatement(statement)) {
+        const declaration = statement.declarationList.declarations
+          .find((item) => ts.isIdentifier(item.name) && item.name.text === name)
+        // 常量只比初始化表达式（源码 const、产物顶层 var）
+        if (declaration?.initializer) return declaration.initializer
       }
-      return ts.visitNode(root, visit) as ts.Node
     }
-    const printer = ts.createPrinter({ removeComments: true })
-    return names.map((name) => {
-      // 函数：整条声明（去掉 export）；常量：只比初始化表达式（源码 const、产物 var）
-      let target: ts.Node | undefined
-      for (const statement of sourceFile.statements) {
-        if (ts.isFunctionDeclaration(statement) && statement.name?.text === name) {
-          target = ts.factory.updateFunctionDeclaration(
-            statement, undefined, statement.asteriskToken, statement.name,
-            statement.typeParameters, statement.parameters, statement.type, statement.body,
-          )
-        }
-        if (ts.isVariableStatement(statement)) {
-          const declaration = statement.declarationList.declarations
-            .find((item) => ts.isIdentifier(item.name) && item.name.text === name)
-          if (declaration?.initializer) target = declaration.initializer
-        }
-      }
-      if (!target) return ''
-      const [transformed] = ts.transform(target, [rewrite]).transformed
-      return printer.printNode(ts.EmitHint.Unspecified, transformed, sourceFile)
-    })
+    throw new Error(`${side}里提取不到 ${name} —— 先确认提取规则是否失配（bun 升级？），再考虑重建${REBUILD_HINT}`)
   }
-  const distSegment = (file: string) => moduleSegments(fs.readFileSync(DIST, 'utf-8'), file, true).join('\n')
-  const sourceText = (file: string) => fs.readFileSync(path.join(ADMIN_ROOT, file), 'utf-8')
+  const isPropertyName = (node: ts.Identifier) => {
+    const parent = node.parent
+    return (ts.isPropertyAccessExpression(parent) && parent.name === node)
+      || ((ts.isPropertyAssignment(parent) || ts.isMethodDeclaration(parent)) && parent.name === node)
+  }
+  const serialize = (target: ts.Node, renameFree: (name: string) => string) => {
+    const locals = new Map<string, string>()
+    const collect = (node: ts.Node) => {
+      if (
+        (ts.isParameter(node) || ts.isVariableDeclaration(node) || ts.isBindingElement(node))
+        && ts.isIdentifier(node.name)
+        && !locals.has(node.name.text)
+      ) {
+        locals.set(node.name.text, `$${locals.size}`)
+      }
+      ts.forEachChild(node, collect)
+    }
+    collect(target)
+    const free = new Set<string>()
+    const walk = (node: ts.Node): string => {
+      if (ts.isParenthesizedExpression(node)) return walk(node.expression)
+      if (node.kind === ts.SyntaxKind.ExportKeyword) return ''
+      if (
+        ts.isPropertyAccessExpression(node)
+        && ts.isIdentifier(node.expression)
+        && /^import_[A-Za-z_]+\d*$/.test(node.expression.text)
+      ) {
+        return `Id(${node.name.text})`
+      }
+      if (ts.isIdentifier(node)) {
+        if (isPropertyName(node)) return `Name(${node.text})`
+        if (locals.has(node.text)) return `Id(${locals.get(node.text)})`
+        const name = renameFree(node.text)
+        free.add(name)
+        return `Id(${name})`
+      }
+      if (ts.isReturnStatement(node)) {
+        const bare = !node.expression || (ts.isIdentifier(node.expression) && node.expression.text === 'undefined')
+        if (bare) return 'Return()'
+      }
+      if (ts.isStringLiteral(node)) return `Str(${JSON.stringify(node.text)})`
+      if (ts.isNumericLiteral(node)) return `Num(${node.text})`
+      if (ts.isRegularExpressionLiteral(node)) return `Re(${node.text})`
+      if (
+        ts.isNoSubstitutionTemplateLiteral(node) || ts.isTemplateHead(node)
+        || ts.isTemplateMiddle(node) || ts.isTemplateTail(node)
+      ) {
+        return `Tpl(${JSON.stringify(node.rawText ?? node.text)})`
+      }
+      const children: string[] = []
+      ts.forEachChild(node, (child) => {
+        const text = walk(child)
+        if (text) children.push(text)
+      })
+      const declarationKind = ts.isVariableDeclarationList(node)
+        ? `:${node.flags & (ts.NodeFlags.Let | ts.NodeFlags.Const)}`
+        : ''
+      return `${ts.SyntaxKind[node.kind]}${declarationKind}(${children.join(',')})`
+    }
+    return { text: walk(target), free }
+  }
+  const compareModule = (file: string, names: readonly string[]) => {
+    const srcFile = parseModule(fs.readFileSync(path.join(ADMIN_ROOT, file), 'utf-8'), ts.ScriptKind.TS)
+    const distFile = parseModule(
+      moduleSegments(fs.readFileSync(DIST, 'utf-8'), file, true).join('\n'),
+      ts.ScriptKind.JS,
+    )
+    const srcFree = new Set<string>()
+    const src = names.map((name) => {
+      const result = serialize(findTarget(srcFile, name, '源码'), (identifier) => identifier)
+      result.free.forEach((identifier) => srcFree.add(identifier))
+      return `${name}: ${result.text}`
+    })
+    const dist = names.map((name) => `${name}: ${serialize(findTarget(distFile, name, '产物'), (identifier) => {
+      const match = /^(.*?)\d+$/.exec(identifier)
+      return match && !srcFree.has(identifier) && srcFree.has(match[1]) ? match[1] : identifier
+    }).text}`)
+    return { src, dist }
+  }
 
-  const SQL_BUILDERS = ['inventoryMovementWhereSql', 'inventoryMovementSelectSql', 'inventoryMovementCountSql'] as const
-
-  it('movements.ts 的三个 SQL 构造函数（条件谓词 + sql`` 原文 + WHERE 接线）规范化后等于源码', () => {
+  it('movements.ts 全部函数（入参校验 / SQL 构造 / 行映射 / 取数与导出）结构等于源码', () => {
     const file = 'src/lib/inventory/movements.ts'
-    const src = canonicalize(sourceText(file), ts.ScriptKind.TS, SQL_BUILDERS)
-    const dist = canonicalize(distSegment(file), ts.ScriptKind.JS, SQL_BUILDERS)
-    // 两侧分别前置断言：提取失配（规则 / bun 版本问题）与内容漂移（没重建）给不同提示
-    // printer 输出的带 tag 模板形如 `sql \`…\``
-    expect(src.every((text) => /\bsql `/.test(text)), '源码里没提取到三个 SQL 构造函数，规范化规则失配').toBe(true)
-    expect(
-      dist.every((text) => /\bsql `/.test(text)),
-      `产物 // ${file} 区段里没提取到三个 SQL 构造函数 —— 先确认是提取规则失配（bun 升级？），再考虑重建${REBUILD_HINT}`,
-    ).toBe(true)
-    expect(src.join('\n').match(/\bif \(/g)?.length, '源码条件谓词数异常').toBe(6)
-    expect(dist, `产物 // ${file} 区段的 SQL 构造函数与源码不一致${REBUILD_HINT}`).toEqual(src)
+    const { src, dist } = compareModule(file, [
+      'optionalText', 'optionalDate', 'optionalCursor', 'normalizeInventoryMovementFilters',
+      'inventoryMovementWhereSql', 'inventoryMovementSelectSql', 'inventoryMovementCountSql',
+      'movementRow', 'queryMovementRows', 'listInventoryMovementsForSession', 'exportInventoryMovementsForSession',
+    ])
+    expect(dist, `产物 // ${file} 区段与源码不一致（产物不是按当前源码构建的）${REBUILD_HINT}`).toEqual(src)
   })
 
-  it('registry.ts 的 inventoryMovementColumns 有序列定义规范化后等于源码', () => {
+  it('registry.ts 的 inventoryMovementColumns 有序列定义结构等于源码', () => {
     const file = 'src/export-worker/registry.ts'
-    const [src] = canonicalize(sourceText(file), ts.ScriptKind.TS, ['inventoryMovementColumns'])
-    const [dist] = canonicalize(distSegment(file), ts.ScriptKind.JS, ['inventoryMovementColumns'])
-    expect(src.match(/header:/g)?.length, '源码里没找到 inventoryMovementColumns 的列定义').toBe(15)
-    expect(dist, `产物里没提取到 inventoryMovementColumns —— 先确认提取规则${REBUILD_HINT}`).not.toBe('')
-    expect(dist, `产物里进出明细导出列与源码不一致（增删 / 换序 / 错接）${REBUILD_HINT}`).toBe(src)
+    const { src, dist } = compareModule(file, ['inventoryMovementColumns'])
+    expect(dist, `产物里进出明细导出列与源码不一致（增删 / 换序 / 错接）${REBUILD_HINT}`).toEqual(src)
   })
 
   it.each(SEGMENT_FRAGMENTS)('%s 的 #360 片段在产物模块区段内', (file, fragments) => {
