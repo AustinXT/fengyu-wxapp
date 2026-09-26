@@ -1781,9 +1781,11 @@ async function createDoc(ctx) {
     if (docType === '门店报货') {
       // 市场归属在事务外按门店父级解析；这里在事务内对市场、门店两行取共享锁并复核（类型 / 启用 / 父级）：
       // 解析与写入之间门店被闭店、市场被停用或门店被改挂都拒，且在本事务结束前挡住这些改动。
-      // 锁序固定「先市场、后门店」—— 与 0009 同步触发器（inventory_sync_location_from_store /
-      // inventory_sync_location_from_org_node）先写上级市场行、再写门店行同向；按主键字典序取锁会在
-      // store_id < market_id 时与触发器反向成环（关店 / 改名与报货并发即死锁）。
+      // 锁序固定「先市场、后门店」—— 与 0009 的 inventory_sync_location_from_store（门店增改时先 UPSERT
+      // 上级市场行、再 UPSERT 门店行）同向；按主键字典序取锁会在 store_id < market_id 时与它反向成环
+      // （关店 / 改名与报货并发即死锁）。inventory_sync_location_from_org_node 每次只写一行，不构成反向持有。
+      // ⚠️ 与 admin 库存写事务之间不成环靠的是事务首句 cutover 行锁（staff FOR KEY SHARE × admin FOR UPDATE 互斥，
+      // 两端库存写事务整体串行）：别把 assertWorkfineInventoryInitialized 改成无锁读取。
       const lockEndpoint = async (locationId) => (await client.query(
         `SELECT location_id, location_type, is_active, parent_location_id
            FROM inventory_locations

@@ -2126,15 +2126,17 @@ export async function createStoreReplenishmentRequest(
   await syncLocations()
   const { id, updatedAt } = await db.transaction(async (tx) => {
     await assertInventoryBusinessWritable(tx)
-    const store = await locationForUpdate(tx, storeId)
+    // 锁序「先市场、后门店」：与 0009 inventory_sync_location_from_store（先 UPSERT 上级市场行、再门店行）同向，
+    // 关店 / 改名与报货并发时不成环（同步触发器不取 cutover 锁，cutover 挡不住它）。之后才锁单据。
     const market = await locationForUpdate(tx, marketId)
+    const store = await locationForUpdate(tx, storeId)
     assertType(store, '门店', '报货主体')
     assertType(market, '市场', '报货市场')
     if (store.parentLocationId !== market.locationId) {
       throw new ApiError('INVALID_PARAMS', '门店只能向所属市场报货')
     }
     assertLocationWritable(session, store)
-    // 锁序：门店 → 市场 → 草稿单（与新建一致，先主体后单据）
+    // 锁序：市场 → 门店 → 草稿单（先主体后单据）
     if (draftId) await lockStoreReplenishmentDraft(tx, draftId, store, { market, expectedUpdatedAt: input.expectedUpdatedAt })
     const skuIds = new Set<string>()
     const prepared: Array<{ sku: SkuSnapshot; quantity: number; remark: string | null }> = []
@@ -2255,7 +2257,7 @@ async function assertDraftUnchanged(tx: Tx, id: string, expectedUpdatedAt: strin
 }
 
 /**
- * 锁住并校验一张门店报货草稿（#348）。调用方须已按「门店 → 市场」取过主体锁。
+ * 锁住并校验一张门店报货草稿（#348）。调用方须已按「市场 → 门店」取过主体锁（与 0009 门店同步触发器同向）。
  * ⚠️ createStoreAllocation 是「报货单 → 市场 → 门店」的既有反序；不成环靠事务开头 cutover 全局锁
  * （staffApi 取 FOR KEY SHARE，与 admin 的 FOR UPDATE 互斥），放宽那把锁之前先统一锁序。
  * 草稿的报货门店不可改；带血缘 / 预留的只可能是存量异常单，一律交人工处理。

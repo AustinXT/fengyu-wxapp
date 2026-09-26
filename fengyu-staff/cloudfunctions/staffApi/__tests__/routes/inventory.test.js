@@ -2364,7 +2364,7 @@ describe('门店报货草稿（#348）', () => {
     market_id: 'market-A', updated_at_iso: '2026-09-26T01:02:03.456Z',
   }
 
-  function mockDraftEnv({ draft = DRAFT, linked = false, scopedStores = ['store-A'], storeParent = 'market-A', storeActive = true, marketActive = true, marketType = '市场' } = {}) {
+  function mockDraftEnv({ draft = DRAFT, linked = false, scopedStores = ['store-A'], storeParent = 'market-A', storeActive = true, marketActive = true, marketType = '市场', storeType = '门店' } = {}) {
     pg.query.mockImplementation(async (query, params) => {
       const sql = String(query)
       if (sql.includes('WITH RECURSIVE descendants')) return scopedStores.map((storeId) => ({ store_id: storeId }))
@@ -2398,7 +2398,7 @@ describe('门店报货草稿（#348）', () => {
             const id = params[0]
             return String(id).startsWith('market')
               ? { rows: [{ location_id: id, location_type: marketType, is_active: marketActive, parent_location_id: null }], rowCount: 1 }
-              : { rows: [{ location_id: id, location_type: '门店', is_active: storeActive, parent_location_id: storeParent }], rowCount: 1 }
+              : { rows: [{ location_id: id, location_type: storeType, is_active: storeActive, parent_location_id: storeParent }], rowCount: 1 }
           }
           if (text.includes('WITH RECURSIVE descendants')) {
             return { rows: scopedStores.map((storeId) => ({ store_id: storeId })), rowCount: scopedStores.length }
@@ -2551,6 +2551,7 @@ describe('门店报货草稿（#348）', () => {
   test.each([
     ['市场被停用', { marketActive: false }, 'INVALID_STATE: 库存主体已停用'],
     ['市场行类型变化', { marketType: '总部' }, 'CONFLICT: 门店所属市场刚发生变化，请刷新后重试'],
+    ['门店行类型变化', { storeType: '市场' }, 'CONFLICT: 门店所属市场刚发生变化，请刷新后重试'],
   ])('事务内复核：%s → 拒绝，不写任何单据', async (_label, env, error) => {
     const getClient = mockDraftEnv(env)
     await expect(inventoryRoutes.createDoc(createCtx({ payload: { ...payload, draft: true }, auth: STORE_AUTH }))).rejects.toThrow(error)
