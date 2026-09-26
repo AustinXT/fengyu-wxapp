@@ -408,7 +408,9 @@ function tokenize(code: string): string[] {
     if (ts.isShorthandPropertyAssignment(node)) shorthandAt.set(node.name.getStart(sf), node.name.text)
     if (ts.isBindingElement(node)) {
       if (node.propertyName && ts.isIdentifier(node.propertyName)) keyAt.add(node.propertyName.getStart(sf))
-      else if (!node.propertyName && ts.isIdentifier(node.name) && ts.isObjectBindingPattern(node.parent)) shorthandAt.set(node.name.getStart(sf), node.name.text)
+      else if (!node.propertyName && !node.dotDotDotToken && ts.isIdentifier(node.name) && ts.isObjectBindingPattern(node.parent)) {
+        shorthandAt.set(node.name.getStart(sf), node.name.text) // `{ ...rest }` 没有固定键，不当简写
+      }
     }
     if ((ts.isMethodDeclaration(node) || ts.isPropertyDeclaration(node)) && ts.isIdentifier(node.name)) keyAt.add(node.name.getStart(sf))
     // 参数属于其函数体这一层：函数节点本身就把 depth 加一
@@ -532,6 +534,8 @@ describe('dist/export-worker.mjs 新鲜度 · 自定义区间校验（#308，源
       `function k(a) { const { b, x: d } = a; return { a, b, e: d } }`, // 解构键变了
       `function k(a) { const { x, c: d } = a; return { a, b: x, e: d } }`, // 解构简写键变了
     ]) expect(tokenize(changed), changed).not.toEqual(obj)
+    // 对象 rest 改名等价（没有固定键）
+    expect(tokenize(`function r(a) { const { b, ...rest } = a; return rest }`)).toEqual(tokenize(`function r(a2) { const { b, ...rest2 } = a2; return rest2 }`))
     // 顶层解构名不归一：互换可见
     expect(tokenize(`const { a, b } = X`)).not.toEqual(tokenize(`const { b, a } = X`))
   })
