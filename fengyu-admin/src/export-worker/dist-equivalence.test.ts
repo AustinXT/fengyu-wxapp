@@ -8,8 +8,9 @@ import { compareModuleRuntime } from './dist-equivalence'
 /** 被导入模块在产物里的区段：只需声明出来的顶层名字 */
 const SEGMENTS: Record<string, string> = {
   '@/db': 'var globalForDb, client, db2;\nvar init_db2 = __esm(() => {});',
-  './helpers': 'var init_helpers = __esm(() => {});\nfunction helper(x) { return x }\nvar LIMIT = 5;',
+  './helpers': 'var init_helpers = __esm(() => {});\nfunction helper(x) { return x }\nfunction wrap(f) { return f }\nvar LIMIT = 5;',
   './other': 'function X2() {}',
+  './fx': 'var init_fx = __esm(() => {});',
 }
 const compare = (sourceCode: string, distCode: string) => compareModuleRuntime({
   sourceCode,
@@ -106,6 +107,17 @@ describe('dist-equivalence：bun 的合法改写判为等价', () => {
     })).toEqual([])
   })
 
+  it('内部模块的副作用导入降为 init_x()，并按源码导入顺序夹在其它 init 之间', () => {
+    expect(compare(
+      'import { db } from "@/db"\nimport "./fx"\nimport { helper } from "./helpers"\nexport const a = helper(db)',
+      'init_db2();\ninit_fx();\ninit_helpers();\nvar a = helper(db2);',
+    )).toEqual([])
+  })
+
+  it('顶层 const ≡ var：初始化器里的引用若延后执行（const A = () => A）不算 TDZ', () => {
+    expect(compare('const A = (): unknown => A\nexport const b = A', 'var A = () => A;\nvar b = A;')).toEqual([])
+  })
+
   it('only：只比指定声明，两侧各恰好一处', () => {
     const only = (names: string[], distCode: string) => compareModuleRuntime({
       sourceCode: 'export const a = 1\nexport const b = 2',
@@ -148,6 +160,14 @@ describe('dist-equivalence：真实漂移判为不等', () => {
     differs('import { sql } from "drizzle-orm"\nexport const q = sql`SELECT a, b`', 'var import_drizzle_orm1 = __toESM(x);\nvar q = import_drizzle_orm1.sql`SELECT a b`;')
     differs('import { sql } from "drizzle-orm"\nexport const q = sql`WHERE x`', 'var import_drizzle_orm1 = __toESM(x);\nvar q = import_drizzle_orm1.sql`WHERE x;`;')
     differs('import { sql } from "drizzle-orm"\nexport const q = sql`-- a\nSELECT 1`', 'var import_drizzle_orm1 = __toESM(x);\nvar q = import_drizzle_orm1.sql`-- b\nSELECT 1`;')
+  })
+
+  it('局部绑定：整体一致的 alpha 改名等价；没有二元运算符的引用串位也能检出', () => {
+    expect(compare(
+      'export function f() { const x = 1; const y = x + 1; return [x, y] }',
+      'function f() { const y2 = 1; const x2 = y2 + 1; return [y2, x2]; }',
+    )).toEqual([])
+    differs('export function f() { const x = 1; const y = x + 1; return [x, y] }', 'function f() { const x = 1; const y = x + 1; return [y, x]; }')
   })
 
   it('局部绑定对调（参数引用串位）', () => {
@@ -195,6 +215,13 @@ describe('dist-equivalence：真实漂移判为不等', () => {
       'init_helpers();\ninit_db2();\nvar a = helper(db2);',
     )
     differs('import "a-pkg"\nimport "b-pkg"\nexport const a = 1', 'import"b-pkg";\nimport"a-pkg";\nvar a = 1;')
+    // 内部副作用导入的 init 必须在源码导入顺序的位置上
+    differs(
+      'import { db } from "@/db"\nimport "./fx"\nimport { helper } from "./helpers"\nexport const a = helper(db)',
+      'init_db2();\ninit_helpers();\ninit_fx();\nvar a = helper(db2);',
+    )
+    // 内部副作用导入在产物里被原样保留成 import（而不是降为 init）也算不等
+    differs('import "./fx"\nexport const a = 1', 'import"./fx";\nvar a = 1;')
     differs('import "server-only"\nexport const a = 1', 'var a = 1;')
     differs('"use server"\nexport const a = 1', 'var a = 1;')
   })
@@ -242,10 +269,17 @@ describe('dist-equivalence：真实漂移判为不等', () => {
   })
 
   it('顶层 const 在声明前被引用时，与 var 不等价（TDZ 抛错 vs undefined）', () => {
-    differs('export function f() { return A }\nconst probe = f()\nconst A = 1', 'function f() { return A; }\nvar probe = f();\nvar A = 1;')
+    expect(compare('export function f() { return A }\nconst probe = f()\nconst A = 1', 'function f() { return A; }\nvar probe = f();\nvar A = 1;').join('\n')).toMatch(/可能在初始化完成之前被执行读取/)
     // 自身初始化器里的自引用、同组靠后声明项的前置引用
-    differs('const A = typeof A\nexport const b = A', 'var A = typeof A;\nvar b = A;')
-    differs('const A = B, B = 1\nexport const c = A', 'var A = B, B = 1;\nvar c = A;')
+    expect(compare('const A = typeof A\nexport const b = A', 'var A = typeof A;\nvar b = A;').join('\n')).toMatch(/可能在初始化完成之前被执行读取/)
+    expect(compare('const A = B, B = 1\nexport const c = A', 'var A = B, B = 1;\nvar c = A;').join('\n')).toMatch(/可能在初始化完成之前被执行读取/)
+    // 引用写在声明之后、却在初始化期间被执行（初始化器调用了读 A 的本地函数）
+    const tdz = /可能在初始化完成之前被执行读取/
+    expect(compare('const A = read()\nfunction read(): unknown { return A }\nexport const b = A', 'var A = read();\nfunction read() { return A; }\nvar b = A;').join('\n')).toMatch(tdz)
+    // 回调传给未知函数：不能证明延后执行，保守按急切执行（宁可误红不可漏报）
+    expect(compare('import { wrap } from "./helpers"\nconst A = wrap(() => A)\nexport const b = A', 'init_helpers();\nvar A = wrap(() => A);\nvar b = A;')).toEqual([
+      'A/VariableDeclarationList: 顶层 A 可能在初始化完成之前被执行读取，const/let → var 不等价',
+    ])
   })
 
   it('私有名 / BigInt 不同', () => {

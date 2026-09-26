@@ -404,6 +404,13 @@ export interface InventoryMovementRow {
   createdAt: string
 }
 
+/** 列表查询入参：条件 + keyset 游标（after / before 二选一）+ 页长（白名单外回落默认值） */
+export interface InventoryMovementListParams extends InventoryMovementFilters {
+  after?: string
+  before?: string
+  pageSize?: number
+}
+
 export interface InventoryMovementPage {
   rows: InventoryMovementRow[]
   total: number

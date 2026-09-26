@@ -21,7 +21,7 @@
  *   - `(…)` 透明；产物侧 `(0, import_pkgN.f)` ≡ `f`（只限命名空间成员 —— `(0, obj.m)` 丢 this、`(0, eval)` 是间接 eval，不归一）；
  *   - `return undefined` ≡ `return`（仅当 `undefined` 是未被遮蔽的全局名）；
  *   - 无替换模板 ≡ 同文字符串；`{ a }` ≡ `{ a: a }`（有默认值 `{ a = 1 }` 时两侧须同为简写且默认值等价）；
- *   - 顶层 `const` / `let` ≡ `var`：仅当源码里**声明之前没有任何对它的引用**（否则 TDZ 与 undefined 行为不同）。
+ *   - 顶层 `const` / `let` ≡ `var`：仅当没有引用会在它**初始化完成之前被执行**（按急切执行分析，保守；否则 TDZ 与 undefined 行为不同）。
  *
  * 打包样板单独核对（保序），不是简单忽略：
  *   - 产物 `init_x()` 调用序列 ≡ 按源码导入顺序推出的各内部模块 `init_x` 序列（漏调、多调、重复、顺序不同都算不等）；
@@ -458,9 +458,68 @@ class Comparator {
     })
   }
 
+  /** 源码模块里「急切执行」到的标识符引用及其执行时刻（按源码位置近似顶层执行顺序），见 checkTopLevelVarSafe */
+  private eagerReferences?: Array<{ node: ts.Identifier; time: number }>
+
   /**
-   * 顶层 const/let → var 只在没有 TDZ 期引用时等价：对每个声明项，任何位于**该声明项结束之前**的引用
-   * （含声明之前、自身初始化器里的自引用、同组靠后声明项的前置引用）都会让 const 抛错而 var 读到 undefined。
+   * 近似模块顶层的执行时序：
+   *   - 顶层语句按书写顺序执行，引用的执行时刻 = 它自己的位置；
+   *   - 函数体延后执行，不算；
+   *   - 但被急切调用的本地函数（函数声明 / 以函数初始化的顶层变量），以及**传给任何调用的回调**（保守：
+   *     不知道被调方会不会同步调用它，一律按「在调用点执行」处理），其函数体在调用点时刻执行（可传递）。
+   * 宁可误红不可漏报：不能证明延后执行的，都按急切执行算。
+   */
+  private collectEagerReferences() {
+    if (this.eagerReferences) return this.eagerReferences
+    const references: Array<{ node: ts.Identifier; time: number }> = []
+    const executedAt = new Map<ts.Node, number>()
+    const checker = this.src.checker
+    const localFunction = (callee: ts.Expression): ts.SignatureDeclaration | undefined => {
+      let target: ts.Expression = callee
+      while (ts.isParenthesizedExpression(target)) target = target.expression
+      if (ts.isArrowFunction(target) || ts.isFunctionExpression(target)) return target
+      if (!ts.isIdentifier(target)) return undefined
+      const declaration = checker.getSymbolAtLocation(target)?.declarations?.[0]
+      if (!declaration || declaration.getSourceFile() !== this.src.sourceFile) return undefined
+      if (ts.isFunctionDeclaration(declaration)) return declaration
+      if (ts.isVariableDeclaration(declaration) && declaration.initializer
+        && (ts.isArrowFunction(declaration.initializer) || ts.isFunctionExpression(declaration.initializer))) {
+        return declaration.initializer
+      }
+      return undefined
+    }
+    const run = (fn: ts.SignatureDeclaration, time: number) => {
+      const previous = executedAt.get(fn)
+      if (previous !== undefined && previous <= time) return
+      executedAt.set(fn, time)
+      const body = (fn as ts.FunctionLikeDeclaration).body
+      if (body) visit(body, time)
+    }
+    const visit = (node: ts.Node, inherited: number | null) => {
+      const time = inherited ?? node.getStart()
+      if (ts.isFunctionLike(node)) return // 延后执行，除非被 run 显式执行
+      if (ts.isIdentifier(node)) references.push({ node, time })
+      ts.forEachChild(node, (child) => visit(child, inherited))
+      if (ts.isCallExpression(node) || ts.isNewExpression(node) || ts.isTaggedTemplateExpression(node)) {
+        const callee = ts.isTaggedTemplateExpression(node) ? node.tag : node.expression
+        const target = localFunction(callee)
+        if (target) run(target, time)
+        const args = ts.isTaggedTemplateExpression(node) ? [] : node.arguments ?? []
+        for (const argument of args) {
+          const callback = localFunction(argument)
+          if (callback) run(callback, time)
+        }
+      }
+    }
+    for (const statement of this.src.sourceFile.statements) visit(statement, null)
+    this.eagerReferences = references
+    return references
+  }
+
+  /**
+   * 顶层 const/let → var 只在没有 TDZ 期执行的引用时等价：对每个声明项，任何在**该声明项初始化完成之前
+   * 被执行**的引用（声明之前的顶层代码、自身初始化器、初始化期间被调用的本地函数 / 回调里的引用）
+   * 都会让 const 抛 ReferenceError 而 var 读到 undefined。延后执行的引用（如 `const A = () => A`）不算。
    */
   private checkTopLevelVarSafe(path: string, list: ts.VariableDeclarationList) {
     const guarded = new Map<ts.Symbol, ts.VariableDeclaration>()
@@ -472,17 +531,14 @@ class Comparator {
       const symbol = this.src.checker.getSymbolAtLocation(declaration.name)
       if (symbol) guarded.set(symbol, declaration)
     }
-    const visit = (node: ts.Node) => {
-      if (ts.isIdentifier(node)) {
-        const symbol = this.src.checker.getSymbolAtLocation(node)
-        const declaration = symbol ? guarded.get(symbol) : undefined
-        if (declaration && node !== declaration.name && node.getStart() < declaration.getEnd()) {
-          this.fail(path, `顶层 ${node.text} 在初始化完成之前被引用，const/let → var 不等价`)
-        }
+    for (const { node, time } of this.collectEagerReferences()) {
+      const symbol = this.src.checker.getSymbolAtLocation(node)
+      const declaration = symbol ? guarded.get(symbol) : undefined
+      if (declaration && node !== declaration.name && time < declaration.getEnd()) {
+        this.fail(path, `顶层 ${node.text} 可能在初始化完成之前被执行读取，const/let → var 不等价`)
+        return
       }
-      ts.forEachChild(node, visit)
     }
-    visit(this.src.sourceFile)
   }
 }
 
@@ -494,10 +550,14 @@ function statementLabel(statement: ts.Statement): string {
   return ts.SyntaxKind[statement.kind]
 }
 
-/** 副作用导入 `import "x"`，保持源码顺序（bun 会把它与 init 调用交错，但副作用导入之间的相对顺序不变） */
+/**
+ * 第三方包的副作用导入 `import "pkg"`，保持源码顺序（bun 原样保留它们，并与 init 调用交错；
+ * 内部模块的副作用导入会被降为 init_x()，已并入 init 序列核对）
+ */
 const sideEffectImports = (statements: readonly ts.Statement[]) => statements
   .filter((statement): statement is ts.ImportDeclaration => ts.isImportDeclaration(statement) && !statement.importClause)
   .map((statement) => (statement.moduleSpecifier as ts.StringLiteral).text)
+  .filter(isBareSpecifier)
 
 const directives = (statements: readonly ts.Statement[]) => statements
   .filter(isDirective)
@@ -548,13 +608,15 @@ export function compareModuleRuntime(sides: ModuleSides): string[] {
     distStatements = pick(distStatements, true, '产物')
   } else {
     // 打包样板核对（保序）：init 调用序列、第三方命名空间声明闭集、副作用导入序列、指令
+    // 单遍按源码导入顺序：内部模块（无论具名导入还是副作用导入 import "./x"）原位追加它在产物里声明的 init；
+    // 第三方包：有绑定的进命名空间闭集，副作用导入 import "pkg" 原样保留、单独比较序列
     const expectedInits: string[] = []
     const expectedPackages: string[] = []
     for (const statement of src.sourceFile.statements) {
-      if (!ts.isImportDeclaration(statement) || !statement.importClause) continue
+      if (!ts.isImportDeclaration(statement)) continue
       const specifier = (statement.moduleSpecifier as ts.StringLiteral).text
       if (isBareSpecifier(specifier)) {
-        if (!expectedPackages.includes(specifier)) expectedPackages.push(specifier)
+        if (statement.importClause && !expectedPackages.includes(specifier)) expectedPackages.push(specifier)
         continue
       }
       const segment = comparator.importSegment(specifier)
@@ -563,14 +625,6 @@ export function compareModuleRuntime(sides: ModuleSides): string[] {
         continue
       }
       for (const name of segment.inits) if (!expectedInits.includes(name)) expectedInits.push(name)
-    }
-    // 副作用导入的模块（import "./x"）若有 init，也按源码顺序排进期望序列
-    for (const statement of src.sourceFile.statements) {
-      if (!ts.isImportDeclaration(statement) || statement.importClause) continue
-      const specifier = (statement.moduleSpecifier as ts.StringLiteral).text
-      if (isBareSpecifier(specifier)) continue
-      const segment = comparator.importSegment(specifier)
-      if (segment) for (const name of segment.inits) if (!expectedInits.includes(name)) expectedInits.push(name)
     }
     if (JSON.stringify(distInits) !== JSON.stringify(expectedInits)) {
       comparator.fail('init', `产物的 init 调用序列 [${distInits.join(' ')}] ≠ 源码导入顺序推出的 [${expectedInits.join(' ')}]（漏调 / 多调 / 重复 / 顺序不同）`)

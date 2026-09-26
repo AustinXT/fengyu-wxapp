@@ -16,6 +16,7 @@ import { INVENTORY_MOVEMENT_DEFAULT_PAGE_SIZE, INVENTORY_MOVEMENT_PAGE_SIZES } f
 import type {
   InventoryMovementDirection,
   InventoryMovementFilters,
+  InventoryMovementListParams,
   InventoryMovementPage,
   InventoryMovementRow,
 } from './types'
@@ -268,11 +269,14 @@ export const listInventoryMovements = withPermission(
   'inventory:stock_list',
   async (
     session,
-    params: InventoryMovementFilters & { after?: string; before?: string; pageSize?: number },
+    params: InventoryMovementListParams,
   ): Promise<InventoryMovementPage> => listInventoryMovementsForSession(session, params),
 )
 
-/** 导出：同一 where，按 id 升序 keyset 分批。游标只有 `undefined` 是首批，其余非正整数一律拒绝。 */
+/**
+ * 导出：同一 where，按 id 升序 keyset 分批。游标只有 `undefined` 是首批，其余非正整数一律拒绝。
+ * 游标畸形报 INVALID_STATE 而不是 INVALID_PARAMS：它是 worker 维护的分页状态，不是用户查询入参。
+ */
 export async function exportInventoryMovementsForSession(
   session: AuthSession,
   params: Record<string, string | undefined>,

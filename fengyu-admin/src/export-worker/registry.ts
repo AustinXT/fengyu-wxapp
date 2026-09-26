@@ -524,7 +524,8 @@ const inventoryColumns = (canViewPrice: boolean) => mapColumns([
   { header: '更新时间', width: 20, key: 'updatedAt', map: (row) => fmtDateTime(value(row, 'updatedAt') as string | Date | null) },
 ])
 
-// 进出明细（#360）：结存是批次结存（流水自带 before/after），不是主体合计
+// 进出明细（#360）：结存是批次结存（流水自带 before/after），不是主体合计。
+// 导出始终带「批号」「批次 ID」列（Excel 里可自行筛选）；页面只在按商品编号查询时显示批号列
 const inventoryMovementColumns = mapColumns([
   { header: '时间', width: 20, key: 'createdAt' },
   { header: '单据类型', width: 16, key: 'docType' },
