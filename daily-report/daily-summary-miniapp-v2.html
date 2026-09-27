@@ -83,7 +83,7 @@
     }
 
     .phone {
-      width: 390px;
+      width: 100%;
       height: 844px;
       overflow: hidden;
       background: #101217;
@@ -99,19 +99,6 @@
       background: var(--page);
       border-radius: 24px;
       position: relative;
-    }
-
-    .fixed-title {
-      position: absolute;
-      left: 16px;
-      top: 14px;
-      z-index: 5;
-      padding: 6px 10px;
-      color: #fff;
-      background: rgba(15, 18, 24, .74);
-      border-radius: 999px;
-      font-size: 12px;
-      pointer-events: none;
     }
 
     .status {
@@ -229,7 +216,8 @@
     }
 
     .content.with-actions {
-      padding-bottom: 172px;
+      height: calc(100% - 166px);
+      padding-bottom: 22px;
     }
 
     .home-content {
@@ -713,7 +701,7 @@
       position: absolute;
       left: 0;
       right: 0;
-      bottom: 76px;
+      bottom: 0;
       height: 74px;
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -1050,6 +1038,8 @@
       align-items: start;
     }
 
+    .stage-phone { min-width: 0; }
+
     .interactive-note {
       padding: 18px 20px;
       border: 1px solid #f0d8d8;
@@ -1141,7 +1131,8 @@
       }
 
       .interactive-stage {
-        grid-template-columns: 390px;
+        max-width: 390px;
+        grid-template-columns: minmax(0, 1fr);
         justify-content: center;
       }
 
@@ -1206,14 +1197,23 @@
     .goal-metric-card { margin:12px 0; padding:13px; border:1px solid var(--line); border-radius:11px; background:#fff; }
     .goal-metric-card h3 { margin:0; font-size:15px; }
     .goal-month-input { width:100%; box-sizing:border-box; margin:8px 0 12px; padding:11px; border:1px solid var(--line); border-radius:9px; font:inherit; }
-    .goal-week-row { display:grid; grid-template-columns:1fr 92px; gap:10px; align-items:center; padding:10px 0; border-top:1px solid var(--line); }
+    .goal-week-row { display:grid; grid-template-columns:minmax(0, 1fr) 104px; gap:10px; align-items:center; padding:10px 0; border-top:1px solid var(--line); }
     .goal-week-row strong, .goal-week-row span { display:block; }
     .goal-week-row strong { font-size:13px; }
     .goal-week-row span { margin-top:3px; color:var(--muted); font-size:11px; }
-    .goal-week-row input { width:100%; box-sizing:border-box; padding:9px; border:1px solid var(--line); border-radius:8px; font:inherit; text-align:right; }
+    .goal-week-row input { width:100%; box-sizing:border-box; padding:9px; border:1px solid var(--line); border-radius:8px; font:inherit; font-size:14px; text-align:right; }
     .goal-check { margin-top:10px; padding:9px 10px; border-radius:8px; background:#f6f7f8; color:var(--muted); font-size:12px; line-height:1.5; }
     .goal-check.ok { background:#edf8f1; color:#18794e; }
-    .goal-actions { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:14px; }
+    .report-section-divider { margin:20px 2px 12px; border-top:1px solid var(--line); }
+    .daily-toolbar { align-items:center; }
+    .daily-date { color:#535862; font-size:13px; font-weight:700; }
+    .daily-period-line { margin:0 2px 10px; color:var(--muted); font-size:12px; line-height:1.5; }
+    .daily-actual-card { padding:12px; }
+    .daily-actual-card .section-head { margin-bottom:9px; }
+    .goal-content { padding-bottom:96px !important; }
+    .goal-auto-row { display:flex; align-items:center; gap:10px; margin:0 2px 12px; }
+    .goal-auto-btn { flex:0 0 auto; border:1px solid #edc5c3; border-radius:8px; padding:8px 10px; color:var(--brand); background:#fff; font-size:12px; font-weight:700; cursor:pointer; }
+    .goal-actions { position:absolute; left:0; right:0; bottom:0; z-index:5; height:74px; display:grid; grid-template-columns:1fr; padding:10px 14px 12px; background:#fff; border-top:1px solid var(--line); }
     .prototype-link { display:inline-block; margin-top:10px; padding:9px 12px; border:1px solid #edc5c3; border-radius:8px; color:var(--brand); background:#fff; font-size:13px; font-weight:700; text-decoration:none; }
   </style>
 </head>
@@ -1231,10 +1231,11 @@
       </div>
     </section>
     <section class="interactive-stage">
-      <article class="phone interactive-phone">
-        <div class="fixed-title">可点击主流程</div>
-        <div class="screen" id="app-screen"></div>
-      </article>
+      <div class="stage-phone">
+        <article class="phone interactive-phone">
+          <div class="screen" id="app-screen"></div>
+        </article>
+      </div>
       <aside class="interactive-note">
         <h2>演示工作台</h2>
         <p>角色切换位于手机外，仅用于验证不同身份的页面与权限。</p>
@@ -1426,11 +1427,22 @@
 
       function serviceSourceBlock(item){const rows=(item.sources||[]).map(source=>`<div class="daily-business__source"><strong>${escapeHtml(source.itemName)} · 本次使用 ${Number(source.sessionUsed)||0} 次</strong><span>来源销售单：${escapeHtml(source.orderId)}</span></div>`).join('');return `<details class="daily-business__links" open><summary>本次核销的项目来源</summary>${rows}<div class="daily-business__source-note">销售单仅作来源展示；同一次服务只填一条反馈。</div></details>`;}
       function businessCard(entry){ const item=business(entry.id);if(!item)return"";return `<div class="card daily-business ${item.type==='sale'?'sale':''}"><div class="daily-business__top"><div><span class="tag ${item.type==='sale'?'warn':'ok'}">${item.type==='sale'?'销售订单':'服务单'}</span><strong>${escapeHtml(item.title)}</strong></div>${item.auto?'':`<button class="daily-business__remove" data-remove-business="${item.id}">移除</button>`}</div><div class="daily-business__meta">${item.id} · 业务日期 ${item.date}${item.auto?'':' · 手动补充'}</div>${item.type==='service'?serviceSourceBlock(item):'<div class="daily-business__links">此订单暂未关联服务单，可单独记录销售沟通。</div>'}<label class="field-label">顾客反馈</label><textarea class="textarea" data-entry-id="${item.id}" data-entry-key="feedback" maxlength="300" placeholder="服务感受、需求或销售沟通反馈">${escapeHtml(entry.feedback)}</textarea><label class="field-label">产品问题 / 跟进事项</label><textarea class="textarea" data-entry-id="${item.id}" data-entry-key="issue" maxlength="300" placeholder="如没有，可留空">${escapeHtml(entry.issue)}</textarea></div>`; }
-      function fillPage(){ const user=currentUser(),actual=dailyActual();return `${chrome()}${nav(state.editingSubmitted?"修改今日日报":"填写经营日报")}<div class="content with-actions"><div class="toolbar"><div class="fixed-info" style="flex:1">日报日期 · ${data.today}</div><button class="small-btn" data-action="copy-last">复制上次补充</button></div><div class="fixed-info">${store(user.storeId).name} · ${activeWeekLabel()}<br>周期由后台配置，此处只读。</div><div class="card target-card"><div class="section-head"><div><div class="section-title">当日实际完成</div><div class="section-sub">按日报日期自动汇总，提交日报时保存快照。</div></div><span class="tag ok">只读</span></div><div class="target-metric-grid target-metric-grid--daily"><div class="target-metric"><span>当日销售完成金额</span><b>${money(actual.sales)}</b></div><div class="target-metric"><span>当日消耗完成金额</span><b>${money(actual.consumption)}</b></div></div></div><div class="daily-section-heading"><strong>一 关联业务条目</strong><span class="tag">${state.form.entries.length} 条</span></div><div class="notice">系统列出当天关联业务；可从已有订单或服务单中补充遗漏项，不会新建业务单据。</div>${state.form.entries.map(businessCard).join('')}<button class="primary-action" data-action="add-business" style="margin-bottom:12px;background:#fff;color:var(--brand);border:1px solid #efc7c7">＋ 补充遗漏业务条目</button><div class="form-section"><div class="section-head"><div class="section-title">二 整日补充</div><span class="tag">选填</span></div><textarea class="textarea short" data-form-field="summary" maxlength="500" placeholder="成长心得、明日计划等；无需重复逐单反馈">${escapeHtml(state.form.summary)}</textarea></div><div class="form-section"><div class="section-head"><div class="section-title">指导关系</div><span class="tag">选填</span></div><label class="field-label">指导员</label><div class="select-pill" data-action="choose-mentor" style="margin:6px 0 10px">${state.form.mentor||"请选择指导员"} <span>⌄</span></div><label class="field-label">同事</label><div class="select-pill" data-action="choose-peer" style="margin-top:6px">${state.form.peer||"请选择同事"} <span>⌄</span></div></div></div><div class="bottom-actions"><button class="btn" data-action="save-draft">保存草稿</button><button class="btn primary" data-action="submit-summary">${state.editingSubmitted?"重新提交":"提交日报"}</button></div>${confirmModal()}${candidateModal()}${toast()}`; }
+      function fillPage(){
+        const user=currentUser(),actual=dailyActual();
+        return `${chrome()}${nav(state.editingSubmitted?"修改今日日报":"填写经营日报")}<div class="content with-actions">
+          <div class="toolbar daily-toolbar"><div class="daily-date">日报日期 · ${data.today}</div><button class="small-btn" data-action="copy-last">复制上次补充</button></div>
+          <div class="daily-period-line">${store(user.storeId).name} · ${activeWeekLabel()}</div>
+          <div class="card target-card daily-actual-card"><div class="section-head"><div class="section-title">当日实际完成</div><span class="tag ok">只读</span></div><div class="target-metric-grid target-metric-grid--daily"><div class="target-metric"><span>当日销售完成金额</span><b>${money(actual.sales)}</b></div><div class="target-metric"><span>当日消耗完成金额</span><b>${money(actual.consumption)}</b></div></div></div>
+          <div class="daily-section-heading"><strong>一 关联业务条目</strong><span class="tag">${state.form.entries.length} 条</span></div>
+          ${state.form.entries.map(businessCard).join('')}<button class="primary-action" data-action="add-business" style="margin-bottom:12px;background:#fff;color:var(--brand);border:1px solid #efc7c7">＋ 补充遗漏业务条目</button>
+          <div class="form-section"><div class="section-head"><div class="section-title">二 整日补充</div><span class="tag">选填</span></div><textarea class="textarea short" data-form-field="summary" maxlength="500" placeholder="成长心得、明日计划等；无需重复逐单反馈">${escapeHtml(state.form.summary)}</textarea></div>
+          <div class="form-section"><div class="section-head"><div class="section-title">指导关系</div><span class="tag">选填</span></div><label class="field-label">指导员</label><div class="select-pill" data-action="choose-mentor" style="margin:6px 0 10px">${state.form.mentor||"请选择指导员"} <span>⌄</span></div><label class="field-label">同事</label><div class="select-pill" data-action="choose-peer" style="margin-top:6px">${state.form.peer||"请选择同事"} <span>⌄</span></div></div>
+        </div><div class="bottom-actions"><button class="btn" data-action="save-draft">保存草稿</button><button class="btn primary" data-action="submit-summary">${state.editingSubmitted?"重新提交":"提交日报"}</button></div>${confirmModal()}${candidateModal()}${toast()}`;
+      }
 
       function myStorePage(){
         const people=employeesForStore(currentUser().storeId), stats=pseudoStats(people.length,state.storePeriod);
-        return `${chrome()}${nav("本店管理",false)}<div class="content">${metricSummary("store","week",{editable:true,title:"本店经营指标"})}${periodSwitch(state.storePeriod,"store-period")}${statsCard("本店提交概况",stats,`${store(currentUser().storeId).name} · ${periodLabel(state.storePeriod)}`)}<div class="card"><div class="section-head"><div class="section-title">待关注员工</div><span class="section-sub">草稿对店长显示为未提交</span></div>${people.map(person=>personRow(person,state.storePeriod)).join("")}</div></div>${tabs("myStore")}${toast()}`;
+        return `${chrome()}${nav("本店管理",false)}<div class="content">${metricSummary("store","week",{editable:true,title:"本店经营指标"})}<div class="report-section-divider" aria-hidden="true"></div>${periodSwitch(state.storePeriod,"store-period")}${statsCard("本店提交概况",stats,`${store(currentUser().storeId).name} · ${periodLabel(state.storePeriod)}`)}<div class="card"><div class="section-head"><div class="section-title">待关注员工</div><span class="section-sub">草稿对店长显示为未提交</span></div>${people.map(person=>personRow(person,state.storePeriod)).join("")}</div></div>${tabs("myStore")}${toast()}`;
       }
       function personRow(person,period=state.period){
         const visible=person.status==="draft"?"missing":person.status, stats=pseudoStats(1,period);
@@ -1448,7 +1460,7 @@
         const concernMarkets=marketIds.slice().sort((a,b)=>a.length-b.length).slice(0,3).map(marketRow).join("");
         const concernStores=stores.slice().sort((a,b)=>a.id.length-b.id.length).slice(0,3).map(storeRow).join("");
         const concernPeople=people.slice().sort((a,b)=>attentionOrder(a)-attentionOrder(b)).slice(0,3).map(x=>personRow(x,state.period)).join("");
-        return `${chrome()}${nav(title,false)}<div class="content">${scopeControl}${!isHeadquarters?metricSummary("market","week",{editable:true,title:"浙江市场经营指标"}):metricSummary("market","week",{editable:false,title:"经营指标"})}${periodSwitch(state.period)}${statsCard("提交概况",pseudoStats(people.length,state.period),`${scopeLabel} · ${periodLabel(state.period)}`)}${showMarkets?`<div class="card"><div class="section-head"><div><div class="section-title">待关注市场</div><div class="section-sub">仅展示需要处理的市场</div></div></div>${concernMarkets}</div>`:""}<div class="card"><div class="section-head"><div><div class="section-title">待关注门店</div><div class="section-sub">仅展示需要处理的门店</div></div></div>${concernStores||'<div class="notice">当前范围暂无待关注门店。</div>'}</div><div class="card"><div class="section-head"><div><div class="section-title">待关注员工</div><div class="section-sub">仅展示需要处理的员工</div></div></div>${concernPeople||'<div class="notice">当前范围暂无待关注员工。</div>'}</div></div>${tabs("overview")}${scopeModal()}${toast()}`;
+        return `${chrome()}${nav(title,false)}<div class="content">${scopeControl}${!isHeadquarters?metricSummary("market","week",{editable:true,title:"浙江市场经营指标"}):metricSummary("market","week",{editable:false,title:"经营指标",showLink:false})}<div class="report-section-divider" aria-hidden="true"></div>${periodSwitch(state.period)}${statsCard("提交概况",pseudoStats(people.length,state.period),`${scopeLabel} · ${periodLabel(state.period)}`)}${showMarkets?`<div class="card"><div class="section-head"><div><div class="section-title">待关注市场</div><div class="section-sub">仅展示需要处理的市场</div></div></div>${concernMarkets}</div>`:""}<div class="card"><div class="section-head"><div><div class="section-title">待关注门店</div><div class="section-sub">仅展示需要处理的门店</div></div></div>${concernStores||'<div class="notice">当前范围暂无待关注门店。</div>'}</div><div class="card"><div class="section-head"><div><div class="section-title">待关注员工</div><div class="section-sub">仅展示需要处理的员工</div></div></div>${concernPeople||'<div class="notice">当前范围暂无待关注员工。</div>'}</div></div>${tabs("overview")}${scopeModal()}${toast()}`;
       }
       function marketRow(id){ const m=market(id), count=data.stores.filter(x=>x.marketId===id).length, stats=pseudoStats(count*4,state.period); return `<div class="tree-row" data-market-open="${id}"><div><strong>${m.name}</strong><span>${count} 家门店 · 提交率 ${stats.rate}%</span></div><b class="tree-arrow">›</b></div>`; }
       function storeRow(s){ const stats=pseudoStats(employeesForStore(s.id).length||3,state.period); return `<div class="tree-row" data-store-open="${s.id}"><div><strong>${s.name}</strong><span>${market(s.marketId).name} · 已交 ${stats.submitted}/${stats.due}</span></div><b class="tree-arrow">›</b></div>`; }
@@ -1466,8 +1478,8 @@
       function rangeReportPage({title,subtitle,stats,listTitle,rows}){ return `${chrome()}${nav(title)}<div class="content no-tabs">${periodSwitch(state.period)}${statsCard("提交概况",stats,subtitle)}<div class="card"><div class="section-head"><div class="section-title">${listTitle}</div></div>${rows||'<div class="notice">当前范围暂无可查看的明细。</div>'}</div></div>${toast()}`; }
       function marketReportPage(){ const m=market(state.selectedMarket), stores=data.stores.filter(x=>x.marketId===m.id), people=data.employees.filter(x=>stores.some(s=>s.id===x.storeId)); return rangeReportPage({title:`${m.name}日报`,subtitle:`${m.name} · ${periodLabel(state.period)}`,stats:pseudoStats(people.length,state.period),listTitle:"门店列表",rows:stores.map(storeRow).join("")}); }
       function storeReportPage(){ const s=store(state.selectedStore), people=employeesForStore(s.id); return rangeReportPage({title:`${s.name}日报`,subtitle:`${market(s.marketId).name} · ${periodLabel(state.period)}`,stats:pseudoStats(people.length||3,state.period),listTitle:"人员提交列表",rows:people.map(x=>personRow(x,state.period)).join("")}); }
-      function snapshotCard(snapshot){const s=snapshot||captureSnapshot(),week=s.week,month=s.month;return `<div class="card target-card"><div class="section-head"><div><div class="section-title">提交时经营快照</div><div class="section-sub">提交后固定，不随实时业绩或目标调整变化。</div></div></div><div class="target-metric-grid target-metric-grid--snapshot"><div class="target-metric"><span>本日销售完成</span><b>${money(s.day.sales)}</b></div><div class="target-metric"><span>本日消耗完成</span><b>${money(s.day.consumption)}</b></div><div class="target-metric"><span>本周销售完成率</span><b>${pct(week.sales.done,week.sales.target)}</b></div><div class="target-metric"><span>本周消耗完成率</span><b>${pct(week.consumption.done,week.consumption.target)}</b></div></div><div class="target-progress">本月销售 ${money(month.sales.done)} / ${money(month.sales.target)} · 消耗 ${money(month.consumption.done)} / ${money(month.consumption.target)}</div></div>`;}
-      function detailPage(){ const person=employee(state.selectedEmployee), row=records(person.id).find(x=>x.date===state.selectedRecordDate)||records(person.id)[0], owns=person.id===currentUser().id&&state.role!=="admin", editable=owns&&row?.date===data.today&&row?.status==="submitted"; if(!row)return `${chrome()}${nav("日报详情")}<div class="content no-tabs"><div class="notice">未找到该日报。</div></div>`; const entryBlocks=row.entries?.length?row.entries.map(entry=>{const item=business(entry.id);return item?`<div class="card daily-business ${item.type==='sale'?'sale':''}"><div class="section-title">${item.type==='sale'?'销售订单':'服务单'} · ${escapeHtml(item.title)}</div><div class="daily-business__meta">${item.id} · 业务日期 ${item.date}</div>${item.type==='service'?serviceSourceBlock(item):''}<p class="daily-business__meta">顾客反馈：${escapeHtml(entry.feedback||'未填写')}</p><p class="daily-business__meta">产品问题：${escapeHtml(entry.issue||'无')}</p></div>`:''}).join(''):`${detailBlock("今日行动",row.action)}${detailBlock("今日成长",row.growth)}${detailBlock("明日计划",row.plan)}`;return `${chrome()}${nav("日报详情")}<div class="content no-tabs"><div class="card"><div class="section-head"><div><div class="section-title">${row.date}</div><div class="section-sub">${person.name} · ${person.role} · ${store(person.storeId).name}</div></div>${tag(row.status)}</div><div class="meta-line"><span>经营周期</span><b>${row.periodLabel||activeWeekLabel()}</b></div>${row.updatedAt?`<div class="meta-line"><span>最近提交</span><b>${row.updatedAt}</b></div>`:""}</div>${row.status==="submitted"?snapshotCard(row.snapshot):''}${entryBlocks}${row.entries?.length?detailBlock('整日补充',row.summary):''}<div class="card"><div class="section-title">指导关系</div><div class="data-row"><span>指导员</span><b>${row.mentor||"未选择"}</b></div><div class="data-row"><span>同事</span><b>${row.peer||"未选择"}</b></div></div>${editable?'<button class="primary-action" data-action="edit-today">修改今日日报</button>':''}<div class="notice">日报提交不代表工资确认或结算。</div></div>${toast()}`; }
+      function snapshotCard(snapshot){const s=snapshot||captureSnapshot(),week=s.week,month=s.month;return `<div class="card target-card"><div class="section-head"><div class="section-title">提交时经营快照</div></div><div class="target-metric-grid target-metric-grid--snapshot"><div class="target-metric"><span>本日销售完成</span><b>${money(s.day.sales)}</b></div><div class="target-metric"><span>本日消耗完成</span><b>${money(s.day.consumption)}</b></div><div class="target-metric"><span>本周销售完成率</span><b>${pct(week.sales.done,week.sales.target)}</b></div><div class="target-metric"><span>本周消耗完成率</span><b>${pct(week.consumption.done,week.consumption.target)}</b></div></div><div class="target-progress">本月销售 ${money(month.sales.done)} / ${money(month.sales.target)} · 消耗 ${money(month.consumption.done)} / ${money(month.consumption.target)}</div></div>`;}
+      function detailPage(){ const person=employee(state.selectedEmployee), row=records(person.id).find(x=>x.date===state.selectedRecordDate)||records(person.id)[0], owns=person.id===currentUser().id&&state.role!=="admin", editable=owns&&row?.date===data.today&&row?.status==="submitted"; if(!row)return `${chrome()}${nav("日报详情")}<div class="content no-tabs"><div class="notice">未找到该日报。</div></div>`; const entryBlocks=row.entries?.length?row.entries.map(entry=>{const item=business(entry.id);return item?`<div class="card daily-business ${item.type==='sale'?'sale':''}"><div class="section-title">${item.type==='sale'?'销售订单':'服务单'} · ${escapeHtml(item.title)}</div><div class="daily-business__meta">${item.id} · 业务日期 ${item.date}</div>${item.type==='service'?serviceSourceBlock(item):''}<p class="daily-business__meta">顾客反馈：${escapeHtml(entry.feedback||'未填写')}</p><p class="daily-business__meta">产品问题：${escapeHtml(entry.issue||'无')}</p></div>`:''}).join(''):`${detailBlock("今日行动",row.action)}${detailBlock("今日成长",row.growth)}${detailBlock("明日计划",row.plan)}`;return `${chrome()}${nav("日报详情")}<div class="content no-tabs"><div class="card"><div class="section-head"><div><div class="section-title">${row.date}</div><div class="section-sub">${person.name} · ${person.role} · ${store(person.storeId).name}</div></div>${tag(row.status)}</div><div class="meta-line"><span>经营周期</span><b>${row.periodLabel||activeWeekLabel()}</b></div>${row.updatedAt?`<div class="meta-line"><span>最近提交</span><b>${row.updatedAt}</b></div>`:""}</div>${row.status==="submitted"?snapshotCard(row.snapshot):''}${entryBlocks}${row.entries?.length?detailBlock('整日补充',row.summary):''}<div class="card"><div class="section-title">指导关系</div><div class="data-row"><span>指导员</span><b>${row.mentor||"未选择"}</b></div><div class="data-row"><span>同事</span><b>${row.peer||"未选择"}</b></div></div>${editable?'<button class="primary-action" data-action="edit-today">修改今日日报</button>':''}</div>${toast()}`; }
       function detailBlock(title,text){ return `<div class="card"><div class="section-title">${title}</div><p style="margin:10px 0 0;color:#444c58;font-size:13px;line-height:1.8;white-space:pre-wrap">${escapeHtml(text||"未填写")}</p></div>`; }
       function minePage(){
         const admin=state.role==="admin", user=admin?{name:state.adminScope==="hq"?"总部运营":"浙江市场总监",role:state.adminScope==="hq"?"总部管理人员":"市场负责人"}:currentUser();
@@ -1476,7 +1488,10 @@
         return `${chrome()}${nav("我的",false)}<div class="content"><div class="card"><div class="section-head" style="margin:0"><div><div class="section-title">${user.name}</div><div class="section-sub">凤御美业 · ${user.role}</div></div><div class="avatar" style="width:48px;height:48px">${user.name[0]}</div></div></div><div class="card"><div class="section-head"><div class="section-title">身份与授权</div><span class="tag ok">已绑定</span></div><div class="data-row"><span>${admin?'所属组织':'所属门店'}</span><b>${org}</b></div><div class="data-row"><span>当前${admin?'管理身份':'岗位'}</span><b>${user.role}</b></div><div class="data-row"><span>授权查看范围</span><b>${range}</b></div></div>${admin?'<div class="card"><div class="section-title">工作台</div><div class="data-row"><span>多身份用户</span><b>可切换授权工作台</b></div><div class="notice">工作台与范围由后台授权下发。</div></div>':''}</div>${tabs("mine")}`;
       }
       function goalMetricEditor(metric,label,draft){const weeks=targetWeeks(),total=weeks.reduce((sum,week)=>sum+Number(draft[metric].weeks[week.id]||0),0),diff=Number(draft[metric].month||0)-total;return `<section class="goal-metric-card"><h3>${label}</h3><label class="field-label">本经营月目标（元）</label><input class="goal-month-input" type="number" min="0" data-target-input="${metric}:month" value="${escapeHtml(draft[metric].month)}">${weeks.map(week=>`<div class="goal-week-row"><div><strong>${week.name}</strong><span>${week.start.slice(5)} 至 ${week.end.slice(5)} · ${daysInWeek(week)} 天</span></div><input type="number" min="0" data-target-input="${metric}:week:${week.id}" value="${escapeHtml(draft[metric].weeks[week.id])}"></div>`).join("")}<div class="goal-check ${diff===0?'ok':''}">周合计 ${money(total)}${diff===0?'，与月目标一致 ✓':`，与月目标相差 ${money(Math.abs(diff))}`}</div></section>`;}
-      function goalPage(){const scope=state.goalScope||targetScopeFromRole(),draft=state.goalDraft||targetFor(scope),owner=scope==="personal"?currentUser().name:scope==="store"?store(currentUser().storeId).name:"浙江市场";return `${chrome()}${nav(targetScopeTitle(scope))}<div class="content no-tabs"><div class="card"><div class="section-head"><div><div class="section-title">${targetScopeTitle(scope)}</div><div class="section-sub">${owner} · 授权人员填写</div></div><span class="tag ok">可编辑</span></div><div class="fixed-info">经营月：${selectedMonth().range}<br>经营周按后台配置显示，目标仅按月与周填写。</div></div>${monthPicker()}${goalMetricEditor("sales","销售目标",draft)}${goalMetricEditor("consumption","消耗目标",draft)}<div class="goal-actions"><button class="btn" data-action="auto-split-goal">按周天数分摊</button><button class="btn primary" data-action="save-goal">保存目标</button></div>${monthModal()}${toast()}`;}
+      function goalPage(){
+        const scope=state.goalScope||targetScopeFromRole(),draft=state.goalDraft||targetFor(scope),owner=scope==="personal"?currentUser().name:scope==="store"?store(currentUser().storeId).name:"浙江市场";
+        return `${chrome()}${nav(targetScopeTitle(scope))}<div class="content no-tabs goal-content"><div class="card"><div class="section-head"><div><div class="section-title">${targetScopeTitle(scope)}</div><div class="section-sub">${owner} · 授权人员填写</div></div><span class="tag ok">可编辑</span></div><div class="fixed-info">经营月：${selectedMonth().range}<br>经营周按后台配置显示，目标仅按月与周填写。</div></div>${monthPicker()}<div class="goal-auto-row"><button class="goal-auto-btn" data-action="auto-split-goal">按天数分配周目标</button></div>${goalMetricEditor("sales","销售目标",draft)}${goalMetricEditor("consumption","消耗目标",draft)}</div><div class="goal-actions"><button class="btn primary" data-action="save-goal">保存目标</button></div>${monthModal()}${toast()}`;
+      }
 
       function monthModal(){ if(state.modal!=="month")return""; return `<div class="market-overlay"><div class="market-sheet"><div class="sheet-title">选择经营月</div>${data.months.map(x=>`<div class="market-option ${x.id===state.selectedMonth?'active':''}" data-month="${x.id}"><div>${x.label}<span>${x.range}</span></div>${x.id===state.selectedMonth?'<b>✓</b>':''}</div>`).join("")}<div class="period-note">选择后立即生效</div></div></div>`; }
       function scopeModal(){ if(state.modal!=="scope")return""; const options=state.adminScope==="market"?[{id:"zhejiang",name:"浙江市场"}]:[{id:"all",name:"全部授权市场"},...data.markets]; return `<div class="market-overlay"><div class="market-sheet"><div class="sheet-title">选择查看范围</div>${options.map(x=>`<div class="market-option ${x.id===state.selectedMarket?'active':''}" data-scope="${x.id}"><div>${x.name}<span>${x.id==='all'?'查看全部授权范围':'仅查看该市场'}</span></div>${x.id===state.selectedMarket?'<b>✓</b>':''}</div>`).join("")}<div class="period-note">范围由后台授权下发，选择后立即生效</div></div></div>`; }
