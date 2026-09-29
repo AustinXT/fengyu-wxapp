@@ -168,6 +168,8 @@ describe('单源守护：数据中心一侧不许再长出日历校验（#308「
     "lib/data-center/time-range.ts :: startOfWeekMonday :: .getUTCDay": 1,
     "lib/data-center/time-range.ts :: daysInclusive :: .getTime": 2,
     "lib/data-center/time-range.ts :: shanghaiToday :: Intl.DateTimeFormat": 1,
+    // #452：合法日历日期经单源守卫后，只计算区间天数，不做日历校验。
+    "export-worker/registry.ts :: queryDailyOverview :: Date.parse": 2,
     "export-worker/file-name.ts :: exportFileName :: .toLocaleTimeString": 1,
     "export-worker/index.ts :: failJob :: new Date(x)": 1,
     "export-worker/index.ts :: processJob :: new Date(x)": 1,
