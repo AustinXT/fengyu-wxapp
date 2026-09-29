@@ -13867,13 +13867,30 @@ var init_postgres_js = __esm(() => {
 });
 
 // src/db/index.ts
+import { writeSync } from "node:fs";
+async function initializeDatabase() {
+  await client`SELECT 1`;
+}
 var globalForDb, connectionString, client, db2;
 var init_db2 = __esm(() => {
   init_postgres_js();
   init_src();
   globalForDb = globalThis;
   connectionString = process.env.E2E_DATABASE_URL ?? process.env.DATABASE_URL ?? "postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp";
-  client = globalForDb.pgClient ?? src_default(connectionString, { max: 5 });
+  client = globalForDb.pgClient ?? src_default(connectionString, {
+    max: 5,
+    connection: { TimeZone: "Asia/Shanghai" },
+    onparameter(key, value) {
+      if (key === "TimeZone" && value !== "Asia/Shanghai") {
+        try {
+          writeSync(2, `PG_TIMEZONE_MISMATCH: expected Asia/Shanghai, received ${value}
+`);
+        } finally {
+          process.exit(1);
+        }
+      }
+    }
+  });
   if (true) {
     globalForDb.pgClient = client;
   }
@@ -184478,7 +184495,7 @@ var getOperatingMaster = withPermission(DATA_CENTER_DASHBOARD_ACTION, async (ses
               AND so.client_user_id IS NOT NULL
               AND so.service_date BETWEEN (${asOf}::date - INTERVAL '90 days')::date AND ${asOf}
               AND c.became_member_at IS NOT NULL
-              AND c.became_member_at::date <= ${asOf}
+              AND (c.became_member_at AT TIME ZONE 'Asia/Shanghai')::date <= ${asOf}
           ),
           month_visits AS (
             SELECT vd.client_user_id, COUNT(*) AS days
@@ -188479,6 +188496,7 @@ async function processJob(job) {
   }
 }
 async function run() {
+  await initializeDatabase();
   console.log(`[export-worker] started (global concurrency: ${MAX_CONCURRENT_JOBS})`);
   await publishWorkerHeartbeat();
   const workerHeartbeat = setInterval(() => {
@@ -188514,7 +188532,7 @@ process.on("SIGINT", () => {
 if (process.argv.includes("--check")) {
   console.log("[export-worker] bundle verified");
 } else if (process.argv.includes("--once")) {
-  runMaintenance().then(claimNextJob).then(async (job) => {
+  initializeDatabase().then(runMaintenance).then(claimNextJob).then(async (job) => {
     if (job)
       await processJob(job);
   }).then(() => process.exit(0)).catch((err) => {

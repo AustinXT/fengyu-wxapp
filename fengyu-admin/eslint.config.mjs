@@ -50,7 +50,7 @@ const config = [
      * 推荐替代：
      *   - SQL 侧：`to_char(NOW() AT TIME ZONE 'Asia/Shanghai', 'YYYYMMDD')`
      *   - JS 侧：`dayjs.tz('Asia/Shanghai').format('YYYYMMDD')`
-     *   - PG 端 timezone 已锁 Asia/Shanghai（migration 0028）后，`NOW()::date` 也安全
+     *   - 连接层设置并断言会话 TimeZone=Asia/Shanghai（#291）后，`NOW()::date` 也安全
      *
      * 当前用 'warn' 软着陆 — admin 现存 10 处命中需逐个评估（状态字段初始化等非订单号路径
      * 可加 `// eslint-disable-next-line no-restricted-syntax` 局部豁免；订单号路径走 SQL 改造，

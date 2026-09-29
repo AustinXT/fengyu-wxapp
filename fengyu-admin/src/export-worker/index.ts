@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { and, eq, inArray, isNotNull, lt, sql } from 'drizzle-orm'
-import { db } from '@/db'
+import { db, initializeDatabase } from '@/db'
 import { adminExportJobs } from '@db/export-job'
 import { deleteByCloudPaths, uploadFile } from '@/lib/cloudbase'
 import { parseErrorPrefix } from '@/lib/api-error'
@@ -313,6 +313,7 @@ async function processJob(job: ExportJob): Promise<void> {
 }
 
 async function run(): Promise<void> {
+  await initializeDatabase()
   console.log(`[export-worker] started (global concurrency: ${MAX_CONCURRENT_JOBS})`)
   await publishWorkerHeartbeat()
   const workerHeartbeat = setInterval(() => {
@@ -342,7 +343,8 @@ process.on('SIGINT', () => { stopping = true })
 if (process.argv.includes('--check')) {
   console.log('[export-worker] bundle verified')
 } else if (process.argv.includes('--once')) {
-  runMaintenance()
+  initializeDatabase()
+    .then(runMaintenance)
     .then(claimNextJob)
     .then(async (job) => {
       if (job) await processJob(job)

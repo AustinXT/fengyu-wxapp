@@ -196,7 +196,7 @@ export const getOperatingMaster = withPermission(
               AND so.client_user_id IS NOT NULL
               AND so.service_date BETWEEN (${asOf}::date - INTERVAL '90 days')::date AND ${asOf}
               AND c.became_member_at IS NOT NULL
-              AND c.became_member_at::date <= ${asOf}
+              AND (c.became_member_at AT TIME ZONE 'Asia/Shanghai')::date <= ${asOf}
           ),
           month_visits AS (
             SELECT vd.client_user_id, COUNT(*) AS days

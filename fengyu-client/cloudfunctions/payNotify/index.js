@@ -197,6 +197,24 @@ function getPg() {
     // timestamp 列自 migration 0076 起统一为 timestamptz（1184）：pg 内置 parser 按字面偏移正确解析，无需自定义 1114 parser。
     pgPool = new pg.Pool({
       connectionString: process.env.PG_CONNECTION_STRING,
+      options: '-c TimeZone=Asia/Shanghai',
+      // pg-pool 等待 verify 完成才交出新连接；async connect 事件不具备这个保证。
+      verify(client, done) {
+        client.query('SHOW TimeZone', (err, result) => {
+          if (err) return done(err)
+          const timezone = result.rows[0]?.TimeZone
+          if (timezone !== 'Asia/Shanghai') {
+            // 配置错误必须终止实例，不能被路由/支付回调 catch 后继续运行。
+            try {
+              // 同步刷出致命日志；即使 stderr 不可写也必须拒绝继续运行。
+              require('node:fs').writeSync(2, `PG_TIMEZONE_MISMATCH: expected Asia/Shanghai, received ${timezone}\n`)
+            } finally {
+              process.exit(1)
+            }
+          }
+          done()
+        })
+      },
       max: 3,
       idleTimeoutMillis: 60000
     })
