@@ -45,8 +45,8 @@ function mockTransactionClient(
       if (text.includes('location_type, is_active, parent_location_id') && text.includes('FOR SHARE')) {
         const id = params[0]
         return String(id).startsWith('market')
-          ? { rows: [{ location_id: id, location_type: '市场', is_active: true, parent_location_id: 'HQ' }], rowCount: 1 }
-          : { rows: [{ location_id: id, location_type: '门店', is_active: true, parent_location_id: locationRow?.parent_location_id ?? 'market-A' }], rowCount: 1 }
+          ? { rows: [{ location_id: id, org_node_id: id, location_type: '市场', is_active: true, parent_location_id: 'HQ' }], rowCount: 1 }
+          : { rows: [{ location_id: id, org_node_id: id, location_type: '门店', is_active: true, parent_location_id: locationRow?.parent_location_id ?? 'market-A' }], rowCount: 1 }
       }
       if (text.includes('INSERT INTO inventory_locations')) return { rows: [], rowCount: 0 }
       if (text.includes('SELECT location_id, location_type, parent_location_id')) {
@@ -194,8 +194,8 @@ describe('inventory.createDoc 权限与状态', () => {
       }
       if (sql.includes('WHERE s.location_id = ANY')) {
         return [
-          { location_id: 'store-A', location_type: '门店', parent_location_id: 'market-A' },
-          { location_id: 'store-B', location_type: '门店', parent_location_id: 'market-A' },
+          { location_id: 'store-A', org_node_id: 'store-A', location_type: '门店', parent_location_id: 'market-A' },
+          { location_id: 'store-B', org_node_id: 'store-B', location_type: '门店', parent_location_id: 'market-A' },
         ]
       }
       return []
@@ -290,8 +290,8 @@ describe('inventory.createDoc 权限与状态', () => {
       }
       if (sql.includes('WHERE s.location_id = ANY')) {
         return [
-          { location_id: 'store-A', location_type: '门店', parent_location_id: 'market-A' },
-          { location_id: 'store-B', location_type: '门店', parent_location_id: 'market-A' },
+          { location_id: 'store-A', org_node_id: 'store-A', location_type: '门店', parent_location_id: 'market-A' },
+          { location_id: 'store-B', org_node_id: 'store-B', location_type: '门店', parent_location_id: 'market-A' },
         ]
       }
       return []
@@ -366,12 +366,12 @@ describe('inventory.createDoc 权限与状态', () => {
       if (sql.includes('FROM inventory_locations') && sql.includes('WHERE location_id = $1')) {
         if (params[0] === 'store-A') {
           return [{
-            location_id: 'store-A', location_type: '门店', parent_location_id: 'market-A', is_active: true,
+            location_id: 'store-A', org_node_id: 'store-A', location_type: '门店', parent_location_id: 'market-A', is_active: true,
           }]
         }
         if (params[0] === 'market-A') {
           return [{
-            location_id: 'market-A', location_type: '市场', parent_location_id: 'HQ', is_active: true,
+            location_id: 'market-A', org_node_id: 'market-A', location_type: '市场', parent_location_id: 'HQ', is_active: true,
           }]
         }
       }
@@ -441,7 +441,7 @@ describe('inventory.createDoc 权限与状态', () => {
       const sql = String(query)
       if (sql.includes('SELECT store_id FROM stores')) return [{ store_id: 'store-B' }]
       if (sql.includes('SELECT location_id, location_type, parent_location_id')) {
-        return [{ location_id: 'store-B', location_type: '门店', parent_location_id: 'market-B', is_active: true }]
+        return [{ location_id: 'store-B', org_node_id: 'store-B', location_type: '门店', parent_location_id: 'market-B', is_active: true }]
       }
       return []
     })
@@ -468,7 +468,7 @@ describe('inventory.createDoc 权限与状态', () => {
           if (text.includes('FROM inventory_locations')) {
             return {
               rows: [{
-                location_id: 'store-B',
+                location_id: 'store-B', org_node_id: 'store-B',
                 location_type: '门店',
                 parent_location_id: 'market-B',
               }],
@@ -506,12 +506,12 @@ describe('inventory.createDoc 权限与状态', () => {
       if (sql.includes('FROM inventory_locations') && sql.includes('WHERE location_id = $1')) {
         if (params[0] === 'store-001') {
           return [{
-            location_id: 'store-001', location_type: '门店', parent_location_id: 'market-A', is_active: true,
+            location_id: 'store-001', org_node_id: 'store-001', location_type: '门店', parent_location_id: 'market-A', is_active: true,
           }]
         }
         if (params[0] === 'market-A') {
           return [{
-            location_id: 'market-A', location_type: '市场', parent_location_id: 'HQ', is_active: true,
+            location_id: 'market-A', org_node_id: 'market-A', location_type: '市场', parent_location_id: 'HQ', is_active: true,
           }]
         }
       }
@@ -646,7 +646,7 @@ describe('inventory.createDoc 权限与状态', () => {
       if (sql.includes('FROM inventory_locations') && sql.includes('WHERE location_id = $1')) {
         return [params[0] === 'market-A'
           ? { location_id: 'market-A', org_node_id: 'market-A', location_type: '市场', parent_location_id: null, is_active: true }
-          : { location_id: params[0], location_type: '门店', parent_location_id: 'market-A', is_active: true }]
+          : { location_id: params[0], org_node_id: params[0], location_type: '门店', parent_location_id: 'market-A', is_active: true }]
       }
       return []
     })
@@ -660,8 +660,8 @@ describe('inventory.createDoc 权限与状态', () => {
           if (text.includes('location_type, is_active, parent_location_id') && text.includes('FOR SHARE')) {
             const id = params[0]
             return String(id).startsWith('market')
-              ? { rows: [{ location_id: id, location_type: '市场', is_active: true, parent_location_id: null }], rowCount: 1 }
-              : { rows: [{ location_id: id, location_type: '门店', is_active: true, parent_location_id: 'market-A' }], rowCount: 1 }
+              ? { rows: [{ location_id: id, org_node_id: id, location_type: '市场', is_active: true, parent_location_id: null }], rowCount: 1 }
+              : { rows: [{ location_id: id, org_node_id: id, location_type: '门店', is_active: true, parent_location_id: 'market-A' }], rowCount: 1 }
           }
           if (text.includes('COALESCE(SUM(quantity_on_hand), 0)')) {
             return { rows: bookRows, rowCount: bookRows.length, _params: params }
@@ -680,7 +680,7 @@ describe('inventory.createDoc 权限与状态', () => {
           }
           if (text.includes('FROM inventory_locations') && text.includes('WHERE location_id = $1')) {
             return {
-              rows: [{ location_id: params[0], location_type: '门店', parent_location_id: 'market-A' }],
+              rows: [{ location_id: params[0], org_node_id: params[0], location_type: '门店', parent_location_id: 'market-A' }],
               rowCount: 1,
             }
           }
@@ -794,7 +794,7 @@ describe('inventory.createDoc 权限与状态', () => {
       const sql = String(query)
       if (sql.includes('WITH RECURSIVE descendants')) return [{ store_id: 'store-001' }]
       if (sql.includes('SELECT location_id, location_type, parent_location_id')) {
-        return [{ location_id: 'store-001', location_type: '门店', parent_location_id: 'market-A' }]
+        return [{ location_id: 'store-001', org_node_id: 'store-001', location_type: '门店', parent_location_id: 'market-A' }]
       }
       if (sql.includes('SELECT COUNT(*)::int AS cnt')) return [{ cnt: 0 }]
       return []
@@ -1036,11 +1036,11 @@ describe('inventory WorkFine 切流门禁', () => {
       if (sql.includes('FROM inventory_locations') && sql.includes('WHERE location_id = $1')) {
         if (params[0] === 'store-001') {
           return [{
-            location_id: 'store-001', location_type: '门店', parent_location_id: 'market-A', is_active: true,
+            location_id: 'store-001', org_node_id: 'store-001', location_type: '门店', parent_location_id: 'market-A', is_active: true,
           }]
         }
         return [{
-          location_id: 'market-A', location_type: '市场', parent_location_id: 'HQ', is_active: true,
+          location_id: 'market-A', org_node_id: 'market-A', location_type: '市场', parent_location_id: 'HQ', is_active: true,
         }]
       }
       return []
@@ -1108,7 +1108,7 @@ describe('inventory 办理选项无金额响应', () => {
       const sql = String(query)
       if (sql.includes('WITH RECURSIVE descendants')) return [{ store_id: 'store-001' }]
       if (sql.includes('SELECT location_id, location_type, parent_location_id')) {
-        return [{ location_id: 'store-001', location_type: '门店', parent_location_id: 'market-A' }]
+        return [{ location_id: 'store-001', org_node_id: 'store-001', location_type: '门店', parent_location_id: 'market-A' }]
       }
       if (sql.includes('SELECT COUNT(*)::int AS cnt') && sql.includes('FROM inventory_skus sku')) {
         return [{ cnt: 1 }]
@@ -1158,7 +1158,7 @@ describe('inventory 办理选项无金额响应', () => {
       const sql = String(query)
       if (sql.includes('WITH RECURSIVE descendants')) return [{ store_id: 'store-001' }]
       if (sql.includes('SELECT location_id, location_type, parent_location_id')) {
-        return [{ location_id: 'store-001', location_type: '门店', parent_location_id: 'market-A' }]
+        return [{ location_id: 'store-001', org_node_id: 'store-001', location_type: '门店', parent_location_id: 'market-A' }]
       }
       if (sql.includes('SELECT COUNT(*)::int AS cnt')) return [{ cnt: 21 }]
       return []
@@ -1189,7 +1189,7 @@ describe('inventory 办理选项无金额响应', () => {
       const sql = String(query)
       if (sql.includes('WITH RECURSIVE descendants')) return [{ store_id: 'store-001' }]
       if (sql.includes('SELECT location_id, location_type, parent_location_id')) {
-        return [{ location_id: 'store-001', location_type: '门店', parent_location_id: 'market-A' }]
+        return [{ location_id: 'store-001', org_node_id: 'store-001', location_type: '门店', parent_location_id: 'market-A' }]
       }
       if (sql.includes('SELECT COUNT(*)::int AS cnt') && sql.includes('FROM inventory_skus sku')) {
         return [{ cnt: 21 }]
@@ -1252,7 +1252,7 @@ describe('inventory 办理选项无金额响应', () => {
       const sql = String(query)
       if (sql.includes('WITH RECURSIVE descendants')) return [{ store_id: 'store-001' }]
       if (sql.includes('SELECT location_id, location_type, parent_location_id')) {
-        return [{ location_id: 'store-001', location_type: '门店', parent_location_id: 'market-A' }]
+        return [{ location_id: 'store-001', org_node_id: 'store-001', location_type: '门店', parent_location_id: 'market-A' }]
       }
       if (sql.includes('SELECT COUNT(*)::int AS cnt')) return [{ cnt: 0 }]
       return []
@@ -1270,7 +1270,7 @@ describe('inventory 办理选项无金额响应', () => {
       const sql = String(query)
       if (sql.includes('WITH RECURSIVE descendants')) return [{ store_id: 'store-001' }]
       if (sql.includes('SELECT location_id, location_type, parent_location_id')) {
-        return [{ location_id: 'store-001', location_type: '门店', parent_location_id: 'market-A' }]
+        return [{ location_id: 'store-001', org_node_id: 'store-001', location_type: '门店', parent_location_id: 'market-A' }]
       }
       if (sql.includes('SELECT COUNT(*)::int AS cnt')) return [{ cnt: 0 }]
       return []
@@ -1314,7 +1314,7 @@ describe('inventory 办理选项无金额响应', () => {
       const sql = String(query)
       if (sql.includes('WITH RECURSIVE descendants')) return [{ store_id: 'store-001' }]
       if (sql.includes('SELECT location_id, location_type, parent_location_id')) {
-        return [{ location_id: 'store-001', location_type: '门店', parent_location_id: 'market-A' }]
+        return [{ location_id: 'store-001', org_node_id: 'store-001', location_type: '门店', parent_location_id: 'market-A' }]
       }
       if (sql.includes('JOIN stores s ON s.store_id = loc.store_id')) {
         return [{ location_id: 'store-002', org_node_id: 'node-store-002', name: '同市场门店' }]
@@ -2412,13 +2412,7 @@ describe('inventory 库存主体解析确定性（#251）', () => {
     )
   })
 
-  test('【已知缺陷·锁当前行为】org_node_id 为空时会把 store_id 当组织节点兜底', async () => {
-    // 这条**不是**在断言正确行为，而是把现状钉住，避免它在别的改动里悄悄漂移。
-    //
-    // `row.org_node_id || locationId` 把入参（store_id）当组织节点 id 返回，而该值会被
-    // 写进 inventory_docs 的端点列 —— 那两列对 inventory_locations.org_node_id 有 FK。
-    // 正解是 fail-loud，但现网为空的主体行实测 0 且改动会牵动 13 个既有用例的 mock，
-    // 已在 routes/inventory.js 的注释里记录，留作独立 issue。
+  test('#270 org_node_id 为空时在写入前拒绝，不以 store_id 兜底', async () => {
     const ctx = storeCtx({ roles: ['customer_mgr'], roleBindings: [
       { role: 'customer_mgr', scopeId: 'node-store-001', scopeType: '门店' },
     ] })
@@ -2430,10 +2424,8 @@ describe('inventory 库存主体解析确定性（#251）', () => {
       is_active: true,
     }])
 
-    // 没有因 org_node_id 为空而抛错，照常走到权限判定
-    await expect(inventoryRoutes.createDoc(ctx)).rejects.toThrow(
-      'PERMISSION_DENIED: 无库存写入权限',
-    )
+    await expect(inventoryRoutes.createDoc(ctx)).rejects.toThrow('LOCATION_MAPPING_MISSING')
+    expect(pg.transaction).not.toHaveBeenCalled()
   })
 
   test('主体查询带确定性排序与 LIMIT 2（防回退成无序 LIMIT 1）', async () => {
@@ -2513,8 +2505,8 @@ describe('门店报货草稿（#348）', () => {
           if (text.includes('location_type, is_active, parent_location_id') && text.includes('FOR SHARE')) {
             const id = params[0]
             return String(id).startsWith('market')
-              ? { rows: [{ location_id: id, location_type: marketType, is_active: marketActive, parent_location_id: null }], rowCount: 1 }
-              : { rows: [{ location_id: id, location_type: storeType, is_active: storeActive, parent_location_id: storeParent }], rowCount: 1 }
+              ? { rows: [{ location_id: id, org_node_id: id, location_type: marketType, is_active: marketActive, parent_location_id: null }], rowCount: 1 }
+              : { rows: [{ location_id: id, org_node_id: id, location_type: storeType, is_active: storeActive, parent_location_id: storeParent }], rowCount: 1 }
           }
           if (text.includes('WITH RECURSIVE descendants')) {
             return { rows: scopedStores.map((storeId) => ({ store_id: storeId })), rowCount: scopedStores.length }
@@ -2532,7 +2524,7 @@ describe('门店报货草稿（#348）', () => {
             return { rows: [{ location_id: String(params[0]).replace(/^org-/, '') }], rowCount: 1 }
           }
           if (text.includes('FROM inventory_locations') && text.includes('WHERE location_id = $1')) {
-            return { rows: [{ location_id: params[0], location_type: '门店', parent_location_id: 'market-A' }], rowCount: 1 }
+            return { rows: [{ location_id: params[0], org_node_id: params[0], location_type: '门店', parent_location_id: 'market-A' }], rowCount: 1 }
           }
           if (text.includes('INSERT INTO inventory_doc_items')) return { rows: [{ id: 101 }], rowCount: 1 }
           return { rows: [], rowCount: 1 }
@@ -2720,5 +2712,14 @@ describe('门店报货草稿（#348）', () => {
       expect(indexSrc).toContain(`'${action}': () => require('./routes/inventory')`)
       expect(indexSrc.split(`'${action}'`).length - 1, action).toBe(2)
     }
+  })
+})
+
+describe('#270 同步和空组织映射', () => {
+  test.each([true, false])('drifted=%s 时总部/市场 ID 撞值仍先拒绝', async (drifted) => {
+    pg.query.mockImplementation(async () => [{ drifted, collided_id: 'COLLIDED-MARKET' }])
+    const ctx = createCtx({ payload: {} })
+    await expect(inventoryRoutes.docList(ctx)).rejects.toThrow('LOCATION_ID_AMBIGUOUS: 库存主体标识 COLLIDED-MARKET')
+    expect(pg.query.mock.calls.some(([sql]) => /INSERT INTO inventory_locations/.test(sql))).toBe(false)
   })
 })

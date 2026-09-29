@@ -869,6 +869,7 @@ async function syncLocations(): Promise<void> {
            OR loc.location_type IS DISTINCT FROM o.type::text
            OR loc.name IS DISTINCT FROM o.name
            OR loc.org_node_id IS DISTINCT FROM o.id
+           OR loc.store_id IS NOT NULL
            OR loc.parent_location_id IS DISTINCT FROM o.parent_id
            OR loc.is_active IS DISTINCT FROM o.is_active)
       UNION ALL
@@ -883,8 +884,18 @@ async function syncLocations(): Promise<void> {
          OR loc.store_id IS DISTINCT FROM s.store_id
          OR loc.parent_location_id IS DISTINCT FROM o.parent_id
          OR loc.is_active IS DISTINCT FROM (COALESCE(o.is_active, false) AND NOT s.is_closed)
-    ) AS drifted
+    ) AS drifted,
+    (SELECT s.store_id
+       FROM stores s
+       JOIN org_nodes o ON o.id = s.store_id
+      WHERE o.type IN ('总部','市场')
+      ORDER BY s.store_id
+      LIMIT 1) AS collided_id
   `)
+  const collidedId = (probe as unknown as Array<{ collided_id: string | null }> | undefined)?.[0]?.collided_id
+  if (collidedId != null) {
+    throw new ApiError('CONFLICT', `LOCATION_ID_AMBIGUOUS: 库存主体标识 ${collidedId} 与总部/市场组织节点冲突`)
+  }
   const drifted = (probe as unknown as Array<{ drifted: boolean | null }> | undefined)?.[0]?.drifted
   if (drifted === false) return
   await db.execute(sql`
@@ -896,6 +907,7 @@ async function syncLocations(): Promise<void> {
       SET location_type = EXCLUDED.location_type,
           name = EXCLUDED.name,
           org_node_id = EXCLUDED.org_node_id,
+          store_id = NULL,
           parent_location_id = EXCLUDED.parent_location_id,
           is_active = EXCLUDED.is_active,
           updated_at = NOW()
@@ -971,7 +983,7 @@ async function locationForRead(tx: Tx, endpointId: string): Promise<Location> {
 async function loadLocation(tx: Tx, endpointId: string, forUpdate: boolean): Promise<Location> {
   const matched = rows<{
     location_id: string
-    org_node_id: string
+    org_node_id: string | null
     location_type: LocationType
     name: string
     parent_location_id: string | null
@@ -993,6 +1005,9 @@ async function loadLocation(tx: Tx, endpointId: string, forUpdate: boolean): Pro
   // 既有差异，不是跨端漂移 —— 别当不一致去「修齐」。
   if (!row || row.is_active === false) {
     throw new ApiError('NOT_FOUND', '库存主体不存在或已停用')
+  }
+  if (!row.org_node_id) {
+    throw new ApiError('INVALID_STATE', 'LOCATION_MAPPING_MISSING: 库存主体缺少组织映射，请联系管理员')
   }
   return {
     locationId: row.location_id,

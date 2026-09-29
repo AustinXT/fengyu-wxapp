@@ -347,10 +347,10 @@ describe('inventory business action input guards', () => {
     const txExecute = vi.fn()
       .mockResolvedValueOnce([itemCompanyShipmentRow({ status: '待收货' })])
       .mockResolvedValueOnce([{
-        location_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
+        location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
       }])
       .mockResolvedValueOnce([{
-        location_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ',
+        location_id: 'M1', org_node_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ',
       }])
       .mockResolvedValueOnce([{
         ...storeRequestItemRow(), doc_id: 'GFH-1', lot_id: 101, quantity: '5',
@@ -396,7 +396,7 @@ describe('inventory business action input guards', () => {
         status: '待审批', cancellationRequestReason: '物流信息异常',
       })])
       .mockResolvedValueOnce([{
-        location_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
+        location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
       }])
     vi.mocked(db.execute).mockResolvedValue([] as never)
     vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
@@ -418,7 +418,7 @@ describe('inventory business action input guards', () => {
         status: '待审批', cancellationRequestReason: '物流信息异常',
       })])
       .mockResolvedValueOnce([{
-        location_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
+        location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
       }])
       .mockResolvedValueOnce([{
         ...storeRequestItemRow(), doc_id: 'GFH-1', lot_id: 101, quantity: '5',
@@ -448,7 +448,7 @@ describe('inventory business action input guards', () => {
         status: '待审批', cancellationRequestReason: '物流信息异常',
       })])
       .mockResolvedValueOnce([{
-        location_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
+        location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
       }])
       .mockResolvedValue([])
     vi.mocked(db.execute).mockResolvedValue([] as never)
@@ -516,7 +516,7 @@ describe('inventory business action input guards', () => {
   it('无门店员工按组织树追溯市场并拒绝跨市场员工购', async () => {
     const txExecute = vi.fn()
       .mockResolvedValueOnce([{
-        location_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ',
+        location_id: 'M1', org_node_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ',
       }])
       .mockResolvedValueOnce([{
         employee_id: 'E002', name: '市场二员工', store_id: null, org_node_id: 'D2', store_market_id: null,
@@ -536,7 +536,7 @@ describe('inventory business action input guards', () => {
   it('员工购候选项只返回所选市场组织树中的在职员工', async () => {
     mockSyncLocationsShortCircuit()
       .mockResolvedValueOnce([{
-        location_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ',
+        location_id: 'M1', org_node_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ',
       }] as never)
       .mockResolvedValueOnce([
         { employee_id: 'E001', name: '员工甲' },
@@ -567,7 +567,7 @@ describe('inventory business action input guards', () => {
   it('供应链员工购候选项排除市场链路和门店员工', async () => {
     mockSyncLocationsShortCircuit()
       .mockResolvedValueOnce([{
-        location_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
+        location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
       }] as never)
       .mockResolvedValueOnce([{ employee_id: 'E-HQ', name: '总部员工' }] as never)
 
@@ -588,7 +588,7 @@ describe('inventory business action input guards', () => {
   it('市场员工购候选项的递归 CTE 不再混用别名与原名（#130 回归）', async () => {
     mockSyncLocationsShortCircuit()
       .mockResolvedValueOnce([{
-        location_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ',
+        location_id: 'M1', org_node_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ',
       }] as never)
       .mockResolvedValueOnce([] as never)
 
@@ -661,7 +661,7 @@ describe('inventory business action input guards', () => {
   it('自采入库必须引用有效且启用的供应商实体', async () => {
     const txExecute = vi.fn()
       .mockResolvedValueOnce([{
-        location_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ',
+        location_id: 'M1', org_node_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ',
       }])
       .mockResolvedValueOnce([])
     vi.mocked(db.execute).mockResolvedValue([] as never)
@@ -680,10 +680,10 @@ describe('inventory business action input guards', () => {
   it('已由市场库存履约的门店报货不能再次进入市场报货', async () => {
     const txExecute = vi.fn()
       .mockResolvedValueOnce([{
-        location_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ',
+        location_id: 'M1', org_node_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ',
       }])
       .mockResolvedValueOnce([{
-        location_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
+        location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
       }])
       .mockResolvedValueOnce([storeRequestItemRow('5')])
       .mockResolvedValueOnce([{
@@ -707,7 +707,7 @@ describe('inventory business action input guards', () => {
   it('品项公司报货需求拒绝非供应链 SKU', async () => {
     const txExecute = vi.fn()
       .mockResolvedValueOnce([{
-        location_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
+        location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
       }])
       .mockResolvedValueOnce([{
         ...marketSkuRow('SELF-SKU'),
@@ -728,7 +728,7 @@ describe('inventory business action input guards', () => {
   it('品项公司报货需求要求已维护供应链采购价', async () => {
     const txExecute = vi.fn()
       .mockResolvedValueOnce([{
-        location_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
+        location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
       }])
       .mockResolvedValueOnce([{
         ...marketSkuRow('SKU-NO-COST'),
@@ -837,7 +837,7 @@ describe('inventory business action input guards', () => {
         supplier_id: null, supplier_name: null,
       }])
       .mockResolvedValueOnce([{
-        location_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
+        location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
       }])
       // 收敛后不再回溯唯一的品项公司报货需求单，直接读本单明细
       .mockResolvedValueOnce([purchaseOrderItem])
@@ -994,7 +994,7 @@ describe('inventory business action input guards', () => {
         source_org_node_id: null, target_org_node_id: 'HQ', market_id: null,
         supplier_id: null, supplier_name: null,
       }])
-      .mockResolvedValueOnce([{ location_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null }])
+      .mockResolvedValueOnce([{ location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null }])
       .mockResolvedValueOnce([{ ...storeRequestItemRow('3'), doc_id: 'CGD-1', market_id: 'M1', quantity: '10' }])
       .mockResolvedValueOnce([{ relation_type: '报货汇总采购订单', from_item_id: 10, to_item_id: 1, quantity: '10' }])
       .mockResolvedValueOnce([{ quantity: '3' }]) // 已入库（释放计算）
@@ -4708,5 +4708,31 @@ describe('#453 前置日期校验不绕过明细形状守卫', () => {
     await expect(receiveSupplyChainPurchaseOrder(SESSION, { supplyChainLocationId: 'HQ', purchaseOrderId: 'CG', items: [item] } as never)).rejects.toThrow('INVALID_PARAMS: 供应链采购入库明细格式不正确')
     expect(db.execute).not.toHaveBeenCalled()
     expect(db.transaction).not.toHaveBeenCalled()
+  })
+})
+
+describe('#270 business 同步和空映射', () => {
+  it('business 热路径无漂移也拒绝撞值，且不进入业务事务', async () => {
+    vi.clearAllMocks()
+    vi.mocked(db.execute).mockResolvedValue([{ drifted: false, collided_id: 'COLLIDED-HQ' }] as never)
+    await expect(createReturnForRestock(SESSION, {
+      sourceOrgNodeId: 'S1', targetOrgNodeId: 'M1', items: [{ lotId: 1, quantity: 1 }],
+    } as never)).rejects.toThrow('LOCATION_ID_AMBIGUOUS: 库存主体标识 COLLIDED-HQ')
+    expect(db.execute).toHaveBeenCalledTimes(1)
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+  it('原始行的空组织映射不能作为成功 Location 返回', async () => {
+    vi.clearAllMocks()
+    vi.mocked(db.execute).mockResolvedValue([{ drifted: false, collided_id: null }] as never)
+    const txExecute = vi.fn().mockResolvedValue([{
+      location_id: 'S1', org_node_id: null, location_type: '门店', name: '门店', is_active: true,
+    }])
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
+      execute: initializedCutoverExecutor(txExecute),
+    } as never))
+    await expect(createReturnForRestock(SESSION, {
+      sourceOrgNodeId: 'S1', targetOrgNodeId: 'M1', items: [{ lotId: 1, quantity: 1 }],
+    } as never)).rejects.toThrow('LOCATION_MAPPING_MISSING')
+    expect(txExecute.mock.calls.map(([q]) => renderSql(q)).join('\n')).not.toContain('inventory_stock_lots')
   })
 })

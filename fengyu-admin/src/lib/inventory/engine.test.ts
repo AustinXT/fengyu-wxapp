@@ -5274,3 +5274,12 @@ describe('#453 列表筛选日期', () => {
     expect(mockDb.select).not.toHaveBeenCalled()
   })
 })
+
+describe('#270 同步撞值在短路之前拒绝', () => {
+  it.each([true, false])('drifted=%s 也不能掩盖市场 ID 撞值', async (drifted) => {
+    vi.clearAllMocks()
+    mockDb.execute.mockResolvedValue([{ drifted, collided_id: 'MARKET-COLLISION' }])
+    await expect(syncInventoryLocations()).rejects.toThrow('LOCATION_ID_AMBIGUOUS: 库存主体标识 MARKET-COLLISION')
+    expect(mockDb.execute).toHaveBeenCalledTimes(1)
+  })
+})
