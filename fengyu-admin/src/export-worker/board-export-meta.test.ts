@@ -25,7 +25,7 @@ import ExcelJS from 'exceljs'
 import { createExportContent } from './registry'
 import { completeExportMeta } from './export-meta'
 import { writeStreamXlsx } from './xlsx-writer'
-import { DATA_CENTER_BOARD_EXPORT_VIEWS } from '@/lib/export-job-types'
+import { DATA_CENTER_BOARD_EXPORT_VIEWS, DATA_CENTER_EXPORT_VIEWS, type DataCenterBoardExportView } from '@/lib/export-job-types'
 import { DATA_CENTER_VIEW_CONFIG } from '@/lib/data-center/columns'
 const HQ: AuthSession = {
   employeeId: 'FY-ADMIN', name: '管理员', phone: '1',
@@ -58,16 +58,16 @@ describe('#296 registry 真实 action 实际期间，与页面解析同源', () 
     expect(content.meta).not.toHaveProperty('basePeriod')
   })
 
-  it.each(DATA_CENTER_BOARD_EXPORT_VIEWS)('%s 越权多店先拒绝，不查询元信息', async view => {
+  it.each(DATA_CENTER_EXPORT_VIEWS)('%s 越权多店先拒绝，不查询元信息', async view => {
     mockGetSession.mockResolvedValue({
       ...HQ,
-      roles: [{ role: 'manager', scopeId: 'N1', scopeType: '门店', actions: ['data_center:dashboard'], scopeStoreIds: ['S1'], scopeOrgNodeIds: ['N1'] }],
-      permissions: { actions: ['data_center:dashboard'], scopeStoreIds: ['S1'], scopeOrgNodeIds: ['N1'] },
+      roles: [{ role: 'manager', scopeId: 'N1', scopeType: '门店', actions: ['data_center:dashboard', 'data_center:customer_detail', 'data_center:staff_commission'], scopeStoreIds: ['S1'], scopeOrgNodeIds: ['N1'] }],
+      permissions: { actions: ['data_center:dashboard', 'data_center:customer_detail', 'data_center:staff_commission'], scopeStoreIds: ['S1'], scopeOrgNodeIds: ['N1'] },
     })
-    const config = DATA_CENTER_VIEW_CONFIG[view]
+    const config = DATA_CENTER_VIEW_CONFIG[view as DataCenterBoardExportView]
     await expect(createExportContent('data-center', {
-      view, params: { scope: 'stores', scopeId: 'S1,S2' },
-      metric: config.kind === 'ranking' ? config.metrics[0].key : undefined,
+      view, params: { scope: 'stores', scopeId: 'S1,S2', month: '2026-08' },
+      metric: config?.kind === 'ranking' ? config.metrics[0].key : undefined,
     })).rejects.toThrow('PERMISSION_DENIED')
     expect(queries).toEqual([])
   })

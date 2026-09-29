@@ -18,10 +18,10 @@ describe('#296 多店范围完整性', () => {
     expect(await scopeExportMeta({ type: 'all' }, '全部')).toEqual({ scope: '全部' })
     expect(queries).toEqual([])
   })
-  it('200 家全名单不截断，按用户选择顺序；启用节点的关店不计停用', async () => {
+  it('200 家全名单不截断，按解析后范围顺序；启用节点的关店不计停用', async () => {
     const ids = Array.from({ length: 200 }, (_, i) => `S${i + 1}`)
     rows.push(...ids.map((id, i): [string, string, string, boolean] => [id, `门店${i + 1}`, '门店', i !== 199]).reverse())
-    const meta = await scopeExportMeta({ type: 'stores', ids }, '門店1、門店2、門店3 等 200 家门店')
+    const meta = await scopeExportMeta({ type: 'stores', ids }, '门店1、门店2、门店3 等 200 家门店')
     expect(meta.extra).toContainEqual({ label: '所选门店', value: ids.map((_, i) => `门店${i + 1}`).join('、') })
     expect(meta.extra).toContainEqual({ label: '范围提示', value: '1 家已停用未计入' })
     expect(queries).toHaveLength(1)

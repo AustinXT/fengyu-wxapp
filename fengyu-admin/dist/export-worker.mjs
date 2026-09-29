@@ -184492,6 +184492,9 @@ async function loadStoreDataStarts(now = Date.now()) {
   return inflight;
 }
 
+// src/lib/data-center/base-period.ts
+var MOM_BASE_PERIOD_LABEL = "环比基期";
+
 // src/lib/data-center/data-start.ts
 function scopeDataStart(axis, stores3, starts) {
   let earliest = null;
@@ -187892,9 +187895,6 @@ async function writeStreamXlsx(options) {
   }
   return { rowCount, sheetCount };
 }
-
-// src/lib/data-center/base-period.ts
-var MOM_BASE_PERIOD_LABEL = "环比基期";
 // src/export-worker/export-meta.ts
 init_datetime();
 function required(label, value2) {

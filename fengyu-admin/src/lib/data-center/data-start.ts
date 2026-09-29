@@ -1,3 +1,4 @@
+import { MOM_BASE_PERIOD_LABEL } from './base-period'
 /**
  * 数据起点判定（#367，纯函数；#289 与各经营明细报表页共用）。
  *
@@ -148,6 +149,6 @@ export function boardNoticeRanges(timeRange: {
 }): Array<{ label: string; range: ResolvedRange }> {
   return [
     { label: '所选期间', range: { start: timeRange.start, end: timeRange.end } },
-    ...(timeRange.previous ? [{ label: '环比基期', range: timeRange.previous }] : []),
+    ...(timeRange.previous ? [{ label: MOM_BASE_PERIOD_LABEL, range: timeRange.previous }] : []),
   ]
 }

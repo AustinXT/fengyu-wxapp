@@ -63,6 +63,7 @@ vi.mock('@/actions/data-center/commission', () => ({
 vi.mock('@/db', () => ({
   db: { select: vi.fn(() => ({ from: vi.fn(() => Object.assign(Promise.resolve([]), {
     leftJoin: vi.fn(() => ({ where: vi.fn(async () => mockScopeRows) })),
+    where: vi.fn(() => ({ limit: vi.fn(async () => mockScopeRows) })),
   })) })) },
 }))
 
@@ -890,5 +891,66 @@ describe('#296 旧四板块 12 个视图全部接入 meta', () => {
     expect(content.meta?.extra).toContainEqual({ label: '范围提示', value: '1 家已停用未计入' })
     mockScopeRows.splice(0, 1)
     await expect(createExportContent('data-center', { view: 'sales-store', params: { scope: 'stores', scopeId: 'S1,S2,S3,S4' } })).rejects.toThrow('INVALID_STATE')
+  })
+})
+
+
+describe('#296 全部 18 视图多店元信息接线，不得丢 extra', () => {
+  beforeEach(async () => {
+    const scope = { type: 'stores', ids: ['S1', 'S2', 'S3', 'S4'] } as const
+    const name = '甲店、乙店、丙店 等 4 家门店'
+    mockScopeRows.push(
+      { id: 'S1', name: '甲店', nodeType: '门店', isActive: true },
+      { id: 'S2', name: '乙店', nodeType: '门店', isActive: true },
+      { id: 'S3', name: '丙店', nodeType: '门店', isActive: true },
+      { id: 'S4', name: '丁店', nodeType: '门店', isActive: false },
+    )
+    for (const fetcher of [getSalesBoard, getCustomerBoard, getProductBoard, getEfficiencyBoard]) {
+      const board = await fetcher({} as never)
+      vi.mocked(fetcher).mockResolvedValue({ ...board, scope: { type: 'stores', id: scope.ids.join(','), name } } as never)
+      vi.mocked(fetcher).mockClear()
+    }
+    vi.mocked(getOperatingMaster).mockResolvedValue({
+      month: '2026-08', range: { start: '2026-08-01', end: '2026-08-31' },
+      ytd: { start: '2026-01-01', end: '2026-08-31' }, asOf: '2026-09-15', scopeName: name,
+      ...buildOperatingMasterTable([], new Map()),
+    } as never)
+    vi.mocked(getDailyOverview).mockResolvedValue({
+      data: buildDailyOverview({ stores: [], categories: [], performanceParts: [], performanceTotals: [], recharge: [], service: [] }),
+      kpis: {} as never, storeCount: 3,
+      period: { label: '上月', current: { start: '2026-08-01', end: '2026-08-31' }, previous: { start: '2026-07-01', end: '2026-07-31' } },
+      scope: { type: 'stores', name },
+    })
+    vi.mocked(exportRemainingCardsReport).mockResolvedValue({
+      columns: [], rows: [], totals: { remaining: 0 }, params: { scope, q: '', show: 'all' }, asOf: '2026-09-15',
+    } as never)
+    vi.mocked(exportCustomerFrequencyReport).mockResolvedValue({
+      rows: [], totals: { visitDays: 0, amount: 0 },
+      params: { scope, searchLabel: '', show: 'all', month: '2026-08', monthLabel: '2026年8月', range: { start: '2026-08-01', end: '2026-08-31' } },
+    } as never)
+    vi.mocked(getCommissionDaily).mockResolvedValue({
+      month: '2026-08', scopeName: name, isAllScope: false,
+      options: { view: 'total', group: 'employee', merge: false, search: '', hideZero: false },
+      grain: 'employee-store', sort: { key: 'total', direction: 'desc' }, rows: [],
+      totals: { days: {}, total: { sale: 0, service: 0, orders: 0 }, employeeCount: 0, rowCount: 0 },
+    } as never)
+    vi.mocked(exportCommissionDetail).mockResolvedValue({
+      rows: [], truncated: false, hasMore: false, summary: null, scopeName: name, month: '2026-08',
+      filters: { employeeId: null, storeId: null, date: null, source: null },
+    } as never)
+  })
+  it.each(DATA_CENTER_EXPORT_VIEWS)('%s 写完整多店名单和停用提示，保留原 extra', async view => {
+    const config = DATA_CENTER_VIEW_CONFIG[view as DataCenterBoardExportView]
+    const content = await createExportContent('data-center', {
+      view, params: { scope: 'stores', scopeId: 'S1,S2,S3,S4', month: '2026-08', kind: '美容', category: '面部护理' },
+      metric: config?.kind === 'ranking' ? config.metrics[0].key : undefined,
+    })
+    expect(content.meta?.scope).toBe('门店 · 甲店、乙店、丙店 等 4 家门店')
+    const entries = completeExportMeta(content.meta, { generatedAt: new Date(0), exporterName: 'a' })!
+    expect(entries).toContainEqual({ label: '所选门店', value: '甲店、乙店、丙店、丁店' })
+    expect(entries).toContainEqual({ label: '范围提示', value: '1 家已停用未计入' })
+    if (view.startsWith('product-')) expect(entries).toContainEqual({ label: '品项分类', value: '美容' })
+    if (config?.kind === 'ranking') expect(entries).toContainEqual({ label: '排名指标', value: config.metrics[0].label })
+    if (view === 'efficiency-staff' || view === 'efficiency-staff-ranking') expect(entries).toContainEqual({ label: '口径', value: STAFF_OUTPUT_SCOPE_NOTE })
   })
 })
