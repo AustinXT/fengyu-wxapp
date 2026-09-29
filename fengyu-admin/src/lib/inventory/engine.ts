@@ -2960,11 +2960,14 @@ async function loadInventoryDocLineage(
       CASE WHEN doc_link.from_doc_id = ${docId} THEN to_doc.status ELSE from_doc.status END AS status,
       CASE WHEN doc_link.from_doc_id = ${docId} THEN to_doc.doc_date ELSE from_doc.doc_date END AS doc_date,
       CASE WHEN doc_link.from_doc_id = ${docId} THEN to_doc.total_quantity ELSE from_doc.total_quantity END AS total_quantity,
+      MAX(CASE WHEN doc_link.from_doc_id = ${docId} THEN to_source.name ELSE from_source.name END) AS source_org_node_name,
       COALESCE(SUM(doc_link.quantity), 0) AS linked_quantity,
       MAX(doc_link.created_at) AS linked_at
     FROM inventory_doc_links doc_link
     JOIN inventory_docs from_doc ON from_doc.id = doc_link.from_doc_id
     JOIN inventory_docs to_doc ON to_doc.id = doc_link.to_doc_id
+    LEFT JOIN inventory_locations from_source ON from_source.org_node_id = from_doc.source_org_node_id
+    LEFT JOIN inventory_locations to_source ON to_source.org_node_id = to_doc.source_org_node_id
     WHERE (doc_link.from_doc_id = ${docId} OR doc_link.to_doc_id = ${docId})
       AND ${linkedDocVisible}
     GROUP BY
@@ -3001,6 +3004,7 @@ async function loadInventoryDocLineage(
       origin_report.status,
       origin_report.doc_date,
       origin_report.total_quantity,
+      MAX(origin_source.name) AS source_org_node_name,
       COALESCE(SUM(origin_receipt_link.quantity), 0) AS linked_quantity,
       MAX(origin_receipt_link.created_at) AS linked_at
     FROM inventory_doc_links origin_receipt_link
@@ -3008,6 +3012,7 @@ async function loadInventoryDocLineage(
       ON origin_ship_link.to_item_id = origin_receipt_link.from_item_id
      AND origin_ship_link.relation_type IN ('市场报货发货', '市场报货赠送发货')
     JOIN inventory_docs origin_report ON origin_report.id = origin_ship_link.from_doc_id
+    LEFT JOIN inventory_locations origin_source ON origin_source.org_node_id = origin_report.source_org_node_id
     WHERE origin_receipt_link.to_doc_id = ${docId}
       AND origin_receipt_link.relation_type = '发货收货'
       AND ${reportVisible}
@@ -3028,6 +3033,7 @@ function mapLineageRows(rows: unknown[]): InventoryDocLineageRow[] {
     doc_date: string | Date
     total_quantity: string | number | null
     linked_quantity: string | number | null
+    source_org_node_name: string | null
   }>).map((row) => ({
     direction: row.direction,
     relationType: row.relation_type,
@@ -3037,6 +3043,7 @@ function mapLineageRows(rows: unknown[]): InventoryDocLineageRow[] {
     docDate: asDocDate(row.doc_date),
     totalQuantity: numberOrNull(row.total_quantity) ?? 0,
     linkedQuantity: numberOrNull(row.linked_quantity) ?? 0,
+    sourceOrgNodeName: row.source_org_node_name ?? null,
   }))
 }
 
@@ -3663,6 +3670,9 @@ export const getInventoryCoreDocById = withPermission(
         actualUnitPrice: itemPriceVisibility !== 'none' ? numberOrNull(item.actualUnitPrice) : undefined,
         amount: includeItemAmount ? numberOrNull(item.amount) : undefined,
         supplyChainUnitCost: itemPriceVisibility === 'all' || itemPriceVisibility === 'supply_chain' ? numberOrNull(item.supplyChainUnitCost) : undefined,
+        marketStandardUnitPrice: head.docType === '市场报货' && itemPriceVisibility !== 'none' ? numberOrNull(item.marketStandardUnitPrice) : undefined,
+        marketUnitDiscount: head.docType === '市场报货' && itemPriceVisibility !== 'none' ? numberOrNull(item.marketUnitDiscount) : undefined,
+        storeStandardUnitPrice: head.docType === '市场报货' && (itemPriceVisibility === 'all' || itemPriceVisibility === 'market') ? numberOrNull(item.storeStandardUnitPrice) : undefined,
         marketActualUnitPrice: itemPriceVisibility !== 'none' ? numberOrNull(item.marketActualUnitPrice) : undefined,
         storeActualUnitPrice: itemPriceVisibility === 'all' || itemPriceVisibility === 'market' ? numberOrNull(item.storeActualUnitPrice) : undefined,
         promotionPlanId: item.promotionPlanId,

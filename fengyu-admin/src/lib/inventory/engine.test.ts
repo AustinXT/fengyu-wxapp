@@ -2115,15 +2115,19 @@ describe('库存单据详情履约进度', () => {
     mockDb.execute.mockReset()
   })
 
-  it('市场报货返回可见血缘及正常、赠送发货收货进度', async () => {
+  it.each([
+    ['无价格档', [], false, false],
+    ['市场价格档', ['inventory:market_price_view'], true, true],
+    ['供应链价格档', ['inventory:supply_chain_price_view'], true, false],
+  ] as const)('市场报货返回可见血缘及进度，%s 服务端遮蔽参考价（#363）', async (_tier, priceActions, pricesVisible, storeVisible) => {
     const now = new Date('2026-08-09T09:00:00.000Z')
     vi.mocked(isAdminScope).mockReturnValue(false)
     mockGetSession.mockResolvedValue({
       employeeId: 'E001',
       name: '测试用户',
       phone: '13800000000',
-      roles: [{ role: 'manager', scopeId: 'MARKET-1', scopeType: '市场' }],
-      permissions: { actions: ['inventory:list'], scopeStoreIds: [] },
+      roles: [{ role: 'manager', scopeId: 'MARKET-1', scopeType: '市场', actions: ['inventory:list', ...priceActions], scopeOrgNodeIds: ['MARKET-1'], scopeStoreIds: [] }],
+      permissions: { actions: ['inventory:list', ...priceActions], scopeStoreIds: [] },
     } as never)
     mockDb.select
       .mockReturnValueOnce(detailHeadSelect([{
@@ -2184,6 +2188,9 @@ describe('库存单据详情履约进度', () => {
         actualUnitPrice: '100',
         amount: '1000',
         supplyChainUnitCost: null,
+        marketStandardUnitPrice: '110',
+        marketUnitDiscount: '10',
+        storeStandardUnitPrice: '150',
         marketActualUnitPrice: '100',
         storeActualUnitPrice: null,
         reason: null,
@@ -2192,6 +2199,7 @@ describe('库存单据详情履约进度', () => {
       }]))
     mockDb.execute
       .mockResolvedValueOnce([{
+        source_org_node_name: '品牌总部',
         direction: '下游',
         relation_type: '市场报货采购订单',
         doc_id: 'CGD-260809-0001',
@@ -2220,6 +2228,7 @@ describe('库存单据详情履约进度', () => {
       docId: 'CGD-260809-0001',
       docDate: '2026-08-09',
       linkedQuantity: 8,
+      sourceOrgNodeName: '品牌总部',
     })])
     expect(detail?.fulfillmentProgress).toEqual({
       kind: '报货履约',
@@ -2233,6 +2242,11 @@ describe('库存单据详情履约进度', () => {
         giftReceivedQuantity: 1,
       }],
     })
+
+    expect(detail?.items[0]?.marketStandardUnitPrice).toBe(pricesVisible ? 110 : undefined)
+    expect(detail?.items[0]?.marketUnitDiscount).toBe(pricesVisible ? 10 : undefined)
+    expect(detail?.items[0]?.marketActualUnitPrice).toBe(pricesVisible ? 100 : undefined)
+    expect(detail?.items[0]?.storeStandardUnitPrice).toBe(storeVisible ? 150 : undefined)
 
     const [lineageQuery, fulfillmentQuery] = mockDb.execute.mock.calls.map(([query]) => query)
     const lineageSql = renderSql(lineageQuery)

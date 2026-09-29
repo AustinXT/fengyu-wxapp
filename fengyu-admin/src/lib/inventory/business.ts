@@ -217,6 +217,8 @@ export interface CreateStoreReplenishmentInput {
 }
 
 export interface StoreReplenishmentSummaryLine {
+  /** 逐门店扣除已汇总 / 已配数量的真实分量（在途封顶前），仅供参考。 */
+  storeQuantities: Array<{ storeId: string | null; storeName: string; quantity: number }>
   skuId: string
   skuName: string
   specName: string | null
@@ -639,6 +641,8 @@ export interface PromotionQuoteOption {
 }
 
 export interface MarketPromotionQuoteLine extends PromotionQuote {
+  /** 门店进货价，只作参考；仅本市场价格档可见。 */
+  storeStandardUnitPrice?: number | null
   recommendedPromotionPlanId: string | null
   selectionMode: '系统推荐' | '人工选择' | null
   eligibleOptions: PromotionQuoteOption[]
@@ -1987,6 +1991,7 @@ async function quoteMarketPricesInTx(
       skuId,
       marketId: input.marketId,
       quantity,
+      storeStandardUnitPrice: sku.storePurchasePrice,
       marketStandardUnitPrice: fixed(base),
       marketUnitDiscount: fixed(discount),
       marketActualUnitPrice: fixed(actual),
@@ -2567,30 +2572,50 @@ export async function summarizeStoreReplenishmentRequests(
       fulfilled_quantity: string | number
       outstanding_quantity: string | number
       request_item_ids: number[] | string
+      store_quantities: Array<{ storeId: string | null; storeName: string; quantity: string | number }>
     }>(await tx.execute(sql`
+      WITH remaining AS (
+        SELECT i.*,
+               COALESCE(store_location.store_id, d.source_org_node_id) AS request_store_id,
+               COALESCE(store_location.name, d.source_org_node_id, '未知门店') AS store_name,
+               GREATEST(i.quantity - summarized.quantity - COALESCE(i.fulfilled_quantity, 0), 0) AS outstanding
+          FROM inventory_docs d
+          JOIN inventory_doc_items i ON i.doc_id = d.id
+          LEFT JOIN inventory_locations store_location ON store_location.org_node_id = d.source_org_node_id
+          JOIN LATERAL (
+            SELECT COALESCE(SUM(quantity), 0) AS quantity
+              FROM inventory_doc_links l
+              JOIN inventory_docs market_request ON market_request.id = l.to_doc_id
+             WHERE l.from_item_id = i.id
+               AND l.relation_type = '门店报货汇总'
+               AND market_request.status <> '已取消'
+          ) summarized ON true
+         WHERE d.doc_type = '门店报货'
+           AND d.status = '已完成'
+           AND d.market_id = ${marketId}
+           AND (${startDate}::date IS NULL OR d.doc_date >= ${startDate})
+           AND (${endDate}::date IS NULL OR d.doc_date <= ${endDate})
+           AND i.quantity > summarized.quantity + COALESCE(i.fulfilled_quantity, 0)
+      )
       SELECT i.sku_id,
              MAX(i.sku_name) AS sku_name,
              MAX(i.spec_name) AS spec_name,
              SUM(i.quantity) AS requested_quantity,
              SUM(COALESCE(i.fulfilled_quantity, 0)) AS fulfilled_quantity,
-             SUM(GREATEST(i.quantity - summarized.quantity - COALESCE(i.fulfilled_quantity, 0), 0)) AS outstanding_quantity,
-             ARRAY_AGG(i.id ORDER BY i.id) AS request_item_ids
-        FROM inventory_docs d
-        JOIN inventory_doc_items i ON i.doc_id = d.id
-        JOIN LATERAL (
-          SELECT COALESCE(SUM(quantity), 0) AS quantity
-            FROM inventory_doc_links l
-            JOIN inventory_docs market_request ON market_request.id = l.to_doc_id
-           WHERE l.from_item_id = i.id
-             AND l.relation_type = '门店报货汇总'
-             AND market_request.status <> '已取消'
-        ) summarized ON true
-       WHERE d.doc_type = '门店报货'
-         AND d.status = '已完成'
-         AND d.market_id = ${marketId}
-         AND (${startDate}::date IS NULL OR d.doc_date >= ${startDate})
-         AND (${endDate}::date IS NULL OR d.doc_date <= ${endDate})
-         AND i.quantity > summarized.quantity + COALESCE(i.fulfilled_quantity, 0)
+             SUM(i.outstanding) AS outstanding_quantity,
+             ARRAY_AGG(i.id ORDER BY i.id) AS request_item_ids,
+             (SELECT JSONB_AGG(JSONB_BUILD_OBJECT(
+                       'storeId', store_part.request_store_id,
+                       'storeName', store_part.store_name,
+                       'quantity', store_part.quantity
+                     ) ORDER BY store_part.store_name, store_part.request_store_id)
+                FROM (
+                  SELECT r.request_store_id, r.store_name, SUM(r.outstanding) AS quantity
+                    FROM remaining r
+                   WHERE r.sku_id = i.sku_id
+                   GROUP BY r.request_store_id, r.store_name
+                ) store_part) AS store_quantities
+        FROM remaining i
        GROUP BY i.sku_id
        ORDER BY MAX(i.sku_name), i.sku_id
     `))
@@ -2634,6 +2659,11 @@ export async function summarizeStoreReplenishmentRequests(
           available: availableQuantity,
         })
         items.push({
+          storeQuantities: (row.store_quantities ?? []).map((store) => ({
+            storeId: store.storeId,
+            storeName: store.storeName,
+            quantity: fixed(Number(store.quantity)),
+          })),
           skuId: row.sku_id,
           skuName: row.sku_name,
           specName: row.spec_name,
@@ -6457,6 +6487,10 @@ export async function quoteMarketReplenishmentPrices(
     const market = await locationForUpdate(tx, marketId)
     assertType(market, '市场', '市场')
     assertLocationWritable(session, market)
+    const visibility = inventoryPriceVisibilityForOrgNodes(inventoryPriceScopeByTier(session), [market.orgNodeId])
+    if (visibility !== 'all' && visibility !== 'market') {
+      throw new ApiError('PERMISSION_DENIED', '无权查看该市场报货价格')
+    }
     return quoteMarketPricesInTx(tx, {
       marketId,
       items: input.items,

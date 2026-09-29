@@ -61,6 +61,9 @@ export default async function Page({
   if (!doc) notFound()
 
   const showPrice = doc.totalAmount !== undefined && doc.docType !== '品项公司发货'
+  // 市场报货四列价格来自服务端快照，门店参考价按主体市场价格档遮蔽。
+  const showMarketReportPrice = showPrice && doc.docType === '市场报货'
+  const showMarketReportStorePrice = showMarketReportPrice && doc.items.some((item) => item.storeStandardUnitPrice !== undefined)
   // 标准价 / 优惠 / 实际价三列：分院配货（门店货款）与供应链采购入库（#346 入库单价优惠）
   const showStoreAllocationPrice = showPrice && (doc.docType === '分院配货' || doc.docType === '供应链采购入库')
   const discountPriceHeaders = doc.docType === '供应链采购入库'
@@ -125,7 +128,7 @@ export default async function Page({
   const lineMarketColumnCount = (doc.docType === '采购订单' || doc.docType === '市场报货汇总') ? 1 : 0
   const lineOwnershipColumnCount = lineSupplierColumnCount + lineMarketColumnCount
   const marketReferencePriceColumnCount = showPrice && !showStoreAllocationPrice && hasPurchaseMarketLine ? 1 : 0
-  const priceColumnCount = showPrice ? (showStoreAllocationPrice ? 4 : 2 + marketReferencePriceColumnCount) : 0
+  const priceColumnCount = showPrice ? (showMarketReportPrice ? 4 + Number(showMarketReportStorePrice) : showStoreAllocationPrice ? 4 : 2 + marketReferencePriceColumnCount) : 0
   const promotionColumnCount = doc.items.some((item) => item.promotionPlanId || item.promotionPlanNoSnapshot) ? 1 : 0
   const itemColumnCount = 9 + lineOwnershipColumnCount + priceColumnCount + reportColumnCount + shipmentColumnCount +
     itemCompanyRequestColumnCount + supplyChainPurchaseColumnCount + promotionColumnCount +
@@ -248,6 +251,7 @@ export default async function Page({
                   <th className="px-3 py-2 text-left">关系</th>
                   <th className="px-3 py-2 text-left">关联单据</th>
                   <th className="px-3 py-2 text-left">类型</th>
+                  <th className="px-3 py-2 text-left">发起主体</th>
                   <th className="px-3 py-2 text-left">状态</th>
                   <th className="px-3 py-2 text-right">关联数量</th>
                   <th className="px-3 py-2 text-right">单据总数量</th>
@@ -265,6 +269,7 @@ export default async function Page({
                       </Link>
                     </td>
                     <td className="px-3 py-2">{lineage.docType}</td>
+                    <td className="px-3 py-2">{fmt(lineage.sourceOrgNodeName)}</td>
                     <td className="px-3 py-2">{lineage.status}</td>
                     {/* #344 库存转换 N:M：关联数量记的是分摊到该目标的来源（出库）数量，与入库单总数量不同口径 */}
                     <td className="px-3 py-2 text-right">{lineage.linkedQuantity}{lineage.relationType === '库存转换' && <span className="ml-1 text-xs text-[#999999]">（按出库数量）</span>}</td>
@@ -274,7 +279,7 @@ export default async function Page({
                 ))}
                 {doc.lineage.length === 0 && (
                   <tr>
-                    <td className="px-3 py-8 text-center text-[#999999]" colSpan={8}>暂无关联单据</td>
+                    <td className="px-3 py-8 text-center text-[#999999]" colSpan={9}>暂无关联单据</td>
                   </tr>
                 )}
               </tbody>
@@ -301,7 +306,13 @@ export default async function Page({
               <th className="px-3 py-2 text-left">赠送</th>
               {lineSupplierColumnCount > 0 && <th className="px-3 py-2 text-left">供应商</th>}
               {lineMarketColumnCount > 0 && <th className="px-3 py-2 text-left">市场</th>}
-              {showStoreAllocationPrice ? <>
+              {showMarketReportPrice ? <>
+                <th className="px-3 py-2 text-right">市场单价</th>
+                <th className="px-3 py-2 text-right">单价优惠</th>
+                <th className="px-3 py-2 text-right">实际单价</th>
+                {showMarketReportStorePrice && <th className="px-3 py-2 text-right">门店单价（参考）</th>}
+                <th className="px-3 py-2 text-right">金额</th>
+              </> : showStoreAllocationPrice ? <>
                 {discountPriceHeaders.map((header) => <th key={header} className="px-3 py-2 text-right">{header}</th>)}
               </> : showPrice && <>
                 <th className="px-3 py-2 text-right">实际单价</th>
@@ -360,7 +371,13 @@ export default async function Page({
                   {lineMarketColumnCount > 0 && (
                     <td className="px-3 py-2">{item.marketId ? fmt(item.marketName) : '品项公司自用'}</td>
                   )}
-                  {showStoreAllocationPrice ? <>
+                  {showMarketReportPrice ? <>
+                    <td className="px-3 py-2 text-right">{fmt(item.marketStandardUnitPrice)}</td>
+                    <td className="px-3 py-2 text-right">{fmt(item.marketUnitDiscount)}</td>
+                    <td className="px-3 py-2 text-right">{fmt(item.marketActualUnitPrice)}</td>
+                    {showMarketReportStorePrice && <td className="px-3 py-2 text-right">{fmt(item.storeStandardUnitPrice)}</td>}
+                    <td className="px-3 py-2 text-right">{fmt(item.amount)}</td>
+                  </> : showStoreAllocationPrice ? <>
                     <td className="px-3 py-2 text-right">{fmt(item.standardUnitPrice)}</td>
                     <td className="px-3 py-2 text-right">{fmt(item.unitDiscount)}</td>
                     <td className="px-3 py-2 text-right">{fmt(item.actualUnitPrice)}</td>

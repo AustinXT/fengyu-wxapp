@@ -558,6 +558,9 @@ export interface InventoryDocItemRow {
   actualUnitPrice?: number | null
   amount?: number | null
   supplyChainUnitCost?: number | null
+  marketStandardUnitPrice?: number | null
+  marketUnitDiscount?: number | null
+  storeStandardUnitPrice?: number | null
   marketActualUnitPrice?: number | null
   storeActualUnitPrice?: number | null
   promotionPlanId: string | null
@@ -583,6 +586,8 @@ export interface InventoryDocLineageRow {
   docDate: string
   totalQuantity: number
   linkedQuantity: number
+  /** 关联单据 source_org_node_id 对应的发起主体；缺失时留空。 */
+  sourceOrgNodeName?: string | null
 }
 
 /** 报货单按明细展示从需求到下游发货、收货的数量快照。 */

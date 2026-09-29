@@ -486,3 +486,35 @@ describe('市场报货单的整单发货 / 入库进度（#336b）', () => {
     expect(screen.queryByText('入库进度')).toBeNull()
   })
 })
+
+describe('#363 市场报货参考价格与血缘主体', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockGetSession.mockResolvedValue({ employeeId: 'E1', permissions: { actions: [] } })
+  })
+
+  it.each([
+    ['市场档', { marketStandardUnitPrice: 100, marketUnitDiscount: 10, marketActualUnitPrice: 90, storeStandardUnitPrice: 150 }, true],
+    ['供应链档', { marketStandardUnitPrice: 100, marketUnitDiscount: 10, marketActualUnitPrice: 90 }, false],
+  ])('%s 使用快照展示；门店参考价只接受服务端可见字段', async (_tier, prices, storeVisible) => {
+    await renderPage(docFixture({
+      docType: '市场报货', totalAmount: 180,
+      items: [itemFixture({ quantity: 2, amount: 180, ...prices })],
+      lineage: [{ direction: '上游', relationType: '门店报货汇总', docId: 'DBH-1', docType: '门店报货', status: '已完成', docDate: '2026-09-16', totalQuantity: 2, linkedQuantity: 2, sourceOrgNodeName: '门店 A' }],
+    } as Partial<InventoryDocDetail>))
+    expect(cellByHeader('SKU-1', '市场单价')).toBe('100')
+    expect(cellByHeader('SKU-1', '单价优惠')).toBe('10')
+    expect(cellByHeader('SKU-1', '实际单价')).toBe('90')
+    expect(screen.queryByRole('columnheader', { name: '门店单价（参考）' }) !== null).toBe(storeVisible)
+    if (storeVisible) expect(cellByHeader('SKU-1', '门店单价（参考）')).toBe('150')
+    expect(screen.getByText('门店 A')).toBeInTheDocument()
+  })
+
+  it('无价格档不显示四列价格，缺失主体显示占位', async () => {
+    await renderPage(docFixture({ docType: '市场报货', items: [itemFixture({ quantity: 2 })] } as Partial<InventoryDocDetail>))
+    for (const name of ['市场单价', '单价优惠', '实际单价', '门店单价（参考）']) {
+      expect(screen.queryByRole('columnheader', { name })).toBeNull()
+    }
+    expect(screen.getByText('暂无关联单据').getAttribute('colspan')).toBe('9')
+  })
+})
