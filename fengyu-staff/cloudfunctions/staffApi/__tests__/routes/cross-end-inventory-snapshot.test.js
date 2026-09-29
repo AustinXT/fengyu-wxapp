@@ -45,6 +45,52 @@ const FILES = {
   dbMigrationsDir: path.resolve(__dirname, '../../../../../db/migrations'),
 }
 
+describe('退货预留消费两端守护（#260）', () => {
+  const staff = () => readFile(FILES.staffInventoryJs).split('async function approveStoreReturnForRestock(')[1].split('\nasync function ')[0]
+  const admin = () => readFile(FILES.adminBusinessTs).split('export async function approveReturnForRestock(')[1].split('\nexport async function ')[0]
+  const flat = (sql) => sql.replace(/\s+/g, ' ').trim()
+  function query(body, start) {
+    const begin = body.indexOf(start)
+    expect(begin).toBeGreaterThan(-1)
+    return body.slice(begin, body.indexOf(String.fromCharCode(96), begin))
+  }
+
+  test('活跃预留 SELECT 完整字面一致，确定性锁住全部匹配行', () => {
+    const expected = "SELECT id, quantity, fulfilled_quantity, released_quantity FROM inventory_stock_reservations WHERE request_doc_id = :doc AND request_item_id = :item AND lot_id = :lot AND status = '已预留' ORDER BY id FOR UPDATE"
+    const staffSql = query(staff(), 'SELECT id, quantity, fulfilled_quantity, released_quantity')
+      .replace('$1', ':doc').replace('$2', ':item').replace('$3', ':lot')
+    const adminSql = query(admin(), 'SELECT id, quantity, fulfilled_quantity, released_quantity')
+      .replace('${returnDocId}', ':doc').replace('${item.id}', ':item').replace('${item.lotId}', ':lot')
+    expect(flat(staffSql)).toBe(expected)
+    expect(flat(adminSql)).toBe(expected)
+  })
+
+  test('履约累加、按唯一主键消费，released 原值保留', () => {
+    const expected = "UPDATE inventory_stock_reservations SET fulfilled_quantity = fulfilled_quantity + :quantity, status = '已完成', updated_at = NOW() WHERE id = :id AND status = '已预留'"
+    const staffSql = query(staff(), 'UPDATE inventory_stock_reservations')
+      .replace('$1', ':id').replace('$2', ':quantity')
+    const adminSql = query(admin(), 'UPDATE inventory_stock_reservations')
+      .replace('${numeric(item.quantity)}', ':quantity').replace('${Number(reservation.id)}', ':id')
+    expect(flat(staffSql)).toBe(expected)
+    expect(flat(adminSql)).toBe(expected + ' RETURNING id')
+    expect(staff()).toContain('reservationUpdated.rowCount !== 1')
+    expect(admin()).toContain('reservationUpdated.length !== 1')
+  })
+
+  test('零/多条及数量差异两端同判据、同错误消息', () => {
+    const messages = ['退货库存预留不唯一，请核对后重试', '退货库存预留已失效，请刷新后重试', '退货数量与库存预留剩余量不一致', '退货库存预留已被其他操作处理']
+    for (const message of messages) {
+      expect(staff()).toContain("new Error('CONFLICT: " + message + "')")
+      expect(admin()).toContain("new ApiError('CONFLICT', '" + message + "')")
+    }
+    expect(staff()).toContain('reservationRes.rows.length > 1')
+    expect(admin()).toContain('reservations.length > 1')
+    const equality = 'Math.round(quantity * 100) !== Math.round(reservedAvailable * 100)'
+    expect(staff()).toContain(equality)
+    expect(admin().replace('Math.round(item.quantity * 100)', 'Math.round(quantity * 100)')).toContain(equality)
+  })
+})
+
 function readFile(p) {
   return fs.readFileSync(p, 'utf8')
 }

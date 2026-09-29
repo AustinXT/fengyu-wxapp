@@ -2144,26 +2144,32 @@ async function approveStoreReturnForRestock(client, head, ctx, auditRemark, acti
           AND request_item_id = $2
           AND lot_id = $3
           AND status = '已预留'
+        ORDER BY id
         FOR UPDATE`,
       [head.id, Number(item.id), sourceLot.id],
     )
+    if (reservationRes.rows.length > 1) throw new Error('CONFLICT: 退货库存预留不唯一，请核对后重试')
     const reservation = reservationRes.rows[0]
     if (!reservation) throw new Error('CONFLICT: 退货库存预留已失效，请刷新后重试')
     const reservedAvailable =
       Number(reservation.quantity) - Number(reservation.fulfilled_quantity) - Number(reservation.released_quantity)
-    if (quantity > reservedAvailable) throw new Error('CONFLICT: 退货库存预留数量不足')
+    // #260：退货明细与预留正常为 1:1，整单原子审批；异常部分履约仍保留历史。
+    // PG 数量为 numeric(12,2)，按百分位比较，避免小数减法误差。
+    if (Math.round(quantity * 100) !== Math.round(reservedAvailable * 100)) {
+      throw new Error('CONFLICT: 退货数量与库存预留剩余量不一致')
+    }
 
     // 先完成本单预留，出库校验只会扣除其他未完成预留。
     const reservationUpdated = await client.query(
       `UPDATE inventory_stock_reservations
-          SET fulfilled_quantity = $2,
+          SET fulfilled_quantity = fulfilled_quantity + $2,
               status = '已完成',
               updated_at = NOW()
         WHERE id = $1
           AND status = '已预留'`,
       [Number(reservation.id), quantity],
     )
-    if (reservationUpdated.rowCount === 0) {
+    if (reservationUpdated.rowCount !== 1) {
       throw new Error('CONFLICT: 退货库存预留已被其他操作处理')
     }
 

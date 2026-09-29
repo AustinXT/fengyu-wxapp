@@ -5424,23 +5424,29 @@ export async function approveReturnForRestock(
     })
     for (const item of items) {
       if (!item.lotId) throw new ApiError('INVALID_STATE', '退货明细缺少来源批次')
-      const [reservation] = rows<{
+      const reservations = rows<{
+        id: string | number
         quantity: string | number
         fulfilled_quantity: string | number
         released_quantity: string | number
       }>(await tx.execute(sql`
-        SELECT quantity, fulfilled_quantity, released_quantity
+        SELECT id, quantity, fulfilled_quantity, released_quantity
           FROM inventory_stock_reservations
          WHERE request_doc_id = ${returnDocId}
            AND request_item_id = ${item.id}
            AND lot_id = ${item.lotId}
            AND status = '已预留'
+         ORDER BY id
          FOR UPDATE
       `))
+      if (reservations.length > 1) throw new ApiError('CONFLICT', '退货库存预留不唯一，请核对后重试')
+      const reservation = reservations[0]
       if (!reservation) throw new ApiError('CONFLICT', '退货库存预留已失效，请刷新后重试')
       const reservedAvailable = Number(reservation.quantity) - Number(reservation.fulfilled_quantity) - Number(reservation.released_quantity)
-      if (nearlyGreater(item.quantity, reservedAvailable)) {
-        throw new ApiError('CONFLICT', '退货库存预留数量不足')
+      // #260：退货明细与预留正常为 1:1，整单原子审批；异常部分履约仍保留历史。
+      // PG 数量为 numeric(12,2)，按百分位比较，避免小数减法误差。
+      if (Math.round(item.quantity * 100) !== Math.round(reservedAvailable * 100)) {
+        throw new ApiError('CONFLICT', '退货数量与库存预留剩余量不一致')
       }
       const sourceLot = await lotForUpdate(tx, item.lotId, source.locationId)
       if (nearlyGreater(item.quantity, sourceLot.quantityOnHand)) {
@@ -5516,16 +5522,18 @@ export async function approveReturnForRestock(
            SET fulfilled_quantity = ${numeric(item.quantity)}
          WHERE id = ${item.id}
       `)
-      await tx.execute(sql`
+      const reservationUpdated = rows(await tx.execute(sql`
         UPDATE inventory_stock_reservations
-           SET fulfilled_quantity = ${numeric(item.quantity)},
+           SET fulfilled_quantity = fulfilled_quantity + ${numeric(item.quantity)},
                status = '已完成',
                updated_at = NOW()
-         WHERE request_doc_id = ${returnDocId}
-           AND request_item_id = ${item.id}
-           AND lot_id = ${item.lotId}
+         WHERE id = ${Number(reservation.id)}
            AND status = '已预留'
-      `)
+        RETURNING id
+      `))
+      if (reservationUpdated.length !== 1) {
+        throw new ApiError('CONFLICT', '退货库存预留已被其他操作处理')
+      }
     }
     await tx.execute(sql`
       UPDATE inventory_docs
