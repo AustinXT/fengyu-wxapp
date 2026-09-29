@@ -178542,8 +178542,11 @@ var createInventoryCoreDoc = withAnyPermission(["inventory:supply_chain_operate"
     throw new ApiError("INVALID_PARAMS", "库存单据至少需要一条明细");
   }
   candidateDate(input.docDate, "单据日期");
-  for (const item of input.items)
+  for (const item of input.items) {
+    if (typeof item !== "object" || item === null)
+      throw new ApiError("INVALID_PARAMS", "库存明细格式不正确");
     candidateDate(item.expiryDate, "有效期");
+  }
   const stocktakeSkuIds = [];
   if (STOCKTAKE_DOC_TYPES.has(input.docType)) {
     const seen = new Set;

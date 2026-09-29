@@ -4658,3 +4658,13 @@ describe('#453 供应链采购入库日期', () => {
     expect(db.transaction).not.toHaveBeenCalled()
   })
 })
+
+
+describe('#453 前置日期校验不绕过明细形状守卫', () => {
+  beforeEach(() => vi.clearAllMocks())
+  it.each([null, undefined, 1, 'bad'])('采购入库非法明细 %s 保持 INVALID_PARAMS，不执行 SQL', async (item) => {
+    await expect(receiveSupplyChainPurchaseOrder(SESSION, { supplyChainLocationId: 'HQ', purchaseOrderId: 'CG', items: [item] } as never)).rejects.toThrow('INVALID_PARAMS: 供应链采购入库明细格式不正确')
+    expect(db.execute).not.toHaveBeenCalled()
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+})

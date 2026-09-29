@@ -1192,11 +1192,11 @@ async function upsertLot(
   tx: Tx,
   input: Omit<LotSnapshot, 'id' | 'quantityOnHand' | 'locationId'> & { locationId: string },
 ): Promise<LotSnapshot> {
-  conversionDate(input.expiryDate, '有效期')
+  const expiryDate = conversionDate(input.expiryDate, '有效期')
   const key = lotKey({
     skuId: input.skuId,
     batchNo: input.batchNo,
-    expiryDate: input.expiryDate,
+    expiryDate,
     isGift: input.isGift,
     supplyChainUnitCost: input.supplyChainUnitCost,
     marketActualUnitPrice: input.marketActualUnitPrice,
@@ -1215,7 +1215,7 @@ async function upsertLot(
     ) VALUES (
       ${input.locationId}, ${input.skuId}, ${key}, ${input.skuName}, ${text(input.specName)},
       ${text(input.supplier)}, ${text(input.supplierId)}, ${text(input.productSeries)}, ${input.batchNo},
-      ${input.expiryDate}, ${input.expiryDate ?? ''}, ${input.isGift}, 0,
+      ${expiryDate}, ${expiryDate ?? ''}, ${input.isGift}, 0,
       ${numeric(input.supplyChainUnitCost)}, ${numeric(input.marketStandardUnitPrice)},
       ${numeric(input.marketUnitDiscount)}, ${numeric(input.marketActualUnitPrice)},
       ${numeric(input.storeStandardUnitPrice)}, ${numeric(input.storeUnitDiscount)},
@@ -4449,7 +4449,10 @@ export async function receiveSupplyChainPurchaseOrder(
     throw new ApiError('INVALID_PARAMS', '供应链采购入库至少需要一条明细')
   }
   dateOrToday(input.docDate)
-  for (const item of input.items) conversionDate(item.expiryDate, '有效期')
+  for (const item of input.items) {
+    if (typeof item !== 'object' || item === null) throw new ApiError('INVALID_PARAMS', '供应链采购入库明细格式不正确')
+    conversionDate(item.expiryDate, '有效期')
+  }
   await syncLocations()
   const inboundId = await db.transaction(async (tx) => {
     await assertInventoryBusinessWritable(tx)
@@ -5858,7 +5861,10 @@ export async function createSelfPurchasedReceipt(
     throw new ApiError('INVALID_PARAMS', '自采产品入库至少需要一条明细')
   }
   dateOrToday(input.docDate)
-  for (const item of input.items) conversionDate(item.expiryDate, '有效期')
+  for (const item of input.items) {
+    if (typeof item !== 'object' || item === null) throw new ApiError('INVALID_PARAMS', '库存明细格式不正确')
+    conversionDate(item.expiryDate, '有效期')
+  }
   await syncLocations()
   const id = await db.transaction(async (tx) => {
     await assertInventoryBusinessWritable(tx)

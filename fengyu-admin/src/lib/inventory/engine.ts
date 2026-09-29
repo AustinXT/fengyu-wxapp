@@ -3757,7 +3757,10 @@ export const createInventoryCoreDoc = withAnyPermission(
       throw new ApiError('INVALID_PARAMS', '库存单据至少需要一条明细')
     }
     candidateDate(input.docDate, '单据日期')
-    for (const item of input.items) candidateDate(item.expiryDate, '有效期')
+    for (const item of input.items) {
+      if (typeof item !== 'object' || item === null) throw new ApiError('INVALID_PARAMS', '库存明细格式不正确')
+      candidateDate(item.expiryDate, '有效期')
+    }
     /**
      * 盘点单：一个 SKU 只能一行。账面数按「主体 + SKU 汇总」记（#131 Q1），同 SKU 两行会
      * 各自拿到**同一个**完整账面数，差异列直接变成重复计算的废数。
