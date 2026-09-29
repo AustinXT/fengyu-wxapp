@@ -81,8 +81,8 @@ for (const worker of ['cron', 'export-worker']) {
   const buildEnv = { ...process.env }
   delete buildEnv.NODE_ENV
   const built = spawnSync('bun', ['build', `src/${worker}/index.ts`, '--target=node', '--format=esm',
-    `--outfile=${bundle}`, '--external=pg-native', '--external=server-only', '--external=@opentelemetry/api',
-    ...(worker === 'export-worker' ? ['--define', 'process.env.FENGYU_EXPORT_WORKER="1"'] : []),
+    `--outfile=${bundle}`, '--external=pg-native', '--external=server-only',
+    ...(worker === 'export-worker' ? ['--external=@opentelemetry/api', '--define', 'process.env.FENGYU_EXPORT_WORKER="1"'] : []),
   ], { cwd: resolve(root, 'fengyu-admin'), encoding: 'utf8', env: buildEnv, timeout: 60000 })
   assert.equal(built.status, 0, built.stderr + built.stdout)
   test(`${worker} 在任务执行前因错误时区启动失败（生产 Node bundle）`, () => {

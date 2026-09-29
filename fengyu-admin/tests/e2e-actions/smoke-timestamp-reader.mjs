@@ -33,7 +33,7 @@ async function main() {
   const tzRow = tzRows[0] || {}
   const tz = tzRow.timezone ?? tzRow.TimeZone ?? Object.values(tzRow)[0]
   if (tz !== 'Asia/Shanghai') {
-    errors.push(`server TimeZone 须为 Asia/Shanghai（migration 0028），实际 "${tz}"——裸串 ::timestamptz 按此 TZ 解释，全线偏移风险`)
+    errors.push(`会话 TimeZone 须为 Asia/Shanghai（#291 连接层保障），实际 "${tz}"——裸串 ::timestamptz 按此 TZ 解释，全线偏移风险`)
   }
 
   // ① ORM select 真实 1184 列：createdAt 走 drizzle reader（withTimezone → new Date(value)）。
