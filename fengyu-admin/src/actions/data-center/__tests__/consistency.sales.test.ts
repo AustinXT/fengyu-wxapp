@@ -50,6 +50,32 @@ function between(src: string, start: string, end: string): string {
   return from === -1 ? '' : src.slice(from, to === -1 ? undefined : to)
 }
 
+/** #295：只归一投影、分组、末日参数；其余完整SQL必须同义。 */
+function storeCountSqls(src: string): string[] {
+  return [
+    between(src, 'const runStoreCount', 'const runEmployeeCount'),
+    between(src, 'const openStoresByStoreSql', 'const ['),
+  ].map((block) => {
+    const query = block.match(/sql`([\s\S]*?)`/)
+    expect(query, 'KPI和逐店明细查询必须分别存在').not.toBeNull()
+    return normalize(query![1]
+      .replace(/SELECT s\.store_id, COUNT\(\*\)::int AS v/, 'SELECT COUNT(*)::int AS v')
+      .replace(/GROUP BY s\.store_id/, '')
+      .replace(/\$\{scopeFilterSql\(session, scope, 's\.store_id'\)\}/g, 'SCOPE')
+      .replace(/\$\{(?:range|cur)\.end\}/g, 'END'))
+  })
+}
+
+const STORE_COUNT_SQL = "SELECT COUNT(*)::int AS v FROM stores s JOIN org_nodes o ON s.org_node_id = o.id WHERE o.type = '门店' AND o.is_active = TRUE AND SCOPE AND s.opening_date IS NOT NULL AND s.opening_date::date <= END AND (s.closed_at IS NULL OR s.closed_at::date > END)"
+
+function expectStoreCountEqual(src: string): void {
+  const queries = storeCountSqls(src)
+  for (const query of queries) expect(query).toBe(STORE_COUNT_SQL)
+  expect(queries[1]).toBe(queries[0])
+  expect(src).not.toMatch(/m\.storeCount\s*\+=\s*1\b/)
+  expect(src).toMatch(/m\.storeCount\s*\+=\s*openMap\.get\(s\.storeId\)\s*\?\?\s*0/)
+}
+
 function cashflowFragments(src: string, side: 'admin' | 'staff'): string[] {
   const ranges = side === 'admin'
     ? [
@@ -249,10 +275,28 @@ describe('数据中心销售板块两端口径一致性守护', () => {
   })
 
   describe('门店数 — 当前启用 + opening_date / closed_at 历史化', () => {
-    it('admin sales.ts 门店数用启用节点 + opening_date <= 区间末 + closed_at 守卫', () => {
-      expect(adminBody).toMatch(/o\.is_active\s*=\s*TRUE/i)
-      expect(adminBody).toMatch(/opening_date::date\s*<=/i)
-      expect(adminBody).toMatch(/closed_at\s+IS\s+NULL\s+OR\s+s\.closed_at::date\s*>/i)
+    it('KPI与逐店明细全段等值，并固定全部开闭店、组织域和计数规则', () => {
+      expectStoreCountEqual(adminSrc)
+    })
+    it.each([
+      ['KPI', 'const runStoreCount', 'const runEmployeeCount'],
+      ['明细', 'const openStoresByStoreSql', 'const ['],
+    ])('只改单独%s查询时，即使另一块仍含正确条件也报红', (_, start, end) => {
+      const block = between(adminSrc, start, end)
+      for (const [from, to] of [
+        ['s.opening_date::date <=', 's.opening_date::date <'],
+        ['s.closed_at::date >', 's.closed_at::date >='],
+        ['AND s.opening_date IS NOT NULL', ''],
+        ['o.is_active = TRUE', 'o.is_active = FALSE'],
+        ['JOIN org_nodes o ON s.org_node_id = o.id', 'JOIN org_nodes o ON s.store_id = o.id'],
+      ]) {
+        const changed = block.replace(from, to)
+        expect(changed).not.toBe(block)
+        expect(() => expectStoreCountEqual(adminSrc.replace(block, changed))).toThrow()
+      }
+    })
+    it('有正确逐店SQL但装配回退为骨架计数也报红', () => {
+      expect(() => expectStoreCountEqual(adminSrc.replace('m.storeCount += openMap.get(s.storeId) ?? 0', 'm.storeCount += 1'))).toThrow()
     })
     it('staff mgmt-dashboard.js 门店数同口径（启用节点 + opening_date / closed_at 历史化）', () => {
       expect(staffBody).toContain("require('../utils/store-status')")
