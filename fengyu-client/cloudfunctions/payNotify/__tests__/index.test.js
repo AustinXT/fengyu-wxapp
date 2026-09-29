@@ -284,13 +284,14 @@ describe('payNotify index.js', () => {
       },
       // sale_items 查询（业绩分配）——补齐 capturePaymentAllocatables 所需字段，走正常比例分摊而非兜底
       {
-        match: /SELECT sale_item_id, sale_amount::numeric AS sale_amount, pending_received::numeric AS pending_received, sales_category[\s\S]*FROM sale_items/,
+        match: /SELECT sale_item_id, sale_amount::numeric AS sale_amount, pending_received::numeric AS pending_received,\s+waived_amount::numeric AS waived_amount, sales_category[\s\S]*FROM sale_items/,
         result: {
           rows: [
             {
               sale_item_id: 'item-001',
               sale_amount: '300.00',
               pending_received: '0',
+              waived_amount: '0',
               sales_category: '自销自耗',
               received: '300.00',
             },

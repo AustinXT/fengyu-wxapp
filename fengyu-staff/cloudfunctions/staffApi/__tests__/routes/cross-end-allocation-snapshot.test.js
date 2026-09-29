@@ -185,13 +185,11 @@ describe('断言2：四端 capturePaymentAllocatables 关键不变片段（含 a
     }
   })
 
-  test('四端转换单兜底一致：无「购买」行时取全部「转出/转入」行按 sale_amount 有符号比例摊 receipt', () => {
-    for (const [end, src] of ENDS()) {
-      expect(src, `${end} 缺转换单 items.length === 0 兜底分支`).toMatch(/items\.length === 0/)
-      expect(src, `${end} 缺转换单 item_direction IN ('转出', '转入') 兜底`).toMatch(/item_direction IN \('转出', '转入'\)/)
-      expect(src, `${end} 转换单兜底仍残留 LIMIT 1`).not.toMatch(/item_direction IN \('转出', '转入'\)[\s\S]{0,120}LIMIT 1/)
-      expect(src, `${end} 缺转换单 SELECT sale_amount（按比例摊需取 sale_amount）`).toMatch(/SELECT sale_item_id, sale_amount::numeric AS sale_amount, sales_category[\s\S]{0,120}item_direction IN \('转出', '转入'\)/)
-      expect(src, `${end} 缺转换单有符号最大余数法`).toMatch(/allocateSignedCents[\s\S]{0,240}weightCents:\s*Math\.round\(Number\(r\.sale_amount\) \* 100\)/)
+  test('四端转换单无购买行时按转入兑现价值增量捕获 receipt', () => {
+    for (const [side,src] of ENDS()) {
+      expect(src, `${side} 缺收款前后差额`).toContain('AS target_before')
+      expect(src, `${side} 仍对转出重复分摊现金`).not.toContain('allocateSignedCents')
+      expect(src).toContain("si.item_direction = '转入'")
     }
   })
 

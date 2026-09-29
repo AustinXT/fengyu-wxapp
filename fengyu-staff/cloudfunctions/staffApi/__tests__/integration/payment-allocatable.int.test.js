@@ -267,7 +267,7 @@ describe('payment-allocatable capture 链路（real PG 5433, BEGIN...ROLLBACK）
 })
 
 // 转换单（按回款逐笔分配）：明细只有「转出/转入」、无「购买」行 → capture 命中 0 明细。
-// 旧逻辑：items.length===0 早返回，不产 receipt、回款行状态靠回填补；新逻辑：按转出/转入有符号净额
+// 旧逻辑：items.length===0 早返回，不产 receipt、回款行状态靠回填补；新逻辑（#300）：按转入兑现价值的前后差额
 //         落 receipt，与销售单一样支持按每笔回款逐笔分配。转出/转入行 received 不受
 //         recalc STEP1 影响（只看『购买』行）。
 describe('capture 转换单（无「购买」明细，业绩转移）', () => {
@@ -304,7 +304,7 @@ describe('capture 转换单（无「购买」明细，业绩转移）', () => {
     expect(purchaseCount.rows[0].n).toBe(0)
   })
 
-  it('capture 落 signed receipt 到转出/转入行（净额=本笔实收），回款行置「待分配」', async () => {
+  it('capture 收款只落转入增量，折抵保留残差，回款行置「待分配」', async () => {
     const pay = await client.query(
       `INSERT INTO sale_order_payments
          (sale_order_id, change_type, amount, payment_method, status, source_end, paid_at)
@@ -321,15 +321,15 @@ describe('capture 转换单（无「购买」明细，业绩转移）', () => {
       directedItems: null,
     })
 
-    // 转换单 → 转出 -211、转入 +1000，净额 789（本笔实收）
+    // #300：折抵 211 保持残差，本笔现金 789 只进转入 receipt。
     const retById = Object.fromEntries(out.map((o) => [o.saleItemId, o]))
-    expect(num(retById[CONV_OUT].amount)).toBe(-211)
-    expect(num(retById[CONV_IN].amount)).toBe(1000)
-    expect(num(retById[CONV_OUT].amount) + num(retById[CONV_IN].amount)).toBe(789)
+    expect(retById[CONV_OUT]).toBeUndefined()
+    expect(num(retById[CONV_IN].amount)).toBe(789)
+    expect(num(out.reduce((sum,r) => sum+r.amount,0))).toBe(789)
     const m = await allocatableMap(salePaymentId)
-    expect(Object.keys(m).length).toBe(2)
-    expect(m[CONV_OUT].amount).toBe(-211)
-    expect(m[CONV_IN].amount).toBe(1000)
+    expect(Object.keys(m).length).toBe(1)
+    expect(m[CONV_OUT]).toBeUndefined()
+    expect(m[CONV_IN].amount).toBe(789)
     expect(m[CONV_IN].salesCategory).toBe('自销自耗')
 
     const ps = await client.query(
@@ -422,7 +422,7 @@ describe('capture 转换单多转入行（异品类按 signed sale_amount 比例
     await insDir(CONV_IN2, '转入', '他销自耗', 300, 300, 5)
   })
 
-  it('capture 按 signed 比例摊 evt=500 → 转出 -100 / 自销自耗 300 / 他销自耗 300', async () => {
+  it('capture evt=500 → 两个转入各 250，转出折抵不重复落 receipt', async () => {
     const pay = await client.query(
       `INSERT INTO sale_order_payments
          (sale_order_id, change_type, amount, payment_method, status, source_end, paid_at)
@@ -440,17 +440,17 @@ describe('capture 转换单多转入行（异品类按 signed sale_amount 比例
     })
 
     const retById = Object.fromEntries(out.map((o) => [o.saleItemId, o]))
-    expect(num(retById[CONV_MULTI_OUT].amount)).toBe(-100)
-    expect(num(retById[CONV_IN1].amount)).toBe(300)
-    expect(num(retById[CONV_IN2].amount)).toBe(300)
+    expect(retById[CONV_MULTI_OUT]).toBeUndefined()
+    expect(num(retById[CONV_IN1].amount)).toBe(250)
+    expect(num(retById[CONV_IN2].amount)).toBe(250)
     expect(retById[CONV_IN1].salesCategory).toBe('自销自耗')
     expect(retById[CONV_IN2].salesCategory).toBe('他销自耗')
-    expect(num(retById[CONV_MULTI_OUT].amount) + num(retById[CONV_IN1].amount) + num(retById[CONV_IN2].amount)).toBe(500)
+    expect(num(out.reduce((sum,r) => sum+r.amount,0))).toBe(500)
 
     const m = await allocatableMap(salePaymentId)
-    expect(m[CONV_MULTI_OUT].amount).toBe(-100)
-    expect(m[CONV_IN1].amount).toBe(300)
-    expect(m[CONV_IN2].amount).toBe(300)
+    expect(m[CONV_MULTI_OUT]).toBeUndefined()
+    expect(m[CONV_IN1].amount).toBe(250)
+    expect(m[CONV_IN2].amount).toBe(250)
     expect(m[CONV_IN1].salesCategory).toBe('自销自耗')
     expect(m[CONV_IN2].salesCategory).toBe('他销自耗')
   })

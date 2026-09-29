@@ -55,7 +55,7 @@ else {
     await recalcPaidSessionsForOrder(db, 'T300_SO')
     return id
   }
-  const month = async (m) => (await db.query(sql, [`2026-${m}-01`,`2026-${m}-31`])).rows[0].v
+  const month = async (m) => (await db.query(sql, [`2026-${m}-01`, `2026-${m}-${new Date(Date.UTC(2026, Number(m), 0)).getUTCDate()}`])).rows[0].v
   test('部分支付销售单 M+1 回款结清不补入 M 月', async () => {
     await order(); await item('T300_BUY','购买',1000,400,true)
     await capture('首次支付',400,'07')
@@ -84,6 +84,49 @@ else {
     await capture('回款',600,'08')
     assert.equal(await month('07'),before); assert.equal(await month('08'),'600.00')
   })
+  for (const [side,file] of [
+    ['staff','../../../fengyu-staff/cloudfunctions/staffApi/utils/payment-allocatable'],
+    ['client','../../../fengyu-client/cloudfunctions/clientApi/utils/payment-allocatable'],
+    ['payNotify','../../../fengyu-client/cloudfunctions/payNotify/payment-allocatable'],
+  ]) {
+    const captureImpl = require(file).capturePaymentAllocatables
+    test(`${side}：已有旧版 signed receipts 的部分支付转换单回款后历史残差不变`, async () => {
+      await order('转换单'); await item('T300_OUT','转出',-1000,-1000,false)
+      await item('T300_IN','转入',2000,1400,true)
+      const first = await payment('首次支付',400,'07')
+      await db.query("INSERT INTO sale_payment_item_receipts(sale_payment_id,sale_order_id,sale_item_id,amount) VALUES ($1,'T300_SO','T300_OUT',-400),($1,'T300_SO','T300_IN',800)",[first])
+      const before = await month('07')
+      const residualBefore = (await db.query("SELECT amount::text FROM sale_item_performance_events WHERE sale_item_id='T300_IN' AND is_legacy_residual")).rows
+      await db.query("UPDATE sale_orders SET received=1000,status='已支付' WHERE sale_order_id='T300_SO'")
+      const repay = await payment('回款',600,'08')
+      const receipts = await captureImpl(db,{salePaymentId:repay,saleOrderId:'T300_SO',eventAmount:600})
+      assert.deepEqual(receipts.map(r=>[r.saleItemId,r.amount]), [['T300_IN',600]])
+      await recalcPaidSessionsForOrder(db,'T300_SO')
+      assert.equal(await month('07'),before); assert.equal(await month('08'),'600.00')
+      assert.deepEqual((await db.query("SELECT amount::text FROM sale_item_performance_events WHERE sale_item_id='T300_IN' AND is_legacy_residual")).rows,residualBefore)
+    })
+    test(`${side}：多转入行逐分冻结，保留分币引起的负一分 receipt`, async () => {
+      await order('转换单')
+      await db.query("UPDATE sale_orders SET total_amount=0.03,received=0.01 WHERE sale_order_id='T300_SO'")
+      await item('T300_OUT','转出',-0.01,-0.01,false)
+      for (let i=1;i<=4;i++) await item(`T300_IN${i}`,'转入',0.01,0,i===3)
+      async function pay(amount,m) {
+        const id=await payment(m==='07'?'首次支付':'回款',amount,m)
+        const r=await captureImpl(db,{salePaymentId:id,saleOrderId:'T300_SO',eventAmount:amount})
+        await recalcPaidSessionsForOrder(db,'T300_SO'); return r
+      }
+      await pay(0.01,'07'); const before = await month('07')
+      await db.query("UPDATE sale_orders SET received=0.02 WHERE sale_order_id='T300_SO'")
+      const second=await pay(0.01,'08')
+      assert.ok(second.some(r=>r.saleItemId==='T300_IN3'&&r.amount===-0.01))
+      assert.equal(Math.round(second.reduce((a,r)=>a+r.amount,0)*100),1)
+      assert.equal(await month('07'),before)
+      const august=await month('08')
+      await db.query("UPDATE sale_orders SET received=0.03,status='已支付' WHERE sale_order_id='T300_SO'")
+      await pay(0.01,'09')
+      assert.equal(await month('07'),before); assert.equal(await month('08'),august)
+    })
+  }
   test('已关闭残差排除，但已落账 receipt 不受父单关闭影响', async () => {
     await order('转换单'); await item('T300_IN','转入',2000,1400,true)
     await db.query("UPDATE sale_orders SET status='已关闭' WHERE sale_order_id='T300_SO'")
