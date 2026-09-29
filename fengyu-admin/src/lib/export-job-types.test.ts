@@ -30,3 +30,12 @@ describe('回款明细导出权限', () => {
       .toBe('sale_order:list')
   })
 })
+
+
+describe('#361 收货跟进导出授权', () => {
+  it('inventory:export 授权，list不能代替', () => {
+    expect(EXPORT_PERMISSIONS_BY_TYPE['inventory-pending-receipts']).toEqual(['inventory:export'])
+    expect(findExportPermissionAction('inventory-pending-receipts', ['inventory:list'])).toBeNull()
+    expect(findExportPermissionAction('inventory-pending-receipts', ['inventory:export'])).toBe('inventory:export')
+  })
+})

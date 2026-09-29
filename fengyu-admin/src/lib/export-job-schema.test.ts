@@ -20,3 +20,11 @@ describe('导出参数长度上限（#376 多店范围）', () => {
     expect(r.success).toBe(false)
   })
 })
+
+
+describe('#361 导出类型传播', () => {
+  it('新类型复用公共payload校验与长度上限', () => {
+    expect(createExportJobSchema.safeParse({ exportType: 'inventory-pending-receipts', payload: { kind: 'store', market: 'M1' } }).success).toBe(true)
+    expect(createExportJobSchema.safeParse({ exportType: 'inventory-pending-receipts', payload: { market: 'x'.repeat(241) } }).success).toBe(false)
+  })
+})

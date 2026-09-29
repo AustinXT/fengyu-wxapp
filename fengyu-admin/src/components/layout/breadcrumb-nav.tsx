@@ -22,6 +22,7 @@ const ROUTE_LABELS: Record<string, string> = {
   "/inventory": "库存管理",
   "/inventory/stocks": "库存查询",
   "/inventory/movements": "进出明细",
+  "/inventory/pending-receipts": "收货跟进",
   "/inventory/operations": "库存业务",
   "/inventory/operations/supply-chain": "供应链业务",
   "/inventory/operations/market": "市场业务",

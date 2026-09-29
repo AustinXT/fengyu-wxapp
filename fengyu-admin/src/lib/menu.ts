@@ -168,6 +168,7 @@ export const MENU_CONFIG: MenuNode[] = [
     children: [
       { label: '库存查询', icon: PackageCheck, href: '/inventory/stocks', requiredActions: ['inventory:stock_list'] },
       { label: '进出明细', icon: ArrowLeftRight, href: '/inventory/movements', requiredActions: ['inventory:stock_list'] },
+      { label: '收货跟进', icon: ArrowLeftRight, href: '/inventory/pending-receipts', requiredActions: ['inventory:list'] },
       {
         label: '供应链业务',
         icon: Factory,
