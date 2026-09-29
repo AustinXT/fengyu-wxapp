@@ -158,7 +158,7 @@ export async function capturePaymentAllocatables(
     ORDER BY a.sale_item_id
     `)
     const rows = convRows as unknown as Array<{ sale_item_id: string; amount: string | number; sales_category: string | null }>
-    if (rows.length === 0 && ord.sale_order_type !== '转换单') return []
+    if (rows.length === 0) return []
 
     const convGuard = await tx.execute(sql`
       UPDATE sale_order_payments
@@ -167,7 +167,6 @@ export async function capturePaymentAllocatables(
          AND (allocation_status IS NULL OR allocation_status = '待分配')
     `)
     if ((convGuard as any).count === 0) return []
-    if (rows.length === 0) return []
     const perItem = rows.map((r) => ({ saleItemId: r.sale_item_id, amount: Number(r.amount) }))
 
     const catMap = new Map(rows.map((r) => [r.sale_item_id, r.sales_category]))

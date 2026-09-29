@@ -348,7 +348,7 @@ describe('capture 转换单（无「购买」明细，业绩转移）', () => {
     expect(o.rows[0].allocation_status).toBe('待分配')
   })
 
-  it('净权重非正兜底：仅置回款行「待分配」，不产 receipt', async () => {
+  it('无正向兑现增量：不改款项分配状态，不产 receipt', async () => {
     const CONV_NOIN = `IT-PA-CONV-NOIN-${RUN}`
     const CONV_NOIN_OUT = `IT-PA-CONV-NOIN-OUT-${RUN}`
     await client.query(
@@ -380,7 +380,7 @@ describe('capture 转换单（无「购买」明细，业绩转移）', () => {
       directedItems: null,
     })
 
-    // 异常转换单（净权重非正）→ 兜底仅置回款行『待分配』，不产 receipt
+    // #300：无兑现增量时不制造无 receipt 的待分配挂单。
     expect(out).toEqual([])
     const m = await allocatableMap(salePaymentId)
     expect(Object.keys(m).length).toBe(0)
@@ -388,7 +388,7 @@ describe('capture 转换单（无「购买」明细，业绩转移）', () => {
       `SELECT allocation_status FROM sale_order_payments WHERE id = $1`,
       [salePaymentId],
     )
-    expect(ps.rows[0].allocation_status).toBe('待分配')
+    expect(ps.rows[0].allocation_status).toBeNull()
   })
 })
 

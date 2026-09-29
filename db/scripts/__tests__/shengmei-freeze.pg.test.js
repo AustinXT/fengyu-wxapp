@@ -33,7 +33,7 @@ else {
     await db.query("INSERT INTO org_nodes(id,name,type) VALUES ('T300_HQ','测试总部','总部')")
     await db.query("INSERT INTO org_nodes(id,name,type,parent_id) VALUES ('T300_MK','测试市场','市场','T300_HQ')")
     await db.query("INSERT INTO org_nodes(id,name,type,parent_id) VALUES ('T300_ORG','测试门店','门店','T300_MK')")
-    await db.query("INSERT INTO stores(store_id,store_name,org_node_id,opening_date) VALUES ('T300_ST','测试门店','T300_ORG','2026-01-01')")
+    await db.query("INSERT INTO stores(store_id,store_name,org_node_id,opening_date) VALUES ('T300_ST','T300 冻结测试门店','T300_ORG','2026-01-01')")
   })
   test.afterEach(async () => { await db.query('ROLLBACK') })
   async function order(type = '销售单') {
@@ -105,6 +105,16 @@ else {
       assert.equal(await month('07'),before); assert.equal(await month('08'),'600.00')
       assert.deepEqual((await db.query("SELECT amount::text FROM sale_item_performance_events WHERE sale_item_id='T300_IN' AND is_legacy_residual")).rows,residualBefore)
     })
+    test(`${side}：兑现已封顶的空增量不制造无 receipt 的待分配挂单`, async () => {
+      await order('转换单'); await item('T300_OUT','转出',-1000,-1000,false)
+      await item('T300_IN','转入',1000,1000,true)
+      const id = await payment('回款',400,'08')
+      const r = await captureImpl(db,{salePaymentId:id,saleOrderId:'T300_SO',eventAmount:400})
+      assert.deepEqual(r,[])
+      const {rows} = await db.query('SELECT allocation_status FROM sale_order_payments WHERE id=$1',[id])
+      assert.equal(rows[0].allocation_status,null)
+      assert.equal((await db.query('SELECT COUNT(*)::int AS n FROM sale_payment_item_receipts WHERE sale_payment_id=$1',[id])).rows[0].n,0)
+    })
     test(`${side}：多转入行逐分冻结，保留分币引起的负一分 receipt`, async () => {
       await order('转换单')
       await db.query("UPDATE sale_orders SET total_amount=0.03,received=0.01 WHERE sale_order_id='T300_SO'")
@@ -120,6 +130,14 @@ else {
       const second=await pay(0.01,'08')
       assert.ok(second.some(r=>r.saleItemId==='T300_IN3'&&r.amount===-0.01))
       assert.equal(Math.round(second.reduce((a,r)=>a+r.amount,0)*100),1)
+      await db.query("INSERT INTO staff_wechat_users(employee_id) VALUES ('T300_EMP')")
+      for (const r of second) await db.query(`INSERT INTO sale_payment_item_allocations
+        (sale_payment_item_receipt_id,employee_id,role_type,allocation_ratio,allocated_amount,commission_rate,commission_amount)
+        VALUES ($1,'T300_EMP','美容师',1,$2,1,$2)`, [r.receiptId,r.amount])
+      const allocations=(await db.query("SELECT allocated_amount::text AS amount,commission_amount::text AS commission FROM sale_payment_item_allocations WHERE employee_id='T300_EMP' ORDER BY sale_payment_item_receipt_id")).rows
+      assert.ok(allocations.some(r=>r.amount==='-0.01'&&r.commission==='-0.01'))
+      assert.equal(Math.round(allocations.reduce((sum,r)=>sum+Number(r.amount),0)*100),1)
+      assert.equal(Math.round(allocations.reduce((sum,r)=>sum+Number(r.commission),0)*100),1)
       assert.equal(await month('07'),before)
       const august=await month('08')
       await db.query("UPDATE sale_orders SET received=0.03,status='已支付' WHERE sale_order_id='T300_SO'")

@@ -255,6 +255,38 @@ describe('payNotify index.js', () => {
     expect(mockPoolQuery).not.toHaveBeenCalled()
   })
 
+  test('#300：转换单负一分增量保留到线上逐项分配与提成，合计守恒', async () => {
+    const { main } = loadFreshIndex()
+    mockPoolQuery.mockResolvedValueOnce({ rows: [makeOrder({
+      sale_order_type: '转换单', status:'部分支付', received:'0.01', total_amount:'0.03',
+      preferred_employee_id:'emp-001',market_name:'测试市场',
+      lakala_out_order_no:'FY-XSD-WX-2604240001',
+    })] })
+    let nextId=10
+    setupClientQueryRouter([
+      {match:/SELECT sale_order_type, legacy_source FROM sale_orders/,
+       result:{rows:[{sale_order_type:'转换单',legacy_source:null}],rowCount:1}},
+      {match:/WITH conversion_receipt_order AS/, result:{rows:[
+        {sale_item_id:'in2',amount:'0.01',sales_category:'自销自耗'},
+        {sale_item_id:'in3',amount:'-0.01',sales_category:'自销自耗'},
+        {sale_item_id:'in4',amount:'0.01',sales_category:'自销自耗'},
+      ],rowCount:3}},
+      {match:/INSERT INTO sale_payment_item_receipts/, result:()=>({rows:[{id:nextId++}],rowCount:1})},
+      {match:/FROM commission_rate_matrix crm/,result:{rows:[{
+        role_type:'美容师',sales_category:'自销自耗',amount_tier_min:'0',amount_tier_max:'9999',commission_rate:'1',
+      }],rowCount:1}},
+      ...defaultPaymentsRoutes({cashPaidSum:'0.02',receivedSum:'0.02'}),
+    ])
+    const result=await main({orderNo:'FY-XSD-WX-2604240001',transactionId:'wx-tail',payAmount:0.01})
+    expect(result.code).toBe('SUCCESS')
+    const allocations=mockClientQuery.mock.calls.filter(([q])=>q.includes('INSERT INTO sale_payment_item_allocations'))
+    expect(allocations).toHaveLength(3)
+    expect(allocations.map(([,params])=>params[3])).toEqual(['0.01','-0.01','0.01'])
+    expect(allocations.map(([,params])=>params[5])).toEqual([0.01,-0.01,0.01])
+    expect(Math.round(allocations.reduce((sum,[,p])=>sum+Number(p[3]),0)*100)).toBe(1)
+    expect(mockClientQuery.mock.calls.some(([q])=>q==='COMMIT')).toBe(true)
+  })
+
   test('1. 无 prepaid 的普通订单 → 充值分支无记录 + 业绩分配正常 + 状态翻 已支付', async () => {
     const { main } = loadFreshIndex()
     mockPoolQuery.mockResolvedValueOnce({
