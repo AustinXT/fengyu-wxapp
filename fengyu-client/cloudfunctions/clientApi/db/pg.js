@@ -33,8 +33,12 @@ function getPool() {
           const timezone = result.rows[0]?.TimeZone
           if (timezone !== 'Asia/Shanghai') {
             // 配置错误必须终止实例，不能被路由/支付回调 catch 后继续运行。
-            console.error(new Error(`PG_TIMEZONE_MISMATCH: expected Asia/Shanghai, received ${timezone}`))
-            process.exit(1)
+            try {
+              // 同步刷出致命日志；即使 stderr 不可写也必须拒绝继续运行。
+              require('node:fs').writeSync(2, `PG_TIMEZONE_MISMATCH: expected Asia/Shanghai, received ${timezone}\n`)
+            } finally {
+              process.exit(1)
+            }
           }
           done()
         })

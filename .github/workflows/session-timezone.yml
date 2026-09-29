@@ -18,6 +18,9 @@ on:
       - 'fengyu-staff/cloudfunctions/**'
       - 'scripts/__tests__/session-timezone.integration.mjs'
       - 'scripts/tests/session-timezone-probe.ts'
+      - 'docker/Dockerfile.admin'
+      - 'docker/Dockerfile.analyst'
+      - 'docker/docker-compose*.yml'
       - '.github/workflows/session-timezone.yml'
   workflow_dispatch:
 

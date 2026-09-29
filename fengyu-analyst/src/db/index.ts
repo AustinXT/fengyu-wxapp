@@ -1,3 +1,4 @@
+import { writeSync } from 'node:fs'
 import { drizzle } from "drizzle-orm/postgres-js"
 import postgres from "postgres"
 
@@ -17,8 +18,12 @@ const client = globalForDb.pgClient ?? postgres(connectionString, {
   // postgres.js 会捕获回调异常并仅拒绝当前查询；配置错误必须终止整个进程。
   onparameter(key, value) {
     if (key === 'TimeZone' && value !== 'Asia/Shanghai') {
-      console.error(new Error(`PG_TIMEZONE_MISMATCH: expected Asia/Shanghai, received ${value}`))
-      process.exit(1)
+      try {
+        // stderr 为管道时 console.error 可能异步；先同步写出根因再退出。
+        writeSync(2, `PG_TIMEZONE_MISMATCH: expected Asia/Shanghai, received ${value}\n`)
+      } finally {
+        process.exit(1)
+      }
     }
   },
 })
