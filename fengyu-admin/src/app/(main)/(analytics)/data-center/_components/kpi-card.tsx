@@ -15,11 +15,9 @@ const TONE_CLASS = {
 /**
  * 基期区间 → hover 文案，如「环比基期：2026-08-01 ~ 2026-08-22（22 天）」。
  *
- * ⚠️ 天数可能算不出。`previous`/`lastYear` 是本 PR **首次**送到客户端的
- * （此前它们从不出仓），等于新增了一块暴露面：`params.ts` 的 `DATE_RE` 接受 `0000`-`0999` 年，
- * 而 `time-range.ts` 的 `fmt` 对年份不做 padStart，于是 `?start=0001-01-01` 这种手改 URL
- * 会让 `addDays(start,-1)` 产出 `"0-12-31"`，`Date.parse("0-12-31T00:00:00Z")` → `NaN`，
- * 渲染出「（NaN 天）」。算不出就只报区间、不报天数，不把垃圾数字摆给用户。
+ * ⚠️ 天数算不出时只报区间、不报天数，不把「（NaN 天）」摆给用户。根因（`?start=0001-01-01` 这类
+ * 手改 URL 让 `addDays` 产出 `"0-12-31"`）已由 #308 在 URL 层与服务端两道校验挡住
+ * （`@/lib/calendar-date` 把年份卡在 1900–2100）；这里保留作兜底。
  */
 function basePeriodTitle(label: string, range: { start: string; end: string } | null): string | undefined {
   if (!range) return undefined

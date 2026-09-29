@@ -206,6 +206,13 @@ export interface CreateStoreReplenishmentInput {
   docDate?: string | null
   remark?: string | null
   items: StoreReplenishmentLineInput[]
+  /**
+   * 门店报货草稿（#348）：传入则在该草稿上原单号写入 —— 存草稿时覆盖明细、仍是草稿；
+   * 提交时转「已完成」。缺省为新建。
+   */
+  draftId?: string | null
+  /** 草稿乐观锁（#348）：打开草稿时拿到的 updatedAt；与库里不一致即 CONFLICT（别人改过） */
+  expectedUpdatedAt?: string | null
 }
 
 export interface StoreReplenishmentSummaryLine {
@@ -247,6 +254,8 @@ export interface CreateMarketReplenishmentInput {
   promotionSelections?: MarketPromotionSelectionInput[]
   /** 提交草稿（#348）：在该草稿单上原单号转「已完成」；缺省为直接新建。 */
   draftId?: string | null
+  /** 草稿乐观锁（#348），同 CreateStoreReplenishmentInput.expectedUpdatedAt */
+  expectedUpdatedAt?: string | null
 }
 
 /**
@@ -263,6 +272,8 @@ export interface SaveMarketReplenishmentDraftInput {
   remark?: string | null
   items: Array<{ skuId: string; purchaseQuantity: number }>
   promotionSelections?: MarketPromotionSelectionInput[]
+  /** 草稿乐观锁（#348），同 CreateStoreReplenishmentInput.expectedUpdatedAt */
+  expectedUpdatedAt?: string | null
 }
 
 export interface MarketPromotionSelectionInput {
@@ -2093,27 +2104,40 @@ function refreshInventoryPaths(): void {
   revalidatePath('/inventory/operations', 'layout')
 }
 
-/** 门店只能为自身市场创建需求，报货本身不产生库存流水。 */
+/**
+ * 门店只能为自身市场创建需求，报货本身不产生库存流水。
+ *
+ * 门店报货：新建 / 存草稿 / 提交草稿共用一条写路径（#348），校验只有一份 ——
+ * 草稿与正式单的明细口径（可报货 SKU、归属本市场、数量为正、同 SKU 合并）完全一致，
+ * 差别只在单头状态：草稿不确认、不进任何下游（汇总 / 在途 / 市场报货引用 / 分院配货都只认「已完成」）。
+ */
 export async function createStoreReplenishmentRequest(
   session: AuthSession,
   input: CreateStoreReplenishmentInput,
-): Promise<{ id: string }> {
+  options: { asDraft?: boolean } = {},
+): Promise<{ id: string; updatedAt: string | null }> {
   const storeId = required(input.storeId, '门店')
   const marketId = required(input.marketId, '市场')
+  const draftId = input.draftId == null ? null : required(input.draftId, '草稿单号')
+  const asDraft = options.asDraft === true
   if (!Array.isArray(input.items) || input.items.length === 0) {
     throw new ApiError('INVALID_PARAMS', '门店报货至少需要一条明细')
   }
   await syncLocations()
-  const id = await db.transaction(async (tx) => {
+  const { id, updatedAt } = await db.transaction(async (tx) => {
     await assertInventoryBusinessWritable(tx)
-    const store = await locationForUpdate(tx, storeId)
+    // 锁序「先市场、后门店」：与 0009 inventory_sync_location_from_store（先 UPSERT 上级市场行、再门店行）同向，
+    // 关店 / 改名与报货并发时不成环（同步触发器不取 cutover 锁，cutover 挡不住它）。之后才锁单据。
     const market = await locationForUpdate(tx, marketId)
+    const store = await locationForUpdate(tx, storeId)
     assertType(store, '门店', '报货主体')
     assertType(market, '市场', '报货市场')
     if (store.parentLocationId !== market.locationId) {
       throw new ApiError('INVALID_PARAMS', '门店只能向所属市场报货')
     }
     assertLocationWritable(session, store)
+    // 锁序：市场 → 门店 → 草稿单（先主体后单据）
+    if (draftId) await lockStoreReplenishmentDraft(tx, draftId, store, { market, expectedUpdatedAt: input.expectedUpdatedAt })
     const skuIds = new Set<string>()
     const prepared: Array<{ sku: SkuSnapshot; quantity: number; remark: string | null }> = []
     for (const item of input.items) {
@@ -2128,21 +2152,38 @@ export async function createStoreReplenishmentRequest(
         remark: text(item.remark),
       })
     }
-    const docId = await generateDocId(tx, '门店报货')
     const total = prepared.reduce((sum, item) => sum + item.quantity, 0)
-    await insertDocHeader(tx, {
-      id: docId,
-      docType: '门店报货',
-      status: '已完成',
-      sourceOrgNodeId: storeId,
-      targetOrgNodeId: marketId,
-      marketId,
-      docDate: input.docDate,
-      totalQuantity: total,
-      remark: input.remark,
-      createdBy: session.employeeId,
-      confirmed: true,
-    })
+    let docId: string
+    if (draftId) {
+      // 草稿没有血缘 / 预留 / 流水（lockStoreReplenishmentDraft 已核对），明细整体重写；合计由明细 trigger 回填
+      docId = draftId
+      await tx.execute(sql`DELETE FROM inventory_doc_items WHERE doc_id = ${draftId}`)
+      await tx.execute(sql`
+        UPDATE inventory_docs
+           SET status = ${asDraft ? '草稿' : '已完成'},
+               doc_date = ${dateOrToday(input.docDate)},
+               remark = ${text(input.remark)},
+               confirmed_by = ${asDraft ? null : session.employeeId},
+               confirmed_at = ${asDraft ? null : sql`NOW()`},
+               updated_at = NOW()
+         WHERE id = ${draftId}
+      `)
+    } else {
+      docId = await generateDocId(tx, '门店报货')
+      await insertDocHeader(tx, {
+        id: docId,
+        docType: '门店报货',
+        status: asDraft ? '草稿' : '已完成',
+        sourceOrgNodeId: storeId,
+        targetOrgNodeId: marketId,
+        marketId,
+        docDate: input.docDate,
+        totalQuantity: total,
+        remark: input.remark,
+        createdBy: session.employeeId,
+        confirmed: !asDraft,
+      })
+    }
     for (const item of prepared) {
       await insertDocItem(tx, {
         docId,
@@ -2164,11 +2205,154 @@ export async function createStoreReplenishmentRequest(
         remark: item.remark,
       })
     }
-    return docId
+    // 回传新版本号：留在编辑态的表单下一次保存拿它做乐观锁（#348）
+    return { id: docId, updatedAt: await docUpdatedAtIso(tx, docId) }
   })
-  await logOperation(session, 'inventory.store_request.create', 'inventory_docs', id, { storeId, marketId })
+  await logOperation(
+    session,
+    asDraft
+      ? 'inventory.store_request.save_draft'
+      : draftId ? 'inventory.store_request.submit_draft' : 'inventory.store_request.create',
+    'inventory_docs',
+    id,
+    { storeId, marketId, draftId },
+  )
   refreshInventoryPaths()
-  return { id }
+  return { id, updatedAt }
+}
+
+/** 存门店报货草稿（#348）：新建或覆盖，与新建 / 提交同一条写路径。 */
+export async function saveStoreReplenishmentDraft(
+  session: AuthSession,
+  input: CreateStoreReplenishmentInput,
+): Promise<{ id: string; updatedAt: string | null }> {
+  return createStoreReplenishmentRequest(session, input, { asDraft: true })
+}
+
+/** 单据 updated_at 的毫秒 ISO（UTC）：与单据详情下发的 `updatedAt`（Date#toISOString）同精度，供草稿乐观锁比对 */
+async function docUpdatedAtIso(tx: Tx, id: string): Promise<string | null> {
+  const [row] = rows<{ updated_at: string | null }>(await tx.execute(sql`
+    SELECT to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS updated_at
+      FROM inventory_docs
+     WHERE id = ${id}
+  `))
+  return row?.updated_at ?? null
+}
+
+/**
+ * 草稿乐观锁（#348）：草稿同一门店 / 市场的多人都能改，且提交即终态 —— 拿着旧内容提交会把别人刚存的改动
+ * 永久覆盖。存草稿 / 提交草稿**必须**带打开草稿时的 updatedAt（缺了就 INVALID_PARAMS，不能退化成「不校验」，
+ * 否则直调 action 不传版本就能无条件覆盖），与库里不一致即 CONFLICT。只有删除不比版本（删除是有意作废）。
+ */
+async function assertDraftUnchanged(tx: Tx, id: string, expectedUpdatedAt: string | null | undefined): Promise<void> {
+  if (expectedUpdatedAt == null || expectedUpdatedAt === '') {
+    throw new ApiError('INVALID_PARAMS', '缺少草稿版本，请重新打开草稿后再保存')
+  }
+  const expected = Date.parse(expectedUpdatedAt)
+  if (Number.isNaN(expected)) throw new ApiError('INVALID_PARAMS', '草稿版本格式不正确')
+  const current = await docUpdatedAtIso(tx, id)
+  if (current === null || Date.parse(current) !== expected) {
+    throw new ApiError('CONFLICT', '草稿已被他人修改，请重新打开后再保存')
+  }
+}
+
+/**
+ * 锁住并校验一张门店报货草稿（#348）。调用方须已按「市场 → 门店」取过主体锁（与 0009 门店同步触发器同向）。
+ * ⚠️ createStoreAllocation 是「报货单 → 市场 → 门店」的既有反序；不成环靠事务开头 cutover 全局锁
+ * （staffApi 取 FOR KEY SHARE，与 admin 的 FOR UPDATE 互斥），放宽那把锁之前先统一锁序。
+ * 草稿的报货门店不可改；带血缘 / 预留的只可能是存量异常单，一律交人工处理。
+ */
+async function lockStoreReplenishmentDraft(
+  tx: Tx,
+  draftId: string,
+  store: Location,
+  /** 存草稿 / 提交：当前市场 + 打开草稿时的版本；删除传 null（不比市场、不比版本） */
+  check: { market: Location; expectedUpdatedAt: string | null | undefined } | null,
+): Promise<DocHeader> {
+  const draft = await docForUpdate(tx, draftId)
+  if (draft.docType !== '门店报货') throw new ApiError('NOT_FOUND', '门店报货草稿不存在')
+  if (draft.status !== '草稿') {
+    throw new ApiError(
+      'INVALID_STATE',
+      draft.status === '已取消' ? '该门店报货草稿已删除' : '门店报货已提交，不能再修改或删除',
+    )
+  }
+  if (draft.sourceOrgNodeId !== store.orgNodeId) {
+    throw new ApiError('INVALID_PARAMS', '草稿的报货门店不能修改')
+  }
+  // 草稿存续期间门店改挂了别的市场：单头的市场归属（汇总 / 配货都按它）不会随状态更新重算，
+  // 提交会把单挂在旧市场上 —— 让人删了按新市场重报（删除不传 market，不受此限）
+  if (check && draft.marketId !== check.market.orgNodeId) {
+    throw new ApiError('INVALID_STATE', '门店已更换所属市场，请删除该草稿后重新报货')
+  }
+  if (check) await assertDraftUnchanged(tx, draftId, check.expectedUpdatedAt)
+  const [linked] = rows<{ linked: boolean }>(await tx.execute(sql`
+    SELECT EXISTS (
+      SELECT 1 FROM inventory_doc_links WHERE from_doc_id = ${draftId} OR to_doc_id = ${draftId}
+    ) OR EXISTS (
+      SELECT 1 FROM inventory_stock_reservations WHERE request_doc_id = ${draftId}
+    ) AS linked
+  `))
+  if (linked?.linked) {
+    throw new ApiError('INVALID_STATE', '该草稿已有上下游关联，不能按草稿修改或删除，请联系管理员处理')
+  }
+  return draft
+}
+
+/**
+ * 删除门店报货草稿（#348）= 草稿 → 已取消（理由同 deleteMarketReplenishmentDraft：单号不复用、留审计）。
+ * 不校验门店是否启用（停用门店的草稿也要清得掉），scope 照断。
+ */
+export async function deleteStoreReplenishmentDraft(
+  session: AuthSession,
+  input: { draftId: string; reason?: string | null },
+): Promise<{ id: string }> {
+  const draftId = required(input.draftId, '草稿单号')
+  const reason = text(input.reason) ?? '删除草稿'
+  await syncLocations()
+  const storeOrgNodeId = await db.transaction(async (tx) => {
+    await assertInventoryBusinessWritable(tx)
+    const [peek] = rows<{ source_org_node_id: string | null }>(await tx.execute(sql`
+      SELECT source_org_node_id FROM inventory_docs WHERE id = ${draftId} AND doc_type = '门店报货'
+    `))
+    if (!peek?.source_org_node_id) throw new ApiError('NOT_FOUND', '门店报货草稿不存在')
+    const [storeRow] = rows<{ location_id: string; org_node_id: string; location_type: LocationType; name: string; parent_location_id: string | null }>(
+      await tx.execute(sql`
+        SELECT location_id, org_node_id, location_type, name, parent_location_id
+          FROM inventory_locations
+         WHERE org_node_id = ${peek.source_org_node_id}
+         ORDER BY location_id
+         LIMIT 1
+         FOR UPDATE
+      `),
+    )
+    if (!storeRow) throw new ApiError('NOT_FOUND', '库存主体不存在')
+    const store: Location = {
+      locationId: storeRow.location_id,
+      orgNodeId: storeRow.org_node_id,
+      locationType: storeRow.location_type,
+      name: storeRow.name,
+      parentLocationId: storeRow.parent_location_id,
+    }
+    assertLocationWritable(session, store)
+    await lockStoreReplenishmentDraft(tx, draftId, store, null)
+    await tx.execute(sql`
+      UPDATE inventory_docs
+         SET status = '已取消',
+             cancellation_reason = ${reason},
+             cancelled_by = ${session.employeeId},
+             cancelled_at = NOW(),
+             updated_at = NOW()
+       WHERE id = ${draftId}
+    `)
+    return store.orgNodeId
+  })
+  await logOperation(session, 'inventory.store_request.delete_draft', 'inventory_docs', draftId, {
+    storeOrgNodeId,
+    reason,
+  })
+  refreshInventoryPaths()
+  return { id: draftId }
 }
 
 /**
@@ -2306,7 +2490,7 @@ async function loadStoreReplenishmentCoverage(
         FROM inventory_docs request_doc
         JOIN inventory_doc_items request_item ON request_item.doc_id = request_doc.id
        WHERE request_doc.doc_type = '门店报货'
-         AND request_doc.status <> '已取消'
+         AND request_doc.status = '已完成'
          AND request_doc.market_id = ${marketId}
          AND request_item.sku_id IN (${skuFilter})
        GROUP BY request_item.sku_id
@@ -2399,7 +2583,7 @@ export async function summarizeStoreReplenishmentRequests(
              AND market_request.status <> '已取消'
         ) summarized ON true
        WHERE d.doc_type = '门店报货'
-         AND d.status <> '已取消'
+         AND d.status = '已完成'
          AND d.market_id = ${marketId}
          AND (${startDate}::date IS NULL OR d.doc_date >= ${startDate})
          AND (${endDate}::date IS NULL OR d.doc_date <= ${endDate})
@@ -2434,9 +2618,10 @@ export async function summarizeStoreReplenishmentRequests(
         // 只是这里查单个 SKU、盘点那条 GROUP BY 批量查），复用时别把这一行的扣减一起抄走。
         const availableQuantity = Math.max(0, fixed(onHandQuantity - reservedQuantity))
         const rowOutstanding = Math.max(0, fixed(Number(row.outstanding_quantity)))
-        // 覆盖查询与主查询同在本事务、且都在上面那把市场行锁之下（门店报货 / 配货 / 市场报货 / 品项公司发货 /
-        // 市场收货都会 FOR UPDATE 本市场行），两条语句读到的是同一份数据，demand 必含主查询的 SKU。
-        // 这里的回退只是防御：退回逐行口径，不抛错。
+        // 覆盖查询与主查询同在本事务、且都在上面那把市场行锁之下（admin 的门店报货 / 配货 / 市场报货 / 品项公司发货 /
+        // 市场收货都会 FOR UPDATE 本市场行），两条语句读到的基本是同一份数据。
+        // ⚠️ staffApi 的门店报货建单 / 提交草稿（#348）不锁市场行：READ COMMITTED 下两条语句之间有门店报货落成已完成时，
+        // demand 可能比主查询多出这部分（只影响本次展示，刷新即恢复）。这里的回退只是防御：退回逐行口径，不抛错。
         // ⚠️ 别按「只读路径用 locationForRead」把上面的锁换掉 —— 两条 SQL 之间的一致性靠的就是它。
         const skuCoverage = coverage.get(row.sku_id) ?? { undelivered: rowOutstanding, inTransit: 0 }
         const { outstandingQuantity, suggestedPurchaseQuantity } = storeReplenishmentCoverage({
@@ -2526,7 +2711,13 @@ function assertMarketPromotionSelectable(session: AuthSession, market: Location)
  * `assertInventoryBusinessWritable` 那把 cutover 全局锁；放宽那把锁之前先统一锁序。
  * 草稿的报货市场不可改 —— 换市场等于换一张单，前端也锁定了市场选择。
  */
-async function lockMarketReplenishmentDraft(tx: Tx, draftId: string, market: Location): Promise<DocHeader> {
+async function lockMarketReplenishmentDraft(
+  tx: Tx,
+  draftId: string,
+  market: Location,
+  /** 存草稿 / 提交：打开草稿时的版本；删除传 null（不比版本） */
+  check: { expectedUpdatedAt: string | null | undefined } | null,
+): Promise<DocHeader> {
   const draft = await docForUpdate(tx, draftId)
   if (draft.docType !== '市场报货') throw new ApiError('NOT_FOUND', '市场报货草稿不存在')
   if (draft.status !== '草稿') {
@@ -2538,6 +2729,7 @@ async function lockMarketReplenishmentDraft(tx: Tx, draftId: string, market: Loc
   if (draft.marketId !== market.orgNodeId) {
     throw new ApiError('INVALID_PARAMS', '草稿的报货市场不能修改')
   }
+  if (check) await assertDraftUnchanged(tx, draftId, check.expectedUpdatedAt)
   // 本功能产出的草稿不写血缘；带血缘的只可能是存量 / 人工修复的异常单，覆盖明细会撞外键、删除会释放占用，一律交人工处理
   const [linked] = rows<{ linked: boolean }>(await tx.execute(sql`
     SELECT EXISTS (
@@ -2573,7 +2765,7 @@ export async function createMarketReplenishment(
     assertType(supplyChain, '总部', '供应链库存主体')
     assertLocationWritable(session, market)
     if ((input.promotionSelections?.length ?? 0) > 0) assertMarketPromotionSelectable(session, market)
-    if (draftId) await lockMarketReplenishmentDraft(tx, draftId, market)
+    if (draftId) await lockMarketReplenishmentDraft(tx, draftId, market, { expectedUpdatedAt: input.expectedUpdatedAt })
     const seenRequestItems = new Set<number>()
     const docDate = dateOrToday(input.docDate)
     const prepared: Array<{
@@ -2600,7 +2792,8 @@ export async function createMarketReplenishment(
         const requestHeader = await docForUpdate(tx, item.docId)
         if (
           requestHeader.docType !== '门店报货' ||
-          requestHeader.status === '已取消' ||
+          // 只认已完成：门店报货草稿（#348）未提交，不能被市场报货引用
+          requestHeader.status !== '已完成' ||
           requestHeader.marketId !== marketId ||
           item.skuId !== skuId
         ) {
@@ -2669,7 +2862,8 @@ export async function createMarketReplenishment(
                doc_date = ${docDate},
                remark = ${text(input.remark)},
                confirmed_by = ${session.employeeId},
-               confirmed_at = NOW()
+               confirmed_at = NOW(),
+               updated_at = NOW()
          WHERE id = ${draftId}
       `)
     } else {
@@ -2747,7 +2941,7 @@ export async function createMarketReplenishment(
 export async function saveMarketReplenishmentDraft(
   session: AuthSession,
   input: SaveMarketReplenishmentDraftInput,
-): Promise<{ id: string }> {
+): Promise<{ id: string; updatedAt: string | null }> {
   const marketId = required(input.marketId, '市场')
   const supplyChainLocationId = required(input.supplyChainLocationId, '供应链库存主体')
   const draftId = input.draftId == null ? null : required(input.draftId, '草稿单号')
@@ -2766,7 +2960,7 @@ export async function saveMarketReplenishmentDraft(
     lines.push({ skuId, purchaseQuantity: positive(line.purchaseQuantity, '实际采购数量') })
   }
   await syncLocations()
-  const id = await db.transaction(async (tx) => {
+  const { id, updatedAt } = await db.transaction(async (tx) => {
     await assertInventoryBusinessWritable(tx)
     const market = await locationForUpdate(tx, marketId)
     const supplyChain = await locationForUpdate(tx, supplyChainLocationId)
@@ -2774,7 +2968,7 @@ export async function saveMarketReplenishmentDraft(
     assertType(supplyChain, '总部', '供应链库存主体')
     assertLocationWritable(session, market)
     if ((input.promotionSelections?.length ?? 0) > 0) assertMarketPromotionSelectable(session, market)
-    if (draftId) await lockMarketReplenishmentDraft(tx, draftId, market)
+    if (draftId) await lockMarketReplenishmentDraft(tx, draftId, market, { expectedUpdatedAt: input.expectedUpdatedAt })
     const docDate = dateOrToday(input.docDate)
     const skus = new Map<string, SkuSnapshot>()
     for (const line of lines) {
@@ -2797,7 +2991,8 @@ export async function saveMarketReplenishmentDraft(
         UPDATE inventory_docs
            SET target_org_node_id = ${supplyChain.orgNodeId},
                doc_date = ${docDate},
-               remark = ${text(input.remark)}
+               remark = ${text(input.remark)},
+               updated_at = NOW()
          WHERE id = ${draftId}
       `)
     } else {
@@ -2824,14 +3019,14 @@ export async function saveMarketReplenishmentDraft(
         ...marketReportItemPriceFields(skus.get(line.skuId)!, line.purchaseQuantity, quote),
       })
     }
-    return docId
+    return { id: docId, updatedAt: await docUpdatedAtIso(tx, docId) }
   })
   await logOperation(session, 'inventory.market_request.save_draft', 'inventory_docs', id, {
     marketId,
     created: !draftId,
   })
   refreshInventoryPaths()
-  return { id }
+  return { id, updatedAt }
 }
 
 /**
@@ -2873,7 +3068,7 @@ export async function deleteMarketReplenishmentDraft(
       parentLocationId: marketRow.parent_location_id,
     }
     assertLocationWritable(session, market)
-    await lockMarketReplenishmentDraft(tx, draftId, market)
+    await lockMarketReplenishmentDraft(tx, draftId, market, null)
     await tx.execute(sql`
       UPDATE inventory_docs
          SET status = '已取消',
@@ -4659,7 +4854,8 @@ export async function createStoreAllocation(
     const requestSkuIds = new Set<string>()
     if (storeRequestId) {
       const request = await docForUpdate(tx, storeRequestId)
-      if (request.docType !== '门店报货' || request.status === '已取消') {
+      // 只认已完成：门店报货草稿（#348）未提交，不能被分院配货引用
+      if (request.docType !== '门店报货' || request.status !== '已完成') {
         throw new ApiError('INVALID_STATE', '分院配货必须引用有效门店报货单')
       }
       storeEndpointId = required(request.sourceOrgNodeId, '门店报货主体')

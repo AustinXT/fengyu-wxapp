@@ -59,6 +59,11 @@
     </view>
   </view>
 
+  <view wx:if="{{canEditDraft}}" class="receive-section draft-actions">
+    <button class="draft-delete-button" bindtap="onDeleteDraftTap" disabled="{{submitting}}">删除草稿</button>
+    <button class="receive-button draft-edit-button" bindtap="onEditDraftTap" disabled="{{submitting}}">继续编辑</button>
+  </view>
+
   <view wx:if="{{canReceive}}" class="receive-section">
     <button class="receive-button" bindtap="onConfirmReceiveTap" loading="{{submitting}}" disabled="{{submitting}}">确认收货</button>
   </view>

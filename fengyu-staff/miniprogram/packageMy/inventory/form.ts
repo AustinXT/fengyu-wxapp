@@ -57,6 +57,8 @@ interface DraftItem {
   quantity: number
   stockReference: number
   reason: string
+  /** 行备注：门店报货草稿回填时保留（admin 代建的行备注不能被小程序存一次就清掉，#348） */
+  remark?: string
 }
 
 const FORM_CONFIG: Record<OperateDocType, FormConfig> = {
@@ -131,6 +133,12 @@ Page({
     addedSkuIds: {} as Record<string, boolean>,
     loadingOptions: false,
     submitting: false,
+    // 门店报货草稿（#348）：canDraft = 本业务支持存草稿；draftId 非空 = 正在编辑这张草稿
+    canDraft: false,
+    draftId: '',
+    // 草稿版本（updatedAt）：保存 / 提交时回传做乐观锁，别人改过云端报 CONFLICT
+    draftVersion: '',
+    loadingDraft: false,
     // 门店报货选品弹层（#339）：服务端检索 + 分页，替换原来只拉前 100 条的原生 picker
     showSkuPicker: false,
     skuKeyword: '',
@@ -143,7 +151,7 @@ Page({
 
   _skuSearch: null as ReportableSkuSearch<ReportableSku> | null,
 
-  onLoad(query: { docType?: string }) {
+  onLoad(query: { docType?: string; id?: string }) {
     if (!requireInventoryStoreOperate()) {
       setTimeout(() => wx.navigateBack(), 500)
       return
@@ -169,6 +177,7 @@ Page({
       isStocktake: config.itemMode === 'stocktakeSku',
       needsTargetStore: config.needsTargetStore,
       needsReason: config.needsReason,
+      canDraft: docType === '门店报货',
     })
     wx.setNavigationBarTitle({ title: config.title })
     if (!sourceStoreId) {
@@ -176,6 +185,54 @@ Page({
       return
     }
     this.loadOptions()
+    const draftId = decodeURIComponent(query.id || '')
+    if (draftId && docType === '门店报货') this.loadDraft(draftId)
+  },
+
+  /** 继续编辑门店报货草稿（#348）：回填明细与备注；是否本店、是否仍是草稿由云端 updateDraft/submitDraft 再校验 */
+  async loadDraft(id: string) {
+    this.setData({ loadingDraft: true })
+    try {
+      const detail = await callStaffApi<{
+        id: string
+        docType: string
+        status: string
+        remark: string | null
+        sourceLocationId: string | null
+        updatedAt: string | null
+        items: Array<{ skuId: string; skuName: string; specName: string | null; quantity: number; remark?: string | null }>
+      }>('inventory.docDetail', { id })
+      if (!detail || detail.docType !== '门店报货' || detail.status !== '草稿') {
+        wx.showToast({ title: '该单据已不是可编辑的草稿', icon: 'none' })
+        setTimeout(() => wx.navigateBack(), 800)
+        return
+      }
+      // 草稿属于别的门店：云端会按「报货门店不能修改」拒，先在这里说清楚该怎么办
+      if (detail.sourceLocationId && detail.sourceLocationId !== this.data.sourceStoreId) {
+        wx.showToast({ title: '该草稿属于其它门店，请切换到该门店后再编辑', icon: 'none', duration: 2500 })
+        setTimeout(() => wx.navigateBack(), 1500)
+        return
+      }
+      const items: DraftItem[] = (detail.items || []).map((item) => ({
+        key: item.skuId,
+        skuId: item.skuId,
+        skuName: item.skuName,
+        specName: item.specName,
+        batchNo: '',
+        quantity: Number(item.quantity),
+        stockReference: 0,
+        reason: '',
+        remark: item.remark || '',
+      }))
+      this.setData({ draftId: detail.id, draftVersion: detail.updatedAt || '', items, remark: detail.remark || '' })
+      wx.setNavigationBarTitle({ title: '编辑门店报货草稿' })
+    } catch (err: any) {
+      // 加载失败别停在空表单：那样提交会走 createDoc 另建一张单，原草稿成了孤儿
+      wx.showToast({ title: err?.message || '草稿加载失败', icon: 'none' })
+      setTimeout(() => wx.navigateBack(), 1200)
+    } finally {
+      this.setData({ loadingDraft: false })
+    }
   },
 
   async loadOptions() {
@@ -460,8 +517,17 @@ Page({
     this.setData({ items, addedSkuIds })
   },
 
-  async onSubmit() {
-    if (this.data.submitting) return
+  /** 存草稿（#348，仅门店报货）：不进入市场汇总与分院配货；存完留在本页，可继续改或提交 */
+  onSaveDraft() {
+    this.submitDoc(true)
+  },
+
+  onSubmit() {
+    this.submitDoc(false)
+  },
+
+  async submitDoc(asDraft: boolean) {
+    if (this.data.submitting || this.data.loadingDraft) return
     if (this.data.items.length === 0) {
       wx.showToast({ title: '请至少添加一条明细', icon: 'none' })
       return
@@ -477,8 +543,13 @@ Page({
       return
     }
     this.setData({ submitting: true })
+    const draftId = this.data.draftId
+    // 草稿四条路：新建草稿 createDoc(draft) / 覆盖 updateDraft / 提交草稿 submitDraft / 直接建单 createDoc
+    const action = draftId
+      ? (asDraft ? 'inventory.updateDraft' : 'inventory.submitDraft')
+      : 'inventory.createDoc'
     try {
-      const result = await callStaffApi<{ id: string }>('inventory.createDoc', {
+      const result = await callStaffApi<{ id: string; updatedAt?: string | null }>(action, {
         docType: this.data.docType,
         storeId: this.data.sourceStoreId,
         targetOrgNodeId: this.data.selectedStore?.orgNodeId || undefined,
@@ -488,8 +559,18 @@ Page({
           skuId: item.skuId,
           quantity: item.quantity,
           reason: item.reason || undefined,
+          remark: item.remark || undefined,
         })),
+        draftId: draftId || undefined,
+        expectedUpdatedAt: draftId ? this.data.draftVersion || undefined : undefined,
+        draft: asDraft && !draftId ? true : undefined,
       })
+      if (asDraft) {
+        this.setData({ submitting: false, draftId: result.id, draftVersion: result.updatedAt || '' })
+        wx.setNavigationBarTitle({ title: '编辑门店报货草稿' })
+        wx.showToast({ title: '草稿已保存', icon: 'success' })
+        return
+      }
       wx.showToast({ title: '提交成功', icon: 'success' })
       // 成功后保持 submitting=true 直到跳走：跳转前的 700ms 里按钮若恢复可点，
       // 再点一次就会建出第二张单（盘点单会有两个不同时点的账面快照）

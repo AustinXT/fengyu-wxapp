@@ -7,6 +7,7 @@
  *
  * 口径权威：notes/references/metrics.md。
  */
+import type { CalendarDate } from '@/lib/calendar-date'
 import type { DeltaDisplay } from '@/lib/delta-display'
 
 export type { DeltaDisplay }
@@ -33,7 +34,7 @@ export type TimeRangePreset = 'today' | 'week' | 'month' | 'year' | 'custom'
 
 export type TimeRangeInput =
   | { preset: 'today' | 'week' | 'month' | 'year' }
-  | { preset: 'custom'; start: string; end: string } // YYYY-MM-DD
+  | { preset: 'custom'; start: CalendarDate; end: CalendarDate } // YYYY-MM-DD，只能经 @/lib/calendar-date 校验得到（#308）
 
 /** 解析后的单个日期区间（闭区间，YYYY-MM-DD） */
 export interface ResolvedRange {

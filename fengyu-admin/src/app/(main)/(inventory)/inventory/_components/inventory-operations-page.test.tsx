@@ -63,6 +63,7 @@ vi.mock('@/actions/inventory/business', () =>
       'createStoreReplenishmentRequest',
       'createSupplyChainStaffPurchase',
       'deleteMarketReplenishmentDraft',
+      'deleteStoreReplenishmentDraft',
       'getShipmentReceiptProgress',
       'listMarketEmployeeOptions',
       'listSupplyChainEmployeeOptions',
@@ -77,6 +78,7 @@ vi.mock('@/actions/inventory/business', () =>
       'requestItemCompanyShipmentCancellation',
       'resolveInventorySkuSupplierStatus',
       'saveMarketReplenishmentDraft',
+      'saveStoreReplenishmentDraft',
       'summarizeMarketReplenishmentRequests',
       'summarizeStoreReplenishmentRequests',
     ].map((name) => [name, vi.fn()]),
@@ -103,7 +105,10 @@ import {
   createInventoryConversion,
   createMarketReplenishment,
   createStoreAllocation,
+  createStoreReplenishmentRequest,
   deleteMarketReplenishmentDraft,
+  deleteStoreReplenishmentDraft,
+  saveStoreReplenishmentDraft,
   quoteMarketReplenishmentPrices,
   saveMarketReplenishmentDraft,
   receiveItemCompanyShipmentInFull,
@@ -972,6 +977,7 @@ describe('待办区的按钮可见性矩阵（#192）', () => {
     { operation: 'company-shipment', docType: '市场报货', status: '已完成', actions: ['去发货'] },
     // 市场报货草稿（#348）：编辑要回表单重新汇总取价，删除走确认弹窗
     { operation: 'market-report', docType: '市场报货', status: '草稿', actions: ['继续编辑', '删除草稿'] },
+    { operation: 'store-request', docType: '门店报货', status: '草稿', actions: ['继续编辑', '删除草稿'] },
     { operation: 'generic:分院调货出库', docType: '分院调货出库', status: '待收货', actions: ['确认收货'] },
     { operation: 'generic:市场间调货出库', docType: '市场间调货出库', status: '待收货', actions: ['确认收货'] },
   ]
@@ -2894,7 +2900,7 @@ describe('市场报货草稿（#348）', () => {
   it('存草稿：新建时不带 draftId、不传来源明细，存完留在编辑态且下次覆盖同一张', async () => {
     mockDocs({})
     vi.mocked(summarizeStoreReplenishmentRequests).mockResolvedValue({ marketId: 'M1', items: [summaryLine('SKU-1', [11], 4)] })
-    vi.mocked(saveMarketReplenishmentDraft).mockResolvedValue({ id: 'MBH-D9' })
+    vi.mocked(saveMarketReplenishmentDraft).mockResolvedValue({ id: 'MBH-D9', updatedAt: '2026-09-26T01:00:00.000Z' })
     renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1] })
 
     fireEvent.click(await screen.findByRole('button', { name: '汇总门店报货' }))
@@ -2942,7 +2948,7 @@ describe('市场报货草稿（#348）', () => {
   it('存草稿在途：待办「继续编辑」不响应；在途期间换了市场，迟到的单号不写回表单', async () => {
     mockDocs({ inbox: segment([draftRow()]) })
     vi.mocked(summarizeStoreReplenishmentRequests).mockResolvedValue({ marketId: 'M1', items: [summaryLine('SKU-1', [11], 4)] })
-    const slowSave = deferred<{ id: string }>()
+    const slowSave = deferred<{ id: string; updatedAt: string | null }>()
     vi.mocked(saveMarketReplenishmentDraft).mockReturnValue(slowSave.promise)
     vi.mocked(getInventoryCoreDocById).mockResolvedValue(draftDetail([{ skuId: 'SKU-1', quantity: 3 }]))
     renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1, M2] })
@@ -2961,7 +2967,7 @@ describe('市场报货草稿（#348）', () => {
     // 在途期间换市场 = 新世代：迟到的保存结果不能把单号写回（否则下一次「提交」会落到那张单上）
     fireEvent.click(screen.getByRole('tab', { name: '填报表单' }))
     fireEvent.change(marketSelect, { target: { value: 'M2' } })
-    await act(async () => { slowSave.resolve({ id: 'MBH-OLD' }) })
+    await act(async () => { slowSave.resolve({ id: 'MBH-OLD', updatedAt: null }) })
     expect(screen.queryByText('MBH-OLD', { selector: 'span.font-mono' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '创建市场报货单' })).toBeInTheDocument()
   })
@@ -2969,7 +2975,7 @@ describe('市场报货草稿（#348）', () => {
   it('无市场价格权限（marketPriceLocationIds=[]）：不取福利报价，存草稿不带福利选择', async () => {
     mockDocs({})
     vi.mocked(summarizeStoreReplenishmentRequests).mockResolvedValue({ marketId: 'M1', items: [summaryLine('SKU-1', [11], 4)] })
-    vi.mocked(saveMarketReplenishmentDraft).mockResolvedValue({ id: 'MBH-D9' })
+    vi.mocked(saveMarketReplenishmentDraft).mockResolvedValue({ id: 'MBH-D9', updatedAt: '2026-09-26T01:00:00.000Z' })
     renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1], marketPriceLocationIds: [] })
     fireEvent.click(await screen.findByRole('button', { name: '汇总门店报货' }))
     await screen.findByRole('checkbox', { name: '选择 商品SKU-1 SKU-1' })
@@ -2981,7 +2987,7 @@ describe('市场报货草稿（#348）', () => {
   it('价格权只覆盖别的市场（办理 A、价格权在 B）：在 A 市场不取价、不带福利选择（与服务端同绑定判据同源）', async () => {
     mockDocs({})
     vi.mocked(summarizeStoreReplenishmentRequests).mockResolvedValue({ marketId: 'M1', items: [summaryLine('SKU-1', [11], 4)] })
-    vi.mocked(saveMarketReplenishmentDraft).mockResolvedValue({ id: 'MBH-D9' })
+    vi.mocked(saveMarketReplenishmentDraft).mockResolvedValue({ id: 'MBH-D9', updatedAt: '2026-09-26T01:00:00.000Z' })
     renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1], marketPriceLocationIds: ['M2'] })
     fireEvent.click(await screen.findByRole('button', { name: '汇总门店报货' }))
     await screen.findByRole('checkbox', { name: '选择 商品SKU-1 SKU-1' })
@@ -3000,7 +3006,7 @@ describe('市场报货草稿（#348）', () => {
         promotionRuleType: '单品阶梯', recommendedPromotionPlanId: 'P-REC', selectionMode: '系统推荐',
       })),
     }) as never)
-    vi.mocked(saveMarketReplenishmentDraft).mockResolvedValue({ id: 'MBH-D9' })
+    vi.mocked(saveMarketReplenishmentDraft).mockResolvedValue({ id: 'MBH-D9', updatedAt: '2026-09-26T01:00:00.000Z' })
     renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1] })
     fireEvent.click(await screen.findByRole('button', { name: '汇总门店报货' }))
     await screen.findByText('FL-1 · 推荐福利')
@@ -3042,5 +3048,80 @@ describe('市场报货草稿（#348）', () => {
     await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalledWith('单据 MBH-D1 不是可编辑的市场报货草稿'))
     expect(screen.queryByRole('button', { name: '提交市场报货单' })).not.toBeInTheDocument()
     expect(summarizeStoreReplenishmentRequests).not.toHaveBeenCalled()
+  })
+})
+
+describe('门店报货草稿（#348 · 348a）', () => {
+  const M1: InventoryLocationRow = { locationId: 'M1', locationType: '市场', name: '南昌市场', orgNodeId: 'M1', storeId: null, parentLocationId: 'HQ', isActive: true }
+  const S1: InventoryLocationRow = { locationId: 'S1', locationType: '门店', name: '一分院', orgNodeId: 'ORG-S1', storeId: 'S1', parentLocationId: 'M1', isActive: true }
+  const S2: InventoryLocationRow = { locationId: 'S2', locationType: '门店', name: '二分院', orgNodeId: 'ORG-S2', storeId: 'S2', parentLocationId: 'M1', isActive: true }
+  function draftRow() {
+    return docRow({ id: 'DBH-D1', docType: '门店报货', status: '草稿', sourceOrgNodeId: 'ORG-S1', targetOrgNodeId: 'M1', marketId: 'M1' })
+  }
+  function draftDetail(): InventoryDocDetail {
+    return {
+      ...docDetail(draftRow()),
+      remark: '门店草稿',
+      items: [{ id: 1, docId: 'DBH-D1', skuId: 'SKU-1', skuName: '商品1', specName: null, quantity: 3, remark: '急用' } as unknown as InventoryDocDetail['items'][number]],
+    }
+  }
+
+  it('继续编辑：回填门店 / 市场 / 明细并锁定门店，提交带 draftId', async () => {
+    mockDocs({ inbox: segment([draftRow()]) })
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue(draftDetail())
+    vi.mocked(createStoreReplenishmentRequest).mockResolvedValue({ id: 'DBH-D1', updatedAt: null })
+    renderPage({ level: 'store', operation: 'store-request', locations: [M1, S1, S2] })
+    await openDocsTab()
+    expect(screen.getByText('草稿：存了未提交的门店报货单，提交后市场才能汇总、配货')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '继续编辑 DBH-D1' }))
+    expect(await screen.findByText('DBH-D1', { selector: 'span.font-mono' })).toBeInTheDocument()
+    const storeSelect = screen.getByRole('option', { name: '一分院' }).closest('select') as HTMLSelectElement
+    expect(storeSelect.value).toBe('S1')
+    expect(storeSelect.disabled).toBe(true)
+    const submitButton = screen.getByRole('button', { name: '提交门店报货单' })
+    fireEvent.submit(submitButton.closest('form')!)
+    await waitFor(() => expect(createStoreReplenishmentRequest).toHaveBeenCalledWith({
+      storeId: 'S1', marketId: 'M1', docDate: expect.any(String), remark: '门店草稿',
+      items: [{ skuId: 'SKU-1', quantity: 3, remark: '急用' }],
+      draftId: 'DBH-D1',
+      // 草稿乐观锁：回传打开草稿时的版本
+      expectedUpdatedAt: draftRow().updatedAt,
+    }))
+  })
+
+  it('存草稿走 saveStoreReplenishmentDraft，存完停在编辑态', async () => {
+    mockDocs({ inbox: segment([draftRow()]) })
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue(draftDetail())
+    vi.mocked(saveStoreReplenishmentDraft).mockResolvedValue({ id: 'DBH-D1', updatedAt: '2026-09-26T02:00:00.000Z' })
+    renderPage({ level: 'store', operation: 'store-request', locations: [M1, S1] })
+    await openDocsTab()
+    fireEvent.click(screen.getByRole('button', { name: '继续编辑 DBH-D1' }))
+    await screen.findByText('DBH-D1', { selector: 'span.font-mono' })
+    fireEvent.click(screen.getByRole('button', { name: '存草稿' }))
+    await waitFor(() => expect(saveStoreReplenishmentDraft).toHaveBeenCalledWith(expect.objectContaining({ draftId: 'DBH-D1', storeId: 'S1' })))
+    expect(createStoreReplenishmentRequest).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: '提交门店报货单' })).toBeInTheDocument()
+  })
+
+  it('删除草稿按业务分派到门店报货的 action，不串到市场报货', async () => {
+    mockDocs({ inbox: segment([draftRow()]) })
+    vi.mocked(deleteStoreReplenishmentDraft).mockResolvedValue({ id: 'DBH-D1' })
+    renderTab({ operation: 'store-request' })
+    await screen.findByText('待我处理')
+    fireEvent.click(screen.getByRole('button', { name: '删除草稿 DBH-D1' }))
+    expect(screen.getByText('删除门店报货草稿？')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '确认删除' }))
+    await waitFor(() => expect(deleteStoreReplenishmentDraft).toHaveBeenCalledWith({ draftId: 'DBH-D1', reason: null }))
+    expect(deleteMarketReplenishmentDraft).not.toHaveBeenCalled()
+  })
+
+  it('草稿门店已不在可选范围（停用 / 越权）：提示只能删除，不回填', async () => {
+    mockDocs({ inbox: segment([draftRow()]) })
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue(draftDetail())
+    renderPage({ level: 'store', operation: 'store-request', locations: [M1, S2] })
+    await openDocsTab()
+    fireEvent.click(screen.getByRole('button', { name: '继续编辑 DBH-D1' }))
+    await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalledWith('草稿的报货门店已停用或不在你的范围内，只能删除该草稿'))
+    expect(screen.queryByRole('button', { name: '提交门店报货单' })).not.toBeInTheDocument()
   })
 })

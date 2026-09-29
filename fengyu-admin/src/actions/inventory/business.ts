@@ -20,6 +20,8 @@ import {
   createSelfPurchasedReceipt as createSelfPurchasedReceiptImpl,
   createStoreAllocation as createStoreAllocationImpl,
   createStoreReplenishmentRequest as createStoreReplenishmentRequestImpl,
+  deleteStoreReplenishmentDraft as deleteStoreReplenishmentDraftImpl,
+  saveStoreReplenishmentDraft as saveStoreReplenishmentDraftImpl,
   getShipmentReceiptProgress as getShipmentReceiptProgressImpl,
   listMarketEmployeeOptions as listMarketEmployeeOptionsImpl,
   listSupplyChainEmployeeOptions as listSupplyChainEmployeeOptionsImpl,
@@ -63,6 +65,19 @@ export const createStoreReplenishmentRequest = withPermission(
   'inventory:store_operate',
   async (session, input: CreateStoreReplenishmentInput) =>
     createStoreReplenishmentRequestImpl(session, input),
+)
+
+/** 门店报货草稿（#348）：与新建 / 提交同一权限；提交走 createStoreReplenishmentRequest({ draftId })。 */
+export const saveStoreReplenishmentDraft = withPermission(
+  'inventory:store_operate',
+  async (session, input: CreateStoreReplenishmentInput) =>
+    saveStoreReplenishmentDraftImpl(session, input),
+)
+
+export const deleteStoreReplenishmentDraft = withPermission(
+  'inventory:store_operate',
+  async (session, input: { draftId: string; reason?: string | null }) =>
+    deleteStoreReplenishmentDraftImpl(session, input),
 )
 
 export const summarizeStoreReplenishmentRequests = withPermission(

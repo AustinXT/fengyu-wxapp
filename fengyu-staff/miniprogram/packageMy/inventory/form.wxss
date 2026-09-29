@@ -162,7 +162,29 @@
   box-sizing: border-box;
 }
 
+.submit-actions {
+  display: flex;
+  gap: 16rpx;
+}
+
+.draft-tip {
+  margin-bottom: 12rpx;
+  color: #D4820A;
+  font-size: 24rpx;
+}
+
+.draft-button {
+  flex: 1;
+  border: 1rpx solid var(--color-primary);
+  border-radius: 6rpx;
+  background: #FFFFFF;
+  color: var(--color-primary);
+  font-size: 28rpx;
+  line-height: 78rpx;
+}
+
 .submit-button {
+  flex: 2;
   border-radius: 6rpx;
   background: var(--color-primary);
   color: #FFFFFF;

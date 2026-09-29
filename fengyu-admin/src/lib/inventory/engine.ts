@@ -2850,7 +2850,7 @@ export const listInventoryDocCandidateIds = withPermission(
 /**
  * 门店仍有未配报货的 SKU（#337 拍板 A：自选行命中时提示「建议引用报货单」，不拦截）。
  *
- * 候选范围与 `store-allocation-source` 同一套 `candidateConditions`（scope / 类型 / 已取消排除 / 门店收窄），
+ * 候选范围与 `store-allocation-source` 同一套 `candidateConditions`（scope / 类型 / 只认已完成（#348 草稿不提示）/ 门店收窄），
  * 行级未配量与建单守卫 `requestItem.quantity - allocated` 逐字同口径（`candidateItemDoneSql('allocated')`）。
  * 纯提示用途：结果不参与任何写入判定。
  */

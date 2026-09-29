@@ -3,7 +3,7 @@
  *
  * 每个板块 action 第一步调用 prepareBoardContext，统一：
  *   1. validateScope —— UI 选的 scope 必须在账号权限内（越权抛 PermissionError）
- *   2. resolveTimeRange —— 解析本期/上期/去年同期
+ *   2. 时间参数复检（#308，非法报 INVALID_PARAMS 不回落）→ resolveTimeRange 解析本期/上期/去年同期
  *   3. resolveScopeName —— scope 显示名（回显）
  * 返回 meta + comparison 区间 + enabled，板块只管自己的指标查询。
  *
@@ -18,7 +18,7 @@ import type { BoardMeta, BoardParams, DataCenterScope } from './types'
 import { resolveTimeRange } from './time-range'
 import { toComparisonRanges, type ComparisonRanges } from './comparison'
 import { multiStoreName } from './scope-options'
-import { isValidStoresScopeIds, MAX_SCOPE_STORES } from './params'
+import { isValidStoresScopeIds, MAX_SCOPE_STORES, toTimeRangeInput } from './params'
 
 /** 账号能选的最高 scope 层级（驱动筛选器禁用「全部」等） */
 export function getScopeTopLevel(session: AuthSession): 'all' | 'market' | 'store' {
@@ -127,7 +127,13 @@ export async function prepareBoardContext(
   params: BoardParams,
 ): Promise<BoardContext> {
   await validateScope(session, params.scope)
-  const tr = resolveTimeRange(params.timeRange)
+  // 时间参数的服务端复检（#308）：action 收的是客户端原始对象、不经过 parseTimeRange。
+  // URL 层对非法值回落本月；到这里还非法只可能是构造出来的请求，报错比静默回落更好排查。
+  const timeRange = toTimeRangeInput(params.timeRange)
+  if (!timeRange) {
+    throw new Error('INVALID_PARAMS: 时间范围无效（须为合法日期且开始不晚于结束）')
+  }
+  const tr = resolveTimeRange(timeRange)
   const scopeName = await resolveScopeName(params.scope)
   return {
     scope: params.scope,
