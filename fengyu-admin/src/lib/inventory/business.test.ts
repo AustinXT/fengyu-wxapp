@@ -16,6 +16,7 @@ import {
   autoBatchNo,
   lineBatchNo,
   approveItemCompanyShipmentCancellation,
+  approveReturnForRestock,
   assertSkuAvailableToMarket,
   cancelSupplyChainPurchaseOrder,
   cancelItemCompanyShipment,
@@ -4734,5 +4735,81 @@ describe('#270 business 同步和空映射', () => {
       sourceOrgNodeId: 'S1', targetOrgNodeId: 'M1', items: [{ lotId: 1, quantity: 1 }],
     } as never)).rejects.toThrow('LOCATION_MAPPING_MISSING')
     expect(txExecute.mock.calls.map(([q]) => renderSql(q)).join('\n')).not.toContain('inventory_stock_lots')
+  })
+})
+
+describe('退货预留消费加固（#260）', () => {
+  beforeEach(() => vi.resetAllMocks())
+  const reservation = (quantity = '2', fulfilled_quantity = '0', released_quantity = '0') =>
+    ({ id: '77', quantity, fulfilled_quantity, released_quantity })
+
+  function mockApproval(reservations: ReturnType<typeof reservation>[], quantity = '2', updated = 1, docType = '院退货') {
+    vi.mocked(db.execute).mockResolvedValue([{ drifted: false }] as never)
+    const execute = vi.fn(initializedCutoverExecutor(async (query) => {
+      const sql = renderSql(query)
+      const params = sqlParams(query)
+      if (sql.includes('FROM inventory_docs') && sql.includes('FOR UPDATE')) return [{
+        id: 'RETURN-1', doc_type: docType, status: '待审批',
+        source_org_node_id: 'S1', target_org_node_id: 'M1', market_id: 'M1',
+      }]
+      if (sql.includes('FROM inventory_locations')) return [{
+        location_id: params[0], org_node_id: params[0], name: params[0],
+        location_type: params[0] === 'S1' ? '门店' : '市场', parent_location_id: 'HQ', is_active: true,
+      }]
+      if (sql.includes('FROM inventory_doc_items')) return [{
+        ...storeRequestItemRow(), id: '101', doc_id: 'RETURN-1', lot_id: '10', quantity,
+      }]
+      if (sql.includes('FROM inventory_stock_reservations')) return reservations
+      if (sql.includes('UPDATE inventory_stock_reservations')) return Array.from({ length: updated }, () => ({ id: '77' }))
+      if (sql.includes('FROM inventory_stock_lots')) return [{
+        ...shipmentSourceLotRow(), id: params[0], location_id: params[1], quantity_on_hand: '10',
+      }]
+      if (sql.includes('FROM inventory_skus')) return [marketSkuRow('SKU-1')]
+      if (sql.includes('INSERT INTO inventory_stock_lots')) return [{ id: '20' }]
+      if (sql.includes('INSERT INTO inventory_doc_items')) return [{ id: '201' }]
+      if (sql.includes('COUNT(')) return [{ count: '0' }]
+      return []
+    }))
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({ execute } as never))
+    return execute
+  }
+
+  it.each([
+    ['少扣', [reservation('3')], '不一致'],
+    ['超扣', [reservation('1')], '不一致'],
+    ['零条', [], '已失效'],
+    ['多条', [reservation(), { ...reservation(), id: '78' }], '不唯一'],
+  ])('%s fail-closed，不消费预留/库存', async (_, reservations, message) => {
+    const execute = mockApproval(reservations)
+    await expect(approveReturnForRestock(SESSION, { returnDocId: 'RETURN-1' })).rejects.toThrow(message)
+    const calls = execute.mock.calls.map(([query]) => renderSql(query))
+    expect(calls.some((sql) => sql.includes('UPDATE inventory_stock_reservations'))).toBe(false)
+    expect(calls.some((sql) => sql.includes('INSERT INTO inventory_movements'))).toBe(false)
+  })
+
+  it.each([
+    ['正常', reservation(), '2'],
+    ['保留历史履约和释放', reservation('5', '1', '2'), '2'],
+    ['小数剩余量', reservation('0.30', '0.10', '0.10'), '0.10'],
+  ])('%s：累加履约且只消费唯一主键', async (_, row, quantity) => {
+    const execute = mockApproval([row], quantity)
+    await approveReturnForRestock(SESSION, { returnDocId: 'RETURN-1' })
+    const update = execute.mock.calls.find(([query]) => renderSql(query).includes('UPDATE inventory_stock_reservations'))![0]
+    const sql = renderSql(update)
+    expect(sql).toContain('fulfilled_quantity = fulfilled_quantity +')
+    expect(sql).toContain('WHERE id =')
+    expect(sql).toContain('RETURNING id')
+    expect(sql).not.toContain('released_quantity =')
+    expect(sqlParams(update)).toEqual([quantity === '0.10' ? '0.1' : '2', 77])
+  })
+
+  it.each([0, 2])('更新返回 %s 行必须冲突并回滚事务', async (updated) => {
+    mockApproval([reservation()], '2', updated)
+    await expect(approveReturnForRestock(SESSION, { returnDocId: 'RETURN-1' })).rejects.toThrow('CONFLICT: 退货库存预留已被其他操作处理')
+  })
+
+  it('同型市场退货也拒少扣', async () => {
+    mockApproval([reservation('3')], '2', 1, '市场退货')
+    await expect(approveReturnForRestock(SESSION, { returnDocId: 'RETURN-1' })).rejects.toThrow('不一致')
   })
 })

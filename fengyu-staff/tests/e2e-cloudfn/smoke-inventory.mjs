@@ -213,6 +213,7 @@ async function main() {
   await stocktakeFlow(errors)
   await storeRequestDraftFlow(errors)
   await receiveRemainderFlow(errors)
+  await returnReservationFlow(errors)
 
   if (errors.length) {
     rec('  ✗ FAIL')
@@ -604,6 +605,87 @@ async function receiveRemainderFlow(errors) {
   if (again.code === 0) errors.push('已完成的分院配货再收货应被拒')
   if (errors.length === before) {
     rec(`  ✓ 确认收货只收剩余量（#358）：${fphId} 已收 3/10 → 入 7、血缘 7、fulfilled 10、单据已完成、流水 +7；再收被拒`)
+  }
+}
+
+
+// #260：与 #358 分开验证 reservations 历史，不改 doc_items 的收货进度口径。
+async function returnReservationFlow(errors) {
+  if (!(await isPrivateSeedRun())) return
+  ranPrivateLedgerFlow = true
+  const financeId = NS + '_INVFIN'
+  const financeOpenid = NS + '_INVFIN_OPENID'
+  await createTestStaff({
+    employeeId: financeId, openid: financeOpenid, phone: testPhone(14),
+    name: NS + '_市场财务', isManager: false, orgNodeId: TEST_MARKET_ORG_ID, storeId: null,
+  })
+  await createTestPermissionRole({ employeeId: financeId, role: 'inventory_market_finance', scopeId: TEST_MARKET_ORG_ID })
+  for (const shape of ['少扣', '超扣', '零条', '多条', '正常', '历史履约释放', '小数', '末行异常']) {
+    const quantity = shape === '小数' ? 0.1 : 2
+    const client = await getPool().connect()
+    let lot
+    let secondLot = null
+    try {
+      await client.query('BEGIN')
+      await client.query("SET LOCAL session_replication_role = 'replica'")
+      const r = await client.query("INSERT INTO inventory_stock_lots (location_id, sku_id, lot_key, sku_name, batch_no, expiry_date_key, is_gift, quantity_on_hand, market_actual_unit_price, store_actual_unit_price) VALUES ($1,$2,$3,$2,$3,'',false,20,40,100) RETURNING id", [TEST_STORE_ID, INV_SKU_ID, 'R260-' + shape])
+      lot = Number(r.rows[0].id)
+      if (shape === '末行异常') {
+        const extra = await client.query("INSERT INTO inventory_stock_lots (location_id, sku_id, lot_key, sku_name, batch_no, expiry_date_key, is_gift, quantity_on_hand, market_actual_unit_price, store_actual_unit_price) VALUES ($1,$2,'R260-LAST',$2,'R260-LAST','',false,20,40,100) RETURNING id", [TEST_STORE_ID, INV_SKU_ID])
+        secondLot = Number(extra.rows[0].id)
+      }
+      await client.query('COMMIT')
+    } catch (e) {
+      await client.query('ROLLBACK')
+      throw e
+    } finally { client.release() }
+    const made = await invokeStaffApi('inventory.createDoc', {
+      _testOpenid: INV_OPERATOR_OPENID, docType: '院退货', sourceOrgNodeId: TEST_STORE_ORG_ID,
+      targetOrgNodeId: TEST_MARKET_ORG_ID,
+      items: shape === '末行异常'
+        ? [{ lotId: lot, skuId: INV_SKU_ID, quantity: 1 }, { lotId: secondLot, skuId: INV_SKU_ID, quantity: 2 }]
+        : [{ lotId: lot, skuId: INV_SKU_ID, quantity }],
+    })
+    if (made.code !== 0) throw new Error('#260 建退货失败：' + made.message)
+    const id = made.data?.id
+    const [last] = await pgQuery('SELECT id FROM inventory_stock_reservations WHERE request_doc_id = $1 ORDER BY request_item_id DESC LIMIT 1', [id])
+    if (shape === '多条') {
+      await pgQuery('INSERT INTO inventory_stock_reservations (request_doc_id, request_item_id, location_id, lot_id, sku_id, quantity, created_by) SELECT request_doc_id, request_item_id, location_id, lot_id, sku_id, quantity, created_by FROM inventory_stock_reservations WHERE id = $1', [last.id])
+    } else if (shape === '零条') {
+      await pgQuery("UPDATE inventory_stock_reservations SET released_quantity = quantity, status = '已释放' WHERE id = $1", [last.id])
+    } else {
+      const values = {
+        '少扣': [3, 0, 0], '超扣': [1, 0, 0], '末行异常': [3, 0, 0], '正常': [2, 0, 0],
+        '历史履约释放': [5, 1, 2], '小数': [0.3, 0.1, 0.1],
+      }[shape]
+      await pgQuery('UPDATE inventory_stock_reservations SET quantity = $2, fulfilled_quantity = $3, released_quantity = $4 WHERE id = $1', [last.id, ...values])
+    }
+    const snapshot = async () => ({
+      reservations: await pgQuery('SELECT id, status, quantity, fulfilled_quantity, released_quantity FROM inventory_stock_reservations WHERE request_doc_id = $1 ORDER BY id', [id]),
+      balance: (await pgQuery('SELECT quantity_on_hand FROM inventory_stock_lots WHERE id = $1', [lot]))[0].quantity_on_hand,
+      secondBalance: secondLot ? (await pgQuery('SELECT quantity_on_hand FROM inventory_stock_lots WHERE id = $1', [secondLot]))[0].quantity_on_hand : null,
+      docs: (await pgQuery('SELECT count(*) AS n FROM inventory_docs'))[0].n,
+      movements: (await pgQuery('SELECT count(*) AS n FROM inventory_movements'))[0].n,
+      links: (await pgQuery('SELECT count(*) AS n FROM inventory_doc_links'))[0].n,
+      items: await pgQuery('SELECT fulfilled_quantity FROM inventory_doc_items WHERE doc_id = $1 ORDER BY id', [id]),
+      status: (await pgQuery('SELECT status FROM inventory_docs WHERE id = $1', [id]))[0].status,
+    })
+    const before = await snapshot()
+    const approve = () => invokeStaffApi('inventory.approveDoc', { _testOpenid: financeOpenid, id, auditRemark: 'C4 私有验证' })
+    const result = await approve()
+    if (['正常', '历史履约释放', '小数'].includes(shape)) {
+      const after = await snapshot()
+      const row = after.reservations[0]
+      if (result.code !== 0 || row.status !== '已完成'
+        || Math.round((Number(row.fulfilled_quantity) + Number(row.released_quantity)) * 100) !== Math.round(Number(row.quantity) * 100)
+        || Number(after.balance) !== 20 - quantity) errors.push('#260 ' + shape + '守恒失败 ' + JSON.stringify({ result, after }))
+      const again = await approve()
+      if (again.code === 0 || JSON.stringify(after) !== JSON.stringify(await snapshot())) errors.push('#260 重复审批有副作用')
+    } else {
+      if (result.code !== -409 || JSON.stringify(before) !== JSON.stringify(await snapshot())) errors.push('#260 ' + shape + '未 fail-closed/原子回滚 ' + JSON.stringify(result))
+      await pgQuery("UPDATE inventory_stock_reservations SET status = '已释放', released_quantity = quantity - fulfilled_quantity WHERE request_doc_id = $1", [id])
+    }
+    rec('  · #260 ' + shape + ' 实际审批验证完成')
   }
 }
 
