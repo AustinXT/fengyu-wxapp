@@ -10,7 +10,7 @@ describe('DataStartNotice', () => {
       <DataStartNotice
         results={[
           { label: '所选期间', range, groups: [] },
-          { label: '较上期基期', range, groups: [{ axis: 'service', marketId: 'M1', marketName: '南昌', stores: [] }] },
+          { label: '环比基期', range, groups: [{ axis: 'service', marketId: 'M1', marketName: '南昌', stores: [] }] },
         ]}
       />,
     )
@@ -30,7 +30,7 @@ describe('DataStartNotice', () => {
             ] }],
           },
           {
-            label: '较上期基期',
+            label: '环比基期',
             range: { start: '2026-07-01', end: '2026-07-31' },
             groups: [
               { axis: 'performance', marketId: 'M1', marketName: '南昌', stores: [{ storeId: 'S1', storeName: '蓝莱店', start: '2026-08-08' }] },
@@ -42,6 +42,6 @@ describe('DataStartNotice', () => {
     )
     const note = screen.getByRole('note', { name: '数据起点提示' })
     expect(note).toHaveTextContent('业绩 · 南昌 2 家（2026-08-08 ~ 2026-08-12 起）')
-    expect(note).toHaveTextContent('较上期基期（2026-07-01 ~ 2026-07-31）同样早于数据起点（涉及 1 家门店）')
+    expect(note).toHaveTextContent('环比基期（2026-07-01 ~ 2026-07-31）同样早于数据起点（涉及 1 家门店）')
   })
 })

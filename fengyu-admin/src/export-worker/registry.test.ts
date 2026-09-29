@@ -1,4 +1,11 @@
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import ExcelJS from 'exceljs'
+import { writeStreamXlsx } from './xlsx-writer'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+const { mockScopeRows } = vi.hoisted(() => ({ mockScopeRows: [] as Array<{ id: string; name: string; nodeType: string; isActive: boolean | null }> }))
 
 vi.mock('@/actions/data-center/sales', () => ({
   getSalesBoard: vi.fn(),
@@ -59,7 +66,10 @@ vi.mock('@/actions/data-center/commission', () => ({
 }))
 // 员工导出分支会立即查 org_nodes 建路径映射（其余分支的 rows 都是惰性的，不碰 db）
 vi.mock('@/db', () => ({
-  db: { select: vi.fn(() => ({ from: vi.fn().mockResolvedValue([]) })) },
+  db: { select: vi.fn(() => ({ from: vi.fn(() => Object.assign(Promise.resolve([]), {
+    leftJoin: vi.fn(() => ({ where: vi.fn(async () => mockScopeRows) })),
+    where: vi.fn(() => ({ limit: vi.fn(async () => mockScopeRows) })),
+  })) })) },
 }))
 
 import { getSalesBoard } from '@/actions/data-center/sales'
@@ -90,6 +100,9 @@ import { buildOperatingMasterTable } from '@/lib/data-center/operating-master'
 import { DATA_CENTER_VIEW_REQUIRED_ACTIONS } from '@/lib/export-job-types'
 import { DATA_CENTER_STAFF_COMMISSION_ACTIONS } from '@/lib/data-center/reports'
 import { exportCommissionDetail, getCommissionDaily } from '@/actions/data-center/commission'
+import { scopeMetaLabel } from '@/lib/data-center/scope-meta'
+import { STAFF_OUTPUT_SCOPE_NOTE } from '@/lib/data-center/staff-output-note'
+import { completeExportMeta } from './export-meta'
 import { createExportContent } from './registry'
 
 function metricValue(unit: 'amount' | 'count' | 'percent'): number {
@@ -127,8 +140,14 @@ const rankingRow = {
   value: 123.456,
 }
 
+const BOARD_META = {
+  scope: { type: 'all', id: null, name: '全部' },
+  timeRange: { start: '2026-09-01', end: '2026-09-15', presetLabel: '本月', previous: null, lastYear: null },
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
+  mockScopeRows.length = 0
   const sales = boardRow('sales-market')
   const customer = boardRow('customer-market-reg')
   const product = boardRow('product-market')
@@ -137,10 +156,11 @@ beforeEach(() => {
   const storeRankingMetrics = getDataCenterRankingConfig('efficiency-store-ranking').metrics
   const staffRankingMetrics = getDataCenterRankingConfig('efficiency-staff-ranking').metrics
 
-  vi.mocked(getSalesBoard).mockResolvedValue({ byMarket: [sales], byStore: [sales] } as never)
-  vi.mocked(getCustomerBoard).mockResolvedValue({ byMarket: [customer], byStore: [customer] } as never)
-  vi.mocked(getProductBoard).mockResolvedValue({ byMarket: [product], byStore: [product] } as never)
+  vi.mocked(getSalesBoard).mockResolvedValue({ ...BOARD_META, byMarket: [sales], byStore: [sales] } as never)
+  vi.mocked(getCustomerBoard).mockResolvedValue({ ...BOARD_META, byMarket: [customer], byStore: [customer] } as never)
+  vi.mocked(getProductBoard).mockResolvedValue({ ...BOARD_META, byMarket: [product], byStore: [product] } as never)
   vi.mocked(getEfficiencyBoard).mockResolvedValue({
+    ...BOARD_META,
     byMarket: [efficiency],
     byStaff: [staff],
     storeRankings: Object.fromEntries(storeRankingMetrics.map((metric) => [metric.key, [rankingRow]])),
@@ -745,7 +765,7 @@ describe('日常数据一览表导出（#369）', () => {
   })
 
   it('☆ 只导当前页签：视角③带两行合并表头的分组，合计行取服务端 totals，元信息写明期间 / 范围 / 视角', async () => {
-    const content = await createExportContent('data-center', { view: 'report-daily-overview', params: { tab: 'secondary' } })
+    const content = await createExportContent('data-center', { view: 'report-daily-overview', params: { tab: 'secondary', scope: 'market', scopeId: 'M1' } })
     expect(content.sheetName).toBe('二级品项汇总')
     expect(content.columns.map((column) => column.header)).toEqual(['门店', '所属市场', '绝对招牌', '充值', '品项业绩合计'])
     expect(content.columns[2].group).toEqual({ key: 'P1', header: '招牌' })
@@ -825,5 +845,141 @@ describe('数据中心导出 · 顾客频率表', () => {
       ).rejects.toThrow('INVALID_PARAMS')
     }
     expect(exportCustomerFrequencyReport).not.toHaveBeenCalled()
+  })
+})
+
+
+describe('#296 旧四板块 12 个视图全部接入 meta', () => {
+  it('视图总数钉死为 12，防漏登记', () => expect(DATA_CENTER_BOARD_EXPORT_VIEWS).toHaveLength(12))
+  it.each(DATA_CENTER_BOARD_EXPORT_VIEWS)('%s 元信息来自 action 实际区间，不来自原始参数；无基期', async view => {
+    const config = DATA_CENTER_VIEW_CONFIG[view]
+    const metric = config.kind === 'ranking' ? config.metrics[0] : undefined
+    const content = await createExportContent('data-center', {
+      view, params: { preset: 'custom', start: '2026-08-01', end: '2026-08-31' }, metric: metric?.key,
+    })
+    expect(content.meta).toMatchObject({ period: '2026-09-01 ~ 2026-09-15（本月）', scope: '全部' })
+    expect(content.meta).not.toHaveProperty('basePeriod')
+    const entries = completeExportMeta(content.meta, { generatedAt: new Date('2026-09-15T04:05:06Z'), exporterName: '导出测试人' })!
+    expect(entries).toContainEqual({ label: '导出时间', value: '2026-09-15 12:05:06' })
+    expect(entries).toContainEqual({ label: '导出人', value: '导出测试人' })
+    expect(entries.map(entry => entry.label)).not.toContain('环比基期')
+    if (metric) expect(entries).toContainEqual({ label: '排名指标', value: metric.label })
+    const staffView = view === 'efficiency-staff' || view === 'efficiency-staff-ranking'
+    expect(entries.some(entry => entry.label === '口径' && entry.value === STAFF_OUTPUT_SCOPE_NOTE)).toBe(staffView)
+  })
+  it.each(['product-market', 'product-store'] as const)('%s 附品项/二级筛选，有值才写', async view => {
+    const filtered = await createExportContent('data-center', { view, params: { kind: '美容', category: '面部护理' } })
+    expect(filtered.meta?.extra).toContainEqual({ label: '品项分类', value: '美容' })
+    expect(filtered.meta?.extra).toContainEqual({ label: '二级品项', value: '面部护理' })
+    const all = await createExportContent('data-center', { view, params: {} })
+    expect(all.meta?.extra?.some(entry => ['品项分类', '二级品项'].includes(entry.label))).toBe(false)
+  })
+  it.each([
+    ['all', '全部', '全部'], ['authorized', '全部授权门店', '全部授权门店'],
+    ['market', '南昌', '市场 · 南昌'], ['store', '汇东店', '门店 · 汇东店'], ['stores', '甲、乙', '门店 · 甲、乙'],
+  ] as const)('范围 %s 统一类型前缀', (type, name, expected) => expect(scopeMetaLabel({ type }, name)).toBe(expected))
+  it.each(['report-commission-daily', 'report-commission-detail'] as const)('%s 市场/门店前缀与其它视图一致', async view => {
+    for (const scope of ['market', 'store'] as const) {
+      const content = await createExportContent('data-center', { view, params: { month: '2026-08', scope, scopeId: 'S1' } })
+      expect(content.meta?.scope).toBe(scope === 'market' ? '市场 · 全部' : '门店 · 全部')
+    }
+  })
+  it('多店完整名单按所选顺序，停用提示不遗漏；组织信息不完整拒绝生成', async () => {
+    mockScopeRows.push(
+      { id: 'S4', name: '丁店', nodeType: '门店', isActive: false },
+      { id: 'S2', name: '乙店', nodeType: '门店', isActive: true },
+      { id: 'S3', name: '丙店', nodeType: '门店', isActive: true },
+      { id: 'S1', name: '甲店', nodeType: '门店', isActive: true },
+    )
+    const content = await createExportContent('data-center', { view: 'sales-store', params: { scope: 'stores', scopeId: 'S1,S2,S3,S4' } })
+    expect(content.meta?.extra).toContainEqual({ label: '所选门店', value: '甲店、乙店、丙店、丁店' })
+    expect(content.meta?.extra).toContainEqual({ label: '范围提示', value: '1 家已停用未计入' })
+    mockScopeRows.splice(0, 1)
+    await expect(createExportContent('data-center', { view: 'sales-store', params: { scope: 'stores', scopeId: 'S1,S2,S3,S4' } })).rejects.toThrow('INVALID_STATE')
+  })
+})
+
+
+describe('#296 全部 18 视图多店元信息接线，不得丢 extra', () => {
+  beforeEach(async () => {
+    const scope = { type: 'stores', ids: ['S1', 'S2', 'S3', 'S4'] } as const
+    const name = '甲店、乙店、丙店 等 4 家门店'
+    mockScopeRows.push(
+      { id: 'S1', name: '甲店', nodeType: '门店', isActive: true },
+      { id: 'S2', name: '乙店', nodeType: '门店', isActive: true },
+      { id: 'S3', name: '丙店', nodeType: '门店', isActive: true },
+      { id: 'S4', name: '丁店', nodeType: '门店', isActive: false },
+    )
+    for (const fetcher of [getSalesBoard, getCustomerBoard, getProductBoard, getEfficiencyBoard]) {
+      const board = await fetcher({} as never)
+      vi.mocked(fetcher).mockResolvedValue({ ...board, scope: { type: 'stores', id: scope.ids.join(','), name } } as never)
+      vi.mocked(fetcher).mockClear()
+    }
+    vi.mocked(getOperatingMaster).mockResolvedValue({
+      month: '2026-08', range: { start: '2026-08-01', end: '2026-08-31' },
+      ytd: { start: '2026-01-01', end: '2026-08-31' }, asOf: '2026-09-15', scopeName: name,
+      ...buildOperatingMasterTable([], new Map()),
+    } as never)
+    vi.mocked(getDailyOverview).mockResolvedValue({
+      data: buildDailyOverview({ stores: [], categories: [], performanceParts: [], performanceTotals: [], recharge: [], service: [] }),
+      kpis: {} as never, storeCount: 3,
+      period: { label: '上月', current: { start: '2026-08-01', end: '2026-08-31' }, previous: { start: '2026-07-01', end: '2026-07-31' } },
+      scope: { type: 'stores', name },
+    })
+    vi.mocked(exportRemainingCardsReport).mockResolvedValue({
+      columns: [], rows: [], totals: { remaining: 0 }, params: { scope, q: '', show: 'all' }, asOf: '2026-09-15',
+    } as never)
+    vi.mocked(exportCustomerFrequencyReport).mockResolvedValue({
+      rows: [], totals: { visitDays: 0, amount: 0 },
+      params: { scope, searchLabel: '', show: 'all', month: '2026-08', monthLabel: '2026年8月', range: { start: '2026-08-01', end: '2026-08-31' } },
+    } as never)
+    vi.mocked(getCommissionDaily).mockResolvedValue({
+      month: '2026-08', scopeName: name, isAllScope: false,
+      options: { view: 'total', group: 'employee', merge: false, search: '', hideZero: false },
+      grain: 'employee-store', sort: { key: 'total', direction: 'desc' }, rows: [],
+      totals: { days: {}, total: { sale: 0, service: 0, orders: 0 }, employeeCount: 0, rowCount: 0 },
+    } as never)
+    vi.mocked(exportCommissionDetail).mockResolvedValue({
+      rows: [], truncated: false, hasMore: false, summary: null, scopeName: name, month: '2026-08',
+      filters: { employeeId: null, storeId: null, date: null, source: null },
+    } as never)
+  })
+  it.each(DATA_CENTER_EXPORT_VIEWS)('%s 写完整多店名单和停用提示，保留原 extra', async view => {
+    const config = DATA_CENTER_VIEW_CONFIG[view as DataCenterBoardExportView]
+    const content = await createExportContent('data-center', {
+      view, params: { scope: 'stores', scopeId: 'S1,S2,S3,S4', month: '2026-08', kind: '美容', category: '面部护理' },
+      metric: config?.kind === 'ranking' ? config.metrics[0].key : undefined,
+    })
+    expect(content.meta?.scope).toBe('门店 · 甲店、乙店、丙店 等 4 家门店')
+    const entries = completeExportMeta(content.meta, { generatedAt: new Date(0), exporterName: 'a' })!
+    expect(entries).toContainEqual({ label: '所选门店', value: '甲店、乙店、丙店、丁店' })
+    expect(entries).toContainEqual({ label: '范围提示', value: '1 家已停用未计入' })
+    if (view.startsWith('product-')) expect(entries).toContainEqual({ label: '品项分类', value: '美容' })
+    if (config?.kind === 'ranking') expect(entries).toContainEqual({ label: '排名指标', value: config.metrics[0].label })
+    if (view === 'efficiency-staff' || view === 'efficiency-staff-ranking') expect(entries).toContainEqual({ label: '口径', value: STAFF_OUTPUT_SCOPE_NOTE })
+    const labels = entries.map(entry => entry.label)
+    const originalLabels: Partial<Record<typeof view, string[]>> = {
+      'report-operating-master': ['统计时点', '年度累计区间', '说明'],
+      'report-daily-overview': ['视角'],
+      'report-remaining-cards': ['快照日', '显示范围'],
+      'report-customer-frequency': ['显示范围', '日期格'],
+      'report-commission-daily': ['视图', '汇总维度', '口径'],
+      'report-commission-detail': ['员工', '门店', '提成类型'],
+    }
+    for (const label of originalLabels[view] ?? []) expect(labels).toContain(label)
+    // 全部多店视图实际回读 xlsx，确认这两行与原 extra 一起落盘。
+    const dir = await mkdtemp(join(tmpdir(), 'fengyu-multi-meta-'))
+    try {
+      const filePath = join(dir, 'export.xlsx')
+      await writeStreamXlsx({ filePath, ...content, meta: entries })
+      const workbook = new ExcelJS.Workbook()
+      await workbook.xlsx.readFile(filePath)
+      const sheet = workbook.getWorksheet('导出说明')!
+      const exported: Record<string, string> = {}
+      sheet.eachRow(row => { exported[row.getCell(1).text] = row.getCell(2).text })
+      expect(exported['所选门店']).toBe('甲店、乙店、丙店、丁店')
+      expect(exported['范围提示']).toBe('1 家已停用未计入')
+      for (const label of originalLabels[view] ?? []) expect(exported).toHaveProperty(label)
+    } finally { await rm(dir, { recursive: true, force: true }) }
   })
 })

@@ -19,7 +19,7 @@ describe('completeExportMeta', () => {
     expect(meta).toEqual([
       { label: '时间区间', value: '2026-09-01 ~ 2026-09-30' },
       { label: '范围', value: '市场 · 南昌凤御' },
-      { label: '基期区间', value: '2026-08-01 ~ 2026-08-31' },
+      { label: '环比基期', value: '2026-08-01 ~ 2026-08-31' },
       { label: '搜索', value: '张' },
       { label: '导出时间', value: '2026-09-25 00:05:09' },
       { label: '导出人', value: '张三' },
@@ -29,7 +29,7 @@ describe('completeExportMeta', () => {
   it('仅范围型页面 period=null 显式标注；无基期不写基期行', () => {
     const meta = completeExportMeta({ period: null, scope: '全部' }, { generatedAt: new Date(0), exporterName: 'a' })!
     expect(meta[0]).toEqual({ label: '时间区间', value: '不限（仅按范围）' })
-    expect(meta.map((entry) => entry.label)).not.toContain('基期区间')
+    expect(meta.map((entry) => entry.label)).not.toContain('环比基期')
   })
 
   it('时间区间 / 范围为空白 → 抛 INVALID_STATE（字段齐全但无法自证口径，不如让任务失败）', () => {
@@ -45,7 +45,7 @@ describe('completeExportMeta', () => {
       { generatedAt: new Date(Number.NaN), exporterName: '' },
     )!
     expect(meta[0].value).toBe('2026-09')
-    expect(meta.map((entry) => entry.label)).not.toContain('基期区间')
+    expect(meta.map((entry) => entry.label)).not.toContain('环比基期')
     expect(meta.find((entry) => entry.label === '导出时间')?.value).toBe('—')
     expect(meta.at(-1)).toEqual({ label: '导出人', value: '—' })
   })

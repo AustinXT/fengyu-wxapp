@@ -120369,7 +120369,7 @@ var require_lodash12 = __commonJS((exports, module) => {
   function assocIndexOf(array3, key) {
     var length = array3.length;
     while (length--) {
-      if (eq23(array3[length][0], key)) {
+      if (eq24(array3[length][0], key)) {
         return length;
       }
     }
@@ -120507,7 +120507,7 @@ var require_lodash12 = __commonJS((exports, module) => {
       case boolTag:
       case dateTag:
       case numberTag:
-        return eq23(+object, +other);
+        return eq24(+object, +other);
       case errorTag:
         return object.name == other.name && object.message == other.message;
       case regexpTag:
@@ -120665,7 +120665,7 @@ var require_lodash12 = __commonJS((exports, module) => {
     }
     return "";
   }
-  function eq23(value2, other) {
+  function eq24(value2, other) {
     return value2 === other || value2 !== value2 && other !== other;
   }
   var isArguments = baseIsArguments(function() {
@@ -121523,7 +121523,7 @@ var require_lodash16 = __commonJS((exports, module) => {
   function assocIndexOf(array3, key) {
     var length = array3.length;
     while (length--) {
-      if (eq23(array3[length][0], key)) {
+      if (eq24(array3[length][0], key)) {
         return length;
       }
     }
@@ -121608,7 +121608,7 @@ var require_lodash16 = __commonJS((exports, module) => {
   function uniq(array3) {
     return array3 && array3.length ? baseUniq(array3) : [];
   }
-  function eq23(value2, other) {
+  function eq24(value2, other) {
     return value2 === other || value2 !== value2 && other !== other;
   }
   function isFunction(value2) {
@@ -121955,7 +121955,7 @@ var require_lodash17 = __commonJS((exports, module) => {
   function assocIndexOf(array3, key) {
     var length = array3.length;
     while (length--) {
-      if (eq23(array3[length][0], key)) {
+      if (eq24(array3[length][0], key)) {
         return length;
       }
     }
@@ -122218,7 +122218,7 @@ var require_lodash17 = __commonJS((exports, module) => {
       case boolTag:
       case dateTag:
       case numberTag:
-        return eq23(+object, +other);
+        return eq24(+object, +other);
       case errorTag:
         return object.name == other.name && object.message == other.message;
       case regexpTag:
@@ -122432,7 +122432,7 @@ var require_lodash17 = __commonJS((exports, module) => {
     return memoized;
   }
   memoize.Cache = MapCache;
-  function eq23(value2, other) {
+  function eq24(value2, other) {
     return value2 === other || value2 !== value2 && other !== other;
   }
   function isArguments(value2) {
@@ -130046,14 +130046,14 @@ var require_lodash18 = __commonJS((exports, module) => {
     return result;
   }
   function assignInDefaults(objValue, srcValue, key, object) {
-    if (objValue === undefined || eq23(objValue, objectProto[key]) && !hasOwnProperty.call(object, key)) {
+    if (objValue === undefined || eq24(objValue, objectProto[key]) && !hasOwnProperty.call(object, key)) {
       return srcValue;
     }
     return objValue;
   }
   function assignValue(object, key, value2) {
     var objValue = object[key];
-    if (!(hasOwnProperty.call(object, key) && eq23(objValue, value2)) || value2 === undefined && !(key in object)) {
+    if (!(hasOwnProperty.call(object, key) && eq24(objValue, value2)) || value2 === undefined && !(key in object)) {
       object[key] = value2;
     }
   }
@@ -130123,7 +130123,7 @@ var require_lodash18 = __commonJS((exports, module) => {
     }
     var type = typeof index3;
     if (type == "number" ? isArrayLike(object) && isIndex(index3, object.length) : type == "string" && (index3 in object)) {
-      return eq23(object[index3], value2);
+      return eq24(object[index3], value2);
     }
     return false;
   }
@@ -130140,7 +130140,7 @@ var require_lodash18 = __commonJS((exports, module) => {
     }
     return result;
   }
-  function eq23(value2, other) {
+  function eq24(value2, other) {
     return value2 === other || value2 !== value2 && other !== other;
   }
   function isArguments(value2) {
@@ -132393,7 +132393,7 @@ var require_lodash20 = __commonJS((exports, module) => {
   function assocIndexOf(array3, key) {
     var length = array3.length;
     while (length--) {
-      if (eq23(array3[length][0], key)) {
+      if (eq24(array3[length][0], key)) {
         return length;
       }
     }
@@ -132506,7 +132506,7 @@ var require_lodash20 = __commonJS((exports, module) => {
   var difference = baseRest(function(array3, values2) {
     return isArrayLikeObject(array3) ? baseDifference(array3, baseFlatten(values2, 1, isArrayLikeObject, true)) : [];
   });
-  function eq23(value2, other) {
+  function eq24(value2, other) {
     return value2 === other || value2 !== value2 && other !== other;
   }
   function isArguments(value2) {
@@ -132782,7 +132782,7 @@ var require_lodash21 = __commonJS((exports, module) => {
   function assocIndexOf(array3, key) {
     var length = array3.length;
     while (length--) {
-      if (eq23(array3[length][0], key)) {
+      if (eq24(array3[length][0], key)) {
         return length;
       }
     }
@@ -132904,7 +132904,7 @@ var require_lodash21 = __commonJS((exports, module) => {
   var union3 = baseRest(function(arrays) {
     return baseUniq(baseFlatten(arrays, 1, isArrayLikeObject, true));
   });
-  function eq23(value2, other) {
+  function eq24(value2, other) {
     return value2 === other || value2 !== value2 && other !== other;
   }
   function isArguments(value2) {
@@ -134889,10 +134889,10 @@ var require_glob = __commonJS((exports, module) => {
       this.emit("resume");
       this.paused = false;
       if (this._emitQueue.length) {
-        var eq23 = this._emitQueue.slice(0);
+        var eq24 = this._emitQueue.slice(0);
         this._emitQueue.length = 0;
-        for (var i = 0;i < eq23.length; i++) {
-          var e = eq23[i];
+        for (var i = 0;i < eq24.length; i++) {
+          var e = eq24[i];
           this._emitMatch(e[0], e[1]);
         }
       }
@@ -155450,7 +155450,7 @@ var require_excel = __commonJS((exports, module) => {
 
 // src/export-worker/index.ts
 init_db2();
-var import_drizzle_orm79 = __toESM(require_drizzle_orm(), 1);
+var import_drizzle_orm80 = __toESM(require_drizzle_orm(), 1);
 import { createReadStream } from "node:fs";
 import { mkdtemp, rm as rm2 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -180890,6 +180890,9 @@ function activeStoreCondition(storeCol) {
     )
   `;
 }
+function isDataCenterActiveStore(store) {
+  return store.isActive;
+}
 
 // src/lib/data-center/scope-sql.ts
 function scopeFilterSql(session4, scope, storeCol = "so.store_id") {
@@ -184139,13 +184142,6 @@ function parseOperatingMasterExportScope(raw) {
   }
   throw new Error("INVALID_PARAMS: 导出范围参数不完整或无效");
 }
-function operatingMasterScopeMeta(scope, name) {
-  if (scope.type === "market")
-    return `市场 · ${name}`;
-  if (scope.type === "store" || scope.type === "stores")
-    return `门店 · ${name}`;
-  return name;
-}
 function operatingMasterExportGroup(column2) {
   return column2.group?.key === BLANK_GROUP.key ? BLANK_FROZEN_GROUP : column2.group;
 }
@@ -184489,6 +184485,9 @@ async function loadStoreDataStarts(now = Date.now()) {
   });
   return inflight;
 }
+
+// src/lib/data-center/base-period.ts
+var MOM_BASE_PERIOD_LABEL = "环比基期";
 
 // src/lib/data-center/data-start.ts
 function scopeDataStart(axis, stores3, starts) {
@@ -186021,20 +186020,52 @@ var exportCustomerFrequencyReport = withAllPermissions(DATA_CENTER_CUSTOMER_DETA
 
 // src/export-worker/report-views.ts
 init_time_range();
-async function scopeMetaLabel(scope) {
-  const name = await resolveScopeName(scope);
+
+// src/export-worker/scope-meta.ts
+init_db2();
+init_org();
+var import_drizzle_orm78 = __toESM(require_drizzle_orm(), 1);
+
+// src/lib/data-center/scope-meta.ts
+function scopeMetaLabel(scope, name) {
   if (scope.type === "market")
     return `市场 · ${name}`;
   if (scope.type === "store" || scope.type === "stores")
     return `门店 · ${name}`;
   return name;
 }
+
+// src/export-worker/scope-meta.ts
+async function scopeExportMeta(scope, name) {
+  if (scope.type !== "stores")
+    return { scope: scopeMetaLabel(scope, name ?? await resolveScopeName(scope)) };
+  const rows = await db2.select({ id: stores.storeId, name: stores.storeName, nodeType: orgNodes.type, isActive: orgNodes.isActive }).from(stores).leftJoin(orgNodes, import_drizzle_orm78.eq(stores.orgNodeId, orgNodes.id)).where(import_drizzle_orm78.inArray(stores.storeId, scope.ids));
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const selected = scope.ids.map((id) => {
+    const row = byId.get(id);
+    if (!row || row.nodeType !== "门店" || row.isActive === null) {
+      throw new Error("INVALID_STATE: 所选门店的组织信息不完整，请刷新后重试");
+    }
+    return { ...row, isActive: row.isActive };
+  });
+  const inactiveCount = selected.filter((row) => !isDataCenterActiveStore({ isActive: row.isActive })).length;
+  return {
+    scope: scopeMetaLabel(scope, multiStoreName(selected.map((row) => row.name))),
+    extra: [
+      { label: "所选门店", value: selected.map((row) => row.name).join("、") },
+      ...inactiveCount ? [{ label: "范围提示", value: `${inactiveCount} 家已停用未计入` }] : []
+    ]
+  };
+}
+
+// src/export-worker/report-views.ts
 async function* fromArray(rows) {
   for (const row of rows)
     yield row;
 }
 async function remainingCardsContent(params) {
   const report = await exportRemainingCardsReport(params);
+  const scopeMeta = await scopeExportMeta(report.params.scope);
   const specs = remainingCardsColumnSpecs(report.columns);
   return {
     sheetName: "顾客剩余卡项清单",
@@ -186044,8 +186075,9 @@ async function remainingCardsContent(params) {
     totalsLabel: "合计",
     meta: {
       period: null,
-      scope: await scopeMetaLabel(report.params.scope),
+      ...scopeMeta,
       extra: [
+        ...scopeMeta.extra ?? [],
         { label: "快照日", value: report.asOf },
         { label: "显示范围", value: report.params.show === "remaining" ? "只看有剩余" : "全部顾客" },
         ...report.params.q ? [{ label: "顾客搜索", value: displaySearchTerm(report.params.q) }] : []
@@ -186059,6 +186091,7 @@ async function customerFrequencyContent(params) {
   if (params.month > shanghaiToday().slice(0, 7))
     throw new Error("INVALID_PARAMS: 不能导出未来月份");
   const report = await exportCustomerFrequencyReport(params);
+  const scopeMeta = await scopeExportMeta(report.params.scope);
   const specs = frequencyExportColumnSpecs(report.params.month);
   return {
     sheetName: "顾客频率表",
@@ -186068,8 +186101,9 @@ async function customerFrequencyContent(params) {
     totalsLabel: "合计",
     meta: {
       period: `${report.params.range.start} ~ ${report.params.range.end}（${report.params.monthLabel}）`,
-      scope: await scopeMetaLabel(report.params.scope),
+      ...scopeMeta,
       extra: [
+        ...scopeMeta.extra ?? [],
         { label: "显示范围", value: report.params.show === "visited" ? "只看有到店" : "全部顾客" },
         ...report.params.searchLabel ? [{ label: "顾客搜索", value: report.params.searchLabel }] : [],
         { label: "日期格", value: "每日拆「到店 / 金额」两列：到店写 ✓；金额为当日消费净额（按款项归属日期，退款为负）" }
@@ -186448,41 +186482,41 @@ function buildCommissionDetailColumns(input) {
 }
 
 // src/lib/data-center/commission-sql.ts
-var import_drizzle_orm78 = __toESM(require_drizzle_orm(), 1);
-var SALE_FROM = import_drizzle_orm78.sql`
+var import_drizzle_orm79 = __toESM(require_drizzle_orm(), 1);
+var SALE_FROM = import_drizzle_orm79.sql`
       FROM sale_payment_item_allocations spia
       JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
       JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
       JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
       JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id`;
 function saleWhere(session4, scope, filters) {
-  return import_drizzle_orm78.sql`
+  return import_drizzle_orm79.sql`
       WHERE ${scopeFilterSql(session4, scope, "so.store_id")}
         AND spia.is_void = FALSE
         AND so.sale_order_type IN ('销售单', '转换单')
         AND spe.status = '已支付'
         AND spe.performance_date BETWEEN ${filters.range.start} AND ${filters.range.end}
-        ${filters.employeeId ? import_drizzle_orm78.sql`AND spia.employee_id = ${filters.employeeId}` : import_drizzle_orm78.sql``}
-        ${filters.storeId ? import_drizzle_orm78.sql`AND so.store_id = ${filters.storeId}` : import_drizzle_orm78.sql``}`;
+        ${filters.employeeId ? import_drizzle_orm79.sql`AND spia.employee_id = ${filters.employeeId}` : import_drizzle_orm79.sql``}
+        ${filters.storeId ? import_drizzle_orm79.sql`AND so.store_id = ${filters.storeId}` : import_drizzle_orm79.sql``}`;
 }
-var SERVICE_FROM = import_drizzle_orm78.sql`
+var SERVICE_FROM = import_drizzle_orm79.sql`
       FROM service_commissions sc
       JOIN service_items sit ON sit.service_item_id = sc.service_item_id
       JOIN service_orders so ON so.service_order_id = sit.service_order_id`;
 function serviceWhere(session4, scope, filters) {
-  return import_drizzle_orm78.sql`
+  return import_drizzle_orm79.sql`
       WHERE ${scopeFilterSql(session4, scope, "so.store_id")}
         AND sc.is_void = FALSE
         AND so.status = '已完成'
         AND so.service_date BETWEEN ${filters.range.start} AND ${filters.range.end}
-        ${filters.employeeId ? import_drizzle_orm78.sql`AND sc.employee_id = ${filters.employeeId}` : import_drizzle_orm78.sql``}
-        ${filters.storeId ? import_drizzle_orm78.sql`AND so.store_id = ${filters.storeId}` : import_drizzle_orm78.sql``}`;
+        ${filters.employeeId ? import_drizzle_orm79.sql`AND sc.employee_id = ${filters.employeeId}` : import_drizzle_orm79.sql``}
+        ${filters.storeId ? import_drizzle_orm79.sql`AND so.store_id = ${filters.storeId}` : import_drizzle_orm79.sql``}`;
 }
 function sourceParts(source, sale, service) {
   return source === "sale" ? [sale] : source === "service" ? [service] : [sale, service];
 }
 function commissionLinesCteSql(session4, scope, filters) {
-  const sale = import_drizzle_orm78.sql`
+  const sale = import_drizzle_orm79.sql`
       SELECT 'sale'::text AS source, spia.id AS source_id, spia.employee_id, so.store_id,
              spe.performance_date AS biz_date,
              COALESCE(spia.commission_amount::numeric, 0) AS sale_commission,
@@ -186490,7 +186524,7 @@ function commissionLinesCteSql(session4, scope, filters) {
              'S:' || so.sale_order_id AS order_key
       ${SALE_FROM}
       ${saleWhere(session4, scope, filters)}`;
-  const service = import_drizzle_orm78.sql`
+  const service = import_drizzle_orm79.sql`
       SELECT 'service'::text AS source, sc.id AS source_id, sc.employee_id, so.store_id,
              so.service_date AS biz_date,
              0::numeric AS sale_commission,
@@ -186498,21 +186532,21 @@ function commissionLinesCteSql(session4, scope, filters) {
              'V:' || so.service_order_id AS order_key
       ${SERVICE_FROM}
       ${serviceWhere(session4, scope, filters)}`;
-  return import_drizzle_orm78.sql`commission_lines AS (${import_drizzle_orm78.sql.join(sourceParts(filters.source, sale, service), import_drizzle_orm78.sql` UNION ALL `)})`;
+  return import_drizzle_orm79.sql`commission_lines AS (${import_drizzle_orm79.sql.join(sourceParts(filters.source, sale, service), import_drizzle_orm79.sql` UNION ALL `)})`;
 }
 function escapeLike(text6) {
   return text6.replace(/[\\%_]/g, (ch) => `\\${ch}`);
 }
 function groupKeySql(grain) {
   if (grain === "position")
-    return import_drizzle_orm78.sql`COALESCE(NULLIF(TRIM(sw.position_name), ''), ${NO_POSITION_LABEL})`;
+    return import_drizzle_orm79.sql`COALESCE(NULLIF(TRIM(sw.position_name), ''), ${NO_POSITION_LABEL})`;
   if (grain === "employee")
-    return import_drizzle_orm78.sql`cl.employee_id`;
-  return import_drizzle_orm78.sql`cl.employee_id || '|' || cl.store_id`;
+    return import_drizzle_orm79.sql`cl.employee_id`;
+  return import_drizzle_orm79.sql`cl.employee_id || '|' || cl.store_id`;
 }
 function commissionMatrixSql(session4, scope, range, grain, options) {
   const pattern = options.search ? `%${escapeLike(options.search)}%` : null;
-  return import_drizzle_orm78.sql`
+  return import_drizzle_orm79.sql`
     WITH ${commissionLinesCteSql(session4, scope, { range })},
     tagged AS (
       SELECT cl.*, ${groupKeySql(grain)} AS gk,
@@ -186520,14 +186554,14 @@ function commissionMatrixSql(session4, scope, range, grain, options) {
       FROM commission_lines cl
       LEFT JOIN staff_wechat_users sw ON sw.employee_id = cl.employee_id
       LEFT JOIN stores st ON st.store_id = cl.store_id
-      ${pattern ? import_drizzle_orm78.sql`WHERE (sw.name ILIKE ${pattern} OR sw.position_name ILIKE ${pattern} OR st.store_name ILIKE ${pattern})` : import_drizzle_orm78.sql``}
+      ${pattern ? import_drizzle_orm79.sql`WHERE (sw.name ILIKE ${pattern} OR sw.position_name ILIKE ${pattern} OR st.store_name ILIKE ${pattern})` : import_drizzle_orm79.sql``}
     ),
     visible AS (
       SELECT * FROM tagged
-      ${options.hideZero ? import_drizzle_orm78.sql`WHERE gk IN (
+      ${options.hideZero ? import_drizzle_orm79.sql`WHERE gk IN (
             SELECT gk FROM tagged GROUP BY gk
             HAVING SUM(sale_commission + service_commission) <> 0
-          )` : import_drizzle_orm78.sql``}
+          )` : import_drizzle_orm79.sql``}
     )
     SELECT gk,
            biz_date::text AS d,
@@ -186548,7 +186582,7 @@ function commissionMatrixSql(session4, scope, range, grain, options) {
   `;
 }
 function commissionKpiSql(session4, scope, range) {
-  return import_drizzle_orm78.sql`
+  return import_drizzle_orm79.sql`
     WITH ${commissionLinesCteSql(session4, scope, { range })},
     per_employee AS (
       SELECT employee_id, SUM(sale_commission + service_commission) AS net
@@ -186564,7 +186598,7 @@ function commissionKpiSql(session4, scope, range) {
   `;
 }
 function pendingAllocationSql(session4, scope, range) {
-  return import_drizzle_orm78.sql`
+  return import_drizzle_orm79.sql`
     SELECT COUNT(*)::int AS count, COALESCE(SUM(sop.amount::numeric), 0) AS amount
     FROM sale_order_payments sop
     JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
@@ -186594,7 +186628,7 @@ function pendingAllocationSql(session4, scope, range) {
   `;
 }
 function commissionEmployeeOptionsSql(session4, scope, range) {
-  return import_drizzle_orm78.sql`
+  return import_drizzle_orm79.sql`
     WITH ${commissionLinesCteSql(session4, scope, { range })}
     SELECT e.employee_id, sw.name, sw.position_name,
            COALESCE(home.store_name, org.name) AS home_name
@@ -186614,7 +186648,7 @@ function detailLineFilters(filters, month) {
   };
 }
 function detailRowsCteSql(session4, scope, filters) {
-  const sale = import_drizzle_orm78.sql`
+  const sale = import_drizzle_orm79.sql`
       SELECT 'sale'::text AS source, spia.id AS source_id, spe.performance_date AS biz_date,
              so.store_id, COALESCE(st.store_name, so.store_name) AS store_name,
              spia.employee_id, sw.name AS employee_name, sw.position_name,
@@ -186634,7 +186668,7 @@ function detailRowsCteSql(session4, scope, filters) {
       LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
       LEFT JOIN product_categories pc ON pc.category_id = ps.category_id
       ${saleWhere(session4, scope, filters)}`;
-  const service = import_drizzle_orm78.sql`
+  const service = import_drizzle_orm79.sql`
       SELECT 'service'::text AS source, sc.id AS source_id, so.service_date AS biz_date,
              so.store_id, st.store_name,
              sc.employee_id, sw.name AS employee_name, sw.position_name,
@@ -186655,16 +186689,16 @@ function detailRowsCteSql(session4, scope, filters) {
       LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
       LEFT JOIN product_categories pc ON pc.category_id = ps.category_id
       ${serviceWhere(session4, scope, filters)}`;
-  return import_drizzle_orm78.sql`detail_rows AS (${import_drizzle_orm78.sql.join(sourceParts(filters.source, sale, service), import_drizzle_orm78.sql` UNION ALL `)})`;
+  return import_drizzle_orm79.sql`detail_rows AS (${import_drizzle_orm79.sql.join(sourceParts(filters.source, sale, service), import_drizzle_orm79.sql` UNION ALL `)})`;
 }
 function commissionDetailPageSql(session4, scope, filters, page) {
-  const seek = page.after ? import_drizzle_orm78.sql`WHERE (biz_date < ${page.after.d}::date
+  const seek = page.after ? import_drizzle_orm79.sql`WHERE (biz_date < ${page.after.d}::date
             OR (biz_date = ${page.after.d}::date AND source > ${page.after.t})
-            OR (biz_date = ${page.after.d}::date AND source = ${page.after.t} AND source_id < ${page.after.id}))` : page.before ? import_drizzle_orm78.sql`WHERE (biz_date > ${page.before.d}::date
+            OR (biz_date = ${page.after.d}::date AND source = ${page.after.t} AND source_id < ${page.after.id}))` : page.before ? import_drizzle_orm79.sql`WHERE (biz_date > ${page.before.d}::date
             OR (biz_date = ${page.before.d}::date AND source < ${page.before.t})
-            OR (biz_date = ${page.before.d}::date AND source = ${page.before.t} AND source_id > ${page.before.id}))` : import_drizzle_orm78.sql``;
-  const order = page.before && !page.after ? import_drizzle_orm78.sql`ORDER BY biz_date ASC, source DESC, source_id ASC` : import_drizzle_orm78.sql`ORDER BY biz_date DESC, source ASC, source_id DESC`;
-  return import_drizzle_orm78.sql`
+            OR (biz_date = ${page.before.d}::date AND source = ${page.before.t} AND source_id > ${page.before.id}))` : import_drizzle_orm79.sql``;
+  const order = page.before && !page.after ? import_drizzle_orm79.sql`ORDER BY biz_date ASC, source DESC, source_id ASC` : import_drizzle_orm79.sql`ORDER BY biz_date DESC, source ASC, source_id DESC`;
+  return import_drizzle_orm79.sql`
     WITH ${detailRowsCteSql(session4, scope, filters)}
     SELECT source, source_id, biz_date::text AS biz_date, store_id, store_name, employee_id, employee_name,
            position_name, order_id, payment_id, customer_name, order_kind, product_name, category_l1, category_l2,
@@ -186676,7 +186710,7 @@ function commissionDetailPageSql(session4, scope, filters, page) {
   `;
 }
 function commissionDetailSummarySql(session4, scope, filters) {
-  const sale = import_drizzle_orm78.sql`
+  const sale = import_drizzle_orm79.sql`
       SELECT 'sale'::text AS source, 'S:' || so.sale_order_id AS order_key,
              spir.id AS receipt_id,
              spir.amount::numeric AS received,
@@ -186684,7 +186718,7 @@ function commissionDetailSummarySql(session4, scope, filters) {
              COALESCE(spia.commission_amount::numeric, 0) AS commission
       ${SALE_FROM}
       ${saleWhere(session4, scope, filters)}`;
-  const service = import_drizzle_orm78.sql`
+  const service = import_drizzle_orm79.sql`
       SELECT 'service'::text AS source, 'V:' || so.service_order_id AS order_key,
              NULL::bigint AS receipt_id,
              0::numeric AS received,
@@ -186692,8 +186726,8 @@ function commissionDetailSummarySql(session4, scope, filters) {
              sc.commission_amount::numeric AS commission
       ${SERVICE_FROM}
       ${serviceWhere(session4, scope, filters)}`;
-  return import_drizzle_orm78.sql`
-    WITH summary_rows AS (${import_drizzle_orm78.sql.join(sourceParts(filters.source, sale, service), import_drizzle_orm78.sql` UNION ALL `)})
+  return import_drizzle_orm79.sql`
+    WITH summary_rows AS (${import_drizzle_orm79.sql.join(sourceParts(filters.source, sale, service), import_drizzle_orm79.sql` UNION ALL `)})
     SELECT COUNT(*)::int AS count,
            COUNT(DISTINCT order_key)::int AS orders,
            -- 一条 receipt 会分给多名员工 / 多个角色，实收按 receipt 去重后再合计，否则成倍放大
@@ -186950,6 +186984,7 @@ async function commissionDailyExport(params) {
   if (params.month > shanghaiToday().slice(0, 7))
     throw new Error("INVALID_PARAMS: 不能导出未来月份");
   const data = await getCommissionDaily(params);
+  const scopeMeta = await scopeExportMeta(parseScope(params), data.scopeName);
   const columns3 = buildCommissionDailyColumns({
     month: data.month,
     view: data.options.view,
@@ -186957,6 +186992,7 @@ async function commissionDailyExport(params) {
     today: shanghaiToday()
   });
   const extra = [
+    ...scopeMeta.extra ?? [],
     { label: "视图", value: COMMISSION_VIEW_LABELS[data.options.view] },
     {
       label: "汇总维度",
@@ -186972,7 +187008,7 @@ async function commissionDailyExport(params) {
     rows: asRows2(data.rows),
     frozenColumns: countLeftFrozen(columns3),
     totalsLabel: commissionTotalsLabel(data.grain, data.totals),
-    meta: { period: periodText(data.month), scope: data.scopeName, extra }
+    meta: { period: periodText(data.month), ...scopeMeta, extra }
   };
 }
 async function commissionDetailExport(params) {
@@ -186983,6 +187019,7 @@ async function commissionDetailExport(params) {
   const fetch2 = (options) => exportCommissionDetail(params, options);
   const first3 = await fetch2({ limit: EXPORT_WORKER_BATCH_SIZE });
   const { filters, summary } = first3;
+  const scopeMeta = await scopeExportMeta(parseScope(params), first3.scopeName);
   const columns3 = buildCommissionDetailColumns({ showEmployee: !filters.employeeId });
   const totals = summary ? { received: summary.received, allocated: summary.allocated, commission: summary.commission, rate: summary.averageRate } : undefined;
   const employee = filters.employeeId ? (() => {
@@ -186990,6 +187027,7 @@ async function commissionDetailExport(params) {
     return row ? `${row.employeeName}（${row.positionName || "无岗位"}）` : filters.employeeId;
   })() : "全部员工";
   const extra = [
+    ...scopeMeta.extra ?? [],
     { label: "员工", value: employee },
     { label: "门店", value: filters.storeId ? first3.rows[0]?.storeName ?? filters.storeId : "范围内全部门店" },
     { label: "提成类型", value: filters.source ? COMMISSION_SOURCE_LABELS[filters.source] : "全部" },
@@ -187006,11 +187044,14 @@ async function commissionDetailExport(params) {
     totalsLabel: `合计（${summary?.count ?? 0} 条）`,
     meta: {
       period: filters.date ? `${filters.date} ~ ${filters.date}` : periodText(first3.month),
-      scope: first3.scopeName,
+      ...scopeMeta,
       extra
     }
   };
 }
+
+// src/lib/data-center/staff-output-note.ts
+var STAFF_OUTPUT_SCOPE_NOTE = "数值为员工个人全域产出";
 
 // src/export-worker/registry.ts
 function value(row, key) {
@@ -187393,7 +187434,17 @@ var inventoryMovementColumns = mapColumns([
   { header: "经办人", width: 12, key: "operatorName", map: (row) => String(value(row, "operatorName") ?? value(row, "operatorId") ?? "") },
   { header: "备注", width: 24, key: "remark" }
 ]);
-function breakdownContent(view3, rows) {
+async function boardExportMeta(board, scope, extra = []) {
+  const scopeMeta = await scopeExportMeta(scope, board.scope.name);
+  const period = `${board.timeRange.start} ~ ${board.timeRange.end}`;
+  const presetLabel = board.timeRange.presetLabel === period ? "自定义" : board.timeRange.presetLabel;
+  return {
+    period: `${period}（${presetLabel}）`,
+    ...scopeMeta,
+    extra: [...scopeMeta.extra ?? [], ...extra]
+  };
+}
+function breakdownContent(view3, rows, meta) {
   const config = getDataCenterBreakdownConfig(view3);
   const columns3 = [
     { header: config.groupLabel, width: 18, value: (row) => text6(row, "groupName") }
@@ -187414,10 +187465,11 @@ function breakdownContent(view3, rows) {
   return {
     sheetName: exportJobLabel("data-center", { view: view3, params: {} }).replace(/.*-/, "").slice(0, 31),
     columns: columns3,
-    rows: fromRows(rows)
+    rows: fromRows(rows),
+    meta
   };
 }
-function rankingContent(rows, metric2) {
+function rankingContent(rows, metric2, meta) {
   const columns3 = [
     { header: "排名", width: 8, value: (row) => numberOrEmpty(row, "rank") },
     { header: "名称", width: 20, value: (row) => text6(row, "name") },
@@ -187427,7 +187479,8 @@ function rankingContent(rows, metric2) {
   return {
     sheetName: metric2.label,
     columns: columns3,
-    rows: fromRows(rows)
+    rows: fromRows(rows),
+    meta
   };
 }
 async function operatingMasterContent(raw) {
@@ -187435,6 +187488,7 @@ async function operatingMasterContent(raw) {
     throw new Error("INVALID_PARAMS: 导出缺少统计月份");
   const scope = parseOperatingMasterExportScope({ scope: raw.scope, scopeId: raw.scopeId });
   const result = await getOperatingMaster({ scope, month: raw.month });
+  const scopeMeta = await scopeExportMeta(scope, result.scopeName);
   const columns3 = toWorkerExportColumns(OPERATING_MASTER_COLUMNS, result.totals).map((column2, index3) => {
     const spec = OPERATING_MASTER_COLUMNS[index3];
     const group = operatingMasterExportGroup(spec);
@@ -187453,8 +187507,9 @@ async function operatingMasterContent(raw) {
     isEmphasisRow: (row) => isOperatingMasterSubtotal(row),
     meta: {
       period: `${result.range.start} ~ ${result.range.end}`,
-      scope: operatingMasterScopeMeta(scope, result.scopeName),
+      ...scopeMeta,
       extra: [
+        ...scopeMeta.extra ?? [],
         { label: "统计时点", value: `${result.asOf}（保有会员截至这一天近 90 天到店）` },
         { label: "年度累计区间", value: `${result.ytd.start} ~ ${result.ytd.end}（R、K 列；不含 WorkFine 历史单）` },
         { label: "说明", value: "显示「—」的是目标列（J、N、O、Q），本期未设目标、不取数" }
@@ -187462,19 +187517,13 @@ async function operatingMasterContent(raw) {
     }
   };
 }
-function scopeMetaLabel2(scope) {
-  if (scope.type === "market")
-    return `市场 · ${scope.name}`;
-  if (scope.type === "store" || scope.type === "stores")
-    return `门店 · ${scope.name}`;
-  return scope.name;
-}
 async function queryDailyOverview(raw) {
   if (raw.period === "custom" && parseReportRange(raw).preset !== "custom") {
     throw new Error("INVALID_PARAMS: 导出的时间范围无效（须为合法日期、开始不晚于结束及今天，且不超过 366 天）");
   }
   const tab = parseDailyOverviewTab(raw.tab);
   const result = await getDailyOverview(raw);
+  const scopeMeta = await scopeExportMeta(parseScope(raw), result.scope.name);
   const columns3 = buildDailyOverviewColumns(tab, result.data);
   return {
     sheetName: DAILY_OVERVIEW_TAB_LABELS[tab],
@@ -187484,8 +187533,8 @@ async function queryDailyOverview(raw) {
     totalsLabel: "合计",
     meta: {
       period: `${result.period.current.start} ~ ${result.period.current.end}`,
-      scope: scopeMetaLabel2(result.scope),
-      extra: [{ label: "视角", value: DAILY_OVERVIEW_TAB_LABELS[tab] }]
+      ...scopeMeta,
+      extra: [...scopeMeta.extra ?? [], { label: "视角", value: DAILY_OVERVIEW_TAB_LABELS[tab] }]
     }
   };
 }
@@ -187521,12 +187570,12 @@ async function queryDataCenter(payload) {
   if (view3.startsWith("sales-")) {
     const board2 = await getSalesBoard(base);
     const rows = view3 === "sales-market" ? board2.byMarket : board2.byStore;
-    return breakdownContent(view3, rows);
+    return breakdownContent(view3, rows, await boardExportMeta(board2, base.scope));
   }
   if (view3.startsWith("customer-")) {
     const board2 = await getCustomerBoard(base);
     const rows = view3.endsWith("-reg") ? view3.startsWith("customer-market") ? board2.byMarket : board2.byStore : view3.startsWith("customer-market") ? board2.byMarket : board2.byStore;
-    return breakdownContent(view3, rows);
+    return breakdownContent(view3, rows, await boardExportMeta(board2, base.scope));
   }
   if (view3.startsWith("product-")) {
     const board2 = await getProductBoard({
@@ -187535,21 +187584,27 @@ async function queryDataCenter(payload) {
       categoryName: raw.category || undefined
     });
     const rows = view3 === "product-market" ? board2.byMarket : board2.byStore;
-    return breakdownContent(view3, rows);
+    return breakdownContent(view3, rows, await boardExportMeta(board2, base.scope, [
+      ...raw.kind?.trim() ? [{ label: "品项分类", value: raw.kind.trim() }] : [],
+      ...raw.category?.trim() ? [{ label: "二级品项", value: raw.category.trim() }] : []
+    ]));
   }
   if (!view3.startsWith("efficiency-"))
     throw new Error(`INVALID_PARAMS: 未知的数据中心导出视图 ${view3}`);
   const board = await getEfficiencyBoard(base);
   if (view3 === "efficiency-market")
-    return breakdownContent(view3, board.byMarket);
+    return breakdownContent(view3, board.byMarket, await boardExportMeta(board, base.scope));
   if (view3 === "efficiency-staff")
-    return breakdownContent(view3, board.byStaff);
+    return breakdownContent(view3, board.byStaff, await boardExportMeta(board, base.scope, [{ label: "口径", value: STAFF_OUTPUT_SCOPE_NOTE }]));
   const config = getDataCenterRankingConfig(view3);
   const metric2 = config.metrics.find((item) => item.key === payload.metric);
   if (!metric2)
     throw new Error("INVALID_PARAMS: 排名指标无效");
   const source = view3 === "efficiency-store-ranking" ? board.storeRankings : board.staffRankings;
-  return rankingContent(source[metric2.key] ?? [], metric2);
+  return rankingContent(source[metric2.key] ?? [], metric2, await boardExportMeta(board, base.scope, [
+    { label: "排名指标", value: metric2.label },
+    ...view3 === "efficiency-staff-ranking" ? [{ label: "口径", value: STAFF_OUTPUT_SCOPE_NOTE }] : []
+  ]));
 }
 function queryProducts(payload) {
   return {
@@ -187855,7 +187910,6 @@ async function writeStreamXlsx(options) {
   }
   return { rowCount, sheetCount };
 }
-
 // src/export-worker/export-meta.ts
 init_datetime();
 function required(label, value2) {
@@ -187871,7 +187925,7 @@ function completeExportMeta(meta, audit) {
   return [
     { label: "时间区间", value: meta.period === null ? "不限（仅按范围）" : required("时间区间", meta.period) },
     { label: "范围", value: required("范围", meta.scope) },
-    ...basePeriod ? [{ label: "基期区间", value: basePeriod }] : [],
+    ...basePeriod ? [{ label: MOM_BASE_PERIOD_LABEL, value: basePeriod }] : [],
     ...meta.extra ?? [],
     { label: "导出时间", value: fmtDateTime(audit.generatedAt) || "—" },
     { label: "导出人", value: audit.exporterName?.trim() || "—" }
@@ -187976,7 +188030,7 @@ function asClaimedId(rows) {
   return Number.isSafeInteger(id) && id > 0 ? id : null;
 }
 async function recoverExpiredLeases() {
-  await db2.execute(import_drizzle_orm79.sql`
+  await db2.execute(import_drizzle_orm80.sql`
     UPDATE admin_export_jobs
        SET status = CASE
              WHEN attempt_count >= ${MAX_ATTEMPTS} THEN 'failed'
@@ -188000,12 +188054,12 @@ async function recoverExpiredLeases() {
   `);
 }
 async function claimNextJob() {
-  const claimed = await db2.execute(import_drizzle_orm79.sql`
+  const claimed = await db2.execute(import_drizzle_orm80.sql`
     UPDATE admin_export_jobs
        SET status = 'running',
            attempt_count = attempt_count + 1,
            started_at = COALESCE(started_at, NOW()),
-           lease_expires_at = NOW() + ${import_drizzle_orm79.sql.raw(`interval '${LEASE_MINUTES} minutes'`)},
+           lease_expires_at = NOW() + ${import_drizzle_orm80.sql.raw(`interval '${LEASE_MINUTES} minutes'`)},
            error_code = NULL,
            error_message = NULL,
            updated_at = NOW()
@@ -188023,13 +188077,13 @@ async function claimNextJob() {
   const id = asClaimedId(claimed);
   if (!id)
     return null;
-  const [job] = await db2.select().from(adminExportJobs).where(import_drizzle_orm79.eq(adminExportJobs.id, id)).limit(1);
+  const [job] = await db2.select().from(adminExportJobs).where(import_drizzle_orm80.eq(adminExportJobs.id, id)).limit(1);
   return job ?? null;
 }
 async function renewLease(id) {
-  await db2.execute(import_drizzle_orm79.sql`
+  await db2.execute(import_drizzle_orm80.sql`
     UPDATE admin_export_jobs
-       SET lease_expires_at = NOW() + ${import_drizzle_orm79.sql.raw(`interval '${LEASE_MINUTES} minutes'`)},
+       SET lease_expires_at = NOW() + ${import_drizzle_orm80.sql.raw(`interval '${LEASE_MINUTES} minutes'`)},
            updated_at = NOW()
      WHERE id = ${id}
        AND status = 'running'
@@ -188052,7 +188106,7 @@ async function failJob(job, err) {
     completedAt: shouldRetry ? null : new Date,
     errorCode: failure.code,
     errorMessage: shouldRetry ? `${failure.message}（第 ${job.attemptCount} 次失败，正在重试）` : failure.message
-  }).where(import_drizzle_orm79.and(import_drizzle_orm79.eq(adminExportJobs.id, job.id), import_drizzle_orm79.eq(adminExportJobs.status, "running")));
+  }).where(import_drizzle_orm80.and(import_drizzle_orm80.eq(adminExportJobs.id, job.id), import_drizzle_orm80.eq(adminExportJobs.status, "running")));
   if (!shouldRetry) {
     const session4 = parseExportSession(job.scopeSnapshot);
     await logOperation(session4, "export_job.failed", "admin_export_jobs", String(job.id), {
@@ -188063,12 +188117,12 @@ async function failJob(job, err) {
   }
 }
 async function expireFinishedFiles() {
-  const expired = await db2.select({ id: adminExportJobs.id, fileCloudPath: adminExportJobs.fileCloudPath }).from(adminExportJobs).where(import_drizzle_orm79.and(import_drizzle_orm79.inArray(adminExportJobs.status, ["ready", "expired"]), import_drizzle_orm79.isNotNull(adminExportJobs.fileCloudPath), import_drizzle_orm79.lt(adminExportJobs.expiresAt, new Date))).limit(100);
+  const expired = await db2.select({ id: adminExportJobs.id, fileCloudPath: adminExportJobs.fileCloudPath }).from(adminExportJobs).where(import_drizzle_orm80.and(import_drizzle_orm80.inArray(adminExportJobs.status, ["ready", "expired"]), import_drizzle_orm80.isNotNull(adminExportJobs.fileCloudPath), import_drizzle_orm80.lt(adminExportJobs.expiresAt, new Date))).limit(100);
   for (const job of expired) {
     try {
       if (job.fileCloudPath)
         await deleteByCloudPaths([job.fileCloudPath]);
-      await db2.update(adminExportJobs).set({ status: "expired", fileCloudPath: null, updatedAt: new Date }).where(import_drizzle_orm79.and(import_drizzle_orm79.eq(adminExportJobs.id, job.id), import_drizzle_orm79.inArray(adminExportJobs.status, ["ready", "expired"])));
+      await db2.update(adminExportJobs).set({ status: "expired", fileCloudPath: null, updatedAt: new Date }).where(import_drizzle_orm80.and(import_drizzle_orm80.eq(adminExportJobs.id, job.id), import_drizzle_orm80.inArray(adminExportJobs.status, ["ready", "expired"])));
     } catch (err) {
       console.error(`[export-worker] cleanup failed for job ${job.id}:`, err);
     }
@@ -188122,7 +188176,7 @@ async function processJob(job) {
           if (rowCount - lastProgress < 1000)
             return;
           lastProgress = rowCount;
-          await db2.update(adminExportJobs).set({ progressRows: rowCount }).where(import_drizzle_orm79.and(import_drizzle_orm79.eq(adminExportJobs.id, job.id), import_drizzle_orm79.eq(adminExportJobs.status, "running")));
+          await db2.update(adminExportJobs).set({ progressRows: rowCount }).where(import_drizzle_orm80.and(import_drizzle_orm80.eq(adminExportJobs.id, job.id), import_drizzle_orm80.eq(adminExportJobs.status, "running")));
         }
       });
       return { content, fileName, filePath, writeResult };
@@ -188138,7 +188192,7 @@ async function processJob(job) {
         progressRows: 0,
         errorCode: null,
         errorMessage: null
-      }).where(import_drizzle_orm79.and(import_drizzle_orm79.eq(adminExportJobs.id, job.id), import_drizzle_orm79.eq(adminExportJobs.status, "running")));
+      }).where(import_drizzle_orm80.and(import_drizzle_orm80.eq(adminExportJobs.id, job.id), import_drizzle_orm80.eq(adminExportJobs.status, "running")));
       await logOperation(session4, "export_job.empty", "admin_export_jobs", String(job.id), {
         exportType
       }).catch((logError) => console.error("[export-worker] empty audit log error:", logError));
@@ -188163,7 +188217,7 @@ async function processJob(job) {
       fileName: output.fileName,
       errorCode: null,
       errorMessage: null
-    }).where(import_drizzle_orm79.and(import_drizzle_orm79.eq(adminExportJobs.id, job.id), import_drizzle_orm79.eq(adminExportJobs.status, "running")));
+    }).where(import_drizzle_orm80.and(import_drizzle_orm80.eq(adminExportJobs.id, job.id), import_drizzle_orm80.eq(adminExportJobs.status, "running")));
     await logOperation(session4, "export_job.ready", "admin_export_jobs", String(job.id), {
       exportType,
       rowCount: output.writeResult.rowCount,
