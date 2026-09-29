@@ -171,8 +171,8 @@ describe('#401 数据中心在营口径 · closed_at 白名单', () => {
       })
     }
     expect(offenders).toEqual([])
-    // 防扫描落空：admin sales/efficiency 三处 + staff queryStoreCount 一处
-    expect(seen).toBe(4)
+    // 防扫描落空：admin sales KPI/明细两处 + efficiency 两处 + staff queryStoreCount 一处
+    expect(seen).toBe(5)
   })
 })
 
