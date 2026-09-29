@@ -1,0 +1,4 @@
+interface:
+  display_name: "需求归并与登记"
+  short_description: "将需求归并为可验收交付，去重后登记少量 GitHub issues"
+  default_prompt: "请使用 $req-to-issues 按本项目流程处理当前任务。"

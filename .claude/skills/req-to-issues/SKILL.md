@@ -1,112 +1,73 @@
 ---
 name: req-to-issues
-description: |
-  把甲方需求（会议纪要、口头描述、聊天记录）提炼成结构化 gh issues。
-  提取需求条目 → 与现有 issues 去重 → 按 [需求][模块] 惯例起草清单 →
-  用户确认后批量创建。歧义条目标 [待确认] 并列出待答问题。
-  当用户说"把需求建成 issues"、"这次会议的需求落成 issue"、"创建需求 issue"、
-  "需求登记"、"req-to-issues"时激活。
-argument-hint: '[会议目录 or 需求文本]，如: notes/meetings/meeting-20260905'
-user-invocable: true
+description: 将会议、聊天或 spec 需求整理成少量可验收的 GitHub 交付单，先去重与归并，未拍板和 review 建议留本地；用户确认具体清单后创建或补充 issue。适用于需求登记、把需求建成 issues。
 metadata:
-  title: 需求 → gh issues
-  description_zh: 甲方需求提炼为结构化 issues，去重 + 确认后批量创建
+  title: 需求归并与任务登记
   author: nvoyager
-  version: 1.0.0
+  version: 2.0.0
   license: MIT
 ---
 
-# 需求 → gh issues
+# 需求 → 少量可交付 issues
 
-维护期工作流第一步：把散落的甲方需求固化为可执行的 gh issues。后续开发走 `issue-dev`（单条）或 `issue-sweep`（批量）。
+Codex 用 `$req-to-issues notes/meetings/meeting-YYYYMMDD` 或自然语言调用。
+开发交给 `issue-dev`，批量交给 `issue-sweep`。本 skill 不实现功能。
 
-**原则**：需求理解准确 > 覆盖全面。每条 issue 必须有可验证的验收标准；理解存疑的条目宁可标 `[待确认]` 停下，也不猜着写。
+## 1. 先分清决策与任务
 
-## 输入来源
+会议目录先读 `summary.md`，必要时回查 `article.md`，不把讨论过程当决定。
+口头需求同样提取：业务目标、已确认规则、验收条件、来源。
 
-| 来源 | 处理 |
-|---|---|
-| 会议目录（`notes/meetings/meeting-YYYYMMDD/`） | 优先读 `summary.md` 的结论待办表，细节回查 `article.md`；不读逐字稿原文 |
-| 口头描述 / 聊天记录粘贴 | 直接提取，逐条复述确认理解 |
-| 已有 spec 变更 | spec 更新走 `meeting-to-spec`，本 skill 只负责落任务；两者可先后串用（先更 spec 再建 issue，issue 引用 spec 章节） |
+- 可执行交付：有明确业务结果与可验证验收，才候选建 issue。
+- 未拍板 / 暂缓 / 待确认：放来源旁 `backlog.md`，集中列问题；**默认不建 `[待确认]` / `[暂缓]` / `[pending]` issue**。无来源目录时用 `notes/backlog/YYYYMMDD.md`。
+- 已实现 / 保持现状：查代码与已有 PR 证据，记入去重结果。
+- review 顺带发现的风格、重复代码、潜在测试守护：放本地 backlog。独立可复现且有用户影响的缺陷才进入 Bug 候选，不因 reviewer 给 P2 就建单。
 
-## 流程
+需要改 spec 时单独走 `meeting-to-spec`，此处引用已有 spec。
 
-### 1. 提取需求条目
-
-从输入中提取独立可交付的条目。拆分标准：**一条 issue = 一次可独立验收的交付**。同一功能的多个子点若必须一起上线，合为一条（正文里列子项）；性质差异大的拆开。
-
-每条初判：
-- 类型：需求（新功能/改动）/ Bug / 暂缓（业务未确认）/ 待确认（理解存疑）
-- 模块：积分 / 回款 / 会员权益 / 库存 / 预约 / 服务单 / 收入查看 …（对齐已有 issue 的模块词）
-- 涉及端：client / staff / admin / db / 云函数（clientApi / staffApi / payNotify）
-
-### 2. 去重
+## 2. 全量去重（含已合并 PR）
 
 ```bash
-gh issue list --state all --limit 100 --search "<关键词>"
+gh issue list --state all --limit 1000 --json number,title,state,body,labels,url
+gh pr list --state all --limit 1000 --base dev --json number,title,state,body,url
 ```
 
-对每条候选搜历史 issues（含 closed）：
-- 已有 open issue 覆盖 → 不新建，必要时 `gh issue comment` 补充新信息
-- closed issue 相关但需求有变 → 新建并在正文引用旧 issue（`相关 #N`）
-- 会上确认"已实现/保持现状"的 → 不建 issue（如需留痕，评论到相关旧 issue）
+若达到上限，必须用 `gh api --paginate` 补齐；关键候选读 `gh issue view N --comments`。
+不能只查最近 100 条或凭标题判断：关键词 + 用户目标 + 根因 + 验收内容交叉比较。
+已合入 dev 但仍 open 的单，核验实现后列“待关单”，不再登记或开发。
 
-### 3. 起草清单
+每个条目给一个动作：`新建 / 补充已有 #N / 已覆盖 / 待决 / 不排期`。
+补充已有 issue 先起草增量，不覆盖原验收；评论只写新信息，重跑前查是否已写过。
+closed 单仅在有新需求差量或新复现的回归时新建，并引用旧单。
 
-标题惯例（对齐仓库现状）：
+## 3. 按交付归并，技术步骤留正文
 
-```
-[需求][模块] 一句话描述     ← 新功能/改动
-[Bug][模块] 一句话描述      ← 缺陷
-[暂缓][模块] 一句话描述     ← 业务方未拍板，先登记不排期
-[待确认][模块] 一句话描述   ← 技术方理解存疑，附待答问题
-```
+**一条 issue = 同一用户目标的一项可独立验收交付。**
+同一根因的跨端修复、同一功能的表/接口/UI/测试、上线不可分的子项放同一单的 checkbox。
+公共骨架通常是功能单内的实现步骤，不单独产出“骨架→组件→每页”任务链。
+只有独立验收/发布、明确依赖或高风险需要分阶段迁移时拆单；表名/文件数/涉及端数量不是拆单依据。
 
-正文模板：
+不要把整个模块塞成巨单：不同业务口径、独立功能或风险不同仍拆开；工作量 >3 天先在父单
+正文列阶段和决策点，明确到可独立交付后才提子单清单。禁止递归自动派生任务。
 
-```markdown
-## 背景
+展示归并表：业务目标 / 包含子项 / 动作与关联 # / 验收要点 / 来源 / 待决问题。
+同时报告“原始条目数 → 新建 issue 数”，每条新单说明为何不能补充已有单。
+默认一次最多提出 5 条新单；若超过，先展示剩余 backlog 与拆分理由，不静默截断需求。
+已有明确授权的清单直接执行；否则具体清单交用户确认，等待期间继续去重和起草正文。
 
-<需求方原话/会议结论引用，一两句>
+## 4. 创建或补充
 
-## 需求描述
+标题只用 `[需求][模块] 业务结果` 或 `[Bug][模块] 故障结果`。
+正文含：背景、范围/不做项、已确认规则、验收 checkbox、涉及端、依赖、来源。
+技术步骤放正文；待决问题放 backlog，别把不能开工的单混进开发队列。
 
-<做什么、怎么算做完；有业务口径的写清口径>
-
-## 验收标准
-
-- [ ] <可验证的检查点，逐条>
-
-## 涉及端（初判）
-
-<client / staff / admin / db / 云函数，可多项>
-
-## 来源
-
-<notes/meetings/meeting-YYYYMMDD/summary.md 或"口头需求 YYYY-MM-DD">
-```
-
-label：需求 → `enhancement`，Bug → `bug`；`[暂缓]`/`[待确认]` 不打 label（靠标题前缀过滤）。
-
-### 4. 确认后批量创建
-
-先向用户展示完整清单（表格：标题 / 验收标准要点 / 来源 / 存疑点），**等确认或修改后**再创建。
-
-创建时 body 落临时文件防 shell 插值（正文含反引号/代码块）：
+创建前再查一次近期 issues 防并发重复；逐条创建并立刻落盘编号/URL，失败重入只补未创建项。
+正文写文件，避免 shell 插值：
 
 ```bash
-gh issue create --title "[需求][积分] xxx" --label enhancement --body-file /tmp/issue-body.md
+gh issue create --title "[需求][模块] 业务结果" --label enhancement --body-file /abs/path/body.md
+gh issue comment N --body-file /abs/path/increment.md
 ```
 
-创建完输出编号清单，提示下一步：单条 `issue-dev #N`，批量 `issue-sweep`。
-
-## 常见错误
-
-| 错误 | 修正 |
-|---|---|
-| 逐字稿全文贴进 issue | 只写结论 + 引用来源路径，正文一屏内读完 |
-| 把讨论过程当结论 | 以 summary.md 结论待办表为准；会上有分歧未拍板的 → `[暂缓]` |
-| 没有验收标准 | 每条至少一个可验证检查点，写不出来说明理解不够 → `[待确认]` |
-| 跳过去重直接建 | 先搜 `--state all`，仓库里 `[暂缓]`/`[待确认]` 的旧单可能就是同一件事 |
-| 未经确认就批量创建 | issue 是对外产物，清单必须先过用户 |
+Bug 用 `bug`；标签不存在先报告，不静默创建标签。输出新建/补充/不建清单与 backlog 路径。
+不要自动关闭旧 issue、建新的“汇总 issue”复制整个队列，或为每个 review finding 建单。
