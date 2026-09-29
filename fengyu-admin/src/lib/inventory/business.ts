@@ -898,35 +898,45 @@ async function syncLocations(): Promise<void> {
   }
   const drifted = (probe as unknown as Array<{ drifted: boolean | null }> | undefined)?.[0]?.drifted
   if (drifted === false) return
-  await db.execute(sql`
-    INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, parent_location_id, is_active)
-    SELECT id, type, name, id, parent_id, is_active
-      FROM org_nodes
-     WHERE type IN ('总部', '市场')
-    ON CONFLICT (location_id) DO UPDATE
-      SET location_type = EXCLUDED.location_type,
-          name = EXCLUDED.name,
-          org_node_id = EXCLUDED.org_node_id,
-          store_id = NULL,
-          parent_location_id = EXCLUDED.parent_location_id,
-          is_active = EXCLUDED.is_active,
-          updated_at = NOW()
-  `)
-  await db.execute(sql`
-    INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, store_id, parent_location_id, is_active)
-    SELECT s.store_id, '门店', s.store_name, s.org_node_id, s.store_id, o.parent_id,
-           COALESCE(o.is_active, false) AND NOT s.is_closed
-      FROM stores s
-      LEFT JOIN org_nodes o ON o.id = s.org_node_id
-    ON CONFLICT (location_id) DO UPDATE
-      SET location_type = EXCLUDED.location_type,
-          name = EXCLUDED.name,
-          org_node_id = EXCLUDED.org_node_id,
-          store_id = EXCLUDED.store_id,
-          parent_location_id = EXCLUDED.parent_location_id,
-          is_active = EXCLUDED.is_active,
-          updated_at = NOW()
-  `)
+  try {
+    await db.execute(sql`
+      INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, parent_location_id, is_active)
+      SELECT id, type, name, id, parent_id, is_active
+        FROM org_nodes
+       WHERE type IN ('总部','市场')
+      ON CONFLICT (location_id) DO UPDATE
+        SET location_type = EXCLUDED.location_type,
+            name = EXCLUDED.name,
+            org_node_id = EXCLUDED.org_node_id,
+            store_id = NULL,
+            parent_location_id = EXCLUDED.parent_location_id,
+            is_active = EXCLUDED.is_active,
+            updated_at = NOW()
+    `)
+    await db.execute(sql`
+      INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, store_id, parent_location_id, is_active)
+      SELECT s.store_id, '门店', s.store_name, s.org_node_id, s.store_id, o.parent_id,
+             COALESCE(o.is_active, false) AND NOT s.is_closed
+        FROM stores s
+        LEFT JOIN org_nodes o ON o.id = s.org_node_id
+      ON CONFLICT (location_id) DO UPDATE
+        SET location_type = EXCLUDED.location_type,
+            name = EXCLUDED.name,
+            org_node_id = EXCLUDED.org_node_id,
+            store_id = EXCLUDED.store_id,
+            parent_location_id = EXCLUDED.parent_location_id,
+            is_active = EXCLUDED.is_active,
+            updated_at = NOW()
+    `)
+  } catch (error) {
+    // Drizzle wraps PostgreSQL exceptions in cause. Keep this guard's business
+    // prefix so the API/error boundary reports CONFLICT instead of a generic SQL error.
+    const pgError = (error as { cause?: unknown } | null)?.cause ?? error
+    if (pgError instanceof Error && pgError.message.startsWith('CONFLICT: LOCATION_ID_AMBIGUOUS:')) {
+      throw new ApiError('CONFLICT', pgError.message.slice('CONFLICT: '.length))
+    }
+    throw error
+  }
 }
 
 async function locationForUpdate(tx: Tx, endpointId: string): Promise<Location> {

@@ -327,6 +327,16 @@ describe('PR #113 进销存单据组织端点跨端守护（staff / admin / sche
       expect(literals[0]).toBe(literals[1])
       expect(literals[1]).toBe(literals[2])
     })
+    test('两条完整 UPSERT 在三份同步实现中逐字一致', () => {
+      const pairs = files().map((src) => {
+        const start = src.indexOf('function sync')
+        const body = src.slice(start, src.indexOf('\n}', start))
+        return [...body.matchAll(/INSERT INTO inventory_locations[\s\S]*?updated_at = NOW\(\)/g)].map((m) => m[0])
+      })
+      expect(pairs[0]).toHaveLength(2)
+      expect(pairs[0]).toEqual(pairs[1])
+      expect(pairs[1]).toEqual(pairs[2])
+    })
     test('撞值闸在漂移短路和 UPSERT 之前', () => {
       for (const src of files()) {
         const start = src.indexOf('function sync')

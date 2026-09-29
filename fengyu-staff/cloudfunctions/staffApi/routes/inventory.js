@@ -421,34 +421,34 @@ async function syncInventoryLocations(client = null) {
   }
   if (probeRows?.[0]?.drifted === false) return
   await q.query(`
-    INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, parent_location_id, is_active)
-    SELECT id, type, name, id, parent_id, is_active
-      FROM org_nodes
-     WHERE type IN ('总部','市场')
-    ON CONFLICT (location_id) DO UPDATE
-      SET location_type = EXCLUDED.location_type,
-          name = EXCLUDED.name,
-          org_node_id = EXCLUDED.org_node_id,
-          store_id = NULL,
-          parent_location_id = EXCLUDED.parent_location_id,
-          is_active = EXCLUDED.is_active,
-          updated_at = NOW()
-  `)
+      INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, parent_location_id, is_active)
+      SELECT id, type, name, id, parent_id, is_active
+        FROM org_nodes
+       WHERE type IN ('总部','市场')
+      ON CONFLICT (location_id) DO UPDATE
+        SET location_type = EXCLUDED.location_type,
+            name = EXCLUDED.name,
+            org_node_id = EXCLUDED.org_node_id,
+            store_id = NULL,
+            parent_location_id = EXCLUDED.parent_location_id,
+            is_active = EXCLUDED.is_active,
+            updated_at = NOW()
+    `)
   await q.query(`
-    INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, store_id, parent_location_id, is_active)
-    SELECT s.store_id, '门店', s.store_name, s.org_node_id, s.store_id, o.parent_id,
-           COALESCE(o.is_active, false) AND NOT s.is_closed
-      FROM stores s
-      LEFT JOIN org_nodes o ON o.id = s.org_node_id
-    ON CONFLICT (location_id) DO UPDATE
-      SET location_type = EXCLUDED.location_type,
-          name = EXCLUDED.name,
-          org_node_id = EXCLUDED.org_node_id,
-          store_id = EXCLUDED.store_id,
-          parent_location_id = EXCLUDED.parent_location_id,
-          is_active = EXCLUDED.is_active,
-          updated_at = NOW()
-  `)
+      INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, store_id, parent_location_id, is_active)
+      SELECT s.store_id, '门店', s.store_name, s.org_node_id, s.store_id, o.parent_id,
+             COALESCE(o.is_active, false) AND NOT s.is_closed
+        FROM stores s
+        LEFT JOIN org_nodes o ON o.id = s.org_node_id
+      ON CONFLICT (location_id) DO UPDATE
+        SET location_type = EXCLUDED.location_type,
+            name = EXCLUDED.name,
+            org_node_id = EXCLUDED.org_node_id,
+            store_id = EXCLUDED.store_id,
+            parent_location_id = EXCLUDED.parent_location_id,
+            is_active = EXCLUDED.is_active,
+            updated_at = NOW()
+    `)
 }
 
 function scopedInventoryLocationIds(auth) {

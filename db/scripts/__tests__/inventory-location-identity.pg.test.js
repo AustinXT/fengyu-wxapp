@@ -63,6 +63,26 @@ if (!url) {
     await conflict(() => c.query(preflight))
     assert.equal((await c.query('SELECT location_type FROM inventory_locations WHERE location_id=$1', [p + 'MKT'])).rows[0].location_type, '市场')
   }))
+  test('preflight rejects a historical class mismatch without a live source collision', () => txn(async () => {
+    const p = await seed(c, 'HISTORICAL_')
+    await c.query('ALTER TABLE inventory_locations DISABLE TRIGGER trg_inventory_locations_guard_identity')
+    await c.query('ALTER TABLE inventory_locations DISABLE TRIGGER trg_inventory_locations_validate_tree')
+    await c.query("UPDATE inventory_locations SET location_type='门店',org_node_id=$2,store_id=NULL WHERE location_id=$1", [p + 'MKT', p + 'ORG'])
+    assert.equal((await c.query("SELECT count(*)::int n FROM stores s JOIN org_nodes o ON o.id=s.store_id WHERE o.type IN ('总部','市场')")).rows[0].n, 0)
+    const preflight = fs.readFileSync(path.resolve(__dirname, '../../migrations/0055_inventory_location_identity_guard.sql'), 'utf8').split('--> statement-breakpoint')[0]
+    await conflict(() => c.query(preflight))
+  }))
+  test('0009 already refuses stocked-market reclassification and missing store mapping', () => txn(async () => {
+    const p = await seed(c, 'LEGACY_GUARD_')
+    for (const [query, params, pattern] of [
+      ["UPDATE org_nodes SET type='门店' WHERE id=$1", [p + 'MKT'], /已作为库存主体/],
+      ['INSERT INTO stores(store_id,store_name) VALUES ($1,$1)', [p + 'NULL_STORE'], /必须关联归属市场下的门店组织节点/],
+    ]) {
+      await c.query('SAVEPOINT legacy_guard')
+      await assert.rejects(() => c.query(query, params), pattern)
+      await c.query('ROLLBACK TO SAVEPOINT legacy_guard')
+    }
+  }))
   test('runtime probe and UPSERT SQL compile and execute against real PG', () => txn(async () => {
     const p = await seed(c, 'RUNTIME_')
     const source = fs.readFileSync(path.resolve(__dirname, '../../../fengyu-admin/src/lib/inventory/engine.ts'), 'utf8')
@@ -88,6 +108,86 @@ if (!url) {
     await store(c, p + 'OTHER', p + 'ORG')
     assert.equal((await c.query('SELECT location_type FROM inventory_locations WHERE location_id=$1', [p + 'OTHER'])).rows[0].location_type, '门店')
   }))
+  test('real DB collision passes through Drizzle/staff wrappers as CONFLICT -409', async () => {
+    const postgres = require('../../../fengyu-admin/node_modules/postgres')
+    const { drizzle } = require('../../../fengyu-admin/node_modules/drizzle-orm/postgres-js')
+    const { sql } = require('../../../fengyu-admin/node_modules/drizzle-orm')
+    const ts = require('../../../fengyu-admin/node_modules/typescript')
+    const pgClient = postgres(url, { max: 1 })
+    const actualDb = drizzle(pgClient)
+    const api = {}
+    const apiSource = fs.readFileSync(path.resolve(__dirname, '../../../fengyu-admin/src/lib/api-error.ts'), 'utf8')
+    const compile = source => ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText
+    new Function('exports', compile(apiSource))(api)
+    const p = await seed(c, 'ERROR_PIPE_')
+    // Real drift forces UPSERT; create a collision after the real probe to
+    // reproduce its TOCTOU window, rather than injecting an artificial Error.
+    await c.query('BEGIN')
+    await c.query('ALTER TABLE org_nodes DISABLE TRIGGER trg_org_nodes_sync_inventory_locations')
+    await c.query('UPDATE org_nodes SET name=$2 WHERE id=$1', [p + 'MKT', p + 'NEW_NAME'])
+    await c.query('ALTER TABLE org_nodes ENABLE TRIGGER trg_org_nodes_sync_inventory_locations')
+    await c.query('COMMIT')
+    let staffPool
+    try {
+      let orgUpsert
+      for (const [file, name] of [['engine.ts', 'syncInventoryLocations'], ['business.ts', 'syncLocations']]) {
+        const source = fs.readFileSync(path.resolve(__dirname, '../../../fengyu-admin/src/lib/inventory', file), 'utf8')
+        const start = source.indexOf('async function ' + name + '(')
+        const fn = source.slice(start, source.indexOf('\n}', start) + 2)
+        orgUpsert = fn.match(/INSERT INTO inventory_locations[\s\S]*?updated_at = NOW\(\)/)[0]
+        let first = true
+        const db = { execute: async query => {
+          const result = await actualDb.execute(query)
+          if (first) {
+            first = false
+            assert.equal(result[0].collided_id, null)
+            assert.equal(result[0].drifted, true)
+            await c.query('BEGIN')
+            await c.query('ALTER TABLE stores DISABLE TRIGGER trg_stores_sync_inventory_locations')
+            await store(c, p + 'MKT', p + 'ORG')
+            await c.query('ALTER TABLE stores ENABLE TRIGGER trg_stores_sync_inventory_locations')
+            await c.query('COMMIT')
+          }
+          return result
+        } }
+        const exports = {}
+        new Function('exports', 'db', 'sql', 'ApiError', compile(fn + '\nexports.run = ' + name))(exports, db, sql, api.ApiError)
+        const response = await api.runWithApiResponse('t270_real_' + name, exports.run)
+        assert.equal(response.code, -409)
+        assert.equal(response.errorType, 'CONFLICT')
+        assert.match(response.message, new RegExp(p + 'MKT'))
+        await c.query('DELETE FROM stores WHERE store_id=$1', [p + 'MKT'])
+      }
+      await c.query('BEGIN')
+      await c.query('ALTER TABLE stores DISABLE TRIGGER trg_stores_sync_inventory_locations')
+      await store(c, p + 'MKT', p + 'ORG')
+      await c.query('ALTER TABLE stores ENABLE TRIGGER trg_stores_sync_inventory_locations')
+      await c.query('COMMIT')
+      const previousUrl = process.env.PG_CONNECTION_STRING
+      process.env.PG_CONNECTION_STRING = url
+      const staffPg = require('../../../fengyu-staff/cloudfunctions/staffApi/db/pg')
+      const { buildErrorResponse } = require('../../../fengyu-staff/cloudfunctions/staffApi/utils/error-codes')
+      staffPool = staffPg.getPool()
+      if (previousUrl === undefined) delete process.env.PG_CONNECTION_STRING
+      else process.env.PG_CONNECTION_STRING = previousUrl
+      const error = await staffPg.transaction(client => client.query(orgUpsert)).then(() => null, err => err)
+      assert.ok(error)
+      const response = buildErrorResponse(error)
+      assert.equal(response.code, -409)
+      assert.equal(response.errorType, 'CONFLICT')
+      assert.match(response.message, new RegExp(p + 'MKT'))
+    } finally {
+      await pgClient.end({ timeout: 0 })
+      if (staffPool) await staffPool.end()
+      await c.query('ROLLBACK')
+      await c.query('DELETE FROM stores WHERE store_id=$1', [p + 'MKT'])
+      await c.query('DELETE FROM org_nodes WHERE id=$1', [p + 'ORG'])
+      await c.query('DELETE FROM inventory_locations WHERE location_id=$1', [p + 'MKT'])
+      await c.query('DELETE FROM org_nodes WHERE id=$1', [p + 'MKT'])
+      await c.query('DELETE FROM inventory_locations WHERE location_id=$1', [p + 'HQ'])
+      await c.query('DELETE FROM org_nodes WHERE id=$1', [p + 'HQ'])
+    }
+  })
   for (const storeFirst of [false, true]) {
     test(`concurrent source inserts (storeFirst=${storeFirst}) cannot replace the winning identity`, async () => {
       const other = new Client({ connectionString: url, statement_timeout: 5000 })

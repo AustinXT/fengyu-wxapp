@@ -2,9 +2,17 @@
 DO $$
 DECLARE collided_id text;
 BEGIN
-  SELECT s.store_id INTO collided_id
-    FROM stores s JOIN org_nodes o ON o.id = s.store_id
-   WHERE o.type IN ('总部', '市场') ORDER BY s.store_id LIMIT 1;
+  SELECT id INTO collided_id
+    FROM (
+      SELECT s.store_id AS id FROM stores s JOIN org_nodes o ON o.id = s.store_id
+       WHERE o.type IN ('总部', '市场')
+      UNION
+      SELECT loc.location_id AS id FROM inventory_locations loc JOIN org_nodes o ON o.id = loc.location_id
+       WHERE loc.location_type = '门店' AND o.type IN ('总部', '市场')
+      UNION
+      SELECT loc.location_id AS id FROM inventory_locations loc JOIN stores s ON s.store_id = loc.location_id
+       WHERE loc.location_type IN ('总部', '市场')
+    ) AS collisions ORDER BY id LIMIT 1;
   IF collided_id IS NOT NULL THEN
     RAISE EXCEPTION 'CONFLICT: LOCATION_ID_AMBIGUOUS: 库存主体标识 % 与总部/市场组织节点冲突', collided_id;
   END IF;
