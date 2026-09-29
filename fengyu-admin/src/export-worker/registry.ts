@@ -49,7 +49,9 @@ import {
   parseOperatingMasterExportScope,
   type OperatingMasterRow,
 } from '@/lib/data-center/operating-master'
-import { isValidMonth } from '@/lib/data-center/report-period'
+import { isValidCalendarDate } from '@/lib/calendar-date'
+import { shanghaiToday } from '@/lib/data-center/time-range'
+import { MAX_CUSTOM_RANGE_DAYS, isValidMonth } from '@/lib/data-center/report-period'
 import { headerWithUnit, metricCell } from '@/lib/data-center/export'
 import type { BreakdownRow, RankingRow } from '@/lib/data-center/types'
 import { fmtDate, fmtDateTime } from '@/lib/datetime'
@@ -634,6 +636,14 @@ function scopeMetaLabel(scope: { type: string; name: string }): string {
 
 /** 日常数据一览表（#369）：只导 `tab` 指定的视角（☆ 默认只导当前页签），视角③带两行合并表头。 */
 async function queryDailyOverview(raw: Record<string, string>): Promise<ExportContent> {
+  // 页面允许回落；导出必须拒绝会让解析器回落的自定义区间。
+  if (raw.period === 'custom' && (
+    !isValidCalendarDate(raw.start) || !isValidCalendarDate(raw.end) ||
+    raw.start > raw.end || raw.start > shanghaiToday() ||
+    (Date.parse(`${raw.end}T00:00:00Z`) - Date.parse(`${raw.start}T00:00:00Z`)) / 86400000 + 1 > MAX_CUSTOM_RANGE_DAYS
+  )) {
+    throw new Error('INVALID_PARAMS: 导出的时间范围无效（须为合法日期、开始不晚于结束及今天，且不超过 366 天）')
+  }
   const tab = parseDailyOverviewTab(raw.tab)
   const result = await getDailyOverview(raw)
   const columns = buildDailyOverviewColumns(tab, result.data)

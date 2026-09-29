@@ -185144,6 +185144,7 @@ function countLeftFrozen(columns3) {
 }
 
 // src/export-worker/registry.ts
+init_time_range();
 init_datetime();
 
 // src/actions/data-center/remaining-cards.ts
@@ -186940,6 +186941,10 @@ function periodText(month) {
   return `${range.start} ~ ${range.end}`;
 }
 async function commissionDailyExport(params) {
+  if (!isValidMonth(params.month))
+    throw new Error("INVALID_PARAMS: 导出缺少统计月份");
+  if (params.month > shanghaiToday().slice(0, 7))
+    throw new Error("INVALID_PARAMS: 不能导出未来月份");
   const data = await getCommissionDaily(params);
   const columns3 = buildCommissionDailyColumns({
     month: data.month,
@@ -186967,6 +186972,10 @@ async function commissionDailyExport(params) {
   };
 }
 async function commissionDetailExport(params) {
+  if (!isValidMonth(params.month))
+    throw new Error("INVALID_PARAMS: 导出缺少统计月份");
+  if (params.month > shanghaiToday().slice(0, 7))
+    throw new Error("INVALID_PARAMS: 不能导出未来月份");
   const fetch2 = (options) => exportCommissionDetail(params, options);
   const first3 = await fetch2({ limit: EXPORT_WORKER_BATCH_SIZE });
   const { filters, summary } = first3;
@@ -187457,6 +187466,9 @@ function scopeMetaLabel2(scope) {
   return scope.name;
 }
 async function queryDailyOverview(raw) {
+  if (raw.period === "custom" && (!isValidCalendarDate(raw.start) || !isValidCalendarDate(raw.end) || raw.start > raw.end || raw.start > shanghaiToday() || (Date.parse(`${raw.end}T00:00:00Z`) - Date.parse(`${raw.start}T00:00:00Z`)) / 86400000 + 1 > MAX_CUSTOM_RANGE_DAYS)) {
+    throw new Error("INVALID_PARAMS: 导出的时间范围无效（须为合法日期、开始不晚于结束及今天，且不超过 366 天）");
+  }
   const tab = parseDailyOverviewTab(raw.tab);
   const result = await getDailyOverview(raw);
   const columns3 = buildDailyOverviewColumns(tab, result.data);
