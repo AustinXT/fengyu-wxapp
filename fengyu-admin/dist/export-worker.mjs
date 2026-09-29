@@ -181219,8 +181219,21 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
     employeeCount
   };
   const skeleton = scopeStoreSkeletonSql(session4, scope);
+  const openStoresByStoreSql = import_drizzle_orm67.sql`
+      SELECT s.store_id, COUNT(*)::int AS v
+      FROM stores s
+      JOIN org_nodes o ON s.org_node_id = o.id
+      WHERE o.type = '门店'
+        AND o.is_active = TRUE
+        AND ${scopeFilterSql(session4, scope, "s.store_id")}
+        AND s.opening_date IS NOT NULL
+        AND s.opening_date::date <= ${cur.end}
+        AND (s.closed_at IS NULL OR s.closed_at::date > ${cur.end})
+      GROUP BY s.store_id
+    `;
   const [
     skelRows,
+    openStoreRows,
     techRows,
     techDirectByMarketRows,
     revRows,
@@ -181231,6 +181244,7 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
     shengmeiConsRows
   ] = await Promise.all([
     db2.execute(skeleton),
+    db2.execute(openStoresByStoreSql),
     db2.execute(technicianByStoreSql(session4, scope, cur.end)),
     db2.execute(technicianDirectByMarketSql(session4, scope, cur.end)),
     db2.execute(import_drizzle_orm67.sql`
@@ -181317,6 +181331,7 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
     }
     return m;
   };
+  const openMap = toMap(openStoreRows);
   const techMap = toMap(techRows);
   const revMap = toMap(revRows);
   const shengmeiRevMap = toMap(shengmeiRevRows);
@@ -181376,7 +181391,7 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
   };
   for (const s of storeAggs) {
     const m = marketRowOf(s.marketId, s.marketName);
-    m.storeCount += 1;
+    m.storeCount += openMap.get(s.storeId) ?? 0;
     m.technicianCount += s.technicianCount ?? 0;
     m.storeRevenue += s.storeRevenue ?? 0;
     m.shengmeiRevenue += s.shengmeiRevenue ?? 0;
