@@ -2,7 +2,7 @@
 import { callStaffApi } from '../../utils/cloud'
 import { formatDateTime } from '../../utils/formatters'
 import { canOperateStoreInventory, getCurrentStoreId } from '../../utils/role'
-import { isStocktakeDocType, stocktakeDiffDisplay, stocktakeSummary } from '../../utils/stocktake'
+import { isStocktakeDocType, stocktakeDiffDisplay, stocktakeSummary } from '../utils/stocktake'
 
 const STATUS_KEY_MAP: Record<string, string> = {
   '已完成': 'done',

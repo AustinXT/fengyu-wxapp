@@ -1,4 +1,4 @@
-// utils/reportable-sku-search.ts — 门店报货选品弹层的检索状态机（#339）
+// packageMy/utils/reportable-sku-search.ts — 门店报货选品弹层的检索状态机（#339）
 //
 // 从 packageMy/inventory/form.ts 抽出来，是为了让「防抖 / 翻页追加 / 丢弃过期响应 / 到底判定」
 // 能脱离 Page 与 wx 运行时单测：页面只负责把 state 补丁 setData、把请求转给 staffApi。

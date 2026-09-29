@@ -14,10 +14,10 @@ import {
   stocktakeDiffDisplay,
   stocktakeSummary,
   tallyStocktake,
-} from '../../utils/stocktake'
+} from '../../packageMy/utils/stocktake'
 
 const ADMIN_PATH = path.resolve(__dirname, '../../../../fengyu-admin/src/lib/inventory/stocktake.ts')
-const STAFF_PATH = path.resolve(__dirname, '../../utils/stocktake.ts')
+const STAFF_PATH = path.resolve(__dirname, '../../packageMy/utils/stocktake.ts')
 
 /** 抠出 `export function <name>(...)` 到下一个顶格 `}` 的整段（含签名），去注释、压空白 */
 function normalizedFunction(filePath: string, name: string): string {

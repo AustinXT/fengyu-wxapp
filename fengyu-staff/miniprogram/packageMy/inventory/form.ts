@@ -1,8 +1,8 @@
 // packageMy/inventory/form.ts — 门店库存业务办理
 import { callStaffApi } from '../../utils/cloud'
 import { getCurrentStoreId, requireInventoryStoreOperate } from '../../utils/role'
-import { ReportableSkuSearch, SKU_PAGE_SIZE } from '../../utils/reportable-sku-search'
-import { isValidStocktakeQuantity } from '../../utils/stocktake'
+import { ReportableSkuSearch, SKU_PAGE_SIZE } from '../utils/reportable-sku-search'
+import { isValidStocktakeQuantity } from '../utils/stocktake'
 
 type OperateDocType = '门店报货' | '分院调货出库' | '院退货' | '院产品报损' | '分院库存盘点'
 // stocktakeSku（#352）：门店盘点按 SKU 录实盘数，账面数由 createDoc 在提交时汇总写入，前端不传
@@ -239,7 +239,7 @@ Page({
     if (!this.data.sourceStoreId) return
     this.setData({ loadingOptions: true })
     try {
-      // 可报货产品不在这里预拉：打开选品弹层时按关键词分页检索（utils/reportable-sku-search）
+      // 可报货产品不在这里预拉：打开选品弹层时按关键词分页检索（packageMy/utils/reportable-sku-search）
       if (this.data.itemMode === 'stockLot') {
         const res = await callStaffApi<{ items: Omit<StockLot, 'displayName'>[] }>(
           'inventory.stockList',

@@ -1,4 +1,4 @@
-// utils/stocktake.ts — 门店盘点（#352）：实盘数校验 + 账面 / 实盘 / 差异派生
+// packageMy/utils/stocktake.ts — 门店盘点（#352）：实盘数校验 + 账面 / 实盘 / 差异派生
 //
 // 差异口径（#131 Q2）：差异 = 实盘 − 账面，纯派生、不落库。
 // ⚠️ stocktakeDiff / tallyStocktake / stocktakeSummary 三个函数体与 admin

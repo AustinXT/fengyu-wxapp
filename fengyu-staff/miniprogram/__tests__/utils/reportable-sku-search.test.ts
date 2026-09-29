@@ -1,4 +1,4 @@
-import { hasMoreSkuPages, ReportableSkuSearch, SKU_PAGE_SIZE, SKU_SEARCH_DEBOUNCE_MS } from '../../utils/reportable-sku-search'
+import { hasMoreSkuPages, ReportableSkuSearch, SKU_PAGE_SIZE, SKU_SEARCH_DEBOUNCE_MS } from '../../packageMy/utils/reportable-sku-search'
 
 type Sku = { skuId: string }
 const page = (from: number, count: number): Sku[] => Array.from({ length: count }, (_, i) => ({ skuId: `S${from + i}` }))

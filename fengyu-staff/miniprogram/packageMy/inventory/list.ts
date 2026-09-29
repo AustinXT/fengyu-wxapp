@@ -1,6 +1,6 @@
 // packageMy/inventory/list.ts — 库存单据列表（只读）
 import { callStaffApi } from '../../utils/cloud'
-import { isStocktakeDocType } from '../../utils/stocktake'
+import { isStocktakeDocType } from '../utils/stocktake'
 
 type DocCategory = 'procurement' | 'sale' | 'transfer' | 'scrap' | 'stocktake'
 type CreateDocType = '门店报货' | '分院调货出库' | '院退货' | '院产品报损' | '分院库存盘点'
