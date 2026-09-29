@@ -2576,7 +2576,7 @@ export async function summarizeStoreReplenishmentRequests(
     }>(await tx.execute(sql`
       WITH remaining AS (
         SELECT i.*,
-               COALESCE(store_location.store_id, d.source_org_node_id) AS request_store_id,
+               store_location.store_id AS request_store_id,
                COALESCE(store_location.name, d.source_org_node_id, '未知门店') AS store_name,
                GREATEST(i.quantity - summarized.quantity - COALESCE(i.fulfilled_quantity, 0), 0) AS outstanding
           FROM inventory_docs d

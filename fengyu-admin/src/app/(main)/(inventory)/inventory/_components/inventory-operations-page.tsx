@@ -2148,7 +2148,7 @@ function summaryToMarketReportLines(summary: Awaited<ReturnType<typeof summarize
     skuName: item.skuName,
     specName: item.specName,
     requestItemIds: item.requestItemIds,
-    storeQuantities: item.storeQuantities,
+    storeQuantities: item.storeQuantities ?? [],
     requestQuantity: item.outstandingQuantity,
     availableQuantity: item.availableQuantity,
     inTransitQuantity: item.inTransitQuantity,
