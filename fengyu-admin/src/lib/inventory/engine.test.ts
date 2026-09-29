@@ -5234,12 +5234,12 @@ describe('报货福利方案只由总部供应链维护（#354，引擎层）', 
 describe('#453 通用库存建单日期', () => {
   beforeEach(() => { vi.clearAllMocks(); mockGetSession.mockResolvedValue(SESSION) })
   it.each(['2026-02-30', '2026-13-01', '0000-01-01', 20260101, {}])('拒绝非法 docDate %s，未执行 SQL', async (docDate) => {
-    await expect(createInventoryCoreDoc({ docType: '分院盘点', docDate, targetOrgNodeId: 'S1', items: [{ skuId: 'SKU', quantity: 1 }] } as never)).rejects.toMatchObject({ prefix: 'INVALID_PARAMS' })
+    await expect(createInventoryCoreDoc({ docType: '分院库存盘点', docDate, targetOrgNodeId: 'S1', items: [{ skuId: 'SKU', quantity: 1 }] } as never)).rejects.toThrow('INVALID_PARAMS: 单据日期格式不正确')
     expect(mockDb.execute).not.toHaveBeenCalled()
     expect(mockDb.transaction).not.toHaveBeenCalled()
   })
   it('拒绝非法明细效期，未执行 SQL', async () => {
-    await expect(createInventoryCoreDoc({ docType: '分院盘点', targetOrgNodeId: 'S1', items: [{ skuId: 'SKU', quantity: 1, expiryDate: '2026-13-01' }] } as never)).rejects.toMatchObject({ prefix: 'INVALID_PARAMS' })
+    await expect(createInventoryCoreDoc({ docType: '分院库存盘点', targetOrgNodeId: 'S1', items: [{ skuId: 'SKU', quantity: 1, expiryDate: '2026-13-01' }] } as never)).rejects.toMatchObject({ prefix: 'INVALID_PARAMS' })
     expect(mockDb.execute).not.toHaveBeenCalled()
     expect(mockDb.transaction).not.toHaveBeenCalled()
   })

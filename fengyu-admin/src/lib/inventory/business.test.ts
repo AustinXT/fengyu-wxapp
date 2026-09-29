@@ -4643,3 +4643,18 @@ describe('#453 库存日期服务端拦截', () => {
     expect(db.transaction).not.toHaveBeenCalled()
   })
 })
+
+
+describe('#453 供应链采购入库日期', () => {
+  beforeEach(() => vi.clearAllMocks())
+  it.each(['2026-02-30', '2026-13-01', '0000-01-01'])('拒绝非法 docDate %s，不执行 SQL', async (docDate) => {
+    await expect(receiveSupplyChainPurchaseOrder(SESSION, { supplyChainLocationId: 'HQ', purchaseOrderId: 'CG', docDate, items: [{ purchaseOrderItemId: 1, quantity: 1 }] } as never)).rejects.toThrow('INVALID_PARAMS: 单据日期格式应为 YYYY-MM-DD')
+    expect(db.execute).not.toHaveBeenCalled()
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+  it('拒绝非法效期，不执行 SQL', async () => {
+    await expect(receiveSupplyChainPurchaseOrder(SESSION, { supplyChainLocationId: 'HQ', purchaseOrderId: 'CG', items: [{ purchaseOrderItemId: 1, quantity: 1, expiryDate: '2026-13-01' }] } as never)).rejects.toThrow('INVALID_PARAMS: 有效期格式应为 YYYY-MM-DD')
+    expect(db.execute).not.toHaveBeenCalled()
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+})

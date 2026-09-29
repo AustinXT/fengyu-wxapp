@@ -4448,6 +4448,8 @@ export async function receiveSupplyChainPurchaseOrder(
   if (!Array.isArray(input.items) || input.items.length === 0) {
     throw new ApiError('INVALID_PARAMS', '供应链采购入库至少需要一条明细')
   }
+  dateOrToday(input.docDate)
+  for (const item of input.items) conversionDate(item.expiryDate, '有效期')
   await syncLocations()
   const inboundId = await db.transaction(async (tx) => {
     await assertInventoryBusinessWritable(tx)
