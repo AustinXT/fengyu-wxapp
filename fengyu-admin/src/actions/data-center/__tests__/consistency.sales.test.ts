@@ -184,10 +184,12 @@ describe('数据中心销售板块两端口径一致性守护', () => {
     it('admin sales.ts 含 unit_real_price * session_used', () => {
       expect(adminBody).toMatch(/unit_real_price::numeric\s*\*\s*sit\.session_used/i)
       expect(adminSrc).toMatch(/so\.status\s*=\s*'已完成'/)
+      expect(adminSrc).toMatch(/sit\.is_shengmei\s*=\s*TRUE/)
     })
     it('staff mgmt-dashboard.js 含 unit_real_price * session_used', () => {
       expect(staffBody).toMatch(/unit_real_price::numeric\s*\*\s*sit\.session_used/i)
       expect(staffSrc).toMatch(/so\.status\s*=\s*'已完成'/)
+      expect(staffSrc).toMatch(/sit\.is_shengmei\s*=\s*TRUE/)
     })
   })
 
