@@ -183889,17 +183889,6 @@ function listMonthDays(month) {
 
 // src/lib/data-center/operating-master.ts
 init_time_range();
-
-// src/lib/data-center/scope-meta.ts
-function scopeMetaLabel(scope, name) {
-  if (scope.type === "market")
-    return `市场 · ${name}`;
-  if (scope.type === "store" || scope.type === "stores")
-    return `门店 · ${name}`;
-  return name;
-}
-
-// src/lib/data-center/operating-master.ts
 var OPERATING_MASTER_METRIC_KEYS = [
   "beauticianCount",
   "retainedMembers",
@@ -186031,10 +186020,20 @@ init_time_range();
 init_db2();
 init_org();
 var import_drizzle_orm78 = __toESM(require_drizzle_orm(), 1);
+
+// src/lib/data-center/scope-meta.ts
+function scopeMetaLabel(scope, name) {
+  if (scope.type === "market")
+    return `市场 · ${name}`;
+  if (scope.type === "store" || scope.type === "stores")
+    return `门店 · ${name}`;
+  return name;
+}
+
+// src/export-worker/scope-meta.ts
 async function scopeExportMeta(scope, name) {
-  const label = scopeMetaLabel(scope, name);
   if (scope.type !== "stores")
-    return { scope: label };
+    return { scope: scopeMetaLabel(scope, name ?? await resolveScopeName(scope)) };
   const rows = await db2.select({ id: stores.storeId, name: stores.storeName, nodeType: orgNodes.type, isActive: orgNodes.isActive }).from(stores).leftJoin(orgNodes, import_drizzle_orm78.eq(stores.orgNodeId, orgNodes.id)).where(import_drizzle_orm78.inArray(stores.storeId, scope.ids));
   const byId = new Map(rows.map((row) => [row.id, row]));
   const selected = scope.ids.map((id) => {
@@ -186046,7 +186045,7 @@ async function scopeExportMeta(scope, name) {
   });
   const inactiveCount = selected.filter((row) => !isDataCenterActiveStore({ isActive: row.isActive })).length;
   return {
-    scope: label,
+    scope: scopeMetaLabel(scope, multiStoreName(selected.map((row) => row.name))),
     extra: [
       { label: "所选门店", value: selected.map((row) => row.name).join("、") },
       ...inactiveCount ? [{ label: "范围提示", value: `${inactiveCount} 家已停用未计入` }] : []
@@ -186061,7 +186060,7 @@ async function* fromArray(rows) {
 }
 async function remainingCardsContent(params) {
   const report = await exportRemainingCardsReport(params);
-  const scopeMeta = await scopeExportMeta(report.params.scope, await resolveScopeName(report.params.scope));
+  const scopeMeta = await scopeExportMeta(report.params.scope);
   const specs = remainingCardsColumnSpecs(report.columns);
   return {
     sheetName: "顾客剩余卡项清单",
@@ -186087,7 +186086,7 @@ async function customerFrequencyContent(params) {
   if (params.month > shanghaiToday().slice(0, 7))
     throw new Error("INVALID_PARAMS: 不能导出未来月份");
   const report = await exportCustomerFrequencyReport(params);
-  const scopeMeta = await scopeExportMeta(report.params.scope, await resolveScopeName(report.params.scope));
+  const scopeMeta = await scopeExportMeta(report.params.scope);
   const specs = frequencyExportColumnSpecs(report.params.month);
   return {
     sheetName: "顾客频率表",

@@ -1,6 +1,8 @@
 import { db } from '@/db'
 import { orgNodes, stores } from '@db/org'
 import { eq, inArray } from 'drizzle-orm'
+import { resolveScopeName } from '@/lib/data-center/context'
+import { multiStoreName } from '@/lib/data-center/scope-options'
 import { scopeMetaLabel } from '@/lib/data-center/scope-meta'
 import type { DataCenterScope } from '@/lib/data-center/types'
 import { isDataCenterActiveStore } from '@/lib/store-status'
@@ -8,14 +10,14 @@ import type { ExportContextMeta } from './export-meta'
 
 /**
  * 仅在对应取数 action 成功（已完成权限/范围校验）后调用。
- * 多店短名与页面一致，完整所选名单另列；停用按组织节点，关店不等于停用。
+ * 多店短名、完整名单、停用提示使用同一批读取；停用按组织节点，关店不等于停用。
+ * 非多店优先使用 action 回显名称；顾客两报表未带回名称时仍只解析一次。
  */
 export async function scopeExportMeta(
   scope: DataCenterScope,
-  name: string,
+  name?: string,
 ): Promise<Pick<ExportContextMeta, 'scope' | 'extra'>> {
-  const label = scopeMetaLabel(scope, name)
-  if (scope.type !== 'stores') return { scope: label }
+  if (scope.type !== 'stores') return { scope: scopeMetaLabel(scope, name ?? await resolveScopeName(scope)) }
   const rows = await db
     .select({ id: stores.storeId, name: stores.storeName, nodeType: orgNodes.type, isActive: orgNodes.isActive })
     .from(stores)
@@ -32,7 +34,7 @@ export async function scopeExportMeta(
   })
   const inactiveCount = selected.filter(row => !isDataCenterActiveStore({ isActive: row.isActive })).length
   return {
-    scope: label,
+    scope: scopeMetaLabel(scope, multiStoreName(selected.map(row => row.name))),
     extra: [
       { label: '所选门店', value: selected.map(row => row.name).join('、') },
       ...(inactiveCount ? [{ label: '范围提示', value: `${inactiveCount} 家已停用未计入` }] : []),

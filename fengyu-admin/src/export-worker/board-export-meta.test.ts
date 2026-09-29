@@ -68,7 +68,7 @@ describe('#296 registry 真实 action 实际期间，与页面解析同源', () 
     await expect(createExportContent('data-center', {
       view, params: { scope: 'stores', scopeId: 'S1,S2', month: '2026-08' },
       metric: config?.kind === 'ranking' ? config.metrics[0].key : undefined,
-    })).rejects.toThrow('PERMISSION_DENIED')
+    })).rejects.toThrow('PERMISSION_DENIED: 越权访问其他门店数据')
     expect(queries).toEqual([])
   })
 

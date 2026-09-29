@@ -6,7 +6,6 @@
  * 列定义用 lib/data-center/matrix-export.ts 从页面列骨架转换，表头 / 合计与页面不漂移。
  */
 import { exportRemainingCardsReport } from '@/actions/data-center/remaining-cards'
-import { resolveScopeName } from '@/lib/data-center/context'
 import { countLeftFrozen, toWorkerExportColumns } from '@/lib/data-center/matrix-export'
 import { displaySearchTerm, remainingCardsColumnSpecs } from '@/lib/data-center/remaining-cards'
 import { exportCustomerFrequencyReport } from '@/actions/data-center/customer-frequency'
@@ -24,7 +23,7 @@ async function* fromArray<T>(rows: readonly T[]): AsyncIterable<T> {
 
 export async function remainingCardsContent(params: Record<string, string>): Promise<ExportContent> {
   const report = await exportRemainingCardsReport(params)
-  const scopeMeta = await scopeExportMeta(report.params.scope, await resolveScopeName(report.params.scope))
+  const scopeMeta = await scopeExportMeta(report.params.scope)
   const specs = remainingCardsColumnSpecs(report.columns)
   return {
     sheetName: '顾客剩余卡项清单',
@@ -53,7 +52,7 @@ export async function customerFrequencyContent(params: Record<string, string>): 
   // 未来月份在 parseReportMonth 里会回落成「上月」：伪造的导出参数不能借此导出一个与 payload 不符的月份
   if (params.month > shanghaiToday().slice(0, 7)) throw new Error('INVALID_PARAMS: 不能导出未来月份')
   const report = await exportCustomerFrequencyReport(params)
-  const scopeMeta = await scopeExportMeta(report.params.scope, await resolveScopeName(report.params.scope))
+  const scopeMeta = await scopeExportMeta(report.params.scope)
   const specs = frequencyExportColumnSpecs(report.params.month)
   return {
     sheetName: '顾客频率表',

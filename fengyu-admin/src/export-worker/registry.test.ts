@@ -1,3 +1,8 @@
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import ExcelJS from 'exceljs'
+import { writeStreamXlsx } from './xlsx-writer'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { mockScopeRows } = vi.hoisted(() => ({ mockScopeRows: [] as Array<{ id: string; name: string; nodeType: string; isActive: boolean | null }> }))
@@ -952,5 +957,29 @@ describe('#296 全部 18 视图多店元信息接线，不得丢 extra', () => {
     if (view.startsWith('product-')) expect(entries).toContainEqual({ label: '品项分类', value: '美容' })
     if (config?.kind === 'ranking') expect(entries).toContainEqual({ label: '排名指标', value: config.metrics[0].label })
     if (view === 'efficiency-staff' || view === 'efficiency-staff-ranking') expect(entries).toContainEqual({ label: '口径', value: STAFF_OUTPUT_SCOPE_NOTE })
+    const labels = entries.map(entry => entry.label)
+    const originalLabels: Partial<Record<typeof view, string[]>> = {
+      'report-operating-master': ['统计时点', '年度累计区间', '说明'],
+      'report-daily-overview': ['视角'],
+      'report-remaining-cards': ['快照日', '显示范围'],
+      'report-customer-frequency': ['显示范围', '日期格'],
+      'report-commission-daily': ['视图', '汇总维度', '口径'],
+      'report-commission-detail': ['员工', '门店', '提成类型'],
+    }
+    for (const label of originalLabels[view] ?? []) expect(labels).toContain(label)
+    // 全部多店视图实际回读 xlsx，确认这两行与原 extra 一起落盘。
+    const dir = await mkdtemp(join(tmpdir(), 'fengyu-multi-meta-'))
+    try {
+      const filePath = join(dir, 'export.xlsx')
+      await writeStreamXlsx({ filePath, ...content, meta: entries })
+      const workbook = new ExcelJS.Workbook()
+      await workbook.xlsx.readFile(filePath)
+      const sheet = workbook.getWorksheet('导出说明')!
+      const exported: Record<string, string> = {}
+      sheet.eachRow(row => { exported[row.getCell(1).text] = row.getCell(2).text })
+      expect(exported['所选门店']).toBe('甲店、乙店、丙店、丁店')
+      expect(exported['范围提示']).toBe('1 家已停用未计入')
+      for (const label of originalLabels[view] ?? []) expect(exported).toHaveProperty(label)
+    } finally { await rm(dir, { recursive: true, force: true }) }
   })
 })
