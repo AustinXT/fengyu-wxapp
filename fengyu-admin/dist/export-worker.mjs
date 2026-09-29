@@ -13867,6 +13867,7 @@ var init_postgres_js = __esm(() => {
 });
 
 // src/db/index.ts
+import { writeSync } from "node:fs";
 async function initializeDatabase() {
   await client`SELECT 1`;
 }
@@ -13881,8 +13882,12 @@ var init_db2 = __esm(() => {
     connection: { TimeZone: "Asia/Shanghai" },
     onparameter(key, value) {
       if (key === "TimeZone" && value !== "Asia/Shanghai") {
-        console.error(new Error(`PG_TIMEZONE_MISMATCH: expected Asia/Shanghai, received ${value}`));
-        process.exit(1);
+        try {
+          writeSync(2, `PG_TIMEZONE_MISMATCH: expected Asia/Shanghai, received ${value}
+`);
+        } finally {
+          process.exit(1);
+        }
       }
     }
   });
