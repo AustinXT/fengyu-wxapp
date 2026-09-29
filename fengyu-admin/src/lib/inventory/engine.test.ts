@@ -2536,6 +2536,7 @@ describe('库存单据详情履约进度', () => {
         relation_type: '原始报货单（经品项公司发货）',
         doc_id: 'MBH-260809-0001',
         doc_type: '市场报货',
+        source_org_node_name: '测试市场',
         status: '已完成',
         doc_date: '2026-08-09',
         total_quantity: '30',
@@ -2548,9 +2549,12 @@ describe('库存单据详情履约进度', () => {
       ['发货收货', 'GFH-260810-0001'],
       ['原始报货单（经品项公司发货）', 'MBH-260809-0001'],
     ])
+    expect(detail?.lineage.find((row) => row.docId === 'MBH-260809-0001')?.sourceOrgNodeName).toBe('测试市场')
     const originQuery = mockDb.execute.mock.calls.map(([query]) => query)
       .find((query) => sqlContains(query, 'origin_report'))
     expect(originQuery).toBeDefined()
+    expect(sqlContains(originQuery, 'MAX(origin_source.name) AS source_org_node_name')).toBe(true)
+    expect(sqlContains(originQuery, 'origin_source.org_node_id = origin_report.source_org_node_id')).toBe(true)
     expect(sqlContains(originQuery, "origin_ship_link.relation_type IN ('市场报货发货', '市场报货赠送发货')")).toBe(true)
     expect(sqlContains(originQuery, "origin_receipt_link.relation_type = '发货收货'")).toBe(true)
   })
