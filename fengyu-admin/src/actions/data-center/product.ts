@@ -52,6 +52,7 @@
  * 性能：daily_agg 全历史扫描（purchase_date <= endDate 无下界）；持卡截面 + cycle 区间分多查询。
  */
 
+import { safeDiv } from '@/lib/data-center/format'
 import { db } from '@/db'
 import { sql, type SQL } from 'drizzle-orm'
 import { withPermission } from '@/lib/with-permission'
@@ -80,7 +81,6 @@ const round2 = (v: unknown): number => Math.round(num(v) * 100) / 100 || 0
 const first = (rows: unknown): Record<string, unknown> =>
   ((rows as unknown[])[0] as Record<string, unknown>) ?? {}
 /** 安全除法（分母 <= 0 → null，前端 '--'） */
-const safeDiv = (a: number, b: number): number | null => (b > 0 ? a / b : null)
 
 /**
  * 品项分组键 + WHERE 过滤片段（一级 product_kind / 二级 category_name 切换）。

@@ -9,6 +9,7 @@
  *
  * 口径与 SQL 见 lib/data-center/commission-sql.ts；列定义见 commission-columns.ts。
  */
+import { safeDiv } from '@/lib/data-center/format'
 import { db } from '@/db'
 import { withAllPermissions } from '@/lib/with-permission'
 import { hasUiCapability } from '@/lib/permission-contract'
@@ -80,10 +81,6 @@ function toNullableNumber(value: unknown): number | null {
   if (value == null || value === '') return null
   const n = Number(value)
   return Number.isFinite(n) ? n : null
-}
-
-function ratio(numerator: number, denominator: number): number | null {
-  return denominator > 0 ? numerator / denominator : null
 }
 
 async function resolveContext(session: AuthSession, query: Query) {
@@ -183,15 +180,15 @@ export const getCommissionDaily = withAllPermissions(
         sale,
         service,
         // 占比分母用合计本身：合计 ≤ 0（极端的全月净退款）时占比无意义，给空
-        saleShare: ratio(sale, total),
-        serviceShare: ratio(service, total),
+        saleShare: safeDiv(sale, total),
+        serviceShare: safeDiv(service, total),
         earningEmployees: toNumber(kpi.earning_employees),
         employees: toNumber(kpi.employees),
         technicianCount,
         noStoreScope,
-        perTechnician: noStoreScope ? null : ratio(total, technicianCount),
+        perTechnician: noStoreScope ? null : safeDiv(total, technicianCount),
         orders,
-        perOrder: ratio(total, orders),
+        perOrder: safeDiv(total, orders),
       },
       pending: { count: toNumber(pending.count), amount: toNumber(pending.amount) },
       canLinkAllocations: grantedOnAllRoles(session, 'allocation:list'),

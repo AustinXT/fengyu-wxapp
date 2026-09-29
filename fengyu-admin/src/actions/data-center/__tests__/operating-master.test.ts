@@ -125,7 +125,7 @@ describe('getOperatingMaster', () => {
     const past = compiled(Q.retained)
     const flat = past.sql.replace(/\s+/g, ' ')
     expect(flat).toMatch(/so\.service_date BETWEEN \(\$\d+::date - INTERVAL '90 days'\)::date AND \$\d+/)
-    expect(flat).toMatch(/c\.became_member_at IS NOT NULL AND c\.became_member_at::date <= \$\d+/)
+    expect(flat).toMatch(/c\.became_member_at IS NOT NULL AND \(c\.became_member_at AT TIME ZONE 'Asia\/Shanghai'\)::date <= \$\d+/)
     expect(past.params.filter((param) => param === '2026-08-31')).toHaveLength(4) // 窗口两端 + 会员守卫 + F/H 当月末
     expect(flat).toContain('COUNT(*) FILTER (WHERE mv.days >= 1) AS once')
     expect(flat).toContain('COUNT(*) FILTER (WHERE mv.days >= 2) AS twice')

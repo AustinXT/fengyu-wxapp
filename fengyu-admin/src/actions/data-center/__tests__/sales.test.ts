@@ -65,6 +65,7 @@ import { getSalesBoard } from '../sales'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { prepareBoardContext } from '@/lib/data-center/context'
+import { resolveTimeRange } from '@/lib/data-center/time-range'
 
 /**
  * 按"调用顺序"配置 db.execute 返回值。
@@ -92,6 +93,7 @@ import { prepareBoardContext } from '@/lib/data-center/context'
  * #285 加 technicianDirectByMarket 时实测打翻了 11 条用例。下面的长度断言就是为此加的。
  */
 function setupExecuteQueue(opts: {
+  historyCopies?: number
   kpis?: number[] // 8 个标量值（默认全 100）
   skeleton?: Array<Record<string, unknown>>
   openStores?: Array<Record<string, unknown>>
@@ -107,6 +109,7 @@ function setupExecuteQueue(opts: {
 
   const queue: unknown[] = [
     ...kpiVals.map((v) => [{ v }]),
+    ...kpiVals.flatMap((v) => Array.from({ length: opts.historyCopies ?? 0 }, () => [{ v: v / 2 }])),
     skeleton,
     opts.openStores ?? skeleton.map((r) => ({ store_id: r.store_id, v: 1 })),
     ...detail,
@@ -438,5 +441,28 @@ describe('getSalesBoard — meta 透传 + scope=store 门店数', () => {
     const res = await getSalesBoard({ ...baseParams, scope: { type: 'store', id: 'S1' } })
     expect(res.kpis.storeCount.value).toBe(0)
     expect(res.kpis.revenuePerStore.value).toBeNull()
+  })
+})
+
+
+describe('getSalesBoard — year 对比去重 (#311)', () => {
+  it('按值相同的历史区间复用查询，8 个 KPI 共减少 8 次 SQL，输出与旧实现快照一致', async () => {
+    const timeRange = resolveTimeRange({ preset: 'year' }, new Date('2026-09-29T04:00:00Z'))
+    expect(timeRange.previous).not.toBe(timeRange.lastYear)
+    expect(timeRange.previous).toEqual(timeRange.lastYear)
+    vi.mocked(prepareBoardContext).mockResolvedValue({
+      ...mockCtx,
+      meta: { ...mockCtx.meta, timeRange: { ...timeRange.current, presetLabel: timeRange.presetLabel, previous: timeRange.previous, lastYear: timeRange.lastYear } },
+      comparison: timeRange,
+      enabled: true,
+    })
+    setupExecuteQueue({ historyCopies: 1 })
+    const result = await getSalesBoard({ ...baseParams, timeRange: { preset: 'year' }, withComparison: true })
+    expect(db.execute).toHaveBeenCalledTimes(26)
+    for (const cell of Object.values(result.kpis)) {
+      expect(cell.mom).toEqual(cell.yoy)
+    }
+    // 快照在 b272a15e 的三路 runner 实现上生成，重构后只改调用次数断言。
+    expect(result).toMatchSnapshot()
   })
 })

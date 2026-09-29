@@ -25,6 +25,16 @@ function isInvalid(value: number | null | undefined): boolean {
   return value == null || !Number.isFinite(value)
 }
 
+/** 比率/均值：任一侧缺失或非有限、分母非正数时返回 null（前端 '--'）。 */
+export function safeDiv(
+  numerator: number | null | undefined,
+  denominator: number | null | undefined,
+): number | null {
+  if (numerator == null || denominator == null
+    || !Number.isFinite(numerator) || !Number.isFinite(denominator)) return null
+  return denominator > 0 ? numerator / denominator : null
+}
+
 /** 金额格式化：千分位 + 2 位小数 */
 export function formatAmount(value: number | null | undefined): string {
   if (isInvalid(value)) return NA_TEXT

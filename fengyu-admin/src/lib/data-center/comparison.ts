@@ -5,7 +5,7 @@
  * 上线前清空 PG，短期无历史 → 上期/去年查出 0 或 runner 返回 null → delta 返回 null →
  * 前端统一显示 '--'，优雅降级无需特判。
  *
- * 性能：开启 comparison 时单 KPI 查询 ×3。仅作用于 KPI 卡片标量，
+ * 性能：开启 comparison 时单 KPI 最多跑三次 runner；同值历史区间只跑一次。仅作用于 KPI 卡片标量，
  * 明细表/排名榜不做逐行对比（见 plan 风险 §2）。
  */
 import type { KpiCell, MetricUnit, ResolvedRange, ResolvedTimeRange } from './types'
@@ -50,10 +50,14 @@ export async function withComparison(
   if (!enabled) {
     return { value, unit }
   }
-  const [prev, ly] = await Promise.all([
-    ranges.previous ? runner(ranges.previous) : Promise.resolve(null),
-    ranges.lastYear ? runner(ranges.lastYear) : Promise.resolve(null),
-  ])
+  const sameHistoryRange = ranges.previous != null && ranges.lastYear != null
+    && ranges.previous.start === ranges.lastYear.start
+    && ranges.previous.end === ranges.lastYear.end
+  const previous = ranges.previous ? runner(ranges.previous) : Promise.resolve(null)
+  const lastYear = sameHistoryRange
+    ? previous
+    : ranges.lastYear ? runner(ranges.lastYear) : Promise.resolve(null)
+  const [prev, ly] = await Promise.all([previous, lastYear])
   return {
     value,
     mom: resolveDeltaDisplay(value, prev),

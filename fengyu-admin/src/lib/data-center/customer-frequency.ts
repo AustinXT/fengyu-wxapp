@@ -6,6 +6,7 @@
  *
  * 口径见 customer-frequency-query.ts 文件头与 notes/references/metrics.md「顾客频率表」。
  */
+import { safeDiv } from '@/lib/data-center/format'
 import { formatPhoneSafe } from '@/lib/format'
 import { resolvePaging } from '@/lib/paging'
 import type { ExportCell } from '@/export-worker/xlsx-writer'
@@ -224,10 +225,6 @@ export interface CustomerFrequencySummary {
   consumeRatio: number | null
 }
 
-function ratio(numerator: number, denominator: number): number | null {
-  return denominator > 0 ? numerator / denominator : null
-}
-
 /** 指标卡：按范围全量计算，不受搜索、只看有到店、分页影响 */
 export function summarizeCustomerFrequency(rows: readonly CustomerFrequencyModelRow[]): CustomerFrequencySummary {
   const tierCounts: Record<CustomerFrequencyTierKey, number> = { low: 0, mid: 0, high: 0 }
@@ -244,18 +241,18 @@ export function summarizeCustomerFrequency(rows: readonly CustomerFrequencyModel
     consumeCents += row.consumeCents
   }
   const tiers = Object.fromEntries(
-    CUSTOMER_FREQUENCY_TIERS.map((tier) => [tier.key, { count: tierCounts[tier.key], share: ratio(tierCounts[tier.key], visitedCount) }]),
+    CUSTOMER_FREQUENCY_TIERS.map((tier) => [tier.key, { count: tierCounts[tier.key], share: safeDiv(tierCounts[tier.key], visitedCount) }]),
   ) as CustomerFrequencySummary['tiers']
   return {
     customerCount: rows.length,
     visitedCount,
-    visitRate: ratio(visitedCount, rows.length),
+    visitRate: safeDiv(visitedCount, rows.length),
     tiers,
     visitTotal,
-    visitsPerVisitor: ratio(visitTotal, visitedCount),
+    visitsPerVisitor: safeDiv(visitTotal, visitedCount),
     amountTotal: amountCents / 100,
     consumeTotal: consumeCents / 100,
-    consumeRatio: ratio(consumeCents, amountCents),
+    consumeRatio: safeDiv(consumeCents, amountCents),
   }
 }
 
