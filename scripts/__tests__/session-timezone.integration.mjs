@@ -29,7 +29,7 @@ function run(target, mode, wrong = false, connectionUrl = url) {
   return spawnSync('bun', ['run', resolve(root, 'scripts/tests/session-timezone-probe.ts'), target, mode], {
     cwd: root,
     env: { ...process.env, E2E_DATABASE_URL: appUrl, DATABASE_URL: connectionUrl,
-      PG_CONNECTION_STRING: url + (mode === 'url-options' ? '?options=-c%20TimeZone%3DUTC' : ''), NODE_ENV: 'production' },
+      PG_CONNECTION_STRING: url + (mode === 'url-options' ? '?options=-c%20TimeZone%3DUTC' : mode === 'url-timezone' ? '?TimeZone=UTC' : ''), NODE_ENV: 'production' },
     encoding: 'utf8', timeout: 20000,
   })
 }
@@ -52,6 +52,18 @@ for (const target of ['staff', 'client', 'pay']) {
     assert.equal(child.status, 1, child.stderr + child.stdout)
     assert.match(child.stderr, /PG_TIMEZONE_MISMATCH/)
     assert.doesNotMatch(child.stdout, /PASS/)
+  })
+}
+
+for (const target of ['staff', 'client', 'pay']) {
+  test(`${target} URL TimeZone 参数不得使会话以 UTC 执行业务查询`, () => {
+    const child = run(target, 'url-timezone')
+    // pg 当前不把 URL 的 TimeZone 字段作为启动参数；若未来驱动支持，错误会话仍须退出。
+    if (child.status === 0) assert.match(child.stdout, /PASS/)
+    else {
+      assert.equal(child.status, 1, child.stderr + child.stdout)
+      assert.match(child.stderr, /PG_TIMEZONE_MISMATCH/)
+    }
   })
 }
 
@@ -102,3 +114,14 @@ for (const worker of ['cron', 'export-worker']) {
     assert.match(child.stdout, /check passed|bundle verified/)
   })
 }
+
+// package.json 的 export-worker 直接消费已提交产物，不能只测试从源码现场构建的临时 bundle。
+test('已提交 export-worker 产物也在任务前因错误时区退出', () => {
+  const child = spawnSync(process.execPath, ['--conditions=react-server',
+    resolve(root, 'fengyu-admin/dist/export-worker.mjs'), '--once'], {
+    cwd: resolve(root, 'fengyu-admin'), encoding: 'utf8', timeout: 20000,
+    env: { ...process.env, E2E_DATABASE_URL: url + '?TimeZone=UTC', DATABASE_URL: url, NODE_ENV: 'production' },
+  })
+  assert.equal(child.status, 1, child.stderr + child.stdout)
+  assert.match(child.stderr, /PG_TIMEZONE_MISMATCH/)
+})
