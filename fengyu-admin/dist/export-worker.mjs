@@ -181066,7 +181066,7 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
           JOIN sale_orders so ON so.sale_order_id = sipe.sale_order_id
           WHERE ${scopeFilterSql(session4, scope, "so.store_id")}
             AND so.sale_order_type IN ('销售单', '转换单')
-            AND so.status = '已支付'
+            AND (NOT sipe.is_legacy_residual OR so.status <> '已关闭')
             AND si.is_shengmei = TRUE
             AND sipe.performance_date BETWEEN ${range.start} AND ${range.end}
         `));
@@ -181209,7 +181209,7 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
         JOIN sale_orders so ON so.sale_order_id = sipe.sale_order_id
         WHERE ${scopeFilterSql(session4, scope, "so.store_id")}
           AND so.sale_order_type IN ('销售单', '转换单')
-          AND so.status = '已支付'
+          AND (NOT sipe.is_legacy_residual OR so.status <> '已关闭')
           AND si.is_shengmei = TRUE
           AND sipe.performance_date BETWEEN ${cur.start} AND ${cur.end}
         GROUP BY so.store_id
