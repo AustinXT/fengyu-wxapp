@@ -386,6 +386,13 @@
       "when": 1790333373116,
       "tag": "0054_pickup_frozen_amount",
       "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1790673195829,
+      "tag": "0055_inventory_location_identity_guard",
+      "breakpoints": true
     }
   ]
 }

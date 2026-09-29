@@ -318,6 +318,37 @@ describe('PR #113 进销存单据组织端点跨端守护（staff / admin / sche
     })
   })
 
+  describe('#270 三份同步身份守卫', () => {
+    const files = () => [staffSrc, adminSrc, readFile(FILES.adminBusinessTs)]
+    const probe = /SELECT EXISTS \([\s\S]*?LIMIT 1\) AS collided_id/
+    test('探测 SQL 三份字面一致（含停用主体与撞值）', () => {
+      const literals = files().map((src) => src.match(probe)?.[0])
+      expect(literals.every(Boolean)).toBe(true)
+      expect(literals[0]).toBe(literals[1])
+      expect(literals[1]).toBe(literals[2])
+    })
+    test('两条完整 UPSERT 在三份同步实现中逐字一致', () => {
+      const pairs = files().map((src) => {
+        const start = src.indexOf('function sync')
+        const body = src.slice(start, src.indexOf('\n}', start))
+        return [...body.matchAll(/INSERT INTO inventory_locations[\s\S]*?updated_at = NOW\(\)/g)].map((m) => m[0])
+      })
+      expect(pairs[0]).toHaveLength(2)
+      expect(pairs[0]).toEqual(pairs[1])
+      expect(pairs[1]).toEqual(pairs[2])
+    })
+    test('撞值闸在漂移短路和 UPSERT 之前', () => {
+      for (const src of files()) {
+        const start = src.indexOf('function sync')
+        const body = src.slice(start, src.indexOf('\n}', start))
+        expect(body.indexOf('if (collidedId != null)')).toBeGreaterThan(0)
+        expect(body.indexOf('if (collidedId != null)')).toBeLessThan(body.indexOf('=== false) return'))
+        expect(body).toContain('store_id = NULL')
+        expect(body).toContain('loc.store_id IS NOT NULL')
+      }
+    })
+  })
+
   // #132：批次供应商锚点。ensureLotFromSku / ensureInventoryLotFromSku 是两份独立副本，
   // 而 lot_key 的 supplier 段取 `supplierId ?? supplier` —— 一端锚 id、另一端锚名称的话，
   // 同一批实物会在两条写入路径下算出不同的 lot_key，拆成两行库存。

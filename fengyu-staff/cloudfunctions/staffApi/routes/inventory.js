@@ -392,6 +392,7 @@ async function syncInventoryLocations(client = null) {
            OR loc.location_type IS DISTINCT FROM o.type::text
            OR loc.name IS DISTINCT FROM o.name
            OR loc.org_node_id IS DISTINCT FROM o.id
+           OR loc.store_id IS NOT NULL
            OR loc.parent_location_id IS DISTINCT FROM o.parent_id
            OR loc.is_active IS DISTINCT FROM o.is_active)
       UNION ALL
@@ -406,37 +407,48 @@ async function syncInventoryLocations(client = null) {
          OR loc.store_id IS DISTINCT FROM s.store_id
          OR loc.parent_location_id IS DISTINCT FROM o.parent_id
          OR loc.is_active IS DISTINCT FROM (COALESCE(o.is_active, false) AND NOT s.is_closed)
-    ) AS drifted
+    ) AS drifted,
+    (SELECT s.store_id
+       FROM stores s
+       JOIN org_nodes o ON o.id = s.store_id
+      WHERE o.type IN ('总部','市场')
+      ORDER BY s.store_id
+      LIMIT 1) AS collided_id
   `, [])
+  const collidedId = probeRows?.[0]?.collided_id
+  if (collidedId != null) {
+    throw new Error(`CONFLICT: LOCATION_ID_AMBIGUOUS: 库存主体标识 ${collidedId} 与总部/市场组织节点冲突`)
+  }
   if (probeRows?.[0]?.drifted === false) return
   await q.query(`
-    INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, parent_location_id, is_active)
-    SELECT id, type, name, id, parent_id, is_active
-      FROM org_nodes
-     WHERE type IN ('总部','市场')
-    ON CONFLICT (location_id) DO UPDATE
-      SET location_type = EXCLUDED.location_type,
-          name = EXCLUDED.name,
-          org_node_id = EXCLUDED.org_node_id,
-          parent_location_id = EXCLUDED.parent_location_id,
-          is_active = EXCLUDED.is_active,
-          updated_at = NOW()
-  `)
+      INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, parent_location_id, is_active)
+      SELECT id, type, name, id, parent_id, is_active
+        FROM org_nodes
+       WHERE type IN ('总部','市场')
+      ON CONFLICT (location_id) DO UPDATE
+        SET location_type = EXCLUDED.location_type,
+            name = EXCLUDED.name,
+            org_node_id = EXCLUDED.org_node_id,
+            store_id = NULL,
+            parent_location_id = EXCLUDED.parent_location_id,
+            is_active = EXCLUDED.is_active,
+            updated_at = NOW()
+    `)
   await q.query(`
-    INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, store_id, parent_location_id, is_active)
-    SELECT s.store_id, '门店', s.store_name, s.org_node_id, s.store_id, o.parent_id,
-           COALESCE(o.is_active, false) AND NOT s.is_closed
-      FROM stores s
-      LEFT JOIN org_nodes o ON o.id = s.org_node_id
-    ON CONFLICT (location_id) DO UPDATE
-      SET location_type = EXCLUDED.location_type,
-          name = EXCLUDED.name,
-          org_node_id = EXCLUDED.org_node_id,
-          store_id = EXCLUDED.store_id,
-          parent_location_id = EXCLUDED.parent_location_id,
-          is_active = EXCLUDED.is_active,
-          updated_at = NOW()
-  `)
+      INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, store_id, parent_location_id, is_active)
+      SELECT s.store_id, '门店', s.store_name, s.org_node_id, s.store_id, o.parent_id,
+             COALESCE(o.is_active, false) AND NOT s.is_closed
+        FROM stores s
+        LEFT JOIN org_nodes o ON o.id = s.org_node_id
+      ON CONFLICT (location_id) DO UPDATE
+        SET location_type = EXCLUDED.location_type,
+            name = EXCLUDED.name,
+            org_node_id = EXCLUDED.org_node_id,
+            store_id = EXCLUDED.store_id,
+            parent_location_id = EXCLUDED.parent_location_id,
+            is_active = EXCLUDED.is_active,
+            updated_at = NOW()
+    `)
 }
 
 function scopedInventoryLocationIds(auth) {
@@ -577,31 +589,10 @@ async function ensureInventoryLocation(locationId, requiredType = null, client =
   if (requiredType && row.location_type !== requiredType) {
     throw new Error(`INVALID_PARAMS: 库存主体必须是${requiredType}`)
   }
-  /**
-   * ⚠️ 已知缺陷，**本次刻意不改**（#251 评审提出，范围外）：
-   *
-   * `org_node_id` 可空（`db/schema/inventory.ts` 无 `.notNull()`，来源 `stores.org_node_id`
-   * 同样可空）。这类行只能靠 `location_id = $1` 入选，而下面的 `|| locationId` 会把
-   * **入参的 store_id 当组织节点 id 返回**；返回值被 `resolveStaffCreateLocations`
-   * 取作 `sourceOrgNodeId` / `targetOrgNodeId` 写进 `inventory_docs` —— 那两列对
-   * `inventory_locations.org_node_id` 有 FK（`0039` 迁移），落库会被 FK 挡下、
-   * 报一条指不到真正病根的约束错。正解是 fail-loud。
-   *
-   *（补了撞值守卫之后，「把错误主体钉进单据」那一支已**不可达**：FK 要放行就得存在另一行
-   * `org_node_id = $1`，而那恰好就是 `rows.length === 2` → CONFLICT 的条件。
-   * 所以本函数现在只会走出「FK 挡下」这一支。）
-   *
-   * 不在本 PR 改的原因：现网 dev/prod 实测 `org_node_id` 为空的主体行均为 **0**，
-   * 属理论缺陷；而改成抛错会打红 13 个既有用例（它们的 mock 行压根不带 `org_node_id`，
-   * 一直靠这个兜底跑过）。修它应当连同那批 mock 的保真度一起做，另开 issue。
-   *
-   * （`location_id` 那侧的兜底则是纯死代码：它是主键，不可能为空 —— 一并留待该 issue 清理。）
-   */
-  return {
-    ...row,
-    location_id: row.location_id || locationId,
-    org_node_id: row.org_node_id || locationId,
+  if (!row.org_node_id) {
+    throw new Error('INVALID_STATE: LOCATION_MAPPING_MISSING: 库存主体缺少组织映射，请联系管理员')
   }
+  return row
 }
 
 async function ensureStoreLocation(locationId, client = null) {
