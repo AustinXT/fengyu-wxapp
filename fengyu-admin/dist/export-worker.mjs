@@ -163602,7 +163602,7 @@ async function capturePaymentAllocatables(tx, args) {
     ORDER BY a.sale_item_id
     `);
     const rows = convRows;
-    if (rows.length === 0 && ord.sale_order_type !== "转换单")
+    if (rows.length === 0)
       return [];
     const convGuard = await tx.execute(import_drizzle_orm25.sql`
       UPDATE sale_order_payments
@@ -163611,8 +163611,6 @@ async function capturePaymentAllocatables(tx, args) {
          AND (allocation_status IS NULL OR allocation_status = '待分配')
     `);
     if (convGuard.count === 0)
-      return [];
-    if (rows.length === 0)
       return [];
     const perItem2 = rows.map((r) => ({ saleItemId: r.sale_item_id, amount: Number(r.amount) }));
     const catMap2 = new Map(rows.map((r) => [r.sale_item_id, r.sales_category]));
