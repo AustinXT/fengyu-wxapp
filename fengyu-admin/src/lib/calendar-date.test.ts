@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from 'node:os'
 import ts from 'typescript'
 import { dirname, join, relative, resolve } from 'node:path'
-import { CALENDAR_MAX_YEAR, CALENDAR_MIN_YEAR, isValidCalendarDate } from './calendar-date'
+import { CALENDAR_MAX_YEAR, CALENDAR_MIN_YEAR, isValidCalendarDate, isValidInventoryCalendarDate } from './calendar-date'
 
 describe('isValidCalendarDate（#308 单源）', () => {
   it('合法日历日期放行（含闰日、年份上下界）', () => {
@@ -197,8 +197,8 @@ describe('单源守护：数据中心一侧不许再长出日历校验（#308「
     ])
     // calendar-date.ts 本体的正则与 UTC 往返都能被识别
     expect(primitives(parse(join(SRC, 'lib/calendar-date.ts')))).toEqual(expect.arrayContaining([
-      'isValidCalendarDate :: .getUTCFullYear', 'isValidCalendarDate :: .getUTCMonth', 'isValidCalendarDate :: .getUTCDate',
-      'isValidCalendarDate :: Date.UTC', 'isValidCalendarDate :: new Date(x)',
+      'isValidInventoryCalendarDate :: .getUTCFullYear', 'isValidInventoryCalendarDate :: .getUTCMonth', 'isValidInventoryCalendarDate :: .getUTCDate',
+      'isValidInventoryCalendarDate :: .setUTCFullYear', 'isValidInventoryCalendarDate :: new Date(x)',
     ]))
   })
 
@@ -227,7 +227,7 @@ describe('单源守护：数据中心一侧不许再长出日历校验（#308「
     expect(localDefs, `${file} 本地又定义了 ${name}`).toBe(0)
   }
 
-  it('calendar-date.ts 的导出恰为闭集 {年份上下界, CalendarDate, isValidCalendarDate}（单源本体里不许再长出平行校验）', () => {
+  it('calendar-date.ts 的导出恰为闭集 {年份上下界, CalendarDate, isValidCalendarDate, 库存年份变体}（日历算法仍单源）', () => {
     const sf = parse(join(SRC, 'lib/calendar-date.ts'))
     const exported = sf.statements.flatMap((st) => {
       const isExport = ts.canHaveModifiers(st) && ts.getModifiers(st)?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword)
@@ -238,7 +238,7 @@ describe('单源守护：数据中心一侧不许再长出日历校验（#308「
       if (ts.isVariableStatement(st)) return st.declarationList.declarations.map((d) => d.name.getText(sf))
       return [`<${ts.SyntaxKind[st.kind]}>`]
     })
-    expect(exported.sort()).toEqual(['CALENDAR_MAX_YEAR', 'CALENDAR_MIN_YEAR', 'CalendarDate', 'isValidCalendarDate'])
+    expect(exported.sort()).toEqual(['CALENDAR_MAX_YEAR', 'CALENDAR_MIN_YEAR', 'CalendarDate', 'isValidCalendarDate', 'isValidInventoryCalendarDate'])
   })
 
   it.each([
@@ -1245,4 +1245,14 @@ describe('CalendarDate 逃逸口守护（TypeChecker 语义判定）', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   }, 60_000)
+})
+
+
+describe('#453 库存年份变体', () => {
+  it.each(['0001-01-01', '0099-12-31', '0100-01-01', '1899-12-31', '2101-01-01', '9999-12-31', '2000-02-29'])('库存允许 %s，保持原有 0001–9999 口径', (value) => {
+    expect(isValidInventoryCalendarDate(value)).toBe(true)
+  })
+  it.each(['0000-01-01', '0100-02-29', '1900-02-29', '2026-02-30', '2026-13-01', '2026-00-01', '2026-01-32', '2026-01-00', '10000-01-01', ' 2026-01-01', '', null, 20260101])('拒绝非法日历值 %s', (value) => {
+    expect(isValidInventoryCalendarDate(value)).toBe(false)
+  })
 })

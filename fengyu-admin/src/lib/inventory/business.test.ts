@@ -4628,3 +4628,18 @@ describe('门店报货草稿（#348）', () => {
          AND request_doc.status = '已完成'`)
   })
 })
+
+
+describe('#453 库存日期服务端拦截', () => {
+  beforeEach(() => vi.clearAllMocks())
+  it.each(['2026-02-30', '2026-13-01', '0000-01-01', 20260101, {}])('采购订单拒绝非法 docDate %s，未执行 SQL', async (docDate) => {
+    await expect(createPurchaseOrder(SESSION, { supplyChainLocationId: 'HQ', docDate, items: [{ sourceItemId: 1, quantity: 1 }] } as never)).rejects.toMatchObject({ prefix: 'INVALID_PARAMS' })
+    expect(db.execute).not.toHaveBeenCalled()
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+  it.each(['2026-02-30', '2026-13-01', '0000-01-01', 20260101, {}])('自采入库拒绝非法 expiryDate %s，未执行 SQL', async (expiryDate) => {
+    await expect(createSelfPurchasedReceipt(SELF_PURCHASE_SESSION, { marketId: 'M1', supplierId: 'SUP', items: [{ skuId: 'SKU', quantity: 1, expiryDate }] } as never)).rejects.toMatchObject({ prefix: 'INVALID_PARAMS' })
+    expect(db.execute).not.toHaveBeenCalled()
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+})

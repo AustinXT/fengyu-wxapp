@@ -280,7 +280,7 @@ describe('货款结算只读报表', () => {
     mockGetSession.mockResolvedValue(MARKET_SESSION)
 
     await expect(listInventorySettlements({ startDate: '2026/09/01' }))
-      .rejects.toThrow('INVALID_PARAMS: 结算期间日期格式必须为 YYYY-MM-DD')
+      .rejects.toThrow('INVALID_PARAMS: 结算开始日期不是有效的日历日期')
     await expect(listInventorySettlements({ startDate: '2026-09-02', endDate: '2026-09-01' }))
       .rejects.toThrow('INVALID_PARAMS: 结算开始日期不能晚于结束日期')
     expect(mockDb.select).not.toHaveBeenCalled()

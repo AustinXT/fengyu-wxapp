@@ -1,3 +1,4 @@
+import { isValidInventoryCalendarDate } from '@/lib/calendar-date'
 import { db } from '@/db'
 import 'server-only'
 import { ApiError } from '@/lib/api-error'
@@ -33,21 +34,10 @@ const MARKET_SETTLEMENT_STATUSES = ['已完成'] as const
  */
 const STORE_SETTLEMENT_STATUSES = ['待收货', '已完成'] as const
 
-const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/
 
-/**
- * 严格日历校验：形状校验挡不住 '2026-02-31' 这类假日期，直传 PG 会以 22008
- * （date/time field value out of range）变成服务器错误。解析为 UTC 日期后回写
- * 比对，闰年/月末越界（2月29/30/31、4月31 等）一律在入口抛 INVALID_PARAMS。
- */
+/** 保留库存 0001–9999 年口径，复用 calendar-date 单源，非法值在 SQL 前拒绝。 */
 export function assertRealCalendarDate(value: string, label: string): void {
-  // PG date 不接受 year zero（0000 会过 toISOString 回写比对但落库 22008），年份显式限 1..9999
-  const year = Number(value.slice(0, 4))
-  if (year < 1 || year > 9999) {
-    throw new ApiError('INVALID_PARAMS', `${label}不是有效的日历日期`)
-  }
-  const parsed = new Date(`${value}T00:00:00Z`)
-  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value) {
+  if (!isValidInventoryCalendarDate(value)) {
     throw new ApiError('INVALID_PARAMS', `${label}不是有效的日历日期`)
   }
 }
@@ -56,9 +46,6 @@ function normalizeSettlementPeriod(filters: { startDate?: string | null; endDate
   const today = shanghaiToday()
   const startDate = filters.startDate?.trim() || `${today.slice(0, 8)}01`
   const endDate = filters.endDate?.trim() || today
-  if (!DATE_PATTERN.test(startDate) || !DATE_PATTERN.test(endDate)) {
-    throw new ApiError('INVALID_PARAMS', '结算期间日期格式必须为 YYYY-MM-DD')
-  }
   assertRealCalendarDate(startDate, '结算开始日期')
   assertRealCalendarDate(endDate, '结算结束日期')
   if (startDate > endDate) {

@@ -28,11 +28,21 @@ export type CalendarDate = string & { readonly [calendarDateBrand]: true }
  * 入参是 unknown：服务端边界直接拿客户端传来的对象字段来校验。
  */
 export function isValidCalendarDate(value: unknown): value is CalendarDate {
+  return isValidInventoryCalendarDate(value)
+    && typeof value === 'string'
+    && Number(value.slice(0, 4)) >= CALENDAR_MIN_YEAR
+    && Number(value.slice(0, 4)) <= CALENDAR_MAX_YEAR
+}
+
+/** 库存已有年份口径 0001–9999；返回 boolean，不产生数据中心的 CalendarDate 品牌类型。 */
+export function isValidInventoryCalendarDate(value: unknown): boolean {
   if (typeof value !== 'string') return false
   const match = value.match(DATE_RE)
   if (!match) return false
   const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])]
-  if (year < CALENDAR_MIN_YEAR || year > CALENDAR_MAX_YEAR) return false
-  const date = new Date(Date.UTC(year, month - 1, day))
+  if (year < 1 || year > 9999) return false
+  // setUTCFullYear 避开 Date.UTC 对 0–99 年自动加 1900 的规则。
+  const date = new Date(0)
+  date.setUTCFullYear(year, month - 1, day)
   return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
 }
