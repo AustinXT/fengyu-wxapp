@@ -24,6 +24,9 @@ vi.mock('@/actions/refunds', () => ({
 vi.mock('@/actions/pickup-records', () => ({
   exportPickupRecords: vi.fn(),
 }))
+vi.mock('@/actions/inventory/movements', () => ({
+  exportInventoryMovements: vi.fn(),
+}))
 vi.mock('@/actions/data-center/customer-frequency', () => ({
   // 缺省返回空结果：「报表视图分发」用例会遍历全部报表视图
   exportCustomerFrequencyReport: vi.fn(async () => ({
@@ -66,6 +69,7 @@ import { getEfficiencyBoard } from '@/actions/data-center/efficiency'
 import { getOperatingMaster } from '@/actions/data-center/operating-master'
 import { exportRefunds } from '@/actions/refunds'
 import { exportPickupRecords } from '@/actions/pickup-records'
+import { exportInventoryMovements } from '@/actions/inventory/movements'
 import { exportRemainingCardsReport } from '@/actions/data-center/remaining-cards'
 import { getDailyOverview } from '@/actions/data-center/daily-overview'
 import { buildDailyOverview } from '@/lib/data-center/daily-overview'
@@ -290,6 +294,47 @@ describe('提货记录导出 · 跨页接线（#341 评审 round-2）', () => {
       [{ store: 'store-1' }, { limit: 500 }],
       [{ store: 'store-1' }, { limit: 500, cursor: 501 }],
     ])
+  })
+})
+
+describe('进出明细导出（#360）', () => {
+  it('列映射：数值列输出 number、经办人缺名回落员工号；按 keyset 游标跨页', async () => {
+    const row = (id: number, overrides: Record<string, unknown> = {}) => ({
+      id, lotId: 11, skuId: 'SKU-1', skuName: '面膜', specName: null, batchNo: 'B-1',
+      docId: `YTH-${id}`, docType: '院退货', direction: '出库', quantityDelta: -3, quantityBefore: 10, quantityAfter: 7,
+      counterpartyName: '南昌市场', operatorId: 'E1', operatorName: '张三', remark: null, createdAt: '2026-09-26 10:00:00',
+      ...overrides,
+    })
+    vi.mocked(exportInventoryMovements).mockReset()
+    vi.mocked(exportInventoryMovements)
+      .mockResolvedValueOnce({ rows: [row(5)], truncated: false, hasMore: true, nextCursor: 5 } as never)
+      .mockResolvedValueOnce({
+        rows: [row(9, { docId: null, docType: null, direction: '调整', quantityDelta: 1.5, operatorName: null })],
+        truncated: false,
+        hasMore: false,
+      } as never)
+
+    const content = await createExportContent('inventory-movements', { location: 'S1', sku: 'SKU-1' })
+    const rows: Array<Record<string, unknown>> = []
+    for await (const value of content.rows) rows.push(value)
+    const columns = Object.fromEntries(content.columns.map((column) => [column.header, column]))
+
+    expect(content.sheetName).toBe('进出明细')
+    expect(content.columns.map((column) => column.header)).toEqual([
+      '时间', '单据类型', '单号', 'SKU', '产品', '规格', '批号', '批次 ID', '方向', '数量',
+      '变动前结存', '变动后结存', '对方主体', '经办人', '备注',
+    ])
+    expect(vi.mocked(exportInventoryMovements).mock.calls).toEqual([
+      [{ location: 'S1', sku: 'SKU-1' }, { limit: 500 }],
+      [{ location: 'S1', sku: 'SKU-1' }, { limit: 500, cursor: 5 }],
+    ])
+    expect(columns['数量']?.value(rows[0])).toBe(-3)
+    expect(columns['批次 ID']?.value(rows[0])).toBe(11)
+    expect(columns['变动后结存']?.value(rows[0])).toBe(7)
+    expect(columns['数量']?.value(rows[1])).toBe(1.5)
+    expect(columns['单号']?.value(rows[1])).toBe('')
+    expect(columns['经办人']?.value(rows[0])).toBe('张三')
+    expect(columns['经办人']?.value(rows[1])).toBe('E1')
   })
 })
 
