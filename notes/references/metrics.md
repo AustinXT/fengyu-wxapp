@@ -417,7 +417,8 @@ WHERE c.customer_status IN ('保有会员-稳定','保有会员-有效')
 **③ `became_member_at::date` 依赖会话时区（#291 同族）。**
 `became_member_at` 是 `timestamptz`，`timestamptz::date` 走会话 `TimeZone`；
 同仓正解范式是 `visit-days.ts` 对 `paid_at` 写的 `(... AT TIME ZONE 'Asia/Shanghai')::date`。
-本轮两处新守卫**照既有 14 处的写法**（不带 `AT TIME ZONE`），因为改成异体会破坏与 `reg` 的逐字同源。
+**#414 在 `customer.ts` 的 `queryActive` / `visit_count` 两处守卫**照既有 14 处的写法（不带 `AT TIME ZONE`），以保持与该板块 `reg` 的逐字同源。
+这条约束不涉及 #372 的 `operating-master.ts`；后者在 #291 单独改为显式上海日，守住其文件头的时区独立声明。
 分层结论：**包含关系不受影响**（同列同表达式同 `end`，分子分母一起漂，⊆ 恒成立，不会 >100%）；
 但**绝对数会错**（`so.service_date` 是裸 `date` 不受影响，只有会员侧偏移）。
 连接层通过 #291 显式设置会话 `Asia/Shanghai` 并在建连时断言，保护这里保留的同源 SQL。

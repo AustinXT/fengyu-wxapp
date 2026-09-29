@@ -24,10 +24,11 @@ test('服务端默认时区确为 UTC（不使用应用连接配置）', async (
   } finally { await client.end() }
 })
 
-function run(target, mode, wrong = false) {
+function run(target, mode, wrong = false, connectionUrl = url) {
+  const appUrl = connectionUrl + (wrong ? '?TimeZone=UTC' : mode === 'url-options' ? '?options=-c%20TimeZone%3DUTC' : '')
   return spawnSync('bun', ['run', resolve(root, 'scripts/tests/session-timezone-probe.ts'), target, mode], {
     cwd: root,
-    env: { ...process.env, E2E_DATABASE_URL: url + (wrong ? '?TimeZone=UTC' : ''), DATABASE_URL: url,
+    env: { ...process.env, E2E_DATABASE_URL: appUrl, DATABASE_URL: connectionUrl,
       PG_CONNECTION_STRING: url + (mode === 'url-options' ? '?options=-c%20TimeZone%3DUTC' : ''), NODE_ENV: 'production' },
     encoding: 'utf8', timeout: 20000,
   })
@@ -51,6 +52,24 @@ for (const target of ['staff', 'client', 'pay']) {
     assert.equal(child.status, 1, child.stderr + child.stdout)
     assert.match(child.stderr, /PG_TIMEZONE_MISMATCH/)
     assert.doesNotMatch(child.stdout, /PASS/)
+  })
+}
+
+for (const target of ['admin', 'analyst']) {
+  test(`${target} 数据库不可达时拒绝完成启动校验`, () => {
+    const child = run(target, 'startup', false, 'postgresql://postgres:test@127.0.0.1:1/unavailable')
+    assert.equal(child.status, 1, child.stderr + child.stdout)
+    assert.match(child.stderr, /ECONNREFUSED|CONNECT_TIMEOUT/)
+    assert.doesNotMatch(child.stdout, /PASS/)
+  })
+  test(`${target} URL options 不得使会话以 UTC 执行业务查询`, () => {
+    const child = run(target, 'url-options')
+    // 3.4.8 的 startup TimeZone 优先于 options；未来驱动若改变顺序也必须被断言挡住。
+    if (child.status === 0) assert.match(child.stdout, /PASS/)
+    else {
+      assert.equal(child.status, 1, child.stderr + child.stdout)
+      assert.match(child.stderr, /PG_TIMEZONE_MISMATCH/)
+    }
   })
 }
 

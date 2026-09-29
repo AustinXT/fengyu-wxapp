@@ -67,8 +67,8 @@ if (target === 'admin' || target === 'analyst') {
         // 固定北京时间 03:00，验证 cron 原 SQL 中的全部日期窗口；不修改生产 SQL/系统时钟。
         const { UPDATE_CUSTOMER_STATUS_SQL } = await import(resolve(root, 'fengyu-admin/src/cron/steps/refresh-customer-status.ts'))
         const { shanghaiToday } = await import(resolve(root, 'fengyu-admin/src/lib/data-center/time-range.ts'))
-        const current = await tx.execute(sql`SELECT CURRENT_DATE::text AS day`)
-        assert.equal(current[0].day, shanghaiToday())
+        const current = await tx.execute(sql`SELECT CURRENT_DATE::text AS day, CURRENT_TIMESTAMP::text AS instant`)
+        assert.equal(current[0].day, shanghaiToday(new Date(current[0].instant)))
         const instant = '2026-09-01T03:00:00+08:00'
         const today = shanghaiToday(new Date(instant))
         const windows = [...UPDATE_CUSTOMER_STATUS_SQL.matchAll(/CURRENT_DATE - INTERVAL '([^']+)'/g)].map((m: RegExpMatchArray) => m[1])

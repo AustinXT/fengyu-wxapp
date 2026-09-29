@@ -8,6 +8,8 @@ on:
       - 'fengyu-admin/src/cron/**'
       - 'fengyu-admin/src/export-worker/**'
       - 'fengyu-admin/src/actions/data-center/customer.ts'
+      - 'fengyu-admin/src/actions/data-center/operating-master.ts'
+      - 'fengyu-admin/src/lib/data-center/time-range.ts'
       - 'fengyu-admin/package*.json'
       - 'fengyu-analyst/src/db/**'
       - 'fengyu-analyst/src/instrumentation.ts'
