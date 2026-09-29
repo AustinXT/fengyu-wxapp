@@ -13,17 +13,10 @@ import { exportCustomerFrequencyReport } from '@/actions/data-center/customer-fr
 import { frequencyExportColumnSpecs } from '@/lib/data-center/customer-frequency'
 import { isValidMonth } from '@/lib/data-center/report-period'
 import { shanghaiToday } from '@/lib/data-center/time-range'
-import type { DataCenterScope } from '@/lib/data-center/types'
+import { scopeExportMeta } from './scope-meta'
 import type { ExportContent } from './registry'
 
 type Row = Record<string, unknown>
-
-async function scopeMetaLabel(scope: DataCenterScope): Promise<string> {
-  const name = await resolveScopeName(scope)
-  if (scope.type === 'market') return `市场 · ${name}`
-  if (scope.type === 'store' || scope.type === 'stores') return `门店 · ${name}`
-  return name
-}
 
 async function* fromArray<T>(rows: readonly T[]): AsyncIterable<T> {
   for (const row of rows) yield row
@@ -31,6 +24,7 @@ async function* fromArray<T>(rows: readonly T[]): AsyncIterable<T> {
 
 export async function remainingCardsContent(params: Record<string, string>): Promise<ExportContent> {
   const report = await exportRemainingCardsReport(params)
+  const scopeMeta = await scopeExportMeta(report.params.scope, await resolveScopeName(report.params.scope))
   const specs = remainingCardsColumnSpecs(report.columns)
   return {
     sheetName: '顾客剩余卡项清单',
@@ -41,8 +35,9 @@ export async function remainingCardsContent(params: Record<string, string>): Pro
     totalsLabel: '合计',
     meta: {
       period: null,
-      scope: await scopeMetaLabel(report.params.scope),
+      ...scopeMeta,
       extra: [
+        ...(scopeMeta.extra ?? []),
         { label: '快照日', value: report.asOf },
         { label: '显示范围', value: report.params.show === 'remaining' ? '只看有剩余' : '全部顾客' },
         ...(report.params.q ? [{ label: '顾客搜索', value: displaySearchTerm(report.params.q) }] : []),
@@ -58,6 +53,7 @@ export async function customerFrequencyContent(params: Record<string, string>): 
   // 未来月份在 parseReportMonth 里会回落成「上月」：伪造的导出参数不能借此导出一个与 payload 不符的月份
   if (params.month > shanghaiToday().slice(0, 7)) throw new Error('INVALID_PARAMS: 不能导出未来月份')
   const report = await exportCustomerFrequencyReport(params)
+  const scopeMeta = await scopeExportMeta(report.params.scope, await resolveScopeName(report.params.scope))
   const specs = frequencyExportColumnSpecs(report.params.month)
   return {
     sheetName: '顾客频率表',
@@ -68,8 +64,9 @@ export async function customerFrequencyContent(params: Record<string, string>): 
     totalsLabel: '合计',
     meta: {
       period: `${report.params.range.start} ~ ${report.params.range.end}（${report.params.monthLabel}）`,
-      scope: await scopeMetaLabel(report.params.scope),
+      ...scopeMeta,
       extra: [
+        ...(scopeMeta.extra ?? []),
         { label: '显示范围', value: report.params.show === 'visited' ? '只看有到店' : '全部顾客' },
         ...(report.params.searchLabel ? [{ label: '顾客搜索', value: report.params.searchLabel }] : []),
         { label: '日期格', value: '每日拆「到店 / 金额」两列：到店写 ✓；金额为当日消费净额（按款项归属日期，退款为负）' },

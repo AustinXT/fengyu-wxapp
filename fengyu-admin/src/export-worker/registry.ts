@@ -38,20 +38,19 @@ import {
   getDataCenterRankingConfig,
   type DataCenterMetricColumn,
 } from '@/lib/data-center/columns'
-import { isValidCustomRange, parseBoardParams } from '@/lib/data-center/params'
+import { isValidCustomRange, parseBoardParams, parseScope } from '@/lib/data-center/params'
 import { countLeftFrozen, toWorkerExportColumns } from '@/lib/data-center/matrix-export'
 import {
   OPERATING_MASTER_COLUMNS,
   isOperatingMasterSubtotal,
   operatingMasterExportGroup,
-  operatingMasterScopeMeta,
   operatingMasterTotalsLabel,
   parseOperatingMasterExportScope,
   type OperatingMasterRow,
 } from '@/lib/data-center/operating-master'
 import { isValidMonth } from '@/lib/data-center/report-period'
 import { headerWithUnit, metricCell } from '@/lib/data-center/export'
-import type { BreakdownRow, RankingRow } from '@/lib/data-center/types'
+import type { BoardMeta, BreakdownRow, DataCenterScope, RankingRow } from '@/lib/data-center/types'
 import { fmtDate, fmtDateTime } from '@/lib/datetime'
 import { formatCurrency } from '@/lib/utils'
 import {
@@ -78,6 +77,9 @@ import {
 import type { WorkerExportColumn, ExportCell } from './xlsx-writer'
 import { customerFrequencyContent, remainingCardsContent } from './report-views'
 import { commissionDailyExport, commissionDetailExport } from './report-commission'
+import { scopeExportMeta } from './scope-meta'
+import { STAFF_OUTPUT_SCOPE_NOTE } from '@/lib/data-center/staff-output-note'
+import type { ExportMetaEntry } from './xlsx-writer'
 import type { ExportContextMeta } from './export-meta'
 
 export interface ExportContent {
@@ -544,9 +546,25 @@ const inventoryMovementColumns = mapColumns([
   { header: '备注', width: 24, key: 'remark' },
 ])
 
+async function boardExportMeta(
+  board: BoardMeta,
+  scope: DataCenterScope,
+  extra: ExportMetaEntry[] = [],
+): Promise<ExportContextMeta> {
+  const scopeMeta = await scopeExportMeta(scope, board.scope.name)
+  const period = `${board.timeRange.start} ~ ${board.timeRange.end}`
+  const presetLabel = board.timeRange.presetLabel === period ? '自定义' : board.timeRange.presetLabel
+  return {
+    period: `${period}（${presetLabel}）`,
+    ...scopeMeta,
+    extra: [...(scopeMeta.extra ?? []), ...extra],
+  }
+}
+
 function breakdownContent(
   view: DataCenterBoardExportView,
   rows: BreakdownRow[],
+  meta: ExportContextMeta,
 ): ExportContent {
   const config = getDataCenterBreakdownConfig(view)
   const columns: WorkerExportColumn<Row>[] = [
@@ -571,12 +589,14 @@ function breakdownContent(
     sheetName: exportJobLabel('data-center', { view, params: {} }).replace(/.*-/, '').slice(0, 31),
     columns,
     rows: fromRows(rows as unknown as Row[]),
+    meta,
   }
 }
 
 function rankingContent(
   rows: RankingRow[],
   metric: DataCenterMetricColumn,
+  meta: ExportContextMeta,
 ): ExportContent {
   const columns: WorkerExportColumn<Row>[] = [
     { header: '排名', width: 8, value: (row) => numberOrEmpty(row, 'rank') },
@@ -588,6 +608,7 @@ function rankingContent(
     sheetName: metric.label,
     columns,
     rows: fromRows(rows as unknown as Row[]),
+    meta,
   }
 }
 
@@ -597,6 +618,7 @@ async function operatingMasterContent(raw: Record<string, string>): Promise<Expo
   if (!isValidMonth(raw.month)) throw new Error('INVALID_PARAMS: 导出缺少统计月份')
   const scope = parseOperatingMasterExportScope({ scope: raw.scope, scopeId: raw.scopeId })
   const result = await getOperatingMaster({ scope, month: raw.month })
+  const scopeMeta = await scopeExportMeta(scope, result.scopeName)
   const columns = toWorkerExportColumns(OPERATING_MASTER_COLUMNS, result.totals).map((column, index) => {
     const spec = OPERATING_MASTER_COLUMNS[index]
     const group = operatingMasterExportGroup(spec)
@@ -616,8 +638,9 @@ async function operatingMasterContent(raw: Record<string, string>): Promise<Expo
     isEmphasisRow: (row) => isOperatingMasterSubtotal(row as unknown as OperatingMasterRow),
     meta: {
       period: `${result.range.start} ~ ${result.range.end}`,
-      scope: operatingMasterScopeMeta(scope, result.scopeName),
+      ...scopeMeta,
       extra: [
+        ...(scopeMeta.extra ?? []),
         { label: '统计时点', value: `${result.asOf}（保有会员截至这一天近 90 天到店）` },
         { label: '年度累计区间', value: `${result.ytd.start} ~ ${result.ytd.end}（R、K 列；不含 WorkFine 历史单）` },
         { label: '说明', value: '显示「—」的是目标列（J、N、O、Q），本期未设目标、不取数' },
@@ -626,16 +649,11 @@ async function operatingMasterContent(raw: Record<string, string>): Promise<Expo
   }
 }
 
-function scopeMetaLabel(scope: { type: string; name: string }): string {
-  if (scope.type === 'market') return `市场 · ${scope.name}`
-  if (scope.type === 'store' || scope.type === 'stores') return `门店 · ${scope.name}`
-  return scope.name
-}
-
 /** 日常数据一览表（#369）：只导 `tab` 指定的视角（☆ 默认只导当前页签），视角③带两行合并表头。 */
 async function queryDailyOverview(raw: Record<string, string>): Promise<ExportContent> {
   const tab = parseDailyOverviewTab(raw.tab)
   const result = await getDailyOverview(raw)
+  const scopeMeta = await scopeExportMeta(parseScope(raw), result.scope.name)
   const columns = buildDailyOverviewColumns(tab, result.data)
   return {
     sheetName: DAILY_OVERVIEW_TAB_LABELS[tab],
@@ -645,8 +663,8 @@ async function queryDailyOverview(raw: Record<string, string>): Promise<ExportCo
     totalsLabel: '合计',
     meta: {
       period: `${result.period.current.start} ~ ${result.period.current.end}`,
-      scope: scopeMetaLabel(result.scope),
-      extra: [{ label: '视角', value: DAILY_OVERVIEW_TAB_LABELS[tab] }],
+      ...scopeMeta,
+      extra: [...(scopeMeta.extra ?? []), { label: '视角', value: DAILY_OVERVIEW_TAB_LABELS[tab] }],
     },
   }
 }
@@ -692,14 +710,14 @@ async function queryDataCenter(
   if (view.startsWith('sales-')) {
     const board = await getSalesBoard(base)
     const rows = view === 'sales-market' ? board.byMarket : board.byStore
-    return breakdownContent(view, rows)
+    return breakdownContent(view, rows, await boardExportMeta(board, base.scope))
   }
   if (view.startsWith('customer-')) {
     const board = await getCustomerBoard(base)
     const rows = view.endsWith('-reg')
       ? (view.startsWith('customer-market') ? board.byMarket : board.byStore)
       : (view.startsWith('customer-market') ? board.byMarket : board.byStore)
-    return breakdownContent(view, rows)
+    return breakdownContent(view, rows, await boardExportMeta(board, base.scope))
   }
   if (view.startsWith('product-')) {
     const board = await getProductBoard({
@@ -708,19 +726,25 @@ async function queryDataCenter(
       categoryName: raw.category || undefined,
     })
     const rows = view === 'product-market' ? board.byMarket : board.byStore
-    return breakdownContent(view, rows)
+    return breakdownContent(view, rows, await boardExportMeta(board, base.scope, [
+      ...(raw.kind?.trim() ? [{ label: '品项分类', value: raw.kind.trim() }] : []),
+      ...(raw.category?.trim() ? [{ label: '二级品项', value: raw.category.trim() }] : []),
+    ]))
   }
 
   // 人效是最后一个板块：显式判前缀，未知视图抛错而不是兜底派给人效板（旧写法对任何新视图都 fail-open）
   if (!view.startsWith('efficiency-')) throw new Error(`INVALID_PARAMS: 未知的数据中心导出视图 ${view}`)
   const board = await getEfficiencyBoard(base)
-  if (view === 'efficiency-market') return breakdownContent(view, board.byMarket)
-  if (view === 'efficiency-staff') return breakdownContent(view, board.byStaff)
+  if (view === 'efficiency-market') return breakdownContent(view, board.byMarket, await boardExportMeta(board, base.scope))
+  if (view === 'efficiency-staff') return breakdownContent(view, board.byStaff, await boardExportMeta(board, base.scope, [{ label: '口径', value: STAFF_OUTPUT_SCOPE_NOTE }]))
   const config = getDataCenterRankingConfig(view)
   const metric = config.metrics.find((item) => item.key === payload.metric)
   if (!metric) throw new Error('INVALID_PARAMS: 排名指标无效')
   const source = view === 'efficiency-store-ranking' ? board.storeRankings : board.staffRankings
-  return rankingContent(source[metric.key] ?? [], metric)
+  return rankingContent(source[metric.key] ?? [], metric, await boardExportMeta(board, base.scope, [
+    { label: '排名指标', value: metric.label },
+    ...(view === 'efficiency-staff-ranking' ? [{ label: '口径', value: STAFF_OUTPUT_SCOPE_NOTE }] : []),
+  ]))
 }
 
 function queryProducts(payload: Record<string, string>): ExportContent {

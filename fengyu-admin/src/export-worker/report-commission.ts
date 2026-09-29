@@ -15,6 +15,7 @@ import {
   COMMISSION_VIEW_LABELS,
 } from '@/lib/data-center/commission-daily'
 import { countLeftFrozen, toWorkerExportColumns } from '@/lib/data-center/matrix-export'
+import { parseScope } from '@/lib/data-center/params'
 import { monthRange } from '@/lib/data-center/report-period'
 import { shanghaiToday } from '@/lib/data-center/time-range'
 import {
@@ -24,6 +25,7 @@ import {
 } from '@/lib/export-pagination'
 import type { ExportQueryPayload } from '@/lib/export-job-types'
 import type { ExportMetaEntry, WorkerExportColumn } from './xlsx-writer'
+import { scopeExportMeta } from './scope-meta'
 import type { ExportContent } from './registry'
 
 type Row = Record<string, unknown>
@@ -41,6 +43,7 @@ function periodText(month: string): string {
 
 export async function commissionDailyExport(params: ExportQueryPayload): Promise<ExportContent> {
   const data = await getCommissionDaily(params)
+  const scopeMeta = await scopeExportMeta(parseScope(params), data.scopeName)
   const columns = buildCommissionDailyColumns({
     month: data.month,
     view: data.options.view,
@@ -48,6 +51,7 @@ export async function commissionDailyExport(params: ExportQueryPayload): Promise
     today: shanghaiToday(),
   })
   const extra: ExportMetaEntry[] = [
+    ...(scopeMeta.extra ?? []),
     { label: '视图', value: COMMISSION_VIEW_LABELS[data.options.view] },
     {
       label: '汇总维度',
@@ -63,7 +67,7 @@ export async function commissionDailyExport(params: ExportQueryPayload): Promise
     rows: asRows(data.rows),
     frozenColumns: countLeftFrozen(columns),
     totalsLabel: commissionTotalsLabel(data.grain, data.totals),
-    meta: { period: periodText(data.month), scope: data.scopeName, extra },
+    meta: { period: periodText(data.month), ...scopeMeta, extra },
   }
 }
 
@@ -72,6 +76,7 @@ export async function commissionDetailExport(params: ExportQueryPayload): Promis
   // 第一批同时带回全量汇总（合计行）与筛选回显；其余批次只取行
   const first = await fetch({ limit: EXPORT_WORKER_BATCH_SIZE })
   const { filters, summary } = first
+  const scopeMeta = await scopeExportMeta(parseScope(params), first.scopeName)
   const columns = buildCommissionDetailColumns({ showEmployee: !filters.employeeId })
   const totals = summary
     ? { received: summary.received, allocated: summary.allocated, commission: summary.commission, rate: summary.averageRate }
@@ -83,6 +88,7 @@ export async function commissionDetailExport(params: ExportQueryPayload): Promis
       })()
     : '全部员工'
   const extra: ExportMetaEntry[] = [
+    ...(scopeMeta.extra ?? []),
     { label: '员工', value: employee },
     { label: '门店', value: filters.storeId ? (first.rows[0]?.storeName ?? filters.storeId) : '范围内全部门店' },
     { label: '提成类型', value: filters.source ? COMMISSION_SOURCE_LABELS[filters.source] : '全部' },
@@ -98,7 +104,7 @@ export async function commissionDetailExport(params: ExportQueryPayload): Promis
     totalsLabel: `合计（${summary?.count ?? 0} 条）`,
     meta: {
       period: filters.date ? `${filters.date} ~ ${filters.date}` : periodText(first.month),
-      scope: first.scopeName,
+      ...scopeMeta,
       extra,
     },
   }

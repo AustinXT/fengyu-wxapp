@@ -435,12 +435,7 @@ export function parseOperatingMasterExportScope(raw: { scope?: string; scopeId?:
   throw new Error('INVALID_PARAMS: 导出范围参数不完整或无效')
 }
 
-/** 导出元信息的范围描述：带上范围类型（「市场 · 南昌凤御」「门店 · 汇东店」），同名时也能自证 */
-export function operatingMasterScopeMeta(scope: DataCenterScope, name: string): string {
-  if (scope.type === 'market') return `市场 · ${name}`
-  if (scope.type === 'store' || scope.type === 'stores') return `门店 · ${name}`
-  return name
-}
+export { scopeMetaLabel as operatingMasterScopeMeta } from './scope-meta'
 
 /**
  * 导出列：页面上 B–D 上方的空白表头因冻结边界拆成两个分组（见 BLANK_FROZEN_GROUP），

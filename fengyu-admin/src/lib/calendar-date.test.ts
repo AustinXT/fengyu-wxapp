@@ -172,7 +172,7 @@ describe('单源守护：数据中心一侧不许再长出日历校验（#308「
     "export-worker/index.ts :: failJob :: new Date(x)": 1,
     "export-worker/index.ts :: processJob :: new Date(x)": 1,
     "export-worker/index.ts :: processJob :: .getTime": 1,
-    "app/(main)/(analytics)/data-center/_components/kpi-card.tsx :: basePeriodTitle :: Date.parse": 2,
+    "lib/data-center/base-period.ts :: basePeriodTitle :: Date.parse": 2,
   }
 
   it('日期运算原语与登记表逐项相等', () => {

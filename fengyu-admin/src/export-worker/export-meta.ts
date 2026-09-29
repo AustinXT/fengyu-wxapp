@@ -1,3 +1,6 @@
+// 将来带环比列的 view 直接复用页面同源格式函数，当前视图不写 basePeriod。
+export { basePeriodTitle } from '@/lib/data-center/base-period'
+import { MOM_BASE_PERIOD_LABEL } from '@/lib/data-center/base-period'
 import { fmtDateTime } from '@/lib/datetime'
 import type { ExportMetaEntry } from './xlsx-writer'
 
@@ -43,7 +46,7 @@ export function completeExportMeta(
   return [
     { label: '时间区间', value: meta.period === null ? '不限（仅按范围）' : required('时间区间', meta.period) },
     { label: '范围', value: required('范围', meta.scope) },
-    ...(basePeriod ? [{ label: '基期区间', value: basePeriod }] : []),
+    ...(basePeriod ? [{ label: MOM_BASE_PERIOD_LABEL, value: basePeriod }] : []),
     ...(meta.extra ?? []),
     { label: '导出时间', value: fmtDateTime(audit.generatedAt) || '—' },
     { label: '导出人', value: audit.exporterName?.trim() || '—' },

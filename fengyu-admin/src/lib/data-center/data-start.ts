@@ -89,7 +89,7 @@ export function isRangeBeforeDataStart(
  * 范围内没有任何门店有该轴数据时返回 null（没有起点可比）。
  *
  * 与 `isRangeBeforeDataStart`（任一门店晚于期间起点即算）的区别：那是「期间里有门店还没上线」的提示口径；
- * 这里是「整个范围还没有数据」的割点口径——较上期基期早于它时，基期值是割点伪影，必须置 null 出「--」。
+ * 这里是「整个范围还没有数据」的割点口径——环比基期早于它时，基期值是割点伪影，必须置 null 出「--」。
  * 新市场陆续上线（易大师 08-23、昭通 09-14）不应让全国范围的较上期整月整月地变成「--」。
  */
 export function scopeDataStart(
@@ -119,7 +119,7 @@ export function isRangeBeforeScopeStart(
 /**
  * 逐段期间判定，只返回受影响的期间（全部完整时返回空数组，页面不渲染提示）。
  *
- * @param ranges  按展示顺序传入，如 `[{ label: '所选期间', range: current }, { label: '较上期基期', range: previous }]`；
+ * @param ranges  按展示顺序传入，如 `[{ label: '所选期间', range: current }, { label: '环比基期', range: previous }]`；
  *                主表的年度累计列另传 `{ label: '年度累计', range: ytd }`
  */
 export function evaluateDataStart(input: {

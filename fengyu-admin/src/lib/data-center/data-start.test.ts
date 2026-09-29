@@ -82,13 +82,13 @@ describe('evaluateDataStart', () => {
     const result = evaluateDataStart({
       ranges: [
         { label: '所选期间', range: { start: '2026-10-01', end: '2026-10-31' } },
-        { label: '较上期基期', range: { start: '2026-09-01', end: '2026-09-30' } },
+        { label: '环比基期', range: { start: '2026-09-01', end: '2026-09-30' } },
       ],
       axes: ['performance'],
       stores: all,
       starts,
     })
-    expect(result.map((r) => r.label)).toEqual(['较上期基期'])
+    expect(result.map((r) => r.label)).toEqual(['环比基期'])
     expect(result[0].groups.map((g) => g.marketName)).toEqual(['昭通凤御'])
   })
 

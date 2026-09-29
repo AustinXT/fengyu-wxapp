@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+const { mockScopeRows } = vi.hoisted(() => ({ mockScopeRows: [] as Array<{ id: string; name: string; nodeType: string; isActive: boolean | null }> }))
+
 vi.mock('@/actions/data-center/sales', () => ({
   getSalesBoard: vi.fn(),
 }))
@@ -59,7 +61,9 @@ vi.mock('@/actions/data-center/commission', () => ({
 }))
 // 员工导出分支会立即查 org_nodes 建路径映射（其余分支的 rows 都是惰性的，不碰 db）
 vi.mock('@/db', () => ({
-  db: { select: vi.fn(() => ({ from: vi.fn().mockResolvedValue([]) })) },
+  db: { select: vi.fn(() => ({ from: vi.fn(() => Object.assign(Promise.resolve([]), {
+    leftJoin: vi.fn(() => ({ where: vi.fn(async () => mockScopeRows) })),
+  })) })) },
 }))
 
 import { getSalesBoard } from '@/actions/data-center/sales'
@@ -90,6 +94,9 @@ import { buildOperatingMasterTable } from '@/lib/data-center/operating-master'
 import { DATA_CENTER_VIEW_REQUIRED_ACTIONS } from '@/lib/export-job-types'
 import { DATA_CENTER_STAFF_COMMISSION_ACTIONS } from '@/lib/data-center/reports'
 import { exportCommissionDetail, getCommissionDaily } from '@/actions/data-center/commission'
+import { scopeMetaLabel } from '@/lib/data-center/scope-meta'
+import { STAFF_OUTPUT_SCOPE_NOTE } from '@/lib/data-center/staff-output-note'
+import { completeExportMeta } from './export-meta'
 import { createExportContent } from './registry'
 
 function metricValue(unit: 'amount' | 'count' | 'percent'): number {
@@ -127,8 +134,14 @@ const rankingRow = {
   value: 123.456,
 }
 
+const BOARD_META = {
+  scope: { type: 'all', id: null, name: '全部' },
+  timeRange: { start: '2026-09-01', end: '2026-09-15', presetLabel: '本月', previous: null, lastYear: null },
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
+  mockScopeRows.length = 0
   const sales = boardRow('sales-market')
   const customer = boardRow('customer-market-reg')
   const product = boardRow('product-market')
@@ -137,10 +150,11 @@ beforeEach(() => {
   const storeRankingMetrics = getDataCenterRankingConfig('efficiency-store-ranking').metrics
   const staffRankingMetrics = getDataCenterRankingConfig('efficiency-staff-ranking').metrics
 
-  vi.mocked(getSalesBoard).mockResolvedValue({ byMarket: [sales], byStore: [sales] } as never)
-  vi.mocked(getCustomerBoard).mockResolvedValue({ byMarket: [customer], byStore: [customer] } as never)
-  vi.mocked(getProductBoard).mockResolvedValue({ byMarket: [product], byStore: [product] } as never)
+  vi.mocked(getSalesBoard).mockResolvedValue({ ...BOARD_META, byMarket: [sales], byStore: [sales] } as never)
+  vi.mocked(getCustomerBoard).mockResolvedValue({ ...BOARD_META, byMarket: [customer], byStore: [customer] } as never)
+  vi.mocked(getProductBoard).mockResolvedValue({ ...BOARD_META, byMarket: [product], byStore: [product] } as never)
   vi.mocked(getEfficiencyBoard).mockResolvedValue({
+    ...BOARD_META,
     byMarket: [efficiency],
     byStaff: [staff],
     storeRankings: Object.fromEntries(storeRankingMetrics.map((metric) => [metric.key, [rankingRow]])),
@@ -745,7 +759,7 @@ describe('日常数据一览表导出（#369）', () => {
   })
 
   it('☆ 只导当前页签：视角③带两行合并表头的分组，合计行取服务端 totals，元信息写明期间 / 范围 / 视角', async () => {
-    const content = await createExportContent('data-center', { view: 'report-daily-overview', params: { tab: 'secondary' } })
+    const content = await createExportContent('data-center', { view: 'report-daily-overview', params: { tab: 'secondary', scope: 'market', scopeId: 'M1' } })
     expect(content.sheetName).toBe('二级品项汇总')
     expect(content.columns.map((column) => column.header)).toEqual(['门店', '所属市场', '绝对招牌', '充值', '品项业绩合计'])
     expect(content.columns[2].group).toEqual({ key: 'P1', header: '招牌' })
@@ -825,5 +839,56 @@ describe('数据中心导出 · 顾客频率表', () => {
       ).rejects.toThrow('INVALID_PARAMS')
     }
     expect(exportCustomerFrequencyReport).not.toHaveBeenCalled()
+  })
+})
+
+
+describe('#296 旧四板块 12 个视图全部接入 meta', () => {
+  it('视图总数钉死为 12，防漏登记', () => expect(DATA_CENTER_BOARD_EXPORT_VIEWS).toHaveLength(12))
+  it.each(DATA_CENTER_BOARD_EXPORT_VIEWS)('%s 元信息来自 action 实际区间，不来自原始参数；无基期', async view => {
+    const config = DATA_CENTER_VIEW_CONFIG[view]
+    const metric = config.kind === 'ranking' ? config.metrics[0] : undefined
+    const content = await createExportContent('data-center', {
+      view, params: { preset: 'custom', start: '2026-08-01', end: '2026-08-31' }, metric: metric?.key,
+    })
+    expect(content.meta).toMatchObject({ period: '2026-09-01 ~ 2026-09-15（本月）', scope: '全部' })
+    expect(content.meta).not.toHaveProperty('basePeriod')
+    const entries = completeExportMeta(content.meta, { generatedAt: new Date('2026-09-15T04:05:06Z'), exporterName: '导出测试人' })!
+    expect(entries).toContainEqual({ label: '导出时间', value: '2026-09-15 12:05:06' })
+    expect(entries).toContainEqual({ label: '导出人', value: '导出测试人' })
+    expect(entries.map(entry => entry.label)).not.toContain('环比基期')
+    if (metric) expect(entries).toContainEqual({ label: '排名指标', value: metric.label })
+    const staffView = view === 'efficiency-staff' || view === 'efficiency-staff-ranking'
+    expect(entries.some(entry => entry.label === '口径' && entry.value === STAFF_OUTPUT_SCOPE_NOTE)).toBe(staffView)
+  })
+  it.each(['product-market', 'product-store'] as const)('%s 附品项/二级筛选，有值才写', async view => {
+    const filtered = await createExportContent('data-center', { view, params: { kind: '美容', category: '面部护理' } })
+    expect(filtered.meta?.extra).toContainEqual({ label: '品项分类', value: '美容' })
+    expect(filtered.meta?.extra).toContainEqual({ label: '二级品项', value: '面部护理' })
+    const all = await createExportContent('data-center', { view, params: {} })
+    expect(all.meta?.extra?.some(entry => ['品项分类', '二级品项'].includes(entry.label))).toBe(false)
+  })
+  it.each([
+    ['all', '全部', '全部'], ['authorized', '全部授权门店', '全部授权门店'],
+    ['market', '南昌', '市场 · 南昌'], ['store', '汇东店', '门店 · 汇东店'], ['stores', '甲、乙', '门店 · 甲、乙'],
+  ] as const)('范围 %s 统一类型前缀', (type, name, expected) => expect(scopeMetaLabel({ type }, name)).toBe(expected))
+  it.each(['report-commission-daily', 'report-commission-detail'] as const)('%s 市场/门店前缀与其它视图一致', async view => {
+    for (const scope of ['market', 'store'] as const) {
+      const content = await createExportContent('data-center', { view, params: { month: '2026-08', scope, scopeId: 'S1' } })
+      expect(content.meta?.scope).toBe(scope === 'market' ? '市场 · 全部' : '门店 · 全部')
+    }
+  })
+  it('多店完整名单按所选顺序，停用提示不遗漏；组织信息不完整拒绝生成', async () => {
+    mockScopeRows.push(
+      { id: 'S4', name: '丁店', nodeType: '门店', isActive: false },
+      { id: 'S2', name: '乙店', nodeType: '门店', isActive: true },
+      { id: 'S3', name: '丙店', nodeType: '门店', isActive: true },
+      { id: 'S1', name: '甲店', nodeType: '门店', isActive: true },
+    )
+    const content = await createExportContent('data-center', { view: 'sales-store', params: { scope: 'stores', scopeId: 'S1,S2,S3,S4' } })
+    expect(content.meta?.extra).toContainEqual({ label: '所选门店', value: '甲店、乙店、丙店、丁店' })
+    expect(content.meta?.extra).toContainEqual({ label: '范围提示', value: '1 家已停用未计入' })
+    mockScopeRows.splice(0, 1)
+    await expect(createExportContent('data-center', { view: 'sales-store', params: { scope: 'stores', scopeId: 'S1,S2,S3,S4' } })).rejects.toThrow('INVALID_STATE')
   })
 })

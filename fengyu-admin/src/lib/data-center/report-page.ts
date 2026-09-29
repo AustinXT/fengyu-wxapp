@@ -1,3 +1,4 @@
+import { MOM_BASE_PERIOD_LABEL } from './base-period'
 /**
  * 经营明细报表页的服务端入口解析（#367，纯函数）。
  *
@@ -115,7 +116,7 @@ function isScopeInOptions(scope: DataCenterScope, scopeOptions: DataCenterScopeO
 }
 
 /**
- * 数据起点提示要检查的期间：区间型 = 所选期间 + 较上期基期；单月型 = 所选月份。
+ * 数据起点提示要检查的期间：区间型 = 所选期间 + 环比基期；单月型 = 所选月份。
  * 页面有额外时间窗口（如主表的年度累计）时在此基础上追加。
  */
 export function reportNoticeRanges(period: ReportPeriod | null): Array<{ label: string; range: ResolvedRange }> {
@@ -123,6 +124,6 @@ export function reportNoticeRanges(period: ReportPeriod | null): Array<{ label: 
   if (period.kind === 'month') return [{ label: '所选月份', range: period.current }]
   return [
     { label: '所选期间', range: period.current },
-    { label: '较上期基期', range: period.previous },
+    { label: MOM_BASE_PERIOD_LABEL, range: period.previous },
   ]
 }

@@ -382,7 +382,7 @@ describe('报表页 · 骨架渲染', () => {
     expect(notice).toHaveTextContent('所选期间（2026-08-01 ~ 2026-08-31）早于部分门店的数据起点')
     expect(notice).toHaveTextContent('业绩 · 南昌凤御 1 家（2026-08-08 起）')
     expect(notice).toHaveTextContent('业绩 · 南昌易大师 1 家（2026-08-23 起）')
-    expect(notice).toHaveTextContent('较上期基期（2026-07-01 ~ 2026-07-31）同样早于数据起点（涉及 3 家门店）')
+    expect(notice).toHaveTextContent('环比基期（2026-07-01 ~ 2026-07-31）同样早于数据起点（涉及 3 家门店）')
   })
 
   it('单月型（频率表）：月份下拉最早 2026-07，默认上月', async () => {
