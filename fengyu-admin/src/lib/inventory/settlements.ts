@@ -43,6 +43,10 @@ export function assertRealCalendarDate(value: string, label: string): void {
 }
 
 function normalizeSettlementPeriod(filters: { startDate?: string | null; endDate?: string | null }) {
+  if ((filters.startDate != null && typeof filters.startDate !== 'string')
+    || (filters.endDate != null && typeof filters.endDate !== 'string')) {
+    throw new ApiError('INVALID_PARAMS', '结算期间日期格式必须为 YYYY-MM-DD')
+  }
   const today = shanghaiToday()
   const startDate = filters.startDate?.trim() || `${today.slice(0, 8)}01`
   const endDate = filters.endDate?.trim() || today

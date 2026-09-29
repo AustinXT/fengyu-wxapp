@@ -4653,7 +4653,7 @@ describe('#453 供应链采购入库日期', () => {
     expect(db.transaction).not.toHaveBeenCalled()
   })
   it('拒绝非法效期，不执行 SQL', async () => {
-    await expect(receiveSupplyChainPurchaseOrder(SESSION, { supplyChainLocationId: 'HQ', purchaseOrderId: 'CG', items: [{ purchaseOrderItemId: 1, quantity: 1, expiryDate: '2026-13-01' }] } as never)).rejects.toThrow('INVALID_PARAMS: 有效期格式应为 YYYY-MM-DD')
+    await expect(receiveSupplyChainPurchaseOrder(SESSION, { supplyChainLocationId: 'HQ', purchaseOrderId: 'CG', items: [{ purchaseOrderItemId: 1, quantity: 1, expiryDate: '2026-13-01' }] } as never)).rejects.toThrow('INVALID_PARAMS: 效期格式应为 YYYY-MM-DD')
     expect(db.execute).not.toHaveBeenCalled()
     expect(db.transaction).not.toHaveBeenCalled()
   })

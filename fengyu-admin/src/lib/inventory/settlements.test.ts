@@ -312,3 +312,14 @@ describe('货款结算只读报表', () => {
   })
 
 })
+
+
+describe('#453 结算日期运行时类型', () => {
+  beforeEach(() => { vi.clearAllMocks(); mockGetSession.mockResolvedValue(MARKET_SESSION) })
+  it.each([123, {}, ['2026-09-01'], false])('非字符串日期 %s 在查询前报 INVALID_PARAMS', async (value) => {
+    for (const filters of [{ startDate: value }, { endDate: value }]) {
+      await expect(listInventorySettlements(filters as never)).rejects.toThrow('INVALID_PARAMS: 结算期间日期格式必须为 YYYY-MM-DD')
+    }
+    expect(mockDb.select).not.toHaveBeenCalled()
+  })
+})

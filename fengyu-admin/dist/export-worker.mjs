@@ -177607,6 +177607,8 @@ var exportInventoryLots = withPermission("inventory:export", async (session4, pa
   };
 });
 var listInventoryCoreDocs = withPermission("inventory:list", async (session4, filters = {}) => {
+  const startDate = filters.startDate == null || filters.startDate === "" ? undefined : normalizeYmd(filters.startDate, "开始日期");
+  const endDate = filters.endDate == null || filters.endDate === "" ? undefined : normalizeYmd(filters.endDate, "结束日期");
   await syncInventoryLocations();
   const scoped = inventoryScopedOrgNodeIds(session4);
   const { page, pageSize, offset } = resolvePaging({
@@ -177668,10 +177670,10 @@ var listInventoryCoreDocs = withPermission("inventory:list", async (session4, fi
              AND COALESCE(pending_item.fulfilled_quantity, 0) < pending_item.quantity
         )`);
   }
-  if (filters.startDate)
-    conditions3.push(import_drizzle_orm58.gte(inventoryDocs.docDate, normalizeYmd(filters.startDate, "开始日期")));
-  if (filters.endDate)
-    conditions3.push(import_drizzle_orm58.lte(inventoryDocs.docDate, normalizeYmd(filters.endDate, "结束日期")));
+  if (startDate)
+    conditions3.push(import_drizzle_orm58.gte(inventoryDocs.docDate, startDate));
+  if (endDate)
+    conditions3.push(import_drizzle_orm58.lte(inventoryDocs.docDate, endDate));
   if (filters.keyword) {
     const pattern = `%${filters.keyword.replace(/[%_]/g, "\\$&")}%`;
     conditions3.push(import_drizzle_orm58.or(import_drizzle_orm58.ilike(inventoryDocs.id, pattern), import_drizzle_orm58.ilike(inventoryDocs.customerName, pattern), import_drizzle_orm58.ilike(inventoryDocs.employeeName, pattern), import_drizzle_orm58.ilike(inventoryDocs.remark, pattern)));
@@ -179416,6 +179418,9 @@ function assertRealCalendarDate(value, label) {
   }
 }
 function normalizeSettlementPeriod(filters) {
+  if (filters.startDate != null && typeof filters.startDate !== "string" || filters.endDate != null && typeof filters.endDate !== "string") {
+    throw new ApiError("INVALID_PARAMS", "结算期间日期格式必须为 YYYY-MM-DD");
+  }
   const today = shanghaiToday();
   const startDate = filters.startDate?.trim() || `${today.slice(0, 8)}01`;
   const endDate = filters.endDate?.trim() || today;

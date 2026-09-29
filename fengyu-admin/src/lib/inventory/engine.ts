@@ -2420,6 +2420,8 @@ export const listInventoryCoreDocs = withPermission(
       pageSize?: number
     } = {},
   ): Promise<{ data: InventoryDocRow[]; total: number; pageSize: number; canViewPrice: boolean; priceVisibility: import('./types').InventoryPriceVisibility }> => {
+    const startDate = filters.startDate == null || filters.startDate === '' ? undefined : normalizeYmd(filters.startDate, '开始日期')
+    const endDate = filters.endDate == null || filters.endDate === '' ? undefined : normalizeYmd(filters.endDate, '结束日期')
     await syncInventoryLocations()
     const scoped = inventoryScopedOrgNodeIds(session)
     const { page, pageSize, offset } = resolvePaging({
@@ -2528,8 +2530,8 @@ export const listInventoryCoreDocs = withPermission(
              AND COALESCE(pending_item.fulfilled_quantity, 0) < pending_item.quantity
         )`)
     }
-    if (filters.startDate) conditions.push(gte(inventoryDocs.docDate, normalizeYmd(filters.startDate, '开始日期')))
-    if (filters.endDate) conditions.push(lte(inventoryDocs.docDate, normalizeYmd(filters.endDate, '结束日期')))
+    if (startDate) conditions.push(gte(inventoryDocs.docDate, startDate))
+    if (endDate) conditions.push(lte(inventoryDocs.docDate, endDate))
     if (filters.keyword) {
       const pattern = `%${filters.keyword.replace(/[%_]/g, '\\$&')}%`
       conditions.push(

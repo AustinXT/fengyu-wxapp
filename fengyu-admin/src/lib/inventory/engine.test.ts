@@ -5244,3 +5244,15 @@ describe('#453 通用库存建单日期', () => {
     expect(mockDb.transaction).not.toHaveBeenCalled()
   })
 })
+
+
+describe('#453 列表筛选日期', () => {
+  beforeEach(() => { vi.clearAllMocks(); mockGetSession.mockResolvedValue(SESSION) })
+  it.each(['2026-02-30', '2026-13-01', '0000-01-01', 123, {}])('非法日期 %s 在所有 SQL 前拒绝', async (value) => {
+    for (const filters of [{ startDate: value }, { endDate: value }]) {
+      await expect(listInventoryCoreDocs(filters as never)).rejects.toMatchObject({ prefix: 'INVALID_PARAMS' })
+    }
+    expect(mockDb.execute).not.toHaveBeenCalled()
+    expect(mockDb.select).not.toHaveBeenCalled()
+  })
+})

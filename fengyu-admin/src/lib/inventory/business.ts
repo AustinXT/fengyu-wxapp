@@ -4451,7 +4451,7 @@ export async function receiveSupplyChainPurchaseOrder(
   dateOrToday(input.docDate)
   for (const item of input.items) {
     if (typeof item !== 'object' || item === null) throw new ApiError('INVALID_PARAMS', '供应链采购入库明细格式不正确')
-    conversionDate(item.expiryDate, '有效期')
+    conversionDate(item.expiryDate, '效期')
   }
   await syncLocations()
   const inboundId = await db.transaction(async (tx) => {
@@ -4516,10 +4516,7 @@ export async function receiveSupplyChainPurchaseOrder(
       if (nearlyGreater(quantity, orderItem.quantity - received)) {
         throw new ApiError('CONFLICT', '实收数量不能超过采购订单待收数量')
       }
-      const expiryDate = text(line.expiryDate)
-      if (expiryDate && !isValidInventoryCalendarDate(expiryDate)) {
-        throw new ApiError('INVALID_PARAMS', '效期格式应为 YYYY-MM-DD')
-      }
+      const expiryDate = conversionDate(line.expiryDate, '效期')
       const unitDiscount = discounts[lineIndex]
       // 优惠只能扣在采购行的下单价快照上：快照为空时 requiredSupplyChainCost 会回退到商品档案**现价**，
       // 那就不是这张单的标准进价了，扣完写进批次会把错成本固化下来。无优惠的入库保持原有回退行为。
