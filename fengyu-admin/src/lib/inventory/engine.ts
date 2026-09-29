@@ -1,3 +1,4 @@
+import { isValidInventoryCalendarDate } from '@/lib/calendar-date'
 import { db } from '@/db'
 import 'server-only'
 import { ApiError } from '@/lib/api-error'
@@ -300,6 +301,7 @@ function isValidDocType(docType: string): docType is InventoryDocType {
 }
 
 function normalizeText(v: string | null | undefined): string | null {
+  if (v != null && typeof v !== 'string') throw new ApiError('INVALID_PARAMS', '文本参数格式不正确')
   const s = v?.trim()
   return s ? s : null
 }
@@ -312,7 +314,7 @@ function normalizeRequired(v: string | null | undefined, label: string): string 
 
 function normalizeYmd(v: string | null | undefined, label: string): string {
   const value = normalizeRequired(v, label)
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+  if (!isValidInventoryCalendarDate(value)) {
     throw new ApiError('INVALID_PARAMS', `${label}格式应为 YYYY-MM-DD`)
   }
   return value
@@ -1075,7 +1077,7 @@ async function ensureLotFromSku(
   }, locationId)
 
   const batchNo = normalizeText(item.batchNo) ?? ''
-  const expiryDate = normalizeText(item.expiryDate)
+  const expiryDate = candidateDate(item.expiryDate, '有效期') ?? null
   const isGift = Boolean(item.isGift)
   const supplyChainUnitCost =
     item.supplyChainUnitCost ?? numberOrNull(sku.supply_chain_purchase_price)
@@ -2418,6 +2420,8 @@ export const listInventoryCoreDocs = withPermission(
       pageSize?: number
     } = {},
   ): Promise<{ data: InventoryDocRow[]; total: number; pageSize: number; canViewPrice: boolean; priceVisibility: import('./types').InventoryPriceVisibility }> => {
+    const startDate = filters.startDate == null || filters.startDate === '' ? undefined : normalizeYmd(filters.startDate, '开始日期')
+    const endDate = filters.endDate == null || filters.endDate === '' ? undefined : normalizeYmd(filters.endDate, '结束日期')
     await syncInventoryLocations()
     const scoped = inventoryScopedOrgNodeIds(session)
     const { page, pageSize, offset } = resolvePaging({
@@ -2526,8 +2530,8 @@ export const listInventoryCoreDocs = withPermission(
              AND COALESCE(pending_item.fulfilled_quantity, 0) < pending_item.quantity
         )`)
     }
-    if (filters.startDate) conditions.push(gte(inventoryDocs.docDate, filters.startDate))
-    if (filters.endDate) conditions.push(lte(inventoryDocs.docDate, filters.endDate))
+    if (startDate) conditions.push(gte(inventoryDocs.docDate, startDate))
+    if (endDate) conditions.push(lte(inventoryDocs.docDate, endDate))
     if (filters.keyword) {
       const pattern = `%${filters.keyword.replace(/[%_]/g, '\\$&')}%`
       conditions.push(
@@ -2655,7 +2659,6 @@ function candidateProgressSql(kind: InventoryDocCandidateProgressKind) {
   return { total, done }
 }
 
-const CANDIDATE_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/
 
 /** Server Action 入参原样到达：非字符串一律按参数错误处理，别让 `.trim` 抛 TypeError 变成 500 */
 function candidateText(value: unknown, label: string): string | undefined {
@@ -2667,16 +2670,7 @@ function candidateText(value: unknown, label: string): string | undefined {
 function candidateDate(value: unknown, label: string): string | undefined {
   const text = candidateText(value, label)
   if (!text) return undefined
-  // 往返比对而不是只看 Date.parse：JS 会把 2026-02-30 顺延成 03-02 且不报错，
-  // 放过去的话 PG 转 date 时抛 22008，用户看到的是 500 而不是参数错误。
-  const [year, month, day] = CANDIDATE_DATE_PATTERN.test(text) ? text.split('-').map(Number) : [NaN, NaN, NaN]
-  const parsed = new Date(Date.UTC(year, month - 1, day))
-  if (
-    Number.isNaN(parsed.getTime())
-    || parsed.getUTCFullYear() !== year
-    || parsed.getUTCMonth() !== month - 1
-    || parsed.getUTCDate() !== day
-  ) {
+  if (!isValidInventoryCalendarDate(text)) {
     throw new ApiError('INVALID_PARAMS', `${label}格式不正确`)
   }
   return text
@@ -3764,6 +3758,11 @@ export const createInventoryCoreDoc = withAnyPermission(
     if (!Array.isArray(input.items) || input.items.length === 0) {
       throw new ApiError('INVALID_PARAMS', '库存单据至少需要一条明细')
     }
+    candidateDate(input.docDate, '单据日期')
+    for (const item of input.items) {
+      if (typeof item !== 'object' || item === null) throw new ApiError('INVALID_PARAMS', '库存明细格式不正确')
+      candidateDate(item.expiryDate, '有效期')
+    }
     /**
      * 盘点单：一个 SKU 只能一行。账面数按「主体 + SKU 汇总」记（#131 Q1），同 SKU 两行会
      * 各自拿到**同一个**完整账面数，差异列直接变成重复计算的废数。
@@ -3891,7 +3890,7 @@ export const createInventoryCoreDoc = withAnyPermission(
         // 市场归属由数据库根据源/目标库存主体统一派生，禁止信任调用方传值。
         marketId: null,
         supplierId: normalizeText(input.supplierId),
-        docDate: normalizeText(input.docDate) ?? shanghaiToday(),
+        docDate: candidateDate(input.docDate, '单据日期') ?? shanghaiToday(),
         relatedSaleOrderId: normalizeText(input.relatedSaleOrderId),
         clientUserId: normalizeText(input.clientUserId),
         customerName: normalizeText(input.customerName),
@@ -3987,7 +3986,7 @@ export const createInventoryCoreDoc = withAnyPermission(
             supplier: snapshot.supplier,
             productSeries: snapshot.productSeries,
             batchNo: lot?.batchNo ?? normalizeText(serverItem.batchNo) ?? '',
-            expiryDate: lot?.expiryDate ?? normalizeText(serverItem.expiryDate),
+            expiryDate: lot?.expiryDate ?? (candidateDate(serverItem.expiryDate, '有效期') ?? null),
             isGift: lot?.isGift ?? Boolean(serverItem.isGift),
             quantity: String(quantity),
             stockSnapshot: lot ? String(lot.quantityOnHand) : numString(bookQuantity),

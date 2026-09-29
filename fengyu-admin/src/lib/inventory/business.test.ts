@@ -4628,3 +4628,43 @@ describe('门店报货草稿（#348）', () => {
          AND request_doc.status = '已完成'`)
   })
 })
+
+
+describe('#453 库存日期服务端拦截', () => {
+  beforeEach(() => vi.clearAllMocks())
+  it.each(['2026-02-30', '2026-13-01', '0000-01-01', 20260101, {}])('采购订单拒绝非法 docDate %s，未执行 SQL', async (docDate) => {
+    await expect(createPurchaseOrder(SESSION, { supplyChainLocationId: 'HQ', docDate, items: [{ sourceItemId: 1, quantity: 1 }] } as never)).rejects.toMatchObject({ prefix: 'INVALID_PARAMS' })
+    expect(db.execute).not.toHaveBeenCalled()
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+  it.each(['2026-02-30', '2026-13-01', '0000-01-01', 20260101, {}])('自采入库拒绝非法 expiryDate %s，未执行 SQL', async (expiryDate) => {
+    await expect(createSelfPurchasedReceipt(SELF_PURCHASE_SESSION, { marketId: 'M1', supplierId: 'SUP', items: [{ skuId: 'SKU', quantity: 1, expiryDate }] } as never)).rejects.toMatchObject({ prefix: 'INVALID_PARAMS' })
+    expect(db.execute).not.toHaveBeenCalled()
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+})
+
+
+describe('#453 供应链采购入库日期', () => {
+  beforeEach(() => vi.clearAllMocks())
+  it.each(['2026-02-30', '2026-13-01', '0000-01-01'])('拒绝非法 docDate %s，不执行 SQL', async (docDate) => {
+    await expect(receiveSupplyChainPurchaseOrder(SESSION, { supplyChainLocationId: 'HQ', purchaseOrderId: 'CG', docDate, items: [{ purchaseOrderItemId: 1, quantity: 1 }] } as never)).rejects.toThrow('INVALID_PARAMS: 单据日期格式应为 YYYY-MM-DD')
+    expect(db.execute).not.toHaveBeenCalled()
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+  it('拒绝非法效期，不执行 SQL', async () => {
+    await expect(receiveSupplyChainPurchaseOrder(SESSION, { supplyChainLocationId: 'HQ', purchaseOrderId: 'CG', items: [{ purchaseOrderItemId: 1, quantity: 1, expiryDate: '2026-13-01' }] } as never)).rejects.toThrow('INVALID_PARAMS: 效期格式应为 YYYY-MM-DD')
+    expect(db.execute).not.toHaveBeenCalled()
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+})
+
+
+describe('#453 前置日期校验不绕过明细形状守卫', () => {
+  beforeEach(() => vi.clearAllMocks())
+  it.each([null, undefined, 1, 'bad'])('采购入库非法明细 %s 保持 INVALID_PARAMS，不执行 SQL', async (item) => {
+    await expect(receiveSupplyChainPurchaseOrder(SESSION, { supplyChainLocationId: 'HQ', purchaseOrderId: 'CG', items: [item] } as never)).rejects.toThrow('INVALID_PARAMS: 供应链采购入库明细格式不正确')
+    expect(db.execute).not.toHaveBeenCalled()
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+})

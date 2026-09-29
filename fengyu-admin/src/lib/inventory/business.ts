@@ -1,3 +1,4 @@
+import { isValidInventoryCalendarDate } from '@/lib/calendar-date'
 import 'server-only'
 
 import { db } from '@/db'
@@ -720,6 +721,7 @@ function rows<T>(value: unknown): T[] {
 }
 
 function text(value: string | null | undefined): string | null {
+  if (value != null && typeof value !== 'string') throw new ApiError('INVALID_PARAMS', '文本参数格式不正确')
   const normalized = value?.trim()
   return normalized || null
 }
@@ -774,7 +776,7 @@ function numeric(value: number | null | undefined): string | null {
 
 function dateOrToday(value: string | null | undefined): string {
   const result = text(value) ?? shanghaiToday()
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(result)) {
+  if (!isValidInventoryCalendarDate(result)) {
     throw new ApiError('INVALID_PARAMS', '单据日期格式应为 YYYY-MM-DD')
   }
   return result
@@ -1190,10 +1192,11 @@ async function upsertLot(
   tx: Tx,
   input: Omit<LotSnapshot, 'id' | 'quantityOnHand' | 'locationId'> & { locationId: string },
 ): Promise<LotSnapshot> {
+  const expiryDate = conversionDate(input.expiryDate, '有效期')
   const key = lotKey({
     skuId: input.skuId,
     batchNo: input.batchNo,
-    expiryDate: input.expiryDate,
+    expiryDate,
     isGift: input.isGift,
     supplyChainUnitCost: input.supplyChainUnitCost,
     marketActualUnitPrice: input.marketActualUnitPrice,
@@ -1212,7 +1215,7 @@ async function upsertLot(
     ) VALUES (
       ${input.locationId}, ${input.skuId}, ${key}, ${input.skuName}, ${text(input.specName)},
       ${text(input.supplier)}, ${text(input.supplierId)}, ${text(input.productSeries)}, ${input.batchNo},
-      ${input.expiryDate}, ${input.expiryDate ?? ''}, ${input.isGift}, 0,
+      ${expiryDate}, ${expiryDate ?? ''}, ${input.isGift}, 0,
       ${numeric(input.supplyChainUnitCost)}, ${numeric(input.marketStandardUnitPrice)},
       ${numeric(input.marketUnitDiscount)}, ${numeric(input.marketActualUnitPrice)},
       ${numeric(input.storeStandardUnitPrice)}, ${numeric(input.storeUnitDiscount)},
@@ -1303,7 +1306,7 @@ async function insertDocItem(tx: Tx, input: InsertDocItemInput): Promise<number>
       ${input.docId}, ${input.lotId ?? null}, ${input.skuId}, ${input.skuName},
       ${text(input.specName)}, ${text(input.supplier)}, ${text(input.supplierId)},
       ${text(input.marketId)}, ${text(input.productSeries)},
-      ${text(input.batchNo) ?? ''}, ${text(input.expiryDate)}, ${Boolean(input.isGift)},
+      ${text(input.batchNo) ?? ''}, ${conversionDate(input.expiryDate, '有效期')}, ${Boolean(input.isGift)},
       ${numeric(input.quantity)}, ${numeric(input.stockSnapshot ?? null)},
       ${numeric(input.requestQuantity ?? null)}, ${numeric(input.fulfilledQuantity ?? null)},
       ${numeric(input.standardUnitPrice ?? null)}, ${numeric(input.unitDiscount ?? null)},
@@ -3594,6 +3597,7 @@ export async function createPurchaseOrder(
   if (!Array.isArray(input.items) || input.items.length === 0) {
     throw new ApiError('INVALID_PARAMS', '采购订单至少需要一条明细')
   }
+  dateOrToday(input.docDate)
   await syncLocations()
   const id = await db.transaction(async (tx) => {
     await assertInventoryBusinessWritable(tx)
@@ -4444,6 +4448,11 @@ export async function receiveSupplyChainPurchaseOrder(
   if (!Array.isArray(input.items) || input.items.length === 0) {
     throw new ApiError('INVALID_PARAMS', '供应链采购入库至少需要一条明细')
   }
+  dateOrToday(input.docDate)
+  for (const item of input.items) {
+    if (typeof item !== 'object' || item === null) throw new ApiError('INVALID_PARAMS', '供应链采购入库明细格式不正确')
+    conversionDate(item.expiryDate, '效期')
+  }
   await syncLocations()
   const inboundId = await db.transaction(async (tx) => {
     await assertInventoryBusinessWritable(tx)
@@ -4507,10 +4516,7 @@ export async function receiveSupplyChainPurchaseOrder(
       if (nearlyGreater(quantity, orderItem.quantity - received)) {
         throw new ApiError('CONFLICT', '实收数量不能超过采购订单待收数量')
       }
-      const expiryDate = text(line.expiryDate)
-      if (expiryDate && !/^\d{4}-\d{2}-\d{2}$/.test(expiryDate)) {
-        throw new ApiError('INVALID_PARAMS', '效期格式应为 YYYY-MM-DD')
-      }
+      const expiryDate = conversionDate(line.expiryDate, '效期')
       const unitDiscount = discounts[lineIndex]
       // 优惠只能扣在采购行的下单价快照上：快照为空时 requiredSupplyChainCost 会回退到商品档案**现价**，
       // 那就不是这张单的标准进价了，扣完写进批次会把错成本固化下来。无优惠的入库保持原有回退行为。
@@ -5851,6 +5857,11 @@ export async function createSelfPurchasedReceipt(
   if (!Array.isArray(input.items) || input.items.length === 0) {
     throw new ApiError('INVALID_PARAMS', '自采产品入库至少需要一条明细')
   }
+  dateOrToday(input.docDate)
+  for (const item of input.items) {
+    if (typeof item !== 'object' || item === null) throw new ApiError('INVALID_PARAMS', '库存明细格式不正确')
+    conversionDate(item.expiryDate, '有效期')
+  }
   await syncLocations()
   const id = await db.transaction(async (tx) => {
     await assertInventoryBusinessWritable(tx)
@@ -5897,7 +5908,7 @@ export async function createSelfPurchasedReceipt(
         sku,
         quantity,
         batchNo: text(line.batchNo),
-        expiryDate: text(line.expiryDate),
+        expiryDate: conversionDate(line.expiryDate, '有效期'),
         isGift: Boolean(line.isGift),
         marketActualUnitPrice,
         storeUnitDiscount,
@@ -6117,10 +6128,7 @@ function conversionText(value: unknown, label: string): string | null {
 function conversionDate(value: unknown, label: string): string | null {
   const normalized = conversionText(value, label)
   if (!normalized) return null
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(normalized)
-  const [year, month, day] = match ? match.slice(1).map(Number) : [0, 0, 0]
-  const parsed = new Date(Date.UTC(year, month - 1, day))
-  if (!match || parsed.getUTCFullYear() !== year || parsed.getUTCMonth() !== month - 1 || parsed.getUTCDate() !== day) {
+  if (!isValidInventoryCalendarDate(normalized)) {
     throw new ApiError('INVALID_PARAMS', `${label}格式应为 YYYY-MM-DD`)
   }
   return normalized
