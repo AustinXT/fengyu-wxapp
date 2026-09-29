@@ -82,6 +82,40 @@ function expectCashflowFragment(src: string) {
   expect(n).not.toMatch(/payment_method/i)
 }
 
+/** 仅归一两个 ORM 的 scope/日期参数及明细投影，整段业务 SQL 必须相等。 */
+function shengmeiFragments(admin: string, staff: string): string[] {
+  const blocks = [
+    between(admin, 'const runShengmeiRevenue', 'const runStoreConsume'),
+    between(admin, '// 生美业绩（行级）', '// 新增会员业绩（付款流水 + 客型）'),
+    between(staff, 'async function queryShengmeiRevenue', 'async function queryStoreConsume'),
+  ]
+  return blocks.map((block) => {
+    const sql = block.match(/`(SELECT[\s\S]*?)`|sql`([\s\S]*?)`/)
+    expect(sql, '生美查询锚点必须存在').not.toBeNull()
+    return normalize(stripComments(sql![1] ?? sql![2]))
+      .replace(/^SELECT so\.store_id, /, 'SELECT ')
+      .replace(/ GROUP BY so\.store_id$/, '')
+      .replace(/WHERE \$\{(?:scopeFilterSql\([^}]*\)|sc\.sql)\}/, 'WHERE __SCOPE__')
+      .replace(/sipe\.performance_date BETWEEN \$\{(?:range|cur)\.start\} AND \$\{(?:range|cur)\.end\}/,
+        '__DATE__')
+      .replace(/\$\{timeWindow\('sipe\.performance_date', mode, 1, true\)\}/, '__DATE__')
+  })
+}
+
+const SHENGMEI_SQL = "SELECT COALESCE(SUM(sipe.amount::numeric), 0) AS v " +
+  "FROM sale_item_performance_events sipe " +
+  "JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id " +
+  "JOIN sale_orders so ON so.sale_order_id = sipe.sale_order_id " +
+  "WHERE __SCOPE__ AND so.sale_order_type IN ('销售单', '转换单') " +
+  "AND (NOT sipe.is_legacy_residual OR so.status <> '已关闭') " +
+  "AND si.is_shengmei = TRUE AND __DATE__"
+
+function expectShengmeiEqual(admin: string, staff: string) {
+  const fragments = shengmeiFragments(admin, staff)
+  expect(fragments).toHaveLength(3)
+  fragments.forEach((sql) => expect(sql).toBe(SHENGMEI_SQL))
+}
+
 describe('数据中心销售板块两端口径一致性守护', () => {
   let adminSrc: string
   let staffSrc: string
@@ -118,14 +152,31 @@ describe('数据中心销售板块两端口径一致性守护', () => {
     })
   })
 
-  describe('生美 = 行级 is_shengmei = TRUE', () => {
-    it('admin sales.ts 含 si.is_shengmei = TRUE 与 sit.is_shengmei = TRUE', () => {
-      expect(adminSrc).toMatch(/si\.is_shengmei\s*=\s*TRUE/)
-      expect(adminSrc).toMatch(/sit\.is_shengmei\s*=\s*TRUE/)
+  describe('生美业绩三处整段等值守护（#300）', () => {
+    it('admin KPI / admin 明细 / staff 首页的完整业务 SQL 相等', () => {
+      expectShengmeiEqual(adminSrc, staffSrc)
     })
-    it('staff mgmt-dashboard.js 含 si.is_shengmei = TRUE 与 sit.is_shengmei = TRUE', () => {
-      expect(staffSrc).toMatch(/si\.is_shengmei\s*=\s*TRUE/)
-      expect(staffSrc).toMatch(/sit\.is_shengmei\s*=\s*TRUE/)
+    it.each([0, 1, 2])('第 %i 处独自恢复已支付闸门必须报红', (index) => {
+      const changed = "AND so.status = '已支付' AND si.is_shengmei = TRUE"
+      if (index === 2) {
+        const start = staffSrc.indexOf('async function queryShengmeiRevenue')
+        const end = staffSrc.indexOf('async function queryStoreConsume', start)
+        const block = staffSrc.slice(start,end).replace('AND si.is_shengmei = TRUE', changed)
+        expect(() => expectShengmeiEqual(adminSrc, staffSrc.slice(0,start) + block + staffSrc.slice(end))).toThrow()
+      } else {
+        const anchor = index === 0 ? 'const runShengmeiRevenue' : '// 生美业绩（行级）'
+        const start = adminSrc.indexOf(anchor)
+        const offset = adminSrc.indexOf('AND si.is_shengmei = TRUE',start)
+        const mutated = adminSrc.slice(0,offset) + changed + adminSrc.slice(offset + 'AND si.is_shengmei = TRUE'.length)
+        expect(() => expectShengmeiEqual(mutated,staffSrc)).toThrow()
+      }
+    })
+    it('任何一处额外过滤、JOIN 或金额表达式漂移都报红', () => {
+      for (const [from,to] of [
+        ['JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id','JOIN sale_items si ON si.sale_order_id = sipe.sale_order_id'],
+        ['SUM(sipe.amount::numeric)','SUM(ABS(sipe.amount::numeric))'],
+        ["so.status <> '已关闭'", "so.status <> '已退款'"],
+      ]) expect(() => expectShengmeiEqual(adminSrc.replace(from,to),staffSrc)).toThrow()
     })
   })
 
@@ -133,10 +184,12 @@ describe('数据中心销售板块两端口径一致性守护', () => {
     it('admin sales.ts 含 unit_real_price * session_used', () => {
       expect(adminBody).toMatch(/unit_real_price::numeric\s*\*\s*sit\.session_used/i)
       expect(adminSrc).toMatch(/so\.status\s*=\s*'已完成'/)
+      expect(adminSrc).toMatch(/sit\.is_shengmei\s*=\s*TRUE/)
     })
     it('staff mgmt-dashboard.js 含 unit_real_price * session_used', () => {
       expect(staffBody).toMatch(/unit_real_price::numeric\s*\*\s*sit\.session_used/i)
       expect(staffSrc).toMatch(/so\.status\s*=\s*'已完成'/)
+      expect(staffSrc).toMatch(/sit\.is_shengmei\s*=\s*TRUE/)
     })
   })
 

@@ -11,7 +11,7 @@
 | 指标 | 公式 | 数据源 | 筛选条件 |
 |------|------|--------|----------|
 | 业绩（门店 / 市场 / 总部） | `SUM(spe.amount)` | `sale_order_performance_events spe` | `spe.status='已支付'` ∩ `spe.change_type IN ('首次支付','回款','退款')` ∩ `spe.sale_order_type IN ('销售单','转换单','充值单')` ∩ `spe.legacy_source IS DISTINCT FROM 'workfine'` ∩ `[spe.performance_date]` |
-| 生美业绩 | `SUM(sipe.amount)` | `sale_item_performance_events sipe` | JOIN sale_items + sale_orders；`sale_order_type IN ('销售单','转换单')` ∩ `status='已支付'` ∩ `is_shengmei=TRUE` ∩ `[sipe.performance_date]` |
+| 生美业绩 | `SUM(sipe.amount)` | `sale_item_performance_events sipe` | JOIN sale_items + sale_orders；`sale_order_type IN ('销售单','转换单')` ∩ `is_shengmei=TRUE` ∩ `[sipe.performance_date]`；款项行不筛父单状态，残差行排除父单 `已关闭` |
 | 实耗 | `SUM(unit_real_price * session_used)` | `service_items.unit_real_price` × `service_items.session_used` | JOIN service_orders；`status='已完成'` ∩ `[service_date]` |
 | 生美实耗 | `SUM(unit_real_price * session_used)` | 同上 | 加 `service_items.is_shengmei=TRUE` |
 
@@ -48,8 +48,16 @@
 > 都已走各自的**款项级**事件视图，而不是订单快照。
 > ⚠ 但三者**并非只差统计粒度**，至少还有这些实打实的差异：
 > 组织业绩排除 `储值卡抵扣` 与 WorkFine legacy；子项事件包含储值卡收款拆分及历史 residual，
-> 且相关报表常按父订单状态过滤；员工销售指标只计 `spia.is_void=FALSE` 且已分配到员工的销售单/转换单款项；
+> 生美业绩不按父单结清过滤（仅残差排除已关闭），staff 销售数据页 SQL 5–8 仍保留父单已支付闸门，待 #369 确认后另单对齐；员工销售指标只计 `spia.is_void=FALSE` 且已分配到员工的销售单/转换单款项；
 > **服务提成根本不走款项事件**，走 `service_commissions` + `[service_date]`。
+
+> **生美历史月份冻结（#300）**：款项按 `sale_order_payments.performance_attribution_date` 计入，
+> 不随父单后续结清或退款增删已落期的款项；退款只在退款归属月份记负数。
+> 转换单新增收款的逐项 receipt = 转入行收款前后已兑现价值之差；与 paid-sessions STEP 1.6
+> 使用相同的封顶、已折走行排除及累计边界分币规则，转出旧卡折抵不重复分摊回款。
+> 原有 signed receipts 不回填；后续回款保持各行既有残差，避免回溯改写订单月。
+> 个别转入行的增量可因分币为负一分，仍保留该符号，合计与本次兑现增量一致。
+> 冻结例外：店长手工修改归属日期、`sale_items.is_shengmei` 数据治理，允许历史月份变化。
 
 ## 客流 / 客量 / 新会员
 
@@ -995,6 +1003,7 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 
 | 日期 | 变更 |
 |------|------|
+| 2026-09-29 | **生美业绩取消父订单已结清闸门（#300）**：原取舍导致部分支付单结清后补入历史款项、整单退款后原月正数消失，无法满足历史冻结。admin KPI/明细/导出与 staff 首页统一按款项归属日期计入；只排除已关闭父单的残差行。转换单四端收款 receipt 改为转入兑现价值前后差额，堵住有符号摊款与实收重算不一致引起的残差漂移；存量 receipt 不回填。店长手工改归属日期及 is_shengmei 治理为冻结例外。staff 销售数据页 SQL 5–8 本单不改，等 #369 口径确认后另单对齐。 |
 | 2026-04-25 | 初版：管理层数据中心首页 8 指标定义 |
 | 2026-04-25 | 追加门店状况 3 项原始指标（会员/保有/员工）+ 11 项派生指标；新增 staff_wechat_users scope 行；新增数字格式化规则（废弃"万"折叠） |
 | 2026-04-25 | 项目数定义落地：`SUM(service_items.session_used)` WHERE `sales_category IN ('自销自耗','他销自耗')` ∩ `status='已完成'`；新增 `service_items.sales_category` / `sale_items.sales_category` 快照依赖 |

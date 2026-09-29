@@ -148,8 +148,8 @@ exports[`#401 管理层取数在营接线 · 运行时闭集 > 每个 handler ×
   "mgmt-dashboard:summary all": [
     "6bcda3d154576663",
     "dd9807d995c36fa8",
-    "c94fee128c8eb6d1",
-    "5467b123885a819a",
+    "23973f76fbbdfce6",
+    "a2678a37c5a2fc95",
     "4ec59ba7e607c3f1",
     "ccbc85b699040e61",
     "4597a4e56788a3e5",
@@ -176,8 +176,8 @@ exports[`#401 管理层取数在营接线 · 运行时闭集 > 每个 handler ×
   "mgmt-dashboard:summary market": [
     "508c2084adb29f4d",
     "0ccc1e7c72531be9",
-    "5d5c2221ee5db59c",
-    "6356bea1d36effa9",
+    "fa4d6009b426b368",
+    "9821e7eeffee4bbb",
     "7f38d91be59aab7e",
     "f0575f4c1426cd56",
     "4b6aa057bf7a1e6a",
@@ -205,8 +205,8 @@ exports[`#401 管理层取数在营接线 · 运行时闭集 > 每个 handler ×
   "mgmt-dashboard:summary store": [
     "a131707baffe29d8",
     "d6a7a62d645a8116",
-    "74cc28e73f389d46",
-    "386656087eea614a",
+    "9dc38c71f0c46c9c",
+    "da64c93f1d1d7d13",
     "c2e89a1cc12cc3ba",
     "9a8b6ea859694e00",
     "239e31ddff973278",

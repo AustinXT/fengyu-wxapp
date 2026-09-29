@@ -277,7 +277,7 @@ async function queryShengmeiRevenue(scopeType, scopeId, date, mode) {
        JOIN sale_orders so ON so.sale_order_id = sipe.sale_order_id
       WHERE ${sc.sql}
         AND so.sale_order_type IN ('销售单', '转换单')
-        AND so.status = '已支付'
+        AND (NOT sipe.is_legacy_residual OR so.status <> '已关闭')
         AND si.is_shengmei = TRUE
         AND ${timeWindow('sipe.performance_date', mode, 1, true)}`,
     [date, ...sc.params],

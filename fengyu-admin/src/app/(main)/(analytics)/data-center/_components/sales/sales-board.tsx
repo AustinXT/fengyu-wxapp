@@ -19,7 +19,7 @@ const KPI_ITEMS: KpiGridItem[] = [
   // ⚠ 表名与列名**必须拆开写**，不能连成 `sale_items.is_shengmei`：hint 容器
   // （kpi-card.tsx:45）没有 break-words，而 columns=4 在 <lg 视口是 grid-cols-2
   // （不降到 1 列），单卡内容宽仅约 130px —— 26 字符的不可断词会溢出卡片（评审 P2）。
-  { key: "shengmeiRevenue", label: "生美业绩", hint: "取自 sale_items 的 is_shengmei 标记" },
+  { key: "shengmeiRevenue", label: "生美业绩", hint: "取自 sale_items 的 is_shengmei 标记；按款项归属日期计入，不随订单结清变动" },
   { key: "storeConsume", label: "总实耗" },
   {
     key: "shengmeiConsume",
