@@ -32,7 +32,15 @@ export function scopeFilterSql(
   storeCol = 'so.store_id',
 ): SQL {
   const col = sql.raw(storeCol)
-  // 经营统计始终排除当前已停用的门店；即使直接构造停用门店 URL 也只能得到零数据。
+  // 经营统计始终排除当前已停用的门店；即使直接构造停用门店 URL 也只能得到零数据（#401）。
+  //
+  // ⚠️ **已登记的唯一例外：新客客单价的分子**（#439，用户 2026-09-26 拍板方案 A）。
+  // 它按 `c.bound_store_id` 过滤而**不再约束订单门店**，于是「绑定在营店的新会员在**已停用**门店消费」
+  // 的钱会进分子。这在方案 A 下是**正确的** —— 分母只按绑定店数人、不看订单，这个人本来就在分母里，
+  // 「钱跟着人走」就该含他在任何门店的消费；把它改回按订单店过滤会重新制造分子分母不同源。
+  // 实测当前金额为 0（全库 3 家停用门店一条款项事件都没有）。
+  // 口径详见 notes/references/metrics.md 的 D-newMemberAvgTicket-store。
+  // **看到这里想"修"它之前先读那一节** —— 这条注释就是为了拦住那次改动才写的。
   const parts: SQL[] = [activeStoreCondition(col)]
 
   // 账号权限范围：admin 全开短路，其他角色用扁平 scopeStoreIds
@@ -69,10 +77,11 @@ export function scopeFilterSql(
  *   - UI 选了市场     → 锚定市场等于该市场才出现；该市场若只是门店级账号的**祖先市场**（未直接授权），
  *                       另须「锚定市场下有本账号可见的在营门店」——与 authorized 同一条可见性（#399），
  *                       即选祖先市场看到的直挂员工 ⊆ 汇总范围看到的，不会更多
- *   - all / authorized → admin 全可见；其他角色按「锚定市场下是否有本账号可见门店」判定
+ *   - all / authorized → 超管或持总部范围全可见（#334，与 staff `all` 恒真一致）；
+ *                        其他角色按「锚定市场下是否有本账号可见的在营门店」判定
  *   - 多店（#376）     → 锚定市场下至少有一家**所选**在营门店（非超管再与授权门店取交集）才出现
- * 品项公司是总部直属市场节点、其下无门店：admin/总部，以及直接授权到品项公司的账号（以市场范围，#399）可见；
- * 汇总范围（all / authorized）下非超管看不到它（锚定市场下没有可见门店）。
+ * 品项公司是总部直属市场节点、其下无门店：超管/总部账号在汇总范围可见，直接授权到品项公司的账号以市场范围可见（#399）；
+ * 市场级 / 门店级账号的汇总范围看不到它（锚定市场下没有可见的在营门店）。
  * 养生部锚到南昌凤御，该市场范围的账号可见。
  *
  * @param anchorCol 锚定市场列引用（默认 `pb.anchor_market_id`）
@@ -105,8 +114,11 @@ export function orgAnchorScopeSql(
     return activeAnchorAmongSql(ids, col)
   }
 
-  // all / authorized：admin 全开；其他角色按锚定市场下的可见门店判定
-  if (isAdminScope(session)) return sql`TRUE`
+  // all / authorized：超管或持总部范围 → 全开（#334）；其他角色按锚定市场下的可见门店判定。
+  // 判定与 getScopeTopLevel / validateScope（context.ts）逐字相同、与 staff `all` 恒真对齐：总部账号本就看全集团，
+  // 锚定市场下有没有在营门店与它无关（品项公司即此例）。session 已被 withPermission 收窄到授予本动作的角色
+  // （缺角色元数据的旧快照不收窄——那时 validateScope / scopeFilterSql 同样按总部放行，口径一致）。
+  if (isAdminScope(session) || session.roles.some((r) => r.scopeType === '总部')) return sql`TRUE`
   return visibleActiveAnchorSql(session, col)
 }
 
@@ -120,7 +132,7 @@ function isGrantedMarketScope(session: AuthSession, marketId: string): boolean {
 }
 
 /**
- * 锚定市场下存在本账号可见的**在营**门店（非超管 all / authorized 与祖先市场共用）。
+ * 锚定市场下存在本账号可见的**在营**门店（市场 / 门店级账号的 all / authorized 与祖先市场共用）。
  * 无授权门店时恒 FALSE。
  */
 function visibleActiveAnchorSql(session: AuthSession, col: SQL): SQL {

@@ -28,6 +28,14 @@
  *   - 进入达标日 = 销售单/转换单/寄存单的 SUM(sale_item_performance_events.amount) 在
  *     (client_user_id, store_id, 分组键, purchase_date) 分组下 >= threshold。
  *   - 复购达标日与区间业绩只统计销售单/转换单；寄存单只作为进入基线，不能触发复购。
+ *   - ★ 区间业绩是**净额**（#288）：负数事件逐笔抵减，净额为负的日子不得整组丢弃；
+ *     只剔除纯寄存日（purchase_received = 0）。体验判定与人数归店只认正数购买日（day_received > 0），
+ *     负数行只进业绩、不造人。
+ *     负数事件不只是退款：转换单**转出行**（received 为负，冲减原品项）与历史残差同样计入 ——
+ *     2026-01~09 prod 销售单/转换单负数事件中，退款 -92.5 万、转换单转出 -126 万。这与
+ *     「业绩 = SUM(sipe.amount)」的成文口径一致：转换只把价值从原品项挪到新品项，不应在新品项凭空多算。
+ *     另：寄存单大额冲销压过当日购买（day_received ≤ 0 < purchase_received）的组现在也会保留，
+ *     按其 purchase_received 参与复购达标与人数判定（寄存单本就不参与复购与区间业绩）；prod 全历史 0 组。
  *   - purchase_date = sale_item_performance_events.performance_date。
  *   - entry_date = 全历史（截至 endDate）最早达标日，跨店合并；新增 = entry_date 落区间；
  *     复购 = 区间内 entry_date 后再次达标（threshold 共用）；体验 = 区间内有购买但全历史无达标日。
@@ -66,7 +74,8 @@ const num = (v: unknown): number => {
   const n = Number(v ?? 0)
   return Number.isFinite(n) ? n : 0
 }
-const round2 = (v: unknown): number => Math.round(num(v) * 100) / 100
+// `|| 0` 把 -0 归一成 0：#288 起业绩可为负，正负抵消的浮点残差（如 -5e-17）舍入后是 -0，会显示成 -0.00
+const round2 = (v: unknown): number => Math.round(num(v) * 100) / 100 || 0
 /** 取数组首行（db.execute 返回数组） */
 const first = (rows: unknown): Record<string, unknown> =>
   ((rows as unknown[])[0] as Record<string, unknown>) ?? {}
@@ -238,7 +247,12 @@ async function queryCycle(
         AND ${filter}
         AND sipe.performance_date <= ${range.end}
       GROUP BY so.client_user_id, so.store_id, ${groupCol}, sipe.performance_date
-      HAVING SUM(sipe.amount::numeric) > 0
+      -- #288：只剔除「两列都为 0」的空组（如当日销售与退款恰好抵平）。负数净额组必须保留 ——
+      -- 退款走负数冲销、不删行，此前「> 0」把净额为负的日子整组丢掉，冲销被吞、业绩只进不出。
+      -- 也不能只判 day_received <> 0：寄存单金额恰好抵平销售单/转换单净额的日子（day_received = 0、
+      -- purchase_received <> 0）仍会被误丢。FILTER 无行时为 NULL，NULL <> 0 不成立，与 0 同待遇。
+      HAVING SUM(sipe.amount::numeric) <> 0
+          OR SUM(sipe.amount::numeric) FILTER (WHERE so.sale_order_type IN ('销售单', '转换单')) <> 0
     ),
     qualifying_days AS (
       SELECT client_user_id, store_id, grp, purchase_date
@@ -255,11 +269,13 @@ async function queryCycle(
       FROM qualifying_days
       GROUP BY client_user_id, grp
     ),
+    -- 区间业绩行（#288）：纳入负数净额日，退款冲销逐笔抵减业绩；只排除纯寄存日（purchase_received = 0）。
+    -- ⚠️ 负数行只能进业绩、不能「造人」：凡从这里判定人数或归店，都必须再加 day_received > 0。
     period_agg AS (
       SELECT client_user_id, store_id, grp, purchase_date, purchase_received AS day_received
       FROM daily_agg
       WHERE purchase_date BETWEEN ${range.start} AND ${range.end}
-        AND purchase_received > 0
+        AND purchase_received <> 0
     ),
     xinzeng AS (
       SELECT client_user_id, grp, entry_date
@@ -276,10 +292,11 @@ async function queryCycle(
     tiyan AS (
       SELECT DISTINCT pa.client_user_id, pa.grp
       FROM period_agg pa
-      WHERE NOT EXISTS (
-        SELECT 1 FROM first_entry f
-        WHERE f.client_user_id = pa.client_user_id AND f.grp = pa.grp
-      )
+      WHERE pa.day_received > 0
+        AND NOT EXISTS (
+          SELECT 1 FROM first_entry f
+          WHERE f.client_user_id = pa.client_user_id AND f.grp = pa.grp
+        )
     ),
     cohort AS (
       ${
@@ -386,14 +403,19 @@ async function queryMemberCountByStore(
 /**
  * 体验/新增/复购人数 + 新增业绩 + 复购业绩，按 store_id 归组（单查，全套 CTE）。
  *
- * **归店规则**（#286 修正后）：
- *   - 体验 / 复购：`period_agg.store_id`（期内消费发生的门店）。这两类人必然在 `period_agg`
- *     里有行 —— `tiyan` 本就从 `period_agg` 派生，`fugou` 要求 `purchase_received >= threshold > 0`。
- *   - **新增**：`COALESCE(period_agg.store_id, xinzeng.entry_store_id)` —— 期内有销售单/转换单
- *     消费的落消费门店，**没有的落「进入达标日所在门店」**。
+ * **人数归店规则**（#286 修正后；#288 起只认正数购买日 `day_received > 0`）：
+ *   - 体验 / 复购：期内正数购买日所在门店。这两类人必然有正数 `period_agg` 行 ——
+ *     `tiyan` 本就从正数行派生，`fugou` 要求 `purchase_received >= threshold > 0`。
+ *   - **新增**：`COALESCE(正数行.store_id, xinzeng.entry_store_id)` —— 期内有销售单/转换单
+ *     正数消费的落消费门店，**没有的落「进入达标日所在门店」**。
  *
- * ⚠️ 为什么新增必须兜底（#286，实测漏 **65.5%**）：`period_agg` 要求
- * `purchase_received > 0`，而 `purchase_received` 只统计销售单/转换单、**不含寄存单**；
+ * **业绩归店规则**（#288）：`period_agg` 全部行（含负数冲销日）按其 `store_id` 求净额。
+ * 人数与业绩分两套口径是刻意的：退款必须逐笔抵减业绩，但「期内只有退款」不代表该店有这位顾客的消费 ——
+ * 若让负数行参与归店，2026-09 prod 实测会凭空多出 60 名体验顾客、133 个新增归店组合。
+ * 于是新增拆成 `new_store`（人数）与 `new_revenue_store`（业绩）两个 CTE。
+ *
+ * ⚠️ 为什么新增必须兜底（#286，实测漏 **65.5%**）：`period_agg` 只收
+ * `purchase_received <> 0` 的行（#288 前是 `> 0`），而 `purchase_received` 只统计销售单/转换单、**不含寄存单**；
  * 而进入达标（`first_entry` → `entry_store` → `xinzeng`）走的是 `day_received`，**含寄存单**。
  * 于是「进入达标日金额全部来自寄存单」的顾客在 `xinzeng` 里有、在 `period_agg` 里没有 ——
  * 旧实现以 `period_agg` 作主表再内连接回来，把他们整体丢弃，
@@ -408,12 +430,11 @@ async function queryMemberCountByStore(
  * 该店的「新增客单价 = 新增业绩 ÷ 新增人数」随即失真，且与 sales 板的归组语义分叉。
  * 权衡后保留「可多店」，由 UI/文档说明差额来源。
  *
- * 业绩不受影响：`SUM(pa.day_received)` 在 LEFT JOIN 后对无消费行取 NULL 被忽略，
- * 三个口径（KPI / 修正前明细 / 修正后明细）业绩完全相等 —— 本缺陷**只丢人、不丢钱**。
+ * 业绩不受 #286 影响（它只丢人、不丢钱）：KPI 与明细的新增业绩都是 xinzeng 在 `period_agg` 上的净额。
  *
  * ⚠️ 新形态：「本期只有寄存单进入、零销售单消费」的门店会出现
  * `新增人数 N > 0` 而 `新增业绩 = 0` ⇒ 客单价显示 `0.00` 而非 `--`（`safeDiv` 分母 > 0）。
- * 数值是诚实的，不是 bug。
+ * 数值是诚实的，不是 bug。同理（#288），退款冲销大于期内消费的门店新增/复购业绩可以为**负**。
  *
  * 具体数字（会随数据漂移）一律见 `_tmp/issue-286/verify.md`，不写进本注释。
  */
@@ -462,7 +483,12 @@ async function queryCycleByStore(
         AND ${filter}
         AND sipe.performance_date <= ${range.end}
       GROUP BY so.client_user_id, so.store_id, ${groupCol}, sipe.performance_date
-      HAVING SUM(sipe.amount::numeric) > 0
+      -- #288：只剔除「两列都为 0」的空组（如当日销售与退款恰好抵平）。负数净额组必须保留 ——
+      -- 退款走负数冲销、不删行，此前「> 0」把净额为负的日子整组丢掉，冲销被吞、业绩只进不出。
+      -- 也不能只判 day_received <> 0：寄存单金额恰好抵平销售单/转换单净额的日子（day_received = 0、
+      -- purchase_received <> 0）仍会被误丢。FILTER 无行时为 NULL，NULL <> 0 不成立，与 0 同待遇。
+      HAVING SUM(sipe.amount::numeric) <> 0
+          OR SUM(sipe.amount::numeric) FILTER (WHERE so.sale_order_type IN ('销售单', '转换单')) <> 0
     ),
     qualifying_days AS (
       SELECT client_user_id, store_id, grp, purchase_date
@@ -479,11 +505,13 @@ async function queryCycleByStore(
       FROM qualifying_days
       GROUP BY client_user_id, grp
     ),
+    -- 区间业绩行（#288）：纳入负数净额日，退款冲销逐笔抵减业绩；只排除纯寄存日（purchase_received = 0）。
+    -- ⚠️ 负数行只能进业绩、不能「造人」：凡从这里判定人数或归店，都必须再加 day_received > 0。
     period_agg AS (
       SELECT client_user_id, store_id, grp, purchase_date, purchase_received AS day_received
       FROM daily_agg
       WHERE purchase_date BETWEEN ${range.start} AND ${range.end}
-        AND purchase_received > 0
+        AND purchase_received <> 0
     ),
     -- 进入达标日 + 当日所在门店，一次取齐（#286）。
     --
@@ -530,35 +558,48 @@ async function queryCycleByStore(
     tiyan AS (
       SELECT DISTINCT pa.client_user_id, pa.grp
       FROM period_agg pa
-      WHERE NOT EXISTS (
-        SELECT 1 FROM first_entry f
-        WHERE f.client_user_id = pa.client_user_id AND f.grp = pa.grp
-      )
+      WHERE pa.day_received > 0
+        AND NOT EXISTS (
+          SELECT 1 FROM first_entry f
+          WHERE f.client_user_id = pa.client_user_id AND f.grp = pa.grp
+        )
     ),
-    -- 期内每个门店每个客群的人数（DISTINCT client per store）+ 业绩（该门店该客群消费）
+    -- 期内每个门店每个客群的人数（DISTINCT client per store）+ 业绩（该门店该客群消费）。
+    -- ⚠️ 人数与业绩的归店口径不同（#288）：人数只认正数购买日（day_received > 0），
+    -- 业绩按 period_agg 全部行求净额。只有退款冲销、没有购买的门店 —— 业绩照扣，但不计人。
     trial_store AS (
       SELECT pa.store_id,
              COUNT(DISTINCT pa.client_user_id) AS cnt
       FROM period_agg pa
       JOIN tiyan t ON t.client_user_id = pa.client_user_id AND t.grp = pa.grp
+      WHERE pa.day_received > 0
       GROUP BY pa.store_id
     ),
     -- ⚠️ 主表必须是 xinzeng（#286）：反过来 FROM period_agg JOIN xinzeng 是内连接，
     -- 「进入达标日金额全部来自寄存单」的顾客不在 period_agg 里，会被整体丢弃（实测漏 65.5%）。
-    -- 期内无销售单/转换单消费的新增顾客落回 entry_store_id；业绩仍只统计真实消费
-    -- （LEFT JOIN 后 pa.day_received 为 NULL，被 SUM 忽略）。
+    -- 期内无正数购买日的新增顾客落回 entry_store_id。
+    -- ON 里的 day_received > 0 只决定人落在哪家店（#288）；它不影响业绩，业绩见 new_revenue_store。
     new_store AS (
       SELECT COALESCE(pa.store_id, x.entry_store_id) AS store_id,
-             COUNT(DISTINCT x.client_user_id) AS cnt,
-             COALESCE(SUM(pa.day_received), 0) AS revenue
+             COUNT(DISTINCT x.client_user_id) AS cnt
       FROM xinzeng x
       LEFT JOIN period_agg pa
-        ON pa.client_user_id = x.client_user_id AND pa.grp = x.grp
+        ON pa.client_user_id = x.client_user_id AND pa.grp = x.grp AND pa.day_received > 0
       GROUP BY COALESCE(pa.store_id, x.entry_store_id)
+    ),
+    -- 新增业绩按消费（含退款冲销）发生的门店归组，净额可为负。
+    -- xinzeng 每个 (client_user_id, grp) 恰一行（entry_store 的 DISTINCT ON），内连接不扇出。
+    new_revenue_store AS (
+      SELECT pa.store_id,
+             SUM(pa.day_received) AS revenue
+      FROM xinzeng x
+      JOIN period_agg pa
+        ON pa.client_user_id = x.client_user_id AND pa.grp = x.grp
+      GROUP BY pa.store_id
     ),
     repurchase_store AS (
       SELECT pa.store_id,
-             COUNT(DISTINCT pa.client_user_id) AS cnt,
+             COUNT(DISTINCT pa.client_user_id) FILTER (WHERE pa.day_received > 0) AS cnt,
              COALESCE(SUM(pa.day_received), 0) AS revenue
       FROM period_agg pa
       JOIN fugou fg ON fg.client_user_id = pa.client_user_id AND fg.grp = pa.grp
@@ -577,12 +618,13 @@ async function queryCycleByStore(
       s.store_id AS store_id,
       COALESCE(t.cnt, 0) AS trial_count,
       COALESCE(n.cnt, 0) AS new_count,
-      COALESCE(n.revenue, 0) AS new_revenue,
+      COALESCE(nr.revenue, 0) AS new_revenue,
       COALESCE(r.cnt, 0) AS repurchase_count,
       COALESCE(r.revenue, 0) AS repurchase_revenue
     FROM store_ids s
     LEFT JOIN trial_store t ON t.store_id = s.store_id
     LEFT JOIN new_store n ON n.store_id = s.store_id
+    LEFT JOIN new_revenue_store nr ON nr.store_id = s.store_id
     LEFT JOIN repurchase_store r ON r.store_id = s.store_id
   `)
   const m = new Map<

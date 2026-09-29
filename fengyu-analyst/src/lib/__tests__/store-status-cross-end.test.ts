@@ -24,7 +24,7 @@ import { activeStoreCondition } from "../store-status"
  * 4. 闭集：analyst 源码（含注释）不得出现 `is_closed` / `isClosed` / `closed_at` / `closedAt`；会查库的文件是闭集，
  *    新增取数文件必须在这里归类（否则可能绕过 scopeFilterSql）。
  *
- * ⚠️ analyst 的 vitest 不在 CI 里跑（#382）：改动 analyst 取数时须本地跑本文件。
+ * analyst 全量 vitest 由 CI 的 analyst-tests job 跑（#436 起；此前不进 CI，#382）。
  */
 
 const ANALYST_SRC = path.resolve(__dirname, "../..")
@@ -410,6 +410,7 @@ describe("在营门店口径跨端守护（#421）", () => {
       "app/api/health/route.ts", // SELECT 1 探活
       "lib/analyst-scope.ts", // 范围下拉 / 旧参数解析
       "lib/assistant-chat-store.ts", // 会话存储，无经营数据
+      "lib/assistant-org-names.ts", // 助手识别不可见门店 / 市场名称（#436），不取数
       "lib/assistant-product-terms.ts", // 品项字典，无门店维度
       "lib/auth.ts", // 登录鉴权：员工 / 角色
       "lib/member-threshold.ts", // system_configs 阈值

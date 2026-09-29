@@ -358,15 +358,15 @@ test('INV-03：三级正向主链 —— 报货→采购→发货→入库→配
     await openOperation(page, 'market', '市场采购入库')
     await pickCandidateDoc(page, '品项公司发货单', shipId)
     await page.waitForTimeout(2000)
-    const marketReceiveRows = await fillReceiptRows(page)
+    const marketReceiveRows = await checkReceiptRowsReadonly(page)
     recordVerdict(
       verdicts,
-      'ui: 市场采购入库的「本次实收」输入可定位并填入',
+      'ui: 市场采购入库的「本次实收」只读且等于待收（#358 整单收货）',
       marketReceiveRows > 0,
-      `已填行数=${marketReceiveRows}`,
+      `行数=${marketReceiveRows}`,
     )
     await fillByLabel(page, '备注', R.marketReceipt)
-    await submitForm(page, '登记本次实收', /市场采购入库已创建/)
+    await submitForm(page, '确认整单收货', /市场采购入库已创建/)
 
     const mrkReceiptId = docIdByRemark('市场采购入库', R.marketReceipt)
     recordVerdict(verdicts, 'doc: 市场采购入库落库', Boolean(mrkReceiptId), mrkReceiptId)
@@ -448,15 +448,15 @@ test('INV-03：三级正向主链 —— 报货→采购→发货→入库→配
     await openOperation(page, 'store', '分院收货入库')
     await pickCandidateDoc(page, '分院配货单', allocId)
     await page.waitForTimeout(2000)
-    const storeReceiveRows = await fillReceiptRows(page)
+    const storeReceiveRows = await checkReceiptRowsReadonly(page)
     recordVerdict(
       verdicts,
-      'ui: 分院收货入库的「本次实收」输入可定位并填入',
+      'ui: 分院收货入库的「本次实收」只读且等于待收（#358 整单收货）',
       storeReceiveRows > 0,
-      `已填行数=${storeReceiveRows}`,
+      `行数=${storeReceiveRows}`,
     )
     await fillByLabel(page, '备注', R.storeReceipt)
-    await submitForm(page, '登记本次实收', /分院收货入库已创建/)
+    await submitForm(page, '确认整单收货', /分院收货入库已创建/)
 
     const storeReceiptId = docIdByRemark('院入库', R.storeReceipt)
     recordVerdict(verdicts, 'doc: 院入库单落库', Boolean(storeReceiptId), storeReceiptId)
@@ -551,34 +551,28 @@ function escapeRe(s: string): string {
 }
 
 /**
- * 收货进度表：逐行把「待收」数量抄进「本次实收」，返回实际填了几行。
- * 市场采购入库与分院收货入库共用同一份源码（ShipmentReceiptForm），故共用本函数。
- *
- * ⚠️ 不能再用 `input[inputmode=decimal]` 定位 —— #135 已把这些输入换成 `type="number"`，
- * 页面上根本没有 inputmode 属性，`count()` 恒为 0：循环一次都不执行，整步**静默空转**，
- * 只是靠表单预填的待收量碰巧提交成功（回归时同样不会报警）。
- * type=number 的 ARIA role 是 **spinbutton**（不是 textbox），行内控件没有 <label>，
- * 可访问名由 aria-label 给出（`本次实收 <商品名> 第N行`，#194）。
- *
- * 这里按**行**取控件而不是按可访问名匹配：同一 SKU 的赠品行与正常行连商品名带 skuId
- * 都相同，只有行序号能区分；按行定位与「待收」列天然同源，不会错位。
- * 返回值交调用方记 verdict —— 行数为 0 必须响亮失败，别再退回静默空转。
+ * 收货进度表（市场采购入库与分院收货入库共用 ShipmentReceiptForm）。
+ * #358 起「本次实收」是只读框（aria-label `本次实收 <商品名> 第N行`，#194），按行取控件与「待收」列同源；
+ * 返回值交调用方记 verdict —— 行数为 0 或任一行可编辑 / 不等于待收都必须响亮失败。
  */
-async function fillReceiptRows(page: Page): Promise<number> {
-  const rows = page.locator('form tbody tr')
+async function checkReceiptRowsReadonly(page: Page): Promise<number> {
+  // 只取表头含「本次实收」的进度表：form 内还有候选单选择表，不能按 `form tbody tr` 一把抓；
+  // 进度表里每一行都必须恰有一个「本次实收」框，缺框即回归，响亮失败（不跳过）
+  const table = page.locator('form table').filter({ has: page.getByRole('columnheader', { name: '本次实收', exact: true }) })
+  const rows = table.locator('tbody tr')
   await rows.first().waitFor({ state: 'visible', timeout: 20_000 }).catch(() => null)
   const total = await rows.count()
-  let filled = 0
+  let matched = 0
   for (let i = 0; i < total; i += 1) {
     const row = rows.nth(i)
-    // 每行只有一个数值输入（本次实收）；明细备注是普通 text → textbox，不会被误取
-    const input = row.getByRole('spinbutton').first()
-    if (await input.count() === 0) continue
+    const input = row.getByLabel(/^本次实收 /)
+    if (await input.count() !== 1) return -1
     const outstanding = (await row.locator('td').nth(3).innerText()).trim()   // td[3] = 待收
-    await input.fill(outstanding)
-    filled += 1
+    const readonly = (await input.first().getAttribute('readonly')) !== null
+    if (!readonly || Number(await input.first().inputValue()) !== Number(outstanding)) return -1
+    matched += 1
   }
-  return filled
+  return matched
 }
 
 /** 打开某层办理台的某张操作卡片 */

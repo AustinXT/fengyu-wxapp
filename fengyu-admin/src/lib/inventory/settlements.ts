@@ -23,7 +23,7 @@ const settlementTargetLocation = alias(inventoryLocations, 'settlement_target_lo
 
 /**
  * 市场货款结算 = 市场报货单应付货款汇总（市场应付供应链，实际单价含福利优惠）。
- * 市场报货创建即「已完成」，白名单口径排除任何取消/驳回态。
+ * 只认「已完成」：草稿（#348，未提交）与删除的草稿（草稿 → 已取消）都不产生货款。
  */
 const MARKET_SETTLEMENT_STATUSES = ['已完成'] as const
 

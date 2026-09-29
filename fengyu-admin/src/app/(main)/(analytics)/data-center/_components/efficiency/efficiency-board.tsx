@@ -5,6 +5,7 @@ import { Card } from "@/components/ui/card"
 import { actionErrorMessage } from "@/lib/action-error"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import { parseBoardParams } from "@/lib/data-center/params"
+import { STAFF_OUTPUT_SCOPE_NOTE } from "@/lib/data-center/staff-output-note"
 import { getEfficiencyBoard } from "@/actions/data-center/efficiency"
 import { KpiGrid, type KpiGridItem } from "../kpi-card"
 import { BreakdownTable } from "../breakdown-table"
@@ -97,13 +98,16 @@ export function EfficiencyBoard() {
             </p>
           )}
         </TabsContent>
-        <TabsContent value="staff-detail">
+        <TabsContent value="staff-detail" className="flex flex-col gap-2">
           <BreakdownTable
             rows={data?.byStaff ?? []}
             loading={loading}
             exportFilename={`人效明细_按技师_${label}`}
             exportView="efficiency-staff"
           />
+          <p className="text-xs text-[var(--muted-foreground)]" data-testid="efficiency-staff-output-note">
+            {STAFF_OUTPUT_SCOPE_NOTE}
+          </p>
         </TabsContent>
         <TabsContent value="store-rank">
           <RankingBoard
@@ -123,6 +127,7 @@ export function EfficiencyBoard() {
             loading={loading}
             exportFilenamePrefix={`人效_员工排名榜_${label}`}
             exportView="efficiency-staff-ranking"
+            note={STAFF_OUTPUT_SCOPE_NOTE}
           />
         </TabsContent>
       </Tabs>

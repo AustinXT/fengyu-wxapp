@@ -182,6 +182,9 @@ try {
       && num(storeA2Lots[0]?.store_actual_unit_price) === 1100
       && (await docHeader(dtoId))?.status === '已完成',
     JSON.stringify({ dti: dtiId, qty: storeA2Lots[0]?.quantity_on_hand, act: storeA2Lots[0]?.store_actual_unit_price }))
+  const [dtoItemAfter] = await docItems(dtoId)
+  check('调货收货回写来源明细已收量（#358 已收口径单源 fulfilled_quantity）',
+    num(dtoItemAfter?.fulfilled_quantity) === 4, `fulfilled=${dtoItemAfter?.fulfilled_quantity}`)
 
   // ════ 市场间调货（§10.3 归属与可见性）════
   setSession(marketASession())

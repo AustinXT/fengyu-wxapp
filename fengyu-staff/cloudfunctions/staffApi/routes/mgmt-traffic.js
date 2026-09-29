@@ -500,8 +500,16 @@ async function queryNewMemberCount(scopeType, scopeId, period) {
   return Number(rows[0]?.v || 0)
 }
 
+/**
+ * ★ 归店用 `c.bound_store_id`（顾客绑定门店），与分母 queryNewMemberCount 逐字同源
+ * （#439，用户 2026-09-26 拍板方案 A）。语义 = 「这批新会员给本店带来多少钱」，钱跟着人走。
+ *
+ * 此前用 buildSaleScope（`o.store_id`，订单发生门店），与分母的 buildClientScope 是两套归店口径 ——
+ * 员工端 wxml 的「新会员客单价」（mgmt-traffic-stats.ts 里 spend / count）正是拿这两个数相除，
+ * 「顾客绑定 A 店、在 B 店消费」时人进 A 的分母、钱进 B 的分子。admin 侧同型，两端同步整改。
+ */
 async function queryNewMemberSpend(scopeType, scopeId, period) {
-  const sc = buildSaleScope(scopeType, scopeId, 'o', 1)
+  const sc = buildClientScope(scopeType, scopeId, 'c', 1)
   const rows = await pg.query(
     `SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
        FROM sale_order_performance_events spe
@@ -527,13 +535,13 @@ async function queryNewMemberSpend(scopeType, scopeId, period) {
  * 截至 2026-09-26 prod 数据，WorkFine 单归属日期最晚到 2026-08-01，区间起点 ≥ 2026-08-02 时本分支为 0
  * （数据现状不是约束：历史单拉取不限日期，再拉入更晚的单会随之计入）。
  * 金额 / 过滤口径照搬本端顾客详情页 legacy_year_stats（mgmt-customer.js / customer.js），
- * 人群条件与 scope 列（o.store_id）同 queryNewMemberSpend。与线上单时间重叠不去重（2026-09-26 拍板）。
+ * 人群条件与 scope 列（c.bound_store_id）同 queryNewMemberSpend（#439 起归店跟着人走）。与线上单时间重叠不去重（2026-09-26 拍板）。
  *
  * ⚠️ admin 同口径副本：fengyu-admin customer.ts::queryNewMemberLegacySpend + lib/data-center/workfine-legacy-spend.ts，
  * 两端逐字一致、legacy 片段四份副本整段等值，由 fengyu-admin consistency.customer.test.ts 守护。
  */
 async function queryNewMemberLegacySpend(scopeType, scopeId, period) {
-  const sc = buildSaleScope(scopeType, scopeId, 'o', 1)
+  const sc = buildClientScope(scopeType, scopeId, 'c', 1)
   const rows = await pg.query(
     `SELECT COALESCE(SUM(
       CASE

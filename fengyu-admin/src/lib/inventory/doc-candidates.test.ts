@@ -247,7 +247,7 @@ describe('候选查询的类型 / 状态 / 剩余量口径', () => {
     const { text } = await whereOf({ purpose: 'shipment-cancel-request' })
     expect(text).toContain('NOT EXISTS')
     expect(text).toContain('COALESCE(cand_received.fulfilled_quantity, 0) > 0')
-    // 收货候选不受此限（部分收货的单还要继续收）
+    // 收货候选不受此限（#358 前放行过部分收货的存量单还要继续收剩余）
     const receipt = await whereOf({ purpose: 'market-receipt' })
     expect(receipt.text).not.toContain('cand_received')
   })

@@ -45,8 +45,8 @@ export const listInventoryCoreDocs = withPermission(
  * 不让客户端直接指定 docType，省得日后有人从这个入口拼出一份绕过办理台语义的查询。
  * 可见范围完全沿用 `listInventoryCoreDocs` 的 scope 过滤，不另起一套口径。
  *
- * 返回两段：`produced`（本业务产出的单）与 `inbox`（本业务要处理的上游待办单，
- * 没有待办语义的业务恒为 `null`）。两段**各自分页**（`page` / `inboxPage`），
+ * 返回两段：`produced`（本业务产出的单）与 `inbox`（本业务要处理的上游待办单；
+ * 市场报货的 inbox 是本业务自己未提交的草稿，#348；没有待办语义的业务恒为 `null`）。两段**各自分页**（`page` / `inboxPage`），
  * 共用同一个 `pageSize`，并各自回传 engine 夹过白名单后的实际页长 ——
  * 前端必须按各自返回的 `pageSize` 算总页数，别共用一个 state。
  *

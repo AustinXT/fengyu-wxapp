@@ -989,7 +989,7 @@ describe('数据中心人效板块两端口径一致性守护', () => {
       //   · 第 6 层 fail-closed 的 `SUM(\s*spe.amount` 不要求 cast，把它也算成合法聚合
       //   · 第 9 层 WHERE 形状切到 `GROUP BY` 就停，HAVING 在其后
       // 写成带 `::numeric` 反而会被第 3 层拦下 —— 缺口恰在最自然的手写形态上。
-      // 本仓 `product.ts:209` 就有 `HAVING SUM(sipe.amount::numeric) > 0` 的既有先例。
+      // 本仓 `product.ts` 曾有 `HAVING SUM(sipe.amount::numeric) > 0` 的先例（#288 已改为只剔除全零组）。
       for (const [label, seg] of [
         ['Part A', sliceOrFail(adminSrc, 'const qRevenueTotal', 'const qConsumeTotal')],
         ['Part B', sliceOrFail(adminSrc, 'const qRevenueByStore', 'const qConsumeByStore')],

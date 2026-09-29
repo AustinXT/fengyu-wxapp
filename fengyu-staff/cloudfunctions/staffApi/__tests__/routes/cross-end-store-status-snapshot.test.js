@@ -22,7 +22,7 @@ const { parse: babelParse } = require('@babel/parser')
 
 const ADMIN_SRC = path.resolve(__dirname, '../../../../../fengyu-admin/src')
 const STAFF_ROOT = path.resolve(__dirname, '../..')
-// 经营分析站（#421 跟随 #401）：第三份副本。analyst 自己的 vitest 不进 CI（#382），闭集 / 单源在这里一并守
+// 经营分析站（#421 跟随 #401）：第三份副本，闭集 / 单源在这里一并守（analyst 自身守护 #436 起由 CI analyst-tests job 跑）
 const ANALYST_SRC = path.resolve(__dirname, '../../../../../fengyu-analyst/src')
 
 function readFile(filePath) {

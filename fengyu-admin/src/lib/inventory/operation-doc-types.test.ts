@@ -260,6 +260,7 @@ describe('待我处理段（#192）', () => {
   const OPERATIONS_WITH_INBOX = [
     'company-shipment',
     'market-receipt',
+    'market-report',
     'market-return-approval',
     'shipment-cancel-approval',
     'store-receipt',
@@ -278,6 +279,7 @@ describe('待我处理段（#192）', () => {
      * market-report-summary / market-report）的来源单**不该**进来 ——
      * 它们在建单表单的候选单选择器（#338）里已可选，待办区对它们没有任何行内动作可做。
      * 唯一例外 company-shipment（#336 验收要求「待发货」段，配「去发货」跳转动作）。
+     * market-report 的 inbox 是**本业务自己的草稿**（#348），不是上游来源单，不算违例。
      */
     const withInbox = Object.entries(INVENTORY_OPERATION_DOC_QUERY)
       .filter(([, query]) => query.inbox !== undefined)
@@ -299,6 +301,8 @@ describe('待我处理段（#192）', () => {
           expect(inbox.pendingItemScope, '待发货段缺未发量收窄 = 已发完的报货单全部涌进待办').toBe('company-shipment')
           continue
         }
+        // 报货草稿（#348）：草稿本身就是可操作态（继续编辑 / 删除），只允许出现在报货类业务上
+        if (operation === 'market-report' && status === '草稿') continue
         expect(ACTIONABLE_STATUSES, `${operation} → ${status}`).toContain(status)
       }
     }
@@ -324,10 +328,11 @@ describe('待我处理段（#192）', () => {
       expect(intersection, `${operation} 的两段状态不得相交`).toEqual([])
     }
     // 命中集合本身也钉死：多出一条就该重新想清楚「同一张单出现在两个区块」是不是本意。
-    expect(overlapping.sort()).toEqual(['shipment-cancel-approval', 'supply-chain-purchase-cancel'])
+    // market-report（#348）：produced 已完成 vs inbox 草稿，删掉的草稿（已取消）两段都不出现
+    expect(overlapping.sort()).toEqual(['market-report', 'shipment-cancel-approval', 'supply-chain-purchase-cancel'])
   })
 
-  it('8 条 inbox 逐条钉死精确值', () => {
+  it('9 条 inbox 逐条钉死精确值', () => {
     // 上面几条是表驱动的自反断言（表改了断言跟着改），这里把**具体值**写死，
     // 防止映射与断言一起被改错还全绿。
     const expected: Record<(typeof OPERATIONS_WITH_INBOX)[number], unknown> = {
@@ -364,10 +369,15 @@ describe('待我处理段（#192）', () => {
         scopeRole: 'target',
         pendingItemScope: 'company-shipment',
       },
+      // 草稿（#348）：编辑 / 提交 / 删除都断报货市场 = 单头 source
+      'market-report': { docTypes: ['市场报货'], statuses: ['草稿'], scopeRole: 'source' },
     }
     for (const operation of OPERATIONS_WITH_INBOX) {
       expect(INVENTORY_OPERATION_DOC_QUERY[operation].inbox, operation).toEqual(expected[operation])
     }
+    // produced 只列已完成：草稿在 inbox，删掉的草稿（已取消）不回到办理台
+    expect(INVENTORY_OPERATION_DOC_QUERY['market-report'].produced)
+      .toEqual({ docTypes: ['市场报货'], statuses: ['已完成'] })
   })
 
   it('不变量 4：每条 inbox 都带 scopeRole，produced 一条都不带', () => {
@@ -408,6 +418,7 @@ describe('待我处理段（#192）', () => {
       'supply-chain-receipt': 'target',
       'supply-chain-purchase-cancel': 'target',
       'company-shipment': 'target',
+      'market-report': 'source',
     }
     for (const operation of OPERATIONS_WITH_INBOX) {
       expect(INVENTORY_OPERATION_DOC_QUERY[operation].inbox!.scopeRole, operation)
@@ -437,6 +448,12 @@ describe('待我处理段（#192）', () => {
     const createShipment = exportedFnBody('createItemCompanyShipment')
     expect(createShipment).toContain('assertLocationWritable(session, source)')
     expect(createShipment).toContain('report.targetOrgNodeId !== source.orgNodeId')
+    // 市场报货草稿（#348）：三个入口都断报货市场，草稿锁里再核对单头市场 = 该市场（单头 source = market）
+    for (const fnName of ['createMarketReplenishment', 'saveMarketReplenishmentDraft', 'deleteMarketReplenishmentDraft']) {
+      expect(exportedFnBody(fnName), fnName).toContain('assertLocationWritable(session, market)')
+    }
+    expect(businessSource).toContain('if (draft.marketId !== market.orgNodeId) {')
+    expect(exportedFnBody('saveMarketReplenishmentDraft')).toContain('sourceOrgNodeId: market.orgNodeId')
   })
 
   it('与 business.ts 的事务内状态断言对账 —— 服务端口径一漂移立刻红', () => {
@@ -466,6 +483,9 @@ describe('待我处理段（#192）', () => {
     // 品项公司发货（#336）：只认已完成的市场报货单 —— 待发货段的 statuses 就是它
     expect(exportedFnBody('createItemCompanyShipment'))
       .toContain(`report.docType !== '市场报货' || report.status !== '已完成'`)
+    // 市场报货草稿（#348）：编辑 / 提交 / 删除都只认草稿
+    expect(businessSource).toContain(`if (draft.docType !== '市场报货') throw new ApiError('NOT_FOUND'`)
+    expect(businessSource).toContain(`if (draft.status !== '草稿') {`)
   })
 
   it('pendingItemScope 在 engine 里落成「未入库明细」的 EXISTS，且不按 market_id 分流（#335）', () => {
@@ -542,16 +562,23 @@ describe('待我处理段（#192）', () => {
     expect([...used].sort()).toEqual([...INVENTORY_INBOX_ACTION_KINDS].sort())
   })
 
-  it('「草稿 → 取消」不可达守护 —— 哪天真有业务产出草稿单，这条会红', () => {
+  it('草稿只由报货专用服务产出（#348），通用建单仍不产出草稿', () => {
     /*
-     * 不实现草稿取消的两个原因，缺一不可：
-     * (a) 没有任何业务产出草稿单 —— insertDocHeader 每次显式传 status，
-     *     engine 的 defaultStatusForDoc 只返回 待审批/待收货/已完成，
-     *     `草稿` 只是 db/schema/inventory.ts 的列默认值；
-     * (b) 全仓没有任何「取消草稿」的 Server Action。
+     * #348 起市场报货可存草稿，待办区配「继续编辑」「删除草稿」两个动作（状态都是草稿）。
+     * 草稿的产出方必须是专用服务：business.ts 里写 `status: '草稿'` 的只有 saveMarketReplenishmentDraft；
+     * 通用建单（engine defaultStatusForDoc）仍然只产出 待审批 / 待收货 / 已完成 ——
+     * 通用单据要是能落草稿，就没有任何编辑 / 删除入口能处理它。
      */
-    expect(Object.values(INVENTORY_INBOX_ACTION_STATUS)).not.toContain('草稿')
-    expect(businessSource).not.toMatch(/status:\s*'草稿'/)
+    const draftKinds = Object.entries(INVENTORY_INBOX_ACTION_STATUS)
+      .filter(([, status]) => status === '草稿')
+      .map(([kind]) => kind)
+      .sort()
+    expect(draftKinds).toEqual(['draft-delete', 'draft-edit-goto'])
+    const draftWriters = [...businessSource.matchAll(/status:\s*'草稿'/g)].map((match) => {
+      const before = businessSource.slice(0, match.index)
+      return before.slice(before.lastIndexOf('export async function ')).match(/export async function (\w+)/)![1]
+    })
+    expect(draftWriters).toEqual(['saveMarketReplenishmentDraft'])
     const defaultStatus = engineSource.slice(
       engineSource.indexOf('function defaultStatusForDoc('),
       engineSource.indexOf('function defaultStatusForDoc(') + 400,

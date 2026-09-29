@@ -109,6 +109,7 @@ export interface InventoryOperationDocQuery {
    *    唯一例外是 `company-shipment` 的「待发货」段（#336）：市场报货单的「已完成」
    *    是**可发货态**（createItemCompanyShipment 只认已完成的报货单），可操作性由
    *    `pendingItemScope: 'company-shipment'`（仍有正常未发量）收窄，二者必须同时出现。
+   *    另一类是报货草稿（#348）：`草稿` 本身就是可操作态（继续编辑 / 提交 / 删除）。
    * 2. inbox 与 produced **允许同 docType，但 statuses 必须互斥**。
    *    命中两条，都是「本身不产出新单、只改目标单状态」的业务（两段自然同 docType）：
    *    `shipment-cancel-approval`（品项公司发货：已取消 vs 待审批）与
@@ -121,6 +122,7 @@ export interface InventoryOperationDocQuery {
    *    而待办区没有任何行内动作可对它们做，列出来只是重复。
    *    例外同样只有 `company-shipment`（#336 会议 §2.8 与验收要求「待发货」待办段）：
    *    它配「去发货」跳转动作，把报货单带回发货表单预选。
+   *    报货草稿（#348）不算上游来源单：它是本业务自己没提交的单，待办区配「继续编辑」「删除草稿」。
    * 4. **必须带 `scopeRole`**，值 = 对应动作在服务端拿哪一端做 scope 断言。
    *    engine 的可见性是双端 OR，而动作校验是单边，两者不一致就会把**对端**的单
    *    列成「待我处理」并渲染出行内按钮 —— 点了必 PERMISSION_DENIED，刷新后还在，
@@ -280,7 +282,19 @@ export const INVENTORY_OPERATION_DOC_QUERY: Record<InventoryOperationId, Invento
   'supply-chain-staff-purchase': { produced: { docTypes: ['供应链员工购出库'] } },
 
   // —— 市场 ——
-  'market-report': { produced: { docTypes: ['市场报货'] } },
+  'market-report': {
+    /*
+     * produced 只列「已完成」（#348）：草稿在 inbox 段，删除的草稿（草稿 → 已取消）不再出现在办理台里，
+     * 单据中心仍按全状态可查。与 inbox 的「草稿」互斥（不变量 2）。
+     */
+    produced: { docTypes: ['市场报货'], statuses: ['已完成'] },
+    /*
+     * 「草稿」（#348）：本市场存了未提交的市场报货单。对齐 `lockMarketReplenishmentDraft`：
+     * `draft.docType !== '市场报货' || draft.status !== '草稿'` → INVALID_STATE；
+     * 编辑 / 提交 / 删除都断 `assertLocationWritable(session, market)`，market 即单头 source ⇒ scopeRole=source。
+     */
+    inbox: { docTypes: ['市场报货'], statuses: ['草稿'], scopeRole: 'source' },
+  },
   'market-receipt': {
     produced: { docTypes: ['市场采购入库'] },
     /*
@@ -478,13 +492,9 @@ export function resolveOperationDocQuery(operationId: string): InventoryOperatio
 /**
  * 待办区一行上可能出现的动作种类。
  *
- * ⚠️ **「草稿 → 取消」刻意不实现**，两个原因缺一不可：
- * (a) 没有任何业务产出草稿单 —— `business.ts` 的 `insertDocHeader` 每次都显式传 status，
- *     `engine.ts` 的 `defaultStatusForDoc` 只返回 待审批 / 待收货 / 已完成，
- *     `草稿` 只是 `db/schema/inventory.ts` 的列默认值；
- * (b) 全仓没有任何「取消草稿」的 Server Action。
- * 单测会断言 `INVENTORY_INBOX_ACTION_STATUS` 的值域不含 `草稿`；哪天真有业务产出草稿单，
- * 那条会红并提醒补这个动作。
+ * 草稿（#348）：市场报货起可存草稿，配「继续编辑」（跳回表单回填）与「删除草稿」（草稿 → 已取消）。
+ * 草稿只由专用服务产出（`saveMarketReplenishmentDraft`），通用建单（engine `defaultStatusForDoc`）
+ * 仍然只产出 待审批 / 待收货 / 已完成，单测钉住。
  */
 export const INVENTORY_INBOX_ACTION_KINDS = [
   'return-approve',
@@ -497,6 +507,8 @@ export const INVENTORY_INBOX_ACTION_KINDS = [
   'purchase-close',
   'generic-receive',
   'report-ship-goto',
+  'draft-edit-goto',
+  'draft-delete',
 ] as const
 export type InventoryInboxActionKind = (typeof INVENTORY_INBOX_ACTION_KINDS)[number]
 
@@ -519,6 +531,8 @@ export const INVENTORY_INBOX_ACTION_STATUS: Record<InventoryInboxActionKind, Inv
   'generic-receive': '待收货',
   // 市场报货单「已完成」即可发货（#336，见 company-shipment 的 inbox 注释）
   'report-ship-goto': '已完成',
+  'draft-edit-goto': '草稿',
+  'draft-delete': '草稿',
 }
 
 /** 内置业务 → 待办行内动作。键集合必须与「有 inbox 的内置业务」完全一致（单测钉住）。 */
@@ -534,6 +548,8 @@ export const INVENTORY_OPERATION_INBOX_ACTIONS = {
   'supply-chain-purchase-cancel': ['purchase-close'],
   // 发货要逐行选批次，只给「去发货」跳转（#336）
   'company-shipment': ['report-ship-goto'],
+  // 草稿编辑要回表单重新汇总门店需求、重新取价，只能跳转；删除走确认弹窗（#348）
+  'market-report': ['draft-edit-goto', 'draft-delete'],
 } as const satisfies Partial<Record<InventoryOperationId, readonly InventoryInboxActionKind[]>>
 
 /** 通用业务 → 待办行内动作。键集合必须与 `INVENTORY_GENERIC_OPERATION_INBOX` 一致（单测钉住）。 */

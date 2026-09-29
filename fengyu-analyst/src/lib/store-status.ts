@@ -9,7 +9,7 @@
  *
  * analyst 是独立部署的站点，本文件是 admin `fengyu-admin/src/lib/store-status.ts` 的**独立副本**
  * （根 CLAUDE.md：禁止跨端共享代码目录；staff 另有 `utils/store-status.js`，共三份）。一致性由
- * `src/lib/__tests__/store-status-cross-end.test.ts`（不进 CI，#382）与 staff
+ * `src/lib/__tests__/store-status-cross-end.test.ts`（CI analyst-tests job，#436）与 staff
  * `__tests__/routes/cross-end-store-active-snapshot.test.js` / `cross-end-store-status-snapshot.test.js`
  * （staffApi 全量在 CI 跑）的字面量整段等值 + 闭集守护。
  */

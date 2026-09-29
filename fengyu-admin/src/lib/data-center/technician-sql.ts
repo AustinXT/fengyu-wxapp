@@ -125,7 +125,7 @@ export function technicianByStoreSql(
  * 不会出现在门店骨架里，拿不到名字。
  *
  * ⚠️ **已知且有意的口径缺口**：本查询要求 `anchor_market_id IS NOT NULL`，而
- * `technician_scoped` 的无门店分支走 `orgAnchorScopeSql` —— 后者在「admin + scope=all」时
+ * `technician_scoped` 的无门店分支走 `orgAnchorScopeSql` —— 后者在「超管或持总部范围 + 汇总范围」时（#334）
  * 直接返回 `TRUE`，**不要求锚得到市场**。于是「既无门店、又锚不到市场」的产能技师会进
  * 总数却进不了任何 market 行 → `技师总数 ≥ Σ byMarket 技师数`。
  *

@@ -13,6 +13,7 @@ import {
   resolveAssistantProductTerms,
   type AssistantProductTermOptions,
 } from "@/lib/assistant-domain-terms"
+import { getAssistantOrgNameCatalog, type AssistantOrgNameCatalog } from "@/lib/assistant-org-names"
 import { getSystemProductTermOptions } from "@/lib/assistant-product-terms"
 import type { AssistantChatResponse, AssistantVisualization } from "@/lib/assistant-types"
 import { formatPointDeltaValue } from "@/lib/metric-delta"
@@ -731,25 +732,112 @@ function findMention(question: string, options: string[]): string | undefined {
   return [...options].sort((a, b) => b.length - a.length).find((value) => question.includes(value))
 }
 
+interface UnavailableOrgMention {
+  kind: "门店" | "市场"
+  name: string
+}
+
+function unavailableOrgMessage(mentions: UnavailableOrgMention[]): string {
+  const names = mentions.map((mention) => `${mention.kind}「${mention.name}」`).join("、")
+  // 停用与无权限用同一句话，不向提问人暴露门店的具体状态（#436 拍板）
+  return `未找到可查看的${names}（可能已停用，或不在你的查看范围内），因此没有取数。请换成当前可查看的门店或市场再问。`
+}
+
+/** 模型常把「不限范围」写成这些词传进 store / market；按未指定处理，不当作点名 */
+const UNSPECIFIED_ORG_TEXT = /^(全部|所有|全集团|集团|总部|不限|无|空|null|undefined|none|all)(门店|市场|范围|区域)?$/i
+
+function normalizeOrgText(value: string | null | undefined): string | undefined {
+  const text = value?.trim()
+  if (!text || UNSPECIFIED_ORG_TEXT.test(text)) return undefined
+  return text
+}
+
+function ambiguousOrgError(kind: "门店" | "市场", text: string, names: string[]): Error {
+  return new Error(`NOT_FOUND: 「${text}」匹配到多个可查看的${kind}（${names.join("、")}），请说明具体是哪一个。`)
+}
+
+/** 精确命中优先；否则只接受唯一的模糊命中，多个命中报歧义，不任取第一个 */
+function matchUnique<T>(items: T[], exact: (item: T) => boolean, fuzzy: (item: T) => boolean): T[] {
+  const exactHits = items.filter(exact)
+  return exactHits.length > 0 ? exactHits : items.filter(fuzzy)
+}
+
+/**
+ * 点名了门店 / 市场就必须命中账号可见范围（在营 + 权限），命中不了直接报错，
+ * 不再静默回落成市场或「全部」——那样回答的范围和提问对不上（#436）。
+ */
 function scopeFromNames(
   options: AnalystScopeOptions,
   input: { market?: string | null; store?: string | null },
 ): AnalystScope {
-  const storeText = input.store?.trim()
+  const stores = options.markets.flatMap((market) => market.stores)
+  const storeText = normalizeOrgText(input.store)
+  const marketText = normalizeOrgText(input.market)
+
+  const resolveMarket = (text: string): AnalystScope | null => {
+    const hits = matchUnique(
+      options.markets,
+      (item) => item.name === text,
+      (item) => text.includes(item.name) || item.name.includes(text),
+    )
+    if (hits.length > 1) throw ambiguousOrgError("市场", text, hits.map((item) => item.name))
+    return hits[0] ? { type: "market", id: hits[0].id } : null
+  }
+
+  // 市场字段点名了就必须可见，即使门店字段已命中也不忽略它（点名不可见就告知，#436）
+  const marketScope = marketText ? resolveMarket(marketText) : null
+  if (marketText && !marketScope) {
+    throw new Error(`NOT_FOUND: ${unavailableOrgMessage([{ kind: "市场", name: marketText }])}`)
+  }
+
   if (storeText) {
-    for (const market of options.markets) {
-      const store = market.stores.find((item) => item.storeName === storeText || item.storeName.includes(storeText))
-      if (store) return { type: "store", id: store.storeId }
-    }
-  }
-
-  const marketText = input.market?.trim()
-  if (marketText) {
-    const market = options.markets.find((item) => item.name === marketText || marketText.includes(item.name))
+    const hits = matchUnique(
+      stores,
+      (item) => item.storeName === storeText,
+      (item) => item.storeName.includes(storeText),
+    )
+    if (hits.length > 1) throw ambiguousOrgError("门店", storeText, hits.map((item) => item.storeName))
+    if (hits[0]) return { type: "store", id: hits[0].storeId }
+    // 市场名误放在 store 字段：只认与可见市场名完全相同的情况
+    const market = options.markets.find((item) => item.name === storeText)
     if (market) return { type: "market", id: market.id }
+    throw new Error(`NOT_FOUND: ${unavailableOrgMessage([{ kind: "门店", name: storeText }])}`)
   }
 
-  return { type: "all" }
+  return marketScope ?? { type: "all" }
+}
+
+/**
+ * 问题里点名、但不在账号可见范围（已停用 / 无权限）的门店或市场。
+ * 可见与不可见名称合在一起按长度从长到短扫一遍（每处只认最长的名称）：
+ * 「可见名包含不可见名」不误拒，「不可见名包含可见名」也不会被可见名抢先截走。
+ */
+export function findUnavailableOrgMentions(
+  question: string,
+  options: AnalystScopeOptions,
+  catalog: AssistantOrgNameCatalog,
+): UnavailableOrgMention[] {
+  const visibleMentions: UnavailableOrgMention[] = [
+    ...options.markets.flatMap((market) => market.stores.map((store) => ({ kind: "门店" as const, name: store.storeName.trim() }))),
+    ...options.markets.map((market) => ({ kind: "市场" as const, name: market.name.trim() })),
+  ].filter((mention) => mention.name)
+  const visible = new Set(visibleMentions.map((mention) => mention.name))
+  const candidates: Array<UnavailableOrgMention & { visible: boolean }> = [
+    ...visibleMentions.map((mention) => ({ ...mention, visible: true })),
+    ...catalog.storeNames.map((name) => ({ kind: "门店" as const, name: name.trim(), visible: false })),
+    ...catalog.marketNames.map((name) => ({ kind: "市场" as const, name: name.trim(), visible: false })),
+  ]
+    .filter((mention) => mention.name && (mention.visible || !visible.has(mention.name)))
+    .sort((a, b) => b.name.length - a.name.length)
+
+  let rest = question
+  const found: UnavailableOrgMention[] = []
+  for (const { visible: isVisible, ...mention } of candidates) {
+    if (!rest.includes(mention.name)) continue
+    if (!isVisible) found.push(mention)
+    rest = rest.split(mention.name).join("\u0000")
+  }
+  return found
 }
 
 function scopeFromQuestion(options: AnalystScopeOptions, question: string): AnalystScope {
@@ -1294,11 +1382,11 @@ function unitLevelFromQuestion(question: string): NewCustomerUnitLevel {
 
 async function resolveCombinedMetricContext(
   session: AuthSession,
+  scopeOptions: AnalystScopeOptions,
   question: string,
   intents: AssistantMetricIntent[],
   now: Date,
 ): Promise<CombinedMetricContext> {
-  const scopeOptions = await getAnalystScopeOptions(session)
   const scope = scopeFromQuestion(scopeOptions, question)
   const scopeLabel = scopeText(scope, scopeOptions)
   const repurchasePeriod = hasMetricIntent(intents, "repurchase")
@@ -1670,11 +1758,12 @@ ${combinedMetricNote(context)}`,
 
 async function answerCombinedMetricQuestion(
   session: AuthSession,
+  scopeOptions: AnalystScopeOptions,
   question: string,
   intents: AssistantMetricIntent[],
   now: Date,
 ): Promise<AssistantChatResponse> {
-  const context = await resolveCombinedMetricContext(session, question, intents, now)
+  const context = await resolveCombinedMetricContext(session, scopeOptions, question, intents, now)
 
   if (wantsCombinedCustomerList(question, intents)) {
     return answerCombinedCustomerListQuestion(session, question, context)
@@ -1741,10 +1830,10 @@ ${combinedMetricNote(context)}`,
 
 async function answerNewCustomerFunnelQuestion(
   session: AuthSession,
+  scopeOptions: AnalystScopeOptions,
   question: string,
   now: Date,
 ): Promise<AssistantChatResponse> {
-  const scopeOptions = await getAnalystScopeOptions(session)
   const scope = scopeFromQuestion(scopeOptions, question)
   const options = await getNewCustomerFunnelFilterOptions(session, scope)
   const timeFilters = inferNewCustomerTimeFilters(question, now)
@@ -1832,8 +1921,11 @@ async function answerNewCustomerFunnelQuestion(
   }
 }
 
-async function answerPenetrationQuestion(session: AuthSession, question: string): Promise<AssistantChatResponse> {
-  const scopeOptions = await getAnalystScopeOptions(session)
+async function answerPenetrationQuestion(
+  session: AuthSession,
+  scopeOptions: AnalystScopeOptions,
+  question: string,
+): Promise<AssistantChatResponse> {
   const scope = scopeFromQuestion(scopeOptions, question)
   const filters = await resolvePenetrationAssistantFilters(session, scope, {}, question)
   const filterText = buildPenetrationFilterText(filters, scopeText(scope, scopeOptions))
@@ -1945,20 +2037,29 @@ export async function answerQuestionWithVisualizations(
   if (questionKind === "clarification") return answerClarification()
   if (questionKind === "unsupported") return answerUnsupportedQuestion()
 
+  // 范围选项只查一次，下游各分支复用
+  const [scopeOptions, orgNameCatalog] = await Promise.all([
+    getAnalystScopeOptions(session),
+    getAssistantOrgNameCatalog(),
+  ])
+  const unavailable = findUnavailableOrgMentions(question, scopeOptions, orgNameCatalog)
+  if (unavailable.length > 0) {
+    return { content: unavailableOrgMessage(unavailable), visualizations: [] }
+  }
+
   const intents = detectAssistantMetricIntents(question)
   if (intents.length >= 2) {
-    return answerCombinedMetricQuestion(session, question, intents, now)
+    return answerCombinedMetricQuestion(session, scopeOptions, question, intents, now)
   }
 
   if (isNewCustomerFunnelQuestion(question)) {
-    return answerNewCustomerFunnelQuestion(session, question, now)
+    return answerNewCustomerFunnelQuestion(session, scopeOptions, question, now)
   }
 
   if (isPenetrationQuestion(question)) {
-    return answerPenetrationQuestion(session, question)
+    return answerPenetrationQuestion(session, scopeOptions, question)
   }
 
-  const scopeOptions = await getAnalystScopeOptions(session)
   const scope = scopeFromQuestion(scopeOptions, question)
   const timeFilters = inferTimeFilters(question, now)
   const filters: RepurchaseFilters = {

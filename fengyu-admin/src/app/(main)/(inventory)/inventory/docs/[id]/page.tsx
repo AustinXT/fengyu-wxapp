@@ -66,7 +66,9 @@ export default async function Page({
   const discountPriceHeaders = doc.docType === '供应链采购入库'
     ? ['标准进价', '单价优惠', '实际进价', '金额']
     : ['门店标准单价', '单价优惠', '优惠后实际单价', '应付货款']
+  // 市场报货草稿 / 删除的草稿（#348）没有采购、发货语义，不渲染履约列
   const reportFulfillment = doc.fulfillmentProgress?.kind === '报货履约'
+    && !(doc.docType === '市场报货' && doc.status !== '已完成')
     ? doc.fulfillmentProgress
     : null
   const shipmentFulfillment = doc.fulfillmentProgress?.kind === '发货收货'
@@ -175,7 +177,8 @@ export default async function Page({
     ['撤回申请原因', doc.cancellationRequestReason],
     ['撤回申请人', doc.cancellationRequestedBy],
     ['撤回申请时间', doc.cancellationRequestedAt ? fmtDateTime(doc.cancellationRequestedAt) : null],
-    ['撤回原因', doc.cancellationReason],
+    // 市场报货只有「删除草稿」一条路径会转已取消（#348，提交即终态）
+    [doc.docType === '市场报货' ? '删除原因' : '撤回原因', doc.cancellationReason],
     ['备注', doc.remark],
   ] as const
 
