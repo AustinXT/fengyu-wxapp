@@ -35,9 +35,14 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: '1.3.3'
-      - name: Install application and driver dependencies
+      # admin 的现有 npm lock 未覆盖 manifest 的 pg 依赖；沿用 lint.yml 的安装入口，
+      # 不在时区修复里顺带升级锁文件。其它五处已核验可 strict npm ci。
+      - name: Install admin dependencies
+        working-directory: fengyu-admin
+        run: npm ci || npm install
+      - name: Install remaining application and driver dependencies
         run: |
-          for directory in db fengyu-admin fengyu-analyst fengyu-staff/cloudfunctions/staffApi fengyu-client/cloudfunctions/clientApi fengyu-client/cloudfunctions/payNotify; do
+          for directory in db fengyu-analyst fengyu-staff/cloudfunctions/staffApi fengyu-client/cloudfunctions/clientApi fengyu-client/cloudfunctions/payNotify; do
             (cd "$directory" && npm ci)
           done
       - name: Start isolated PostgreSQL with UTC default
