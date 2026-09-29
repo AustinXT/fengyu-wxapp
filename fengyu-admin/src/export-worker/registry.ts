@@ -21,6 +21,7 @@ import { exportPointTransactions } from '@/actions/points'
 import { exportCards } from '@/actions/cards'
 import { exportInventoryLots } from '@/actions/inventory/stocks'
 import { exportInventoryMovements } from '@/actions/inventory/movements'
+import { exportPendingReceipts } from '@/actions/inventory/pending-receipts'
 import { exportPickupRecords } from '@/actions/pickup-records'
 import { getSalesBoard } from '@/actions/data-center/sales'
 import { getCustomerBoard } from '@/actions/data-center/customer'
@@ -528,6 +529,20 @@ const inventoryColumns = (canViewPrice: boolean) => mapColumns([
 
 // 进出明细（#360）：结存是批次结存（流水自带 before/after），不是主体合计。
 // 导出始终带「批号」「批次 ID」列（Excel 里可自行筛选）；页面只在按商品编号查询时显示批号列
+function pendingReceiptColumns(kind: string | undefined) {
+  return mapColumns([
+    { header: kind === 'market' ? '市场' : '门店', width: 20, key: 'recipientName' },
+    { header: kind === 'market' ? '发货日期' : '配货日期', width: 14, key: 'docDate' },
+    { header: '单号', width: 26, key: 'docId' },
+    { header: '商品', width: 24, key: 'skuName' },
+    { header: '批号', width: 24, key: 'batchNo' },
+    { header: '已发', width: 10, key: 'sentQuantity', map: row => numberOrEmpty(row, 'sentQuantity') },
+    { header: '已收', width: 10, key: 'receivedQuantity', map: row => numberOrEmpty(row, 'receivedQuantity') },
+    { header: '未收', width: 10, key: 'pendingQuantity', map: row => numberOrEmpty(row, 'pendingQuantity') },
+    { header: '在途天数', width: 12, key: 'transitDays', map: row => numberOrEmpty(row, 'transitDays') },
+  ])
+}
+
 const inventoryMovementColumns = mapColumns([
   { header: '时间', width: 20, key: 'createdAt' },
   { header: '单据类型', width: 16, key: 'docType' },
@@ -916,6 +931,12 @@ export async function createExportContent(
         rows: pagedRows((options: ExportBatchOptions<number>) => exportInventoryLots(params, options), firstPage),
       }
     }
+    case 'inventory-pending-receipts':
+      return {
+        sheetName: params.kind === 'market' ? '市场入库情况' : '分院未入库明细',
+        columns: pendingReceiptColumns(params.kind),
+        rows: pagedRows((options: ExportBatchOptions<string>) => exportPendingReceipts(params, options)),
+      }
     case 'inventory-movements':
       return {
         sheetName: '进出明细',

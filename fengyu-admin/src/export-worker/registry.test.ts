@@ -4,6 +4,8 @@ import { join } from 'node:path'
 import ExcelJS from 'exceljs'
 import { writeStreamXlsx } from './xlsx-writer'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { exportPendingReceipts } from '@/actions/inventory/pending-receipts'
+vi.mock('@/actions/inventory/pending-receipts', () => ({ exportPendingReceipts: vi.fn() }))
 
 const { mockScopeRows } = vi.hoisted(() => ({ mockScopeRows: [] as Array<{ id: string; name: string; nodeType: string; isActive: boolean | null }> }))
 
@@ -981,5 +983,22 @@ describe('#296 全部 18 视图多店元信息接线，不得丢 extra', () => {
       expect(exported['范围提示']).toBe('1 家已停用未计入')
       for (const label of originalLabels[view] ?? []) expect(exported).toHaveProperty(label)
     } finally { await rm(dir, { recursive: true, force: true }) }
+  })
+})
+
+describe('#361 收货跟进 worker', () => {
+  it.each(['store', 'market'])('同构无金额列与字符串keyset：%s', async kind => {
+    vi.mocked(exportPendingReceipts)
+      .mockResolvedValueOnce({ rows: [{ id: '9007199254740993', recipientName: '主体一', docDate: '2026-09-20', docId: 'DOC1', skuName: '面膜', batchNo: 'B1', sentQuantity: 10, receivedQuantity: 3, pendingQuantity: 7, transitDays: 9 }], hasMore: true, truncated: false, nextCursor: '9007199254740993' } as never)
+      .mockResolvedValueOnce({ rows: [], hasMore: false, truncated: false })
+    const params = { kind, market: 'M1', start: '2026-09-01' }
+    const content = await createExportContent('inventory-pending-receipts', params)
+    const rows = []
+    for await (const row of content.rows) rows.push(row)
+    expect(rows).toHaveLength(1)
+    expect(content.sheetName).toBe(kind === 'store' ? '分院未入库明细' : '市场入库情况')
+    expect(content.columns.map(column => column.header)).toEqual([kind === 'store' ? '门店' : '市场', kind === 'store' ? '配货日期' : '发货日期', '单号', '商品', '批号', '已发', '已收', '未收', '在途天数'])
+    expect(content.columns.find(column => column.header === '未收')?.value(rows[0])).toBe(7)
+    expect(vi.mocked(exportPendingReceipts).mock.calls.slice(-2)).toEqual([[params, { limit: 500 }], [params, { limit: 500, cursor: '9007199254740993' }]])
   })
 })

@@ -231,3 +231,16 @@ describe('retryMyExportJob · data-center 视图权限（全部满足）', () =>
     expect(db.update).not.toHaveBeenCalled()
   })
 })
+
+
+describe('#361 收货跟进任务', () => {
+  it('list不能创建导出任务，export可创建且快照只含实际授权范围', async () => {
+    mockGetSession.mockResolvedValue(session([role(['inventory:list'], 'M1')]))
+    await expect(createExportJob({ exportType: 'inventory-pending-receipts', payload: { kind: 'store' } })).rejects.toThrow(/PERMISSION_DENIED/)
+    expect(db.insert).not.toHaveBeenCalled()
+    mockGetSession.mockResolvedValue(session([role(['inventory:export'], 'M1'), role(['inventory:list'], 'M2')]))
+    await expect(createExportJob({ exportType: 'inventory-pending-receipts', payload: { kind: 'market', market: 'M1' } })).resolves.toEqual({ id: 7, reused: false })
+    const snapshot = insertValues.mock.calls[0][0].scopeSnapshot as AuthSession
+    expect(snapshot.roles.map(r => r.scopeId)).toEqual(['M1'])
+  })
+})

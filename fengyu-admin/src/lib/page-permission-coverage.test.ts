@@ -47,6 +47,7 @@ const LIST_PAGE_GATES: Record<string, Clause[]> = {
   '/inventory': ['inventory:list', 'inventory:stock_list'],
   '/inventory/stocks': ['inventory:stock_list'],
   '/inventory/movements': ['inventory:stock_list'],
+  '/inventory/pending-receipts': ['inventory:list'],
   '/inventory/operations': ['inventory:list', 'inventory:stock_list'],
   '/inventory/operations/[level]': ['inventory:list', 'inventory:stock_list'],
   '/inventory/operations/supply-chain': ['inventory:list', 'inventory:stock_list'],

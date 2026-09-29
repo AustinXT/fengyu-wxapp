@@ -452,6 +452,23 @@ describe('dist/export-worker.mjs 新鲜度 · 进出明细导出接线（#360）
     expect(equivalenceIssues(file), `产物 // ${file} 区段与源码不等价（产物不是按当前源码构建的）${REBUILD_HINT}`).toEqual([])
   })
 
+  it('#361 收货跟进取数与action运行时代码同步产物', () => {
+    const file = 'src/lib/inventory/pending-receipts.ts'
+    const dist = fs.readFileSync(DIST, 'utf-8')
+    const importedSegment = buildDistSegmentOfImport(file, dist)
+    // datetime 是明确的再导出，实际声明位于 time-range；不能把缺声明当等价。
+    expect(fs.readFileSync(path.join(ADMIN_ROOT, 'src/lib/datetime.ts'), 'utf-8')).toContain("export { shanghaiToday } from './data-center/time-range'")
+    expect(compareModuleRuntime({
+      sourceCode: fs.readFileSync(path.join(ADMIN_ROOT, file), 'utf-8'),
+      distCode: moduleSegments(dist, file, true).join('\n'),
+      distSegmentOfImport: specifier => specifier === '@/lib/datetime'
+        ? [importedSegment(specifier), ...moduleSegments(dist, 'src/lib/data-center/time-range.ts', true)].join('\n')
+        : importedSegment(specifier),
+      only: ['optionalText', 'normalizePendingReceiptFilters', 'pendingReceiptWhereSql', 'pendingReceiptSelectSql', 'mapRow', 'queryRows', 'exportPendingReceiptsForSession'],
+    })).toEqual([])
+    expect(equivalenceIssues('src/actions/inventory/pending-receipts.ts', ['exportPendingReceipts'])).toEqual([])
+  })
+
   it('export-job-types.ts 的类型登记、权限映射、标签映射与产物语义等价（键值对应关系整体比较）', () => {
     const file = 'src/lib/export-job-types.ts'
     expect(
