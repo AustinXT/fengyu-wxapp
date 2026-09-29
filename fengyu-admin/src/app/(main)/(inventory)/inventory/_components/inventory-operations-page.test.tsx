@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { INVENTORY_GENERIC_DOC_TYPES } from '@/lib/inventory/types'
 import type { InventoryDocDetail, InventoryDocRow, InventoryLocationRow } from '@/lib/inventory/types'
 import {
@@ -884,6 +884,7 @@ function renderPage(options: {
   canCreatePickupRecord?: boolean
   receiptDiscountOrgNodeIds?: string[] | null
   marketPriceLocationIds?: string[] | null
+  canViewPrice?: boolean
 }) {
   mockCandidates(options.candidates ?? [])
   return render(
@@ -897,7 +898,7 @@ function renderPage(options: {
       canSelfPurchase={options.canSelfPurchase ?? false}
       canRequestShipmentCancellation={false}
       canApproveShipmentCancellation={false}
-      canViewPrice
+      canViewPrice={options.canViewPrice ?? true}
       marketPriceLocationIds={options.marketPriceLocationIds === undefined ? null : options.marketPriceLocationIds}
       receiptDiscountOrgNodeIds={options.receiptDiscountOrgNodeIds === undefined ? null : options.receiptDiscountOrgNodeIds}
       canCreatePickupRecord={options.canCreatePickupRecord ?? true}
@@ -2781,13 +2782,13 @@ describe('市场汇总报货显示在途采购（#362）', () => {
     vi.mocked(summarizeStoreReplenishmentRequests).mockResolvedValue({
       marketId: 'M1',
       items: [
-        {
+        { storeQuantities: [],
           skuId: 'SKU-1', skuName: '精华液', specName: '50ml',
           requestedQuantity: 16, fulfilledQuantity: 6, outstandingQuantity: 0,
           onHandQuantity: 0, reservedQuantity: 0, availableQuantity: 0,
           inTransitQuantity: 10, inTransitCoveredQuantity: 6, suggestedPurchaseQuantity: 0, requestItemIds: [2],
         },
-        {
+        { storeQuantities: [],
           skuId: 'SKU-2', skuName: '面霜', specName: '30g',
           requestedQuantity: 8, fulfilledQuantity: 0, outstandingQuantity: 5,
           onHandQuantity: 1, reservedQuantity: 0, availableQuantity: 1,
@@ -2823,6 +2824,7 @@ describe('市场报货草稿（#348）', () => {
   const M1: InventoryLocationRow = { locationId: 'M1', locationType: '市场', name: '南昌市场', orgNodeId: 'M1', storeId: null, parentLocationId: 'HQ', isActive: true }
   const M2: InventoryLocationRow = { locationId: 'M2', locationType: '市场', name: '九江市场', orgNodeId: 'M2', storeId: null, parentLocationId: 'HQ', isActive: true }
   const summaryLine = (skuId: string, requestItemIds: number[], suggested: number) => ({
+    storeQuantities: [{ storeId: 'S1', storeName: '门店一', quantity: suggested }],
     skuId, skuName: `商品${skuId}`, specName: null, requestedQuantity: suggested, fulfilledQuantity: 0,
     outstandingQuantity: suggested, onHandQuantity: 0, reservedQuantity: 0, availableQuantity: 0,
     inTransitQuantity: 0, inTransitCoveredQuantity: 0, suggestedPurchaseQuantity: suggested, requestItemIds,
@@ -2856,6 +2858,43 @@ describe('市场报货草稿（#348）', () => {
     vi.mocked(quoteMarketReplenishmentPrices).mockImplementation(async (input) => quoteFor(input.items) as never)
   })
 
+  it('#363 SKU 可展开两店分量，四列报价只读且不影响采购数', async () => {
+    mockDocs({})
+    vi.mocked(summarizeStoreReplenishmentRequests).mockResolvedValue({ marketId: 'M1', items: [{
+      ...summaryLine('SKU-1', [11, 12], 16),
+      storeQuantities: [{ storeId: 'S1', storeName: '门店 A', quantity: 10 }, { storeId: 'S2', storeName: '门店 B', quantity: 6 }],
+    }] })
+    vi.mocked(quoteMarketReplenishmentPrices).mockImplementation(async (input) => ({
+      ...quoteFor(input.items), items: quoteFor(input.items).items.map((item) => ({ ...item, storeStandardUnitPrice: 150, marketUnitDiscount: 10, marketActualUnitPrice: 90 })),
+    }) as never)
+    renderPage({ level: 'market', operation: 'market-report', locations: [M1, HQ] })
+    fireEvent.click(await screen.findByRole('button', { name: '汇总门店报货' }))
+    const summary = await screen.findByLabelText('门店分量 商品SKU-1 SKU-1')
+    expect(summary.closest('details')?.open).toBe(false)
+    fireEvent.click(summary)
+    expect(summary.closest('details')?.open).toBe(true)
+    expect(within(summary.closest('details')!).getByText('门店 A')).toBeInTheDocument()
+    expect(within(summary.closest('details')!).getByText('门店 B')).toBeInTheDocument()
+    expect(screen.getByText('已扣已汇总 / 已配货，在途封顶前')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByText('150')).toBeInTheDocument())
+    for (const name of ['市场单价', '单价优惠', '实际单价', '门店单价（参考）']) {
+      expect(screen.getByRole('columnheader', { name })).toBeInTheDocument()
+    }
+    expect(screen.getByLabelText('实际采购 商品SKU-1 SKU-1')).toHaveValue(16)
+  })
+
+  it.each([['仅供应链价格档', true], ['无价格档', false]] as const)('#363 %s 不取市场报价、不显示门店单价', async (_tier, canViewPrice) => {
+    mockDocs({})
+    vi.mocked(summarizeStoreReplenishmentRequests).mockResolvedValue({ marketId: 'M1', items: [summaryLine('SKU-1', [11], 4)] })
+    renderPage({ level: 'market', operation: 'market-report', locations: [M1, HQ], marketPriceLocationIds: [], canViewPrice })
+    fireEvent.click(await screen.findByRole('button', { name: '汇总门店报货' }))
+    await screen.findByLabelText('实际采购 商品SKU-1 SKU-1')
+    for (const name of ['市场单价', '单价优惠', '实际单价', '门店单价（参考）']) {
+      expect(screen.queryByRole('columnheader', { name })).toBeNull()
+    }
+    expect(quoteMarketReplenishmentPrices).not.toHaveBeenCalled()
+  })
+
   it('继续编辑：回填草稿（只勾草稿里的商品、数量取草稿值）、锁定市场，提交时带 draftId 与当前来源明细', async () => {
     mockDocs({ inbox: segment([draftRow()]) })
     vi.mocked(getInventoryCoreDocById).mockResolvedValue(draftDetail([{ skuId: 'SKU-1', quantity: 3, mode: '人工选择', planId: 'P1' }]))
@@ -2886,7 +2925,7 @@ describe('市场报货草稿（#348）', () => {
     expect(marketSelect.disabled).toBe(true)
 
     const submitButton = await screen.findByRole('button', { name: '提交市场报货单' })
-    await waitFor(() => expect(screen.getByText('100 - 0 = 100')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('无匹配福利，按标准价')).toBeInTheDocument())
     fireEvent.submit(submitButton.closest('form')!)
     await waitFor(() => expect(createMarketReplenishment).toHaveBeenCalledWith(expect.objectContaining({
       draftId: 'MBH-D1',
@@ -2905,7 +2944,7 @@ describe('市场报货草稿（#348）', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: '汇总门店报货' }))
     await screen.findByRole('checkbox', { name: '选择 商品SKU-1 SKU-1' })
-    await waitFor(() => expect(screen.getByText('100 - 0 = 100')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('无匹配福利，按标准价')).toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: '存草稿' }))
     await waitFor(() => expect(saveMarketReplenishmentDraft).toHaveBeenCalledWith(expect.objectContaining({
       draftId: null, marketId: 'M1', supplyChainLocationId: 'HQ',
@@ -2927,7 +2966,7 @@ describe('市场报货草稿（#348）', () => {
     await openDocsTab()
     fireEvent.click(screen.getByRole('button', { name: '继续编辑 MBH-D1' }))
     const submitButton = await screen.findByRole('button', { name: '提交市场报货单' })
-    await waitFor(() => expect(screen.getByText('100 - 0 = 100')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('无匹配福利，按标准价')).toBeInTheDocument())
     fireEvent.submit(submitButton.closest('form')!)
     await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalledWith('商品SKU-X 当前已无待汇总的门店报货，请取消勾选后再提交'))
     expect(createMarketReplenishment).not.toHaveBeenCalled()
@@ -2957,7 +2996,7 @@ describe('市场报货草稿（#348）', () => {
     fireEvent.change(marketSelect, { target: { value: 'M1' } })
     fireEvent.click(await screen.findByRole('button', { name: '汇总门店报货' }))
     await screen.findByRole('checkbox', { name: '选择 商品SKU-1 SKU-1' })
-    await waitFor(() => expect(screen.getByText('100 - 0 = 100')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('无匹配福利，按标准价')).toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: '存草稿' }))
     await waitFor(() => expect(saveMarketReplenishmentDraft).toHaveBeenCalledTimes(1))
     // 表单提交在途：待办动作一律不响应（防止回填 / 删除与在途的保存抢同一张单）
@@ -3021,7 +3060,7 @@ describe('市场报货草稿（#348）', () => {
     renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1, M2] })
     const marketSelect = (await screen.findByRole('option', { name: '南昌市场' })).closest('select') as HTMLSelectElement
     fireEvent.change(marketSelect, { target: { value: 'M1' } })
-    fireEvent.click(screen.getByRole('button', { name: '汇总门店报货' }))
+    fireEvent.click(await screen.findByRole('button', { name: '汇总门店报货' }))
     await waitFor(() => expect(summarizeStoreReplenishmentRequests).toHaveBeenCalledTimes(1))
     fireEvent.change(marketSelect, { target: { value: 'M2' } })
     await waitFor(() => expect(screen.getByRole('button', { name: '汇总门店报货' })).not.toBeDisabled())

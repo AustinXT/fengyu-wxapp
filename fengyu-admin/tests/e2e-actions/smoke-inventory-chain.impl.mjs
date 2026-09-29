@@ -1785,6 +1785,52 @@ try {
   check('#348a 删除门店报货草稿 = 已取消，记原因',
     storeDropHead348?.status === '已取消' && storeDropHead348?.cancellation_reason === '报错了',
     JSON.stringify({ status: storeDropHead348?.status, reason: storeDropHead348?.cancellation_reason }))
+
+  // #363：日期窗口隔离本组两店分量，真实 SQL 验证合并与已汇总 / 已配扣减。
+  const date363 = '2099-01-01'
+  setSession(storeA1Session())
+  const { id: storeA363 } = await biz.createStoreReplenishmentRequest({
+    storeId: STA1_ID, marketId: MKA_ORG, docDate: date363,
+    items: [{ skuId: SKU_SELF, quantity: 10 }],
+  })
+  setSession(storeA2Session())
+  const { id: storeB363 } = await biz.createStoreReplenishmentRequest({
+    storeId: STA2_ID, marketId: MKA_ORG, docDate: date363,
+    items: [{ skuId: SKU_SELF, quantity: 6 }],
+  })
+  const [itemA363] = await docItems(storeA363)
+  const [itemB363] = await docItems(storeB363)
+  setSession(marketASession())
+  const input363 = { marketId: MKA_ORG, startDate: date363, endDate: date363 }
+  const line363 = (await biz.summarizeStoreReplenishmentRequests(input363)).items.find((line) => line.skuId === SKU_SELF)
+  check('#363 两店同 SKU：A 10 / B 6，门店分量合计等于无在途待配 16',
+    line363?.storeQuantities.length === 2
+      && line363.storeQuantities.find((store) => store.storeId === STA1_ID)?.quantity === 10
+      && line363.storeQuantities.find((store) => store.storeId === STA2_ID)?.quantity === 6
+      && line363.storeQuantities.every((store) => Boolean(store.storeName))
+      && line363.outstandingQuantity === 16,
+    JSON.stringify(line363?.storeQuantities))
+  const { id: market363 } = await biz.createMarketReplenishment({
+    marketId: MKA_ORG, supplyChainLocationId: HQ_ORG,
+    items: [{ skuId: SKU_SELF, sourceRequestItemIds: [itemA363.id], purchaseQuantity: 3 }],
+  })
+  // 隔离夹具设置历史已配数量，不写生产库；查询应与已汇总 3 独立相减。
+  await pgQuery('UPDATE inventory_doc_items SET fulfilled_quantity = 2 WHERE id = $1', [itemB363.id])
+  const remaining363 = (await biz.summarizeStoreReplenishmentRequests(input363)).items.find((line) => line.skuId === SKU_SELF)
+  check('#363 已汇总 A 3 / 已配 B 2 不计入分量，剩 A 7 / B 4',
+    remaining363?.storeQuantities.find((store) => store.storeId === STA1_ID)?.quantity === 7
+      && remaining363?.storeQuantities.find((store) => store.storeId === STA2_ID)?.quantity === 4
+      && remaining363?.outstandingQuantity === 11,
+    JSON.stringify(remaining363?.storeQuantities))
+  const detail363 = await docs.getInventoryCoreDocById(market363)
+  const [snapshot363] = await pgQuery('SELECT * FROM inventory_doc_items WHERE doc_id = $1 ORDER BY id', [market363])
+  check('#363 市场报货详情四列等于落库快照，血缘有门店主体名称',
+    detail363?.items[0]?.marketStandardUnitPrice === num(snapshot363.market_standard_unit_price)
+      && detail363?.items[0]?.marketUnitDiscount === num(snapshot363.market_unit_discount)
+      && detail363?.items[0]?.marketActualUnitPrice === num(snapshot363.market_actual_unit_price)
+      && detail363?.items[0]?.storeStandardUnitPrice === num(snapshot363.store_standard_unit_price)
+      && detail363?.lineage.some((row) => row.docId === storeA363 && Boolean(row.sourceOrgNodeName)),
+    JSON.stringify({ item: detail363?.items[0], lineage: detail363?.lineage }))
 } catch (e) {
   check('冒烟整体', false, '致命错误：' + (e?.stack || e?.message || String(e)))
 } finally {

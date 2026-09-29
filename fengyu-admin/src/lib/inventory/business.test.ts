@@ -187,7 +187,7 @@ function marketSkuRow(skuId: string, marketPurchasePrice = '100') {
     owner_market_id: null,
     supply_chain_purchase_price: null,
     market_purchase_price: marketPurchasePrice,
-    store_purchase_price: null,
+    store_purchase_price: null as string | null,
     market_staff_purchase_price: null,
     item_company_purchase_price: null,
   }
@@ -284,7 +284,7 @@ function initializedCutoverExecutor(txExecute: (query: unknown) => Promise<unkno
 function mockQuoteTransaction(skus: ReturnType<typeof marketSkuRow>[], promotions: unknown[]) {
   const txExecute = vi.fn()
     .mockResolvedValueOnce([{
-      location_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ',
+      location_id: 'M1', org_node_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ',
     }])
   for (const sku of skus) txExecute.mockResolvedValueOnce([sku])
   txExecute.mockResolvedValueOnce(promotions)
@@ -1033,6 +1033,35 @@ describe('inventory business action input guards', () => {
       marketStandardUnitPrice: 100,
       marketUnitDiscount: 10,
       marketActualUnitPrice: 90,
+      storeStandardUnitPrice: null,
+    })
+  })
+
+  it('#363 B 市场价格权不能读取 A 市场门店参考价', async () => {
+    const mixed = {
+      employeeId: 'E1',
+      roles: [
+        { role: 'inventory_market_operator', scopeId: 'M1', scopeType: '市场', actions: ['inventory:market_operate'], scopeStoreIds: [], scopeOrgNodeIds: ['M1'] },
+        { role: 'inventory_market_finance', scopeId: 'M2', scopeType: '市场', actions: ['inventory:market_price_view'], scopeStoreIds: [], scopeOrgNodeIds: ['M2'] },
+      ],
+      permissions: { actions: ['inventory:market_operate', 'inventory:market_price_view'], scopeStoreIds: [] },
+    } as never
+    const execute = mockQuoteTransaction([], [])
+    await expect(quoteMarketReplenishmentPrices(mixed, {
+      marketId: 'M1', items: [{ skuId: 'SKU-1', quantity: 1 }],
+    })).rejects.toThrow('PERMISSION_DENIED: 无权查看该市场报货价格')
+    expect(execute).toHaveBeenCalledTimes(1)
+  })
+
+  it('#363 门店参考价来自 SKU，福利不影响门店参考价或市场实际价', async () => {
+    mockQuoteTransaction([{ ...marketSkuRow('SKU-1'), store_purchase_price: '150' }], [
+      promotionRow({ planId: 'P1', planNo: 'P1', skuId: 'SKU-1', discount: '10' }),
+    ])
+    await expect(quoteMarketReplenishmentPrices(PRICE_SESSION, {
+      marketId: 'M1', items: [{ skuId: 'SKU-1', quantity: 2 }],
+    })).resolves.toMatchObject({
+      items: [expect.objectContaining({ storeStandardUnitPrice: 150, marketStandardUnitPrice: 100, marketUnitDiscount: 10, marketActualUnitPrice: 90 })],
+      totalActualAmount: 180,
     })
   })
 
@@ -4157,7 +4186,7 @@ describe('门店报货汇总按在途采购封顶（#362）', () => {
       .toEqual({ outstandingQuantity: 0, suggestedPurchaseQuantity: 0 })
   })
 
-  function mockSummary(options: { coverageRows: unknown[] }) {
+  function mockSummary(options: { coverageRows: unknown[]; outstanding?: number; stores?: Array<{ storeId: string; storeName: string; quantity: string }> }) {
     const coverageQueries: unknown[] = []
     const executor = vi.fn(async (query: unknown) => {
       const rendered = renderSql(query)
@@ -4171,7 +4200,8 @@ describe('门店报货汇总按在途采购封顶（#362）', () => {
       if (rendered.includes("d.doc_type = '门店报货'")) {
         return [{
           sku_id: 'SKU-1', sku_name: '测试 SKU', spec_name: null,
-          requested_quantity: '16', fulfilled_quantity: '6', outstanding_quantity: '6', request_item_ids: '{1,2}',
+          requested_quantity: '16', fulfilled_quantity: '6', outstanding_quantity: String(options.outstanding ?? 6), request_item_ids: '{1,2}',
+          store_quantities: options.stores ?? [{ storeId: 'S1', storeName: '门店 A', quantity: '4' }, { storeId: 'S2', storeName: '门店 B', quantity: '2' }],
         }]
       }
       if (rendered.includes('FROM inventory_stock_lots')) return [{ quantity: '0' }]
@@ -4183,6 +4213,17 @@ describe('门店报货汇总按在途采购封顶（#362）', () => {
     return { coverageQueries }
   }
 
+  it('#363 两店 A 10 / B 6 的 JSON 聚合反序列化为门店分量，合计等于无在途待配', async () => {
+    mockSummary({
+      coverageRows: [{ sku_id: 'SKU-1', undelivered_quantity: '16', in_transit_quantity: '0' }],
+      outstanding: 16,
+      stores: [{ storeId: 'S1', storeName: '门店 A', quantity: '10' }, { storeId: 'S2', storeName: '门店 B', quantity: '6' }],
+    })
+    const [item] = (await summarizeStoreReplenishmentRequests(SESSION, { marketId: 'M1' })).items
+    expect(item.storeQuantities).toEqual([{ storeId: 'S1', storeName: '门店 A', quantity: 10 }, { storeId: 'S2', storeName: '门店 B', quantity: 6 }])
+    expect(item.storeQuantities.reduce((sum, store) => sum + store.quantity, 0)).toBe(item.outstandingQuantity)
+  })
+
   it('summarize 接上覆盖查询：在途 10 把 B 的待配 / 建议采购压到 0，并回传在途量', async () => {
     const { coverageQueries } = mockSummary({
       coverageRows: [{ sku_id: 'SKU-1', undelivered_quantity: '10', in_transit_quantity: '10' }],
@@ -4191,6 +4232,7 @@ describe('门店报货汇总按在途采购封顶（#362）', () => {
     expect(summary.items).toEqual([expect.objectContaining({
       skuId: 'SKU-1', outstandingQuantity: 0, availableQuantity: 0, inTransitQuantity: 10,
       inTransitCoveredQuantity: 6, suggestedPurchaseQuantity: 0, requestItemIds: [1, 2],
+      storeQuantities: [{ storeId: 'S1', storeName: '门店 A', quantity: 4 }, { storeId: 'S2', storeName: '门店 B', quantity: 2 }],
     })])
     // 一次查全部 SKU；SKU 列表经 sql.join 展开成独立参数（裸数组会被摊成非法 SQL）
     expect(coverageQueries).toHaveLength(1)
@@ -4216,6 +4258,7 @@ describe('门店报货汇总按在途采购封顶（#362）', () => {
     const summary = await summarizeStoreReplenishmentRequests(SESSION, { marketId: 'M1' })
     expect(summary.items).toEqual([expect.objectContaining({
       outstandingQuantity: 6, inTransitQuantity: 0, inTransitCoveredQuantity: 0, suggestedPurchaseQuantity: 6,
+      storeQuantities: [{ storeId: 'S1', storeName: '门店 A', quantity: 4 }, { storeId: 'S2', storeName: '门店 B', quantity: 2 }],
     })])
   })
 })
@@ -4621,8 +4664,7 @@ describe('门店报货草稿（#348）', () => {
   it('市场汇总与在途只认已完成的门店报货（草稿不进待配）', () => {
     const source = readFileSync(resolve(__dirname, 'business.ts'), 'utf-8')
     const summarize = source.slice(source.indexOf('export async function summarizeStoreReplenishmentRequests('))
-    expect(summarize.slice(0, 3000)).toContain(`WHERE d.doc_type = '门店报货'
-         AND d.status = '已完成'`)
+    expect(summarize.slice(0, 4000)).toMatch(/WHERE d\.doc_type = '门店报货'\s+AND d\.status = '已完成'/)
     const coverage = source.slice(source.indexOf('async function loadStoreReplenishmentCoverage('))
     expect(coverage.slice(0, 2000)).toContain(`WHERE request_doc.doc_type = '门店报货'
          AND request_doc.status = '已完成'`)

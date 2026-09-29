@@ -2128,6 +2128,7 @@ function ItemCompanyReplenishmentForm({
 }
 
 interface MarketReportLine {
+  storeQuantities: Array<{ storeId: string | null; storeName: string; quantity: number }>
   skuId: string
   skuName: string
   specName: string | null
@@ -2147,6 +2148,7 @@ function summaryToMarketReportLines(summary: Awaited<ReturnType<typeof summarize
     skuName: item.skuName,
     specName: item.specName,
     requestItemIds: item.requestItemIds,
+    storeQuantities: item.storeQuantities ?? [],
     requestQuantity: item.outstandingQuantity,
     availableQuantity: item.availableQuantity,
     inTransitQuantity: item.inTransitQuantity,
@@ -2182,6 +2184,7 @@ export function mergeMarketReportDraftLines(
       skuName: item.skuName,
       specName: item.specName,
       requestItemIds: [],
+      storeQuantities: [],
       requestQuantity: 0,
       availableQuantity: 0,
       inTransitQuantity: 0,
@@ -2621,7 +2624,13 @@ function MarketReportForm({
                   <th className="px-3 py-2 font-medium">在途采购</th>
                   <th className="px-3 py-2 font-medium">建议采购</th>
                   <th className="px-3 py-2 font-medium">实际采购</th>
-                  {canQuoteMarketPrice && <th className="px-3 py-2 font-medium">福利报价</th>}
+                  {canQuoteMarketPrice && <>
+                    <th className="px-3 py-2 font-medium">市场单价</th>
+                    <th className="px-3 py-2 font-medium">单价优惠</th>
+                    <th className="px-3 py-2 font-medium">实际单价</th>
+                    <th className="px-3 py-2 font-medium">门店单价（参考）</th>
+                    <th className="px-3 py-2 font-medium">报货福利</th>
+                  </>}
                 </tr>
               </thead>
               <tbody>
@@ -2644,7 +2653,23 @@ function MarketReportForm({
                   return (
                     <tr key={line.skuId} className="border-t border-[var(--border)]">
                       <td className="px-3 py-2"><input aria-label={`选择 ${rowName}`} type="checkbox" checked={line.selected} onChange={(event) => updateLine(index, { selected: event.target.checked })} /></td>
-                      <td className="px-3 py-2"><div className="font-medium">{line.skuName}</div><div className="text-xs text-[#888888]">{line.specName || line.skuId}</div></td>
+                      <td className="px-3 py-2">
+                        <div className="font-medium">{line.skuName}</div>
+                        <div className="text-xs text-[#888888]">{line.specName || line.skuId}</div>
+                        <details className="mt-2 text-xs">
+                          <summary className="cursor-pointer text-[var(--primary)]" aria-label={`门店分量 ${rowName}`}>门店分量（参考）</summary>
+                          <div className="mt-1 text-[#888888]">已扣已汇总 / 已配货，在途封顶前</div>
+                          {line.storeQuantities.length > 0 ? (
+                            <ul className="mt-1 space-y-1">
+                              {line.storeQuantities.map((store) => (
+                                <li key={store.storeId ?? store.storeName} className="flex justify-between gap-4">
+                                  <span>{store.storeName}</span><span>{store.quantity}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          ) : <div className="mt-1 text-[#888888]">暂无待汇总门店分量</div>}
+                        </details>
+                      </td>
                       <td className="px-3 py-2">
                         {line.requestQuantity}
                         {/* 待配已被在途封顶时亮出扣了多少：在途挂着不到货（短收 / 总部不发）时人能看出来，不至于整行静默漏报 */}
@@ -2654,7 +2679,11 @@ function MarketReportForm({
                       <td className="px-3 py-2">{line.inTransitQuantity}</td>
                       <td className="px-3 py-2">{line.suggestedPurchaseQuantity}</td>
                       <td className="px-3 py-2"><Input className="w-24" aria-label={`实际采购 ${rowName}`} type="number" min="0" step="0.01" max="9999999999.99" value={line.purchaseQuantity} onChange={(event) => updateLine(index, { purchaseQuantity: event.target.value })} disabled={!line.selected} /></td>
-                      {canQuoteMarketPrice && (
+                      {canQuoteMarketPrice && <>
+                        <td className="px-3 py-2">{currentQuote?.marketStandardUnitPrice ?? '—'}</td>
+                        <td className="px-3 py-2">{currentQuote?.marketUnitDiscount ?? '—'}</td>
+                        <td className="px-3 py-2">{currentQuote?.marketActualUnitPrice ?? '—'}</td>
+                        <td className="px-3 py-2">{currentQuote?.storeStandardUnitPrice ?? '—'}</td>
                         <td className="px-3 py-2">
                           {!line.selected ? (
                             <span className="text-xs text-[#888888]">未参与本次报货</span>
@@ -2689,7 +2718,6 @@ function MarketReportForm({
                                 <div className="text-xs text-[#888888]">无匹配福利，按标准价</div>
                               )}
                               <div className="text-xs text-[#666666]">
-                                {currentQuote.marketStandardUnitPrice} - {currentQuote.marketUnitDiscount} = {currentQuote.marketActualUnitPrice}
                                 {currentQuote.selectionMode === '人工选择' ? ' · 已改选' : currentQuote.promotionPlanId ? ' · 系统推荐' : ''}
                               </div>
                             </div>
@@ -2697,7 +2725,7 @@ function MarketReportForm({
                             <span className="text-xs text-[#D94040]">报价失败，请调整后重试</span>
                           )}
                         </td>
-                      )}
+                      </>}
                     </tr>
                   )
                 })}
