@@ -55,9 +55,16 @@ function storeCountSqls(src: string): string[] {
   return [
     between(src, 'const runStoreCount', 'const runEmployeeCount'),
     between(src, 'const openStoresByStoreSql', 'const ['),
-  ].map((block) => {
+  ].map((block, index) => {
     const query = block.match(/sql`([\s\S]*?)`/)
     expect(query, 'KPI和逐店明细查询必须分别存在').not.toBeNull()
+    const shape = normalize(query![1])
+    if (index === 1) {
+      expect(shape).toMatch(/^SELECT s\.store_id, COUNT\(\*\)::int AS v FROM /)
+      expect(shape).toMatch(/ GROUP BY s\.store_id$/)
+    } else {
+      expect(shape).not.toMatch(/GROUP BY/i)
+    }
     return normalize(query![1]
       .replace(/SELECT s\.store_id, COUNT\(\*\)::int AS v/, 'SELECT COUNT(*)::int AS v')
       .replace(/GROUP BY s\.store_id/, '')
@@ -72,8 +79,9 @@ function expectStoreCountEqual(src: string): void {
   const queries = storeCountSqls(src)
   for (const query of queries) expect(query).toBe(STORE_COUNT_SQL)
   expect(queries[1]).toBe(queries[0])
-  expect(src).not.toMatch(/m\.storeCount\s*\+=\s*1\b/)
-  expect(src).toMatch(/m\.storeCount\s*\+=\s*openMap\.get\(s\.storeId\)\s*\?\?\s*0/)
+  const body = stripComments(src)
+  expect(body).not.toMatch(/m\.storeCount\s*\+=\s*1\b/)
+  expect(body).toMatch(/m\.storeCount\s*\+=\s*openMap\.get\(s\.storeId\)\s*\?\?\s*0/)
 }
 
 function cashflowFragments(src: string, side: 'admin' | 'staff'): string[] {
@@ -297,6 +305,25 @@ describe('数据中心销售板块两端口径一致性守护', () => {
     })
     it('有正确逐店SQL但装配回退为骨架计数也报红', () => {
       expect(() => expectStoreCountEqual(adminSrc.replace('m.storeCount += openMap.get(s.storeId) ?? 0', 'm.storeCount += 1'))).toThrow()
+    })
+    it('逐店查询投影/分组必须保留，KPI不能误加逐店分组', () => {
+      const detail = between(adminSrc, 'const openStoresByStoreSql', 'const [')
+      for (const [from, to] of [
+        ['GROUP BY s.store_id', ''],
+        ['SELECT s.store_id, COUNT(*)::int AS v', 'SELECT COUNT(*)::int AS v'],
+      ]) {
+        expect(() => expectStoreCountEqual(adminSrc.replace(detail, detail.replace(from, to)))).toThrow()
+      }
+      const kpi = between(adminSrc, 'const runStoreCount', 'const runEmployeeCount')
+      const grouped = kpi.replace(/sql`([\s\S]*?)`/, (_, query) => `sql\`${query} GROUP BY s.store_id\``)
+      expect(grouped).not.toBe(kpi)
+      expect(() => expectStoreCountEqual(adminSrc.replace(kpi, grouped))).toThrow()
+    })
+    it('装配守护只看代码：旧写法注释不误报，注释不能掩盖++回退', () => {
+      expectStoreCountEqual(adminSrc + '\n// m.storeCount += 1')
+      const expression = 'm.storeCount += openMap.get(s.storeId) ?? 0'
+      const bad = adminSrc.replace(expression, 'm.storeCount++') + '\n// ' + expression
+      expect(() => expectStoreCountEqual(bad)).toThrow()
     })
     it('staff mgmt-dashboard.js 门店数同口径（启用节点 + opening_date / closed_at 历史化）', () => {
       expect(staffBody).toContain("require('../utils/store-status')")
