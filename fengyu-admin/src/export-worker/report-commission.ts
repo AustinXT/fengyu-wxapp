@@ -16,7 +16,7 @@ import {
 } from '@/lib/data-center/commission-daily'
 import { countLeftFrozen, toWorkerExportColumns } from '@/lib/data-center/matrix-export'
 import { parseScope } from '@/lib/data-center/params'
-import { monthRange } from '@/lib/data-center/report-period'
+import { isValidMonth, monthRange } from '@/lib/data-center/report-period'
 import { shanghaiToday } from '@/lib/data-center/time-range'
 import {
   EXPORT_WORKER_BATCH_SIZE,
@@ -42,6 +42,8 @@ function periodText(month: string): string {
 }
 
 export async function commissionDailyExport(params: ExportQueryPayload): Promise<ExportContent> {
+  if (!isValidMonth(params.month)) throw new Error('INVALID_PARAMS: 导出缺少统计月份')
+  if (params.month > shanghaiToday().slice(0, 7)) throw new Error('INVALID_PARAMS: 不能导出未来月份')
   const data = await getCommissionDaily(params)
   const scopeMeta = await scopeExportMeta(parseScope(params), data.scopeName)
   const columns = buildCommissionDailyColumns({
@@ -72,6 +74,8 @@ export async function commissionDailyExport(params: ExportQueryPayload): Promise
 }
 
 export async function commissionDetailExport(params: ExportQueryPayload): Promise<ExportContent> {
+  if (!isValidMonth(params.month)) throw new Error('INVALID_PARAMS: 导出缺少统计月份')
+  if (params.month > shanghaiToday().slice(0, 7)) throw new Error('INVALID_PARAMS: 不能导出未来月份')
   const fetch = (options: ExportBatchOptions<string>) => exportCommissionDetail(params, options)
   // 第一批同时带回全量汇总（合计行）与筛选回显；其余批次只取行
   const first = await fetch({ limit: EXPORT_WORKER_BATCH_SIZE })

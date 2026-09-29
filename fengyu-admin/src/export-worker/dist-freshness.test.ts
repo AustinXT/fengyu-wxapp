@@ -585,6 +585,7 @@ describe('dist/export-worker.mjs 新鲜度 · 自定义区间校验（#308，源
     ['src/lib/calendar-date.ts', 'CALENDAR_MAX_YEAR'],
     ['src/lib/calendar-date.ts', 'DATE_RE'],
     ['src/lib/calendar-date.ts', 'isValidCalendarDate'],
+    ['src/lib/calendar-date.ts', 'isValidInventoryCalendarDate'],
     ['src/lib/data-center/params.ts', 'FIXED_PRESETS'],
     ['src/lib/data-center/params.ts', 'isFixedPreset'],
     ['src/lib/data-center/params.ts', 'toCustomRange'],

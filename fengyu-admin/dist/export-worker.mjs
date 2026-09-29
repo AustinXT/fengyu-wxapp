@@ -159533,15 +159533,19 @@ var CALENDAR_MIN_YEAR = 1900;
 var CALENDAR_MAX_YEAR = 2100;
 var DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 function isValidCalendarDate(value) {
+  return isValidInventoryCalendarDate(value) && typeof value === "string" && Number(value.slice(0, 4)) >= CALENDAR_MIN_YEAR && Number(value.slice(0, 4)) <= CALENDAR_MAX_YEAR;
+}
+function isValidInventoryCalendarDate(value) {
   if (typeof value !== "string")
     return false;
   const match = value.match(DATE_RE);
   if (!match)
     return false;
   const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
-  if (year < CALENDAR_MIN_YEAR || year > CALENDAR_MAX_YEAR)
+  if (year < 1 || year > 9999)
     return false;
-  const date5 = new Date(Date.UTC(year, month - 1, day));
+  const date5 = new Date(0);
+  date5.setUTCFullYear(year, month - 1, day);
   return date5.getUTCFullYear() === year && date5.getUTCMonth() === month - 1 && date5.getUTCDate() === day;
 }
 
@@ -176273,6 +176277,8 @@ function isValidDocType(docType) {
   return INVENTORY_DOC_TYPES.includes(docType);
 }
 function normalizeText(v) {
+  if (v != null && typeof v !== "string")
+    throw new ApiError("INVALID_PARAMS", "文本参数格式不正确");
   const s = v?.trim();
   return s ? s : null;
 }
@@ -176284,7 +176290,7 @@ function normalizeRequired(v, label) {
 }
 function normalizeYmd(v, label) {
   const value = normalizeRequired(v, label);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+  if (!isValidInventoryCalendarDate(value)) {
     throw new ApiError("INVALID_PARAMS", `${label}格式应为 YYYY-MM-DD`);
   }
   return value;
@@ -176832,7 +176838,7 @@ async function ensureLotFromSku(tx, locationId, item, trace) {
     ownerMarketId: sku.owner_market_id
   }, locationId);
   const batchNo = normalizeText(item.batchNo) ?? "";
-  const expiryDate = normalizeText(item.expiryDate);
+  const expiryDate = candidateDate(item.expiryDate, "有效期") ?? null;
   const isGift = Boolean(item.isGift);
   const supplyChainUnitCost = item.supplyChainUnitCost ?? numberOrNull(sku.supply_chain_purchase_price);
   const marketStandardUnitPrice = item.marketStandardUnitPrice ?? numberOrNull(sku.market_purchase_price);
@@ -177601,6 +177607,8 @@ var exportInventoryLots = withPermission("inventory:export", async (session4, pa
   };
 });
 var listInventoryCoreDocs = withPermission("inventory:list", async (session4, filters = {}) => {
+  const startDate = filters.startDate == null || filters.startDate === "" ? undefined : normalizeYmd(filters.startDate, "开始日期");
+  const endDate = filters.endDate == null || filters.endDate === "" ? undefined : normalizeYmd(filters.endDate, "结束日期");
   await syncInventoryLocations();
   const scoped = inventoryScopedOrgNodeIds(session4);
   const { page, pageSize, offset } = resolvePaging({
@@ -177662,10 +177670,10 @@ var listInventoryCoreDocs = withPermission("inventory:list", async (session4, fi
              AND COALESCE(pending_item.fulfilled_quantity, 0) < pending_item.quantity
         )`);
   }
-  if (filters.startDate)
-    conditions3.push(import_drizzle_orm58.gte(inventoryDocs.docDate, filters.startDate));
-  if (filters.endDate)
-    conditions3.push(import_drizzle_orm58.lte(inventoryDocs.docDate, filters.endDate));
+  if (startDate)
+    conditions3.push(import_drizzle_orm58.gte(inventoryDocs.docDate, startDate));
+  if (endDate)
+    conditions3.push(import_drizzle_orm58.lte(inventoryDocs.docDate, endDate));
   if (filters.keyword) {
     const pattern = `%${filters.keyword.replace(/[%_]/g, "\\$&")}%`;
     conditions3.push(import_drizzle_orm58.or(import_drizzle_orm58.ilike(inventoryDocs.id, pattern), import_drizzle_orm58.ilike(inventoryDocs.customerName, pattern), import_drizzle_orm58.ilike(inventoryDocs.employeeName, pattern), import_drizzle_orm58.ilike(inventoryDocs.remark, pattern)));
@@ -177739,7 +177747,6 @@ function candidateProgressSql(kind) {
     )`;
   return { total, done };
 }
-var CANDIDATE_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 function candidateText(value, label) {
   if (value === undefined || value === null)
     return;
@@ -177751,9 +177758,7 @@ function candidateDate(value, label) {
   const text5 = candidateText(value, label);
   if (!text5)
     return;
-  const [year2, month, day2] = CANDIDATE_DATE_PATTERN.test(text5) ? text5.split("-").map(Number) : [NaN, NaN, NaN];
-  const parsed = new Date(Date.UTC(year2, month - 1, day2));
-  if (Number.isNaN(parsed.getTime()) || parsed.getUTCFullYear() !== year2 || parsed.getUTCMonth() !== month - 1 || parsed.getUTCDate() !== day2) {
+  if (!isValidInventoryCalendarDate(text5)) {
     throw new ApiError("INVALID_PARAMS", `${label}格式不正确`);
   }
   return text5;
@@ -178538,6 +178543,12 @@ var createInventoryCoreDoc = withAnyPermission(["inventory:supply_chain_operate"
   if (!Array.isArray(input.items) || input.items.length === 0) {
     throw new ApiError("INVALID_PARAMS", "库存单据至少需要一条明细");
   }
+  candidateDate(input.docDate, "单据日期");
+  for (const item of input.items) {
+    if (typeof item !== "object" || item === null)
+      throw new ApiError("INVALID_PARAMS", "库存明细格式不正确");
+    candidateDate(item.expiryDate, "有效期");
+  }
   const stocktakeSkuIds = [];
   if (STOCKTAKE_DOC_TYPES.has(input.docType)) {
     const seen = new Set;
@@ -178600,7 +178611,7 @@ var createInventoryCoreDoc = withAnyPermission(["inventory:supply_chain_operate"
       targetOrgNodeId,
       marketId: null,
       supplierId: normalizeText(input.supplierId),
-      docDate: normalizeText(input.docDate) ?? shanghaiToday(),
+      docDate: candidateDate(input.docDate, "单据日期") ?? shanghaiToday(),
       relatedSaleOrderId: normalizeText(input.relatedSaleOrderId),
       clientUserId: normalizeText(input.clientUserId),
       customerName: normalizeText(input.customerName),
@@ -178675,7 +178686,7 @@ var createInventoryCoreDoc = withAnyPermission(["inventory:supply_chain_operate"
         supplier: snapshot.supplier,
         productSeries: snapshot.productSeries,
         batchNo: lot?.batchNo ?? normalizeText(serverItem.batchNo) ?? "",
-        expiryDate: lot?.expiryDate ?? normalizeText(serverItem.expiryDate),
+        expiryDate: lot?.expiryDate ?? (candidateDate(serverItem.expiryDate, "有效期") ?? null),
         isGift: lot?.isGift ?? Boolean(serverItem.isGift),
         quantity: String(quantity),
         stockSnapshot: lot ? String(lot.quantityOnHand) : numString(bookQuantity),
@@ -179401,24 +179412,18 @@ var settlementSourceLocation = alias(inventoryLocations, "settlement_source_loc"
 var settlementTargetLocation = alias(inventoryLocations, "settlement_target_loc");
 var MARKET_SETTLEMENT_STATUSES = ["已完成"];
 var STORE_SETTLEMENT_STATUSES = ["待收货", "已完成"];
-var DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 function assertRealCalendarDate(value, label) {
-  const year2 = Number(value.slice(0, 4));
-  if (year2 < 1 || year2 > 9999) {
-    throw new ApiError("INVALID_PARAMS", `${label}不是有效的日历日期`);
-  }
-  const parsed = new Date(`${value}T00:00:00Z`);
-  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value) {
+  if (!isValidInventoryCalendarDate(value)) {
     throw new ApiError("INVALID_PARAMS", `${label}不是有效的日历日期`);
   }
 }
 function normalizeSettlementPeriod(filters) {
+  if (filters.startDate != null && typeof filters.startDate !== "string" || filters.endDate != null && typeof filters.endDate !== "string") {
+    throw new ApiError("INVALID_PARAMS", "结算期间日期格式必须为 YYYY-MM-DD");
+  }
   const today = shanghaiToday();
   const startDate = filters.startDate?.trim() || `${today.slice(0, 8)}01`;
   const endDate = filters.endDate?.trim() || today;
-  if (!DATE_PATTERN.test(startDate) || !DATE_PATTERN.test(endDate)) {
-    throw new ApiError("INVALID_PARAMS", "结算期间日期格式必须为 YYYY-MM-DD");
-  }
   assertRealCalendarDate(startDate, "结算开始日期");
   assertRealCalendarDate(endDate, "结算结束日期");
   if (startDate > endDate) {
@@ -179505,7 +179510,7 @@ var listInventorySettlements = withPermission("inventory:list", async (session4,
 });
 
 // src/lib/inventory/movements.ts
-var DATE_PATTERN2 = /^\d{4}-\d{2}-\d{2}$/;
+var DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 var CURSOR_PATTERN = /^[1-9]\d{0,17}$/;
 var MAX_TEXT_LENGTH = 64;
 function optionalText(value, label) {
@@ -179524,7 +179529,7 @@ function optionalDate(value, label) {
   const text5 = optionalText(value, label);
   if (!text5)
     return;
-  if (!DATE_PATTERN2.test(text5))
+  if (!DATE_PATTERN.test(text5))
     throw new ApiError("INVALID_PARAMS", `${label}不是有效的日历日期`);
   assertRealCalendarDate(text5, label);
   return text5;
@@ -186974,6 +186979,10 @@ function periodText(month) {
   return `${range.start} ~ ${range.end}`;
 }
 async function commissionDailyExport(params) {
+  if (!isValidMonth(params.month))
+    throw new Error("INVALID_PARAMS: 导出缺少统计月份");
+  if (params.month > shanghaiToday().slice(0, 7))
+    throw new Error("INVALID_PARAMS: 不能导出未来月份");
   const data = await getCommissionDaily(params);
   const scopeMeta = await scopeExportMeta(parseScope(params), data.scopeName);
   const columns3 = buildCommissionDailyColumns({
@@ -187003,6 +187012,10 @@ async function commissionDailyExport(params) {
   };
 }
 async function commissionDetailExport(params) {
+  if (!isValidMonth(params.month))
+    throw new Error("INVALID_PARAMS: 导出缺少统计月份");
+  if (params.month > shanghaiToday().slice(0, 7))
+    throw new Error("INVALID_PARAMS: 不能导出未来月份");
   const fetch2 = (options) => exportCommissionDetail(params, options);
   const first3 = await fetch2({ limit: EXPORT_WORKER_BATCH_SIZE });
   const { filters, summary } = first3;
@@ -187505,6 +187518,9 @@ async function operatingMasterContent(raw) {
   };
 }
 async function queryDailyOverview(raw) {
+  if (raw.period === "custom" && parseReportRange(raw).preset !== "custom") {
+    throw new Error("INVALID_PARAMS: 导出的时间范围无效（须为合法日期、开始不晚于结束及今天，且不超过 366 天）");
+  }
   const tab = parseDailyOverviewTab(raw.tab);
   const result = await getDailyOverview(raw);
   const scopeMeta = await scopeExportMeta(parseScope(raw), result.scope.name);
