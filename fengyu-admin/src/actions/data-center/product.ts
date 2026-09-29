@@ -80,8 +80,6 @@ const round2 = (v: unknown): number => Math.round(num(v) * 100) / 100 || 0
 /** 取数组首行（db.execute 返回数组） */
 const first = (rows: unknown): Record<string, unknown> =>
   ((rows as unknown[])[0] as Record<string, unknown>) ?? {}
-/** 安全除法（分母 <= 0 → null，前端 '--'） */
-
 /**
  * 品项分组键 + WHERE 过滤片段（一级 product_kind / 二级 category_name 切换）。
  *   - categoryName 非空（必附 productKind）→ 分组键 pc.category_name，过滤一级+二级

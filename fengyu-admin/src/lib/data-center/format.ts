@@ -8,8 +8,8 @@
  *   - 缺失（null/undefined/NaN/Infinity）：返回 '--'
  *
  * ⚠️ 跨端口径一致性：与 staff number.ts 保持字面一致，consistency 测试守护。
- *    该守护覆盖的是金额/计数/占比三个格式化器；`formatDelta` 是数据中心独有的徽章文案，
- *    staff 端无对应副本（#310/#315 改造前后均如此）。
+ *    该守护覆盖的是金额/计数/占比三个格式化器；`formatDelta`（徽章文案）和
+ *    `safeDiv`（比率计算）是 admin 数据中心独有工具，staff 端无对应副本。
  */
 import {
   FLAT_TEXT,

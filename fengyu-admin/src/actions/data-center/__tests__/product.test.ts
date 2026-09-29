@@ -392,7 +392,12 @@ describe('product — year 查询计数 (#311)', () => {
         enabled: true,
       })
       vi.mocked(db.execute).mockClear()
-      await getProductBoard({ ...PARAMS, timeRange: { preset }, withComparison: true })
+      const result = await getProductBoard({ ...PARAMS, timeRange: { preset }, withComparison: true })
+      if (preset === 'year') {
+        for (const cell of Object.values(result.kpis)) expect(cell.mom).toEqual(cell.yoy)
+        // 与 sales 同样，快照先在 b272a15e 的三路 comparison 实现上生成。
+        expect(result).toMatchSnapshot()
+      }
       counts.push(vi.mocked(db.execute).mock.calls.length)
     }
     expect(counts[0] - counts[1]).toBe(5)

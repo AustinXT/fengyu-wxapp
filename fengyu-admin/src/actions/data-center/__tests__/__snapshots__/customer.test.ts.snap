@@ -1,0 +1,170 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`customer — year 查询计数 (#311) > year 比三个不同区间少 12 次 db.execute 1`] = `
+{
+  "byMarket": [],
+  "byStore": [],
+  "kpis": {
+    "consumePerVisit": {
+      "mom": {
+        "kind": "na",
+      },
+      "unit": "amount",
+      "value": null,
+      "yoy": {
+        "kind": "na",
+      },
+    },
+    "convRate": {
+      "mom": {
+        "kind": "na",
+      },
+      "unit": "percent",
+      "value": null,
+      "yoy": {
+        "kind": "na",
+      },
+    },
+    "deep": {
+      "unit": "count",
+      "value": 0,
+    },
+    "dormant": {
+      "unit": "count",
+      "value": 0,
+    },
+    "frozen": {
+      "unit": "count",
+      "value": 0,
+    },
+    "memberAvgTicket": {
+      "mom": {
+        "kind": "na",
+      },
+      "unit": "amount",
+      "value": null,
+      "yoy": {
+        "kind": "na",
+      },
+    },
+    "newCustomerAvgTicket": {
+      "mom": {
+        "kind": "na",
+      },
+      "unit": "amount",
+      "value": null,
+      "yoy": {
+        "kind": "na",
+      },
+    },
+    "newMembers": {
+      "mom": {
+        "kind": "na",
+      },
+      "unit": "count",
+      "value": 0,
+      "yoy": {
+        "kind": "na",
+      },
+    },
+    "operatedMembers": {
+      "mom": {
+        "kind": "na",
+      },
+      "unit": "count",
+      "value": 0,
+      "yoy": {
+        "kind": "na",
+      },
+    },
+    "projectCount": {
+      "mom": {
+        "kind": "na",
+      },
+      "unit": "count",
+      "value": 0,
+      "yoy": {
+        "kind": "na",
+      },
+    },
+    "reactivatedDeep": {
+      "unit": "count",
+      "value": 0,
+    },
+    "reactivatedDormant": {
+      "unit": "count",
+      "value": 0,
+    },
+    "reactivatedFrozen": {
+      "unit": "count",
+      "value": 0,
+    },
+    "registeredMembers": {
+      "mom": {
+        "kind": "na",
+      },
+      "unit": "count",
+      "value": 0,
+      "yoy": {
+        "kind": "na",
+      },
+    },
+    "retainedMembers": {
+      "mom": {
+        "kind": "na",
+      },
+      "unit": "count",
+      "value": 0,
+      "yoy": {
+        "kind": "na",
+      },
+    },
+    "serviceCount": {
+      "mom": {
+        "kind": "na",
+      },
+      "unit": "count",
+      "value": 0,
+      "yoy": {
+        "kind": "na",
+      },
+    },
+    "trafficCustomers": {
+      "mom": {
+        "kind": "na",
+      },
+      "unit": "count",
+      "value": 0,
+      "yoy": {
+        "kind": "na",
+      },
+    },
+    "visitOnce": {
+      "unit": "count",
+      "value": 0,
+    },
+    "visitTwice": {
+      "unit": "count",
+      "value": 0,
+    },
+  },
+  "scope": {
+    "id": null,
+    "name": "全部",
+    "type": "all",
+  },
+  "timeRange": {
+    "end": "2026-09-29",
+    "lastYear": {
+      "end": "2025-09-29",
+      "start": "2025-01-01",
+    },
+    "presetLabel": "今年",
+    "previous": {
+      "end": "2025-09-29",
+      "start": "2025-01-01",
+    },
+    "start": "2026-01-01",
+  },
+}
+`;

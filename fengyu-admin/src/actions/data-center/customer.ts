@@ -987,8 +987,6 @@ async function queryOpsBreakdown(
   return map
 }
 
-/** 安全除法（分母 0 → null，前端 '--'） */
-
 /** 组装 byMarket / byStore 行：骨架去重出组列表，逐组填 metrics */
 function buildBreakdownRows(
   group: 'market' | 'store',
