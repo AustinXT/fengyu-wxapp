@@ -264,6 +264,7 @@ describe('待我处理段（#192）', () => {
     'market-return-approval',
     'shipment-cancel-approval',
     'store-receipt',
+    'store-request',
     'store-return-approval',
     'supply-chain-purchase-cancel',
     'supply-chain-receipt',
@@ -302,7 +303,7 @@ describe('待我处理段（#192）', () => {
           continue
         }
         // 报货草稿（#348）：草稿本身就是可操作态（继续编辑 / 删除），只允许出现在报货类业务上
-        if (operation === 'market-report' && status === '草稿') continue
+        if ((operation === 'market-report' || operation === 'store-request') && status === '草稿') continue
         expect(ACTIONABLE_STATUSES, `${operation} → ${status}`).toContain(status)
       }
     }
@@ -329,10 +330,10 @@ describe('待我处理段（#192）', () => {
     }
     // 命中集合本身也钉死：多出一条就该重新想清楚「同一张单出现在两个区块」是不是本意。
     // market-report（#348）：produced 已完成 vs inbox 草稿，删掉的草稿（已取消）两段都不出现
-    expect(overlapping.sort()).toEqual(['market-report', 'shipment-cancel-approval', 'supply-chain-purchase-cancel'])
+    expect(overlapping.sort()).toEqual(['market-report', 'shipment-cancel-approval', 'store-request', 'supply-chain-purchase-cancel'])
   })
 
-  it('9 条 inbox 逐条钉死精确值', () => {
+  it('10 条 inbox 逐条钉死精确值', () => {
     // 上面几条是表驱动的自反断言（表改了断言跟着改），这里把**具体值**写死，
     // 防止映射与断言一起被改错还全绿。
     const expected: Record<(typeof OPERATIONS_WITH_INBOX)[number], unknown> = {
@@ -371,6 +372,8 @@ describe('待我处理段（#192）', () => {
       },
       // 草稿（#348）：编辑 / 提交 / 删除都断报货市场 = 单头 source
       'market-report': { docTypes: ['市场报货'], statuses: ['草稿'], scopeRole: 'source' },
+      // 门店报货草稿（#348）：编辑 / 提交 / 删除都断报货门店 = 单头 source
+      'store-request': { docTypes: ['门店报货'], statuses: ['草稿'], scopeRole: 'source' },
     }
     for (const operation of OPERATIONS_WITH_INBOX) {
       expect(INVENTORY_OPERATION_DOC_QUERY[operation].inbox, operation).toEqual(expected[operation])
@@ -378,6 +381,8 @@ describe('待我处理段（#192）', () => {
     // produced 只列已完成：草稿在 inbox，删掉的草稿（已取消）不回到办理台
     expect(INVENTORY_OPERATION_DOC_QUERY['market-report'].produced)
       .toEqual({ docTypes: ['市场报货'], statuses: ['已完成'] })
+    expect(INVENTORY_OPERATION_DOC_QUERY['store-request'].produced)
+      .toEqual({ docTypes: ['门店报货'], statuses: ['已完成'] })
   })
 
   it('不变量 4：每条 inbox 都带 scopeRole，produced 一条都不带', () => {
@@ -419,6 +424,7 @@ describe('待我处理段（#192）', () => {
       'supply-chain-purchase-cancel': 'target',
       'company-shipment': 'target',
       'market-report': 'source',
+      'store-request': 'source',
     }
     for (const operation of OPERATIONS_WITH_INBOX) {
       expect(INVENTORY_OPERATION_DOC_QUERY[operation].inbox!.scopeRole, operation)
@@ -454,6 +460,12 @@ describe('待我处理段（#192）', () => {
     }
     expect(businessSource).toContain('if (draft.marketId !== market.orgNodeId) {')
     expect(exportedFnBody('saveMarketReplenishmentDraft')).toContain('sourceOrgNodeId: market.orgNodeId')
+    // 门店报货草稿（#348）：新建 / 存草稿 / 提交共用 createStoreReplenishmentRequest，删除单独一个入口；都断报货门店
+    for (const fnName of ['createStoreReplenishmentRequest', 'deleteStoreReplenishmentDraft']) {
+      expect(exportedFnBody(fnName), fnName).toContain('assertLocationWritable(session, store)')
+    }
+    expect(businessSource).toContain('if (draft.sourceOrgNodeId !== store.orgNodeId) {')
+    expect(exportedFnBody('createStoreReplenishmentRequest')).toContain('sourceOrgNodeId: storeId')
   })
 
   it('与 business.ts 的事务内状态断言对账 —— 服务端口径一漂移立刻红', () => {
@@ -565,7 +577,8 @@ describe('待我处理段（#192）', () => {
   it('草稿只由报货专用服务产出（#348），通用建单仍不产出草稿', () => {
     /*
      * #348 起市场报货可存草稿，待办区配「继续编辑」「删除草稿」两个动作（状态都是草稿）。
-     * 草稿的产出方必须是专用服务：business.ts 里写 `status: '草稿'` 的只有 saveMarketReplenishmentDraft；
+     * 草稿的产出方必须是专用服务：business.ts 里给 status 写 '草稿' 的只有 saveMarketReplenishmentDraft 与
+     * createStoreReplenishmentRequest（asDraft，门店报货新建 / 存草稿共用写路径）；
      * 通用建单（engine defaultStatusForDoc）仍然只产出 待审批 / 待收货 / 已完成 ——
      * 通用单据要是能落草稿，就没有任何编辑 / 删除入口能处理它。
      */
@@ -574,11 +587,14 @@ describe('待我处理段（#192）', () => {
       .map(([kind]) => kind)
       .sort()
     expect(draftKinds).toEqual(['draft-delete', 'draft-edit-goto'])
-    const draftWriters = [...businessSource.matchAll(/status:\s*'草稿'/g)].map((match) => {
+    // 写法覆盖 `status: '草稿'`、`status: cond ? '草稿' : …`、`SET status = ${cond ? '草稿' : …}`（同一行内给 status 赋含草稿的值）
+    const draftWriters = [...businessSource.matchAll(/\bstatus(?::|\s*=)[^\n]*'草稿'/g)].map((match) => {
       const before = businessSource.slice(0, match.index)
       return before.slice(before.lastIndexOf('export async function ')).match(/export async function (\w+)/)![1]
     })
-    expect(draftWriters).toEqual(['saveMarketReplenishmentDraft'])
+    expect([...new Set(draftWriters)].sort()).toEqual(['createStoreReplenishmentRequest', 'saveMarketReplenishmentDraft'])
+    // 门店报货只在 asDraft 时写草稿（新建 / 提交恒为已完成）
+    expect(exportedFnBody('createStoreReplenishmentRequest')).toContain(`status: asDraft ? '草稿' : '已完成'`)
     const defaultStatus = engineSource.slice(
       engineSource.indexOf('function defaultStatusForDoc('),
       engineSource.indexOf('function defaultStatusForDoc(') + 400,

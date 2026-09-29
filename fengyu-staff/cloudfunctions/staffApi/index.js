@@ -100,6 +100,9 @@ const routes = {
   'inventory.docList':    () => require('./routes/inventory').docList,
   'inventory.docDetail':  () => require('./routes/inventory').docDetail,
   'inventory.createDoc':  () => require('./routes/inventory').createDoc,
+  'inventory.updateDraft': () => require('./routes/inventory').updateDraft,
+  'inventory.submitDraft': () => require('./routes/inventory').submitDraft,
+  'inventory.deleteDraft': () => require('./routes/inventory').deleteDraft,
   'inventory.confirmReceive': () => require('./routes/inventory').confirmReceive,
   'inventory.approveDoc': () => require('./routes/inventory').approveDoc,
   'inventory.rejectDoc':  () => require('./routes/inventory').rejectDoc,
@@ -186,7 +189,8 @@ const STORE_MUTATION_ACTIONS = new Set([
   'appointment.confirm', 'appointment.checkin',
   'card.recharge', 'card.inflow', 'card.createRefund', 'card.approveRefund', 'card.rejectRefund',
   'service.create', 'service.start', 'service.complete', 'service.confirm', 'service.cancel',
-  'inventory.createDoc', 'inventory.confirmReceive', 'inventory.approveDoc',
+  'inventory.createDoc', 'inventory.updateDraft', 'inventory.submitDraft', 'inventory.deleteDraft',
+  'inventory.confirmReceive', 'inventory.approveDoc',
   'inventory.rejectDoc', 'inventory.uploadReceipt',
 ])
 

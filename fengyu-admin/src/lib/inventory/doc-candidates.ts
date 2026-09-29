@@ -88,10 +88,10 @@ export const INVENTORY_DOC_CANDIDATES: Record<InventoryDocCandidatePurpose, Inve
     progress: 'shipped',
     remainingToggle: true,
   },
-  // createStoreAllocation：`request.status === '已取消'` 拒；配货市场 = request.target 且可写。
+  // createStoreAllocation：`request.status !== '已完成'` 拒（门店报货草稿不可引用，#348）；配货市场 = request.target 且可写。
   // 报货单可选（#337），表单选了收货门店后按 sourceOrgNodeId 收窄到该门店的单。
   'store-allocation-source': {
-    rules: [{ docType: '门店报货' }],
+    rules: [{ docType: '门店报货', statuses: ['已完成'] }],
     scopeRole: 'target',
     progress: 'allocated',
     remainingToggle: true,
