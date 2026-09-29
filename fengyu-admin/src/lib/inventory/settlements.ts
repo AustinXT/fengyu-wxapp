@@ -40,7 +40,7 @@ const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/
  * （date/time field value out of range）变成服务器错误。解析为 UTC 日期后回写
  * 比对，闰年/月末越界（2月29/30/31、4月31 等）一律在入口抛 INVALID_PARAMS。
  */
-function assertRealCalendarDate(value: string, label: string): void {
+export function assertRealCalendarDate(value: string, label: string): void {
   // PG date 不接受 year zero（0000 会过 toISOString 回写比对但落库 22008），年份显式限 1..9999
   const year = Number(value.slice(0, 4))
   if (year < 1 || year > 9999) {
