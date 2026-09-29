@@ -586,7 +586,8 @@ admin 取 `fengyu-admin/src/lib/data-center/spend-buckets.ts` 的 `SPEND_BUCKET_
 |------|------|--------|----------|
 | 新增会员数（newMemberCount） | `COUNT(*)` | `client_wechat_users` | `became_member_at::date BETWEEN $startDate AND $endDate` ∩ scope（`bound_store_id`） |
 | 新增会员对应消费（newMemberSpend） | `SUM(spe.amount)` | `sale_order_performance_events spe` JOIN `sale_orders` | JOIN 上面的新增会员；`spe.sale_order_type IN ('销售单','转换单')` ∩ `spe.status='已支付'` ∩ `spe.change_type IN ('首次支付','回款','退款')` ∩ `spe.legacy_source IS DISTINCT FROM 'workfine'` ∩ `[spe.performance_date]` ∩ scope（**`c.bound_store_id`，与分母「新增会员数」同源；#439 自 2026-09-26 起，此前是 `o.store_id`**）。**2026-09-16（#138）起同 §4 口径**，旧实现为 `SUM(o.received - COALESCE(o.refunded_amount,0)) @ o.paid_at::date` ∩ `o.status='已支付'`（旧文档误记为 `paid_amount`，该列已 DROP） |
-| 新增会员客单价（newMemberAvgTicket） | `newMemberSpend / newMemberCount` | 派生；防除零 → `--` |
+| 新增会员对应消费 · WorkFine 历史单分支（newMemberLegacySpend，#289） | 订单级，**有明细取明细**：`CASE WHEN EXISTS(sale_items) THEN SUM(si.received) ELSE o.received END` | `sale_orders o` JOIN `client_wechat_users c` | 人群同上（`became_member_at` 落区间）；`o.status IN ('已支付','部分支付','已完成')` ∩ `o.sale_order_type IN ('销售单','转换单')` ∩ `o.legacy_source='workfine'` ∩ `[o.performance_attribution_date]` ∩ scope（**`c.bound_store_id`，随 #439 归店同源**）。口径照搬 §staff 顾客档案消费指标「年度消费 · legacy 分支」 |
+| 新增会员客单价（newMemberAvgTicket） | `(newMemberSpend + newMemberLegacySpend) / newMemberCount` | 派生；防除零 → `--`。**#289 起分子含 WorkFine 历史单**，分母不动（故成交率不受影响）；**#439 起分子两分支都按 `c.bound_store_id` 归店，与分母同源**。admin KPI 两分支相加后除以人数再 `round2`；明细在 SQL 里相加、`round2(合计) ÷ 人数`（展示时再格式化）；staff 回传 `newMembers.spend = round2(两分支之和)`、前端 `spend / count` 格式化。三处在 .xx5 边界上可能差 1 分（既有舍入差异，非本单引入） |
 | 新增会员成交率（newMemberConvRate） | `newMemberCount / trialFootfall × 100%` | 派生；防除零 → `--` |
 
 **新增会员成交率分母（trialFootfall）**：
@@ -748,6 +749,44 @@ FROM (
 > **D-newMemberSpend（已决 D-3=A）**：分子 `newMemberSpend` = 这群新增会员在区间内的**全部消费**，
 > 不区分是"成为会员前"还是"成为会员后"的订单——UI 文案"新增会员对应消费"读作"对应这群人的整体经营贡献"。
 
+#### 新客客单价的 WorkFine 历史单分支（#289，2026-09-26）
+
+> **为什么**：WorkFine 单在款项流水（`sale_order_payments` / spe）里**一行都没有**（prod 19,033 张 → 0 行），
+> 只读 spe 时，跨 2026-07-03 割点的区间（含「今年」预设）分子漏掉割点前的消费，而分母（`became_member_at`）回溯到 2022-08 ——
+> 审计时「今年」低报 41%、南昌青云店 25 个新会员里 20 个分子为 0。补一条订单级分支（方案 1：只补分子）。
+>
+> **割点**：截至 2026-09-26 prod 数据，WorkFine 单的归属日期最晚到 **2026-08-01**（不是 07-03），所以区间起点 ≥ **2026-08-02**
+> 时本分支为 0、结果与补之前逐分一致；07-03 ~ 08-01 之间的区间**会**带进 legacy 金额。
+> ⚠ 这是**数据现状不是约束**：admin 历史单拉取（`actions/legacy-orders.ts`）不限日期，以后再拉入更晚的单（如晚上线市场），
+> 割点随之后移、并可能与线上单重叠——届时重跑 §本节「重叠」的匹配。
+>
+> **与线上单重叠不去重（2026-09-26 拍板）**：12 家门店在线上首笔款项之后仍有 WorkFine 单（113 张、273,983.00）。
+> 按「同一顾客、同一天、同一金额」匹配只有 2 对疑似重复，已列入 PR 待人工确认：
+> `FY-XSD2607200007 ↔ FY-XSD-WX-2607190054`（南昌蓝茉店 2026-07-19 13,940.00）、
+> `FY-ABZH2607250026 ↔ FY-XSD-WX-2607250051`（南昌世纪店 2026-07-25 0.00）。
+>
+> **待拍板 · WorkFine 回款单（FY-HKD）是否重复**：拉入时回款单也记作销售单、`received = total_amount`。
+> prod 1,300 张有回款的原单 `received` 全部等于 `total_amount`，其中 1,295 张「原单 received + 回款」超出原单总额
+> ——若 WorkFine 原单金额是应收而非实收，回款会被重复计入（全量 725.49 万；「今年」新客分子里 45 张 124,323.00，
+> 剔除则 9,435.77 → 约 9,230.62）。本分支与 staff 详情页 `legacy_year_stats` 同口径（均计入），待业务确认 WorkFine 原单金额语义后四份副本一起改。
+>
+> **副本（4 份，禁止跨端共享代码）**：① staff `mgmt-customer.js` 详情页 `legacy_year_stats` ② staff `customer.js` 同名 CTE
+> ③ admin `lib/data-center/workfine-legacy-spend.ts`（KPI `queryNewMemberLegacySpend` 与明细 `newmem_legacy_spend` 共用，customer.ts 内不得内联）
+> ④ staff `mgmt-traffic.js` `queryNewMemberLegacySpend`。金额表达式四份逐字相等、过滤条件各自有序闭集、
+> admin KPI 与 staff 逐字一致，由 `consistency.customer.test.ts`「#289」组守护。
+> ⚠ `mgmt-customer.js` / `customer.js` 的 `order_stats`（累计消费）金额表达式同形但**不限 legacy**，不是本组副本。
+>
+> **数据起点提示**：客量板按**整块板**显示（不针对单张卡），复用 `DataStartNotice` + `evaluateDataStart`，
+> 轴 = 业绩 + 服务，期间 = 所选期间 + 环比基期（同比基期不列：2027-07 前恒早于全部门店起点，列了提示永远挂着）。
+> 新客客单卡 hint 注明「含 WorkFine 历史单（订单级实收）」。staff 客量页暂无数据起点提示。
+>
+> **同族仍未修（勿以为整族都修好了）**：
+> - 客量板「会员经营人数 / 被经营 6 档 / 会员客单价」（admin `queryOperatedMembers` / `queryMemberAvgTicket` / 明细 `member_spend`；
+>   staff `mgmt-traffic.js` §4 `queryMemberOps`）仍只读 spe，跨割点时少计 legacy 消费
+> - 成交率：分母两个分支数据深度不同（① `service_orders` 最早 07-08、② `became_member_at` 回溯 2022-08）。
+>   #284 只关掉了同比 / 环比，**本期值跨割点时依然失真**
+> - 经营主表 R 列「年度累计达成」：已明确**不接** WorkFine（见 §经营数据主表），与本分支做法不同，是有意的
+
 ## 派生指标
 
 > **2026-04-25 T6 完成**：派生分母按时间维度区分双口径 — 日维度派生用 `selectedDate` 当日的 `employeeCount.day` / `storeCount.day`；月维度派生用 `selectedDate` 月末的 `employeeCount.month` / `storeCount.month`。
@@ -814,9 +853,9 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 | 组织层级业绩 · 子项类 | **生美业绩** | `[sipe.performance_date]` | #137 |
 | admin 数据中心 · **销售 / 人效**板块 | **业绩 / 现金流类**金额指标（⚠ 实耗、生美实耗、服务提成**除外**，见下表） | `[spe.performance_date]` | #137 |
 | admin 数据中心 · **品项**板块 | 子项类金额指标 | `[sipe.performance_date]` | #137 |
-| admin 数据中心 · **客量板块** | 会员被经营 6 档分桶、会员客单价、新会员对应消费、新会员客单价 | `[spe.performance_date]` | **#138** |
+| admin 数据中心 · **客量板块** | 会员被经营 6 档分桶、会员客单价、新会员对应消费、新会员客单价 | `[spe.performance_date]`；新会员消费的 WorkFine 分支走订单级 `[o.performance_attribution_date]`（#289） | **#138** / #289 |
 | staff 管理层 · 首页看板 / 销售数据 / 门店·员工排行 | **业绩 / 现金流类**金额指标（⚠ 同上，实耗与服务提成除外） | `[spe.performance_date]` | #137 |
-| staff 管理层 · **mgmtTraffic 会员经营** | 同 admin 客量板块（镜像实现） | `[spe.performance_date]` | **#138** |
+| staff 管理层 · **mgmtTraffic 会员经营** | 同 admin 客量板块（镜像实现） | `[spe.performance_date]`；新会员消费的 WorkFine 分支走订单级 `[o.performance_attribution_date]`（#289） | **#138** / #289 |
 | staff · **订单列表、营业额分配列表** 的日期筛选 | 列表筛选区间 | `[performance_attribution_date]` | **#139** |
 | admin · **工作台** | 今日实付、今日退款、昨日实付 | `[spe.performance_date]` | **#140** |
 | staff · **顾客档案年度消费 / 列表年消费** | 本年净消费、tier 徽章分档 | `[performance_attribution_date]` | **#141** |
@@ -865,6 +904,8 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 > 实现：`fengyu-staff/.../routes/mgmt-customer.js`（管理层视角）与 `customer.js`（店长视角）。
 > ⚠ **副本关系要分清**：
 > **两端「详情页」的年度消费查询互为语义副本**（常规款项分支 + legacy 分支都已逐字核对），改一端必同改另一端；
+> **legacy 分支另有 2 份副本**（#289：admin `lib/data-center/workfine-legacy-spend.ts`、staff `mgmt-traffic.js` 新客消费），
+> 四份由 `consistency.customer.test.ts` 整段等值守护，改任一份必同改其余三份；
 > **列表「年消费」只与详情共享落年口径**，金额公式本就不同（`SUM(o.total_amount)` vs `SUM(sop.amount)`）；
 > **月度消费日历两端公式也本就不同**（见下表最后两行）。后两类都不要"对齐"。
 
@@ -999,6 +1040,7 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 | **2026-09-23** | **analyst 增幅文案两条本地例外落地（#314，拍板）**，见文末基期章节「analyst 的两条本地例外」小节。<br>· **`rate` 型零基期不再算「算不出」**：百分点差值走减法、不需要非零分母，两道基期守卫改排在 rate 分支之后，`0% → 30%` 出 `+30.0pct`。此前 `previous === 0` 排在前面，**只藏涨不藏跌**（`30% → 0%` 照常出 `-30.0pct`）。⚠️ **已知代价**：`service_orders` 最早 2026-07-08 而新客入口走首单（回溯 2022-08），2022–2025 的 1,352 个新客到店恒为 0，故**凡 `entry_date < 2026-07-08` 的基期新客其到店数都不可信**（观察窗 `[entry_date, +90天]` 完全早于割点=恒为 0 的假零基期、跨割点=可能低估；⚠️ 别写成固定失效日、也别写成「与割点重叠」或「割点前的基期都是 0」——分别忽略了同比平移 12 个月致 2027 上半年仍命中、漏掉最严重的恒零形态、把跨线的低估误说成归零），集团级到店率同比将显示约 `+86.7pct`。该代价在拍板时已量化告知并被接受（根因由 #289 跟踪），**不要据此回头推翻**。<br>· **伪持平并入「持平」**：`toFixed(1)` 舍成 `0.0` 的不再带符号输出 `+0.0%` / `-0.0%`，配色一并变灰；判据是印出来的那个数（`Number(scaled.toFixed(1)) === 0`）而非原始 delta。⚠️ 阈值随展示精度走，analyst 1 位、admin 数据中心 2 位、首页看板整数，**别互抄**。<br>· 同轮确立 **文案与配色同源**：tone 读实际渲染值，不再自己重算方向；没印出数字时才退而用两期差值补方向，而**四种成因（零基期 / 负基期 / 非有限入参 / 溢出）里只有负基期允许这么做**（#307 既定分叉不变），其余弃判置灰。<br>· 同轮把 AI 助手的 `assistant-answer.ts` `formatSignedRate`（与看板吃同一个 `kpi.delta` 的第二实现，曾各自判零、且不挡 `NaN`）**收敛到 `metric-delta` 的无前缀内核**，顺带修掉 #317 登记的 `NaNpct`。<br>⚠️ 决策 1（负基期「由负转正 / 未转正」矩阵）点名的 **analyst 侧尚未落地**，不在 #314 范围。 |
 | **2026-09-25** | **新增「日常数据一览表」口径（#369）**，见 §日常数据一览表。同时订正三处过时描述：§业绩/实耗 与 §客流/客量 的「他销他耗 / 生态合作 = 跨店或合作机构消耗」（静态标签，不表示跨店）；§快照字段依赖 `sale_items.sales_category` 来源应为 `product_categories.sales_category`；§品项维度汇总 一级品项取值应为 `product_categories` 一级行 |
 | **2026-09-25** | **新增「经营数据主表」口径（#372）**，见文末「经营数据主表（admin 数据中心 · 经营明细）」节。首版取数 D/P/R/V/W/X 六列；P/W/X 与销售板门店明细逐字同谓词（`consistency.operating-master.test.ts` 整段模板等值守护）；D 复用 `technician-sql` 单源、人池换为「技能含美容师」；V「生美项目数」与人效板/门店榜「项目数」（`sales_category` 口径）**不是同一指标**。其余 16 列占位待 #373/#374 |
+| **2026-09-26** | **新客客单价分子补 WorkFine 历史单分支（#289）**，见 §5「新客客单价的 WorkFine 历史单分支」。分子 = 款项流水 + 订单级 legacy（`CASE WHEN EXISTS(sale_items) THEN SUM(si.received) ELSE o.received END`），分母不动；admin KPI / 明细 / staff `mgmt-traffic` 三处同改、两端逐字一致，legacy 片段登记为第 3、4 份副本。prod 复算（fengyu_ro，全部范围在营）：01-01~09-22 591 人 5,630.51 → 9,437.56；01-01~09-26 606 人 5,722.96 → 9,435.77；08-02~09-25 325 人 8,251.33 不变；07 月 53 人 2,058.00 → 3,931.28。**不再以审计时的 9,411.49 为目标值**（prod 数据已变）。客量板加整块数据起点提示；同族未修清单同节登记 |
 
 ---
 

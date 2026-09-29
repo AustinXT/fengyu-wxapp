@@ -15,8 +15,10 @@ import { DATA_CENTER_REPORT_LIST } from '@/lib/data-center/reports'
  * PERMISSION_DENIED，生产脱敏后表现为板块内联红字「数据加载失败」。
  */
 
-const { getDataCenterScopeOptions, redirect, notFound } = vi.hoisted(() => ({
+const { getDataCenterScopeOptions, getDataStartDates, customerBoardProps, redirect, notFound } = vi.hoisted(() => ({
   getDataCenterScopeOptions: vi.fn(),
+  getDataStartDates: vi.fn(),
+  customerBoardProps: [] as unknown[],
   redirect: vi.fn((url: string) => {
     throw new Error(`REDIRECT:${url}`)
   }),
@@ -25,11 +27,23 @@ const { getDataCenterScopeOptions, redirect, notFound } = vi.hoisted(() => ({
   }),
 }))
 
-vi.mock('next/navigation', () => ({ redirect, notFound }))
-vi.mock('@/actions/data-center/shared', () => ({ getDataCenterScopeOptions }))
+vi.mock('next/navigation', () => ({
+  redirect,
+  notFound,
+  // 与 report-pages.test 同：Next 控制流错误（这里用 REDIRECT: 前缀模拟）必须照常上抛
+  unstable_rethrow: vi.fn((error: unknown) => {
+    if (error instanceof Error && error.message.startsWith('REDIRECT:')) throw error
+  }),
+}))
+vi.mock('@/actions/data-center/shared', () => ({ getDataCenterScopeOptions, getDataStartDates }))
 vi.mock('../_components/scope-time-filter', () => ({ ScopeTimeFilter: () => null }))
 vi.mock('../_components/sales/sales-board', () => ({ SalesBoard: () => <div data-testid="board" /> }))
-vi.mock('../_components/customer/customer-board', () => ({ CustomerBoard: () => null }))
+vi.mock('../_components/customer/customer-board', () => ({
+  CustomerBoard: (props: unknown) => {
+    customerBoardProps.push(props)
+    return null
+  },
+}))
 vi.mock('../_components/efficiency/efficiency-board', () => ({ EfficiencyBoard: () => null }))
 vi.mock('../_components/product/product-board', () => ({ ProductBoard: () => null }))
 
@@ -74,6 +88,8 @@ function call(board: string, query: Record<string, string | string[] | undefined
 
 beforeEach(() => {
   vi.clearAllMocks()
+  customerBoardProps.length = 0
+  getDataStartDates.mockResolvedValue({})
 })
 
 describe('数据中心板块页 · 非总部默认 scope 解析', () => {
@@ -277,5 +293,49 @@ describe('数据中心板块页 · 已停用门店空态（#293）', () => {
 
     expect(screen.getByTestId('board')).toBeInTheDocument()
     expect(screen.queryByTestId('scope-empty-state')).not.toBeInTheDocument()
+  })
+})
+
+describe('数据中心板块页 · 数据起点（#289 客量板）', () => {
+  const starts = { S1: { performance: '2026-07-08', service: '2026-07-08' } }
+
+  it('客量板在服务端取数据起点，连同 scope 数据源交给板块', async () => {
+    getDataCenterScopeOptions.mockResolvedValue(hqOptions)
+    getDataStartDates.mockResolvedValue(starts)
+    render(await call('customer'))
+
+    expect(getDataStartDates).toHaveBeenCalledTimes(1)
+    expect(customerBoardProps).toEqual([{ scopeOptions: hqOptions, dataStarts: starts }])
+  })
+
+  it('其余板块不取数据起点（不多打一次库）', async () => {
+    getDataCenterScopeOptions.mockResolvedValue(hqOptions)
+    for (const board of ['sales', 'efficiency', 'product']) await call(board)
+
+    expect(getDataStartDates).not.toHaveBeenCalled()
+  })
+
+  it('空态不挂板块，也不取数据起点', async () => {
+    getDataCenterScopeOptions.mockResolvedValue(noStoreOptions)
+    await call('customer')
+
+    expect(getDataStartDates).not.toHaveBeenCalled()
+  })
+
+  it('数据起点取数失败时降级为不提示，页面照常渲染', async () => {
+    getDataCenterScopeOptions.mockResolvedValue(hqOptions)
+    getDataStartDates.mockRejectedValue(new Error('connection reset'))
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    render(await call('customer'))
+
+    expect(customerBoardProps).toEqual([{ scopeOptions: hqOptions, dataStarts: {} }])
+    spy.mockRestore()
+  })
+
+  it('数据起点取数撞上会话过期跳转时照常上抛，不被降级吞掉', async () => {
+    getDataCenterScopeOptions.mockResolvedValue(hqOptions)
+    getDataStartDates.mockRejectedValue(new Error('REDIRECT:/login?expired=1'))
+
+    await expect(call('customer')).rejects.toThrow('REDIRECT:/login?expired=1')
   })
 })

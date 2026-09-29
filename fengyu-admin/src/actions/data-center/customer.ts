@@ -23,6 +23,8 @@
  *     不按父订单 status 过滤、排除储值卡抵扣；与 mgmt-traffic.js 逐条一致，由 consistency.customer.test.ts 守护）
  *   - 成交率分母 = 期初未达会员的到店活跃池 ∪ 本期全部新增会员（D-conv-denom=1c，#284 推翻原 D-2=B；
  *     ② 分支与分子 newmem/queryNewMemberCount 同源，保证分子 ⊆ 分母、成交率恒 ≤ 100%）
+ *   - 新客客单价分子 = 款项流水分支 + WorkFine 历史单分支（#289，订单级实收，片段见 lib/data-center/workfine-legacy-spend.ts）；
+ *     分母 = 会员新增不动。同族「会员经营人数 / 6 档 / 会员客单价」仍只读款项流水（未修，metrics.md 已登记）
  *   - 项目数 = SUM(session_used) WHERE sales_category IN ('自销自耗','他销自耗')（D-5）
  *   - customer_status 枚举 '沉睡'/'冰冻'/'休眠'（非 '预警沉睡'）
  *   - 一次/二次客活 = 区间内**到店天数** = 1 / >= 2（#298）：到店日由 visitDaysSql 按
@@ -48,6 +50,7 @@ import { scopeFilterSql, scopeStoreSkeletonSql } from '@/lib/data-center/scope-s
 import { excludeDepositRefundSql } from '@/lib/data-center/consume-filter'
 import { visitDaysSql } from '@/lib/data-center/visit-days'
 import { SPEND_BUCKET_FLOORS } from '@/lib/data-center/spend-buckets'
+import { workfineLegacyOrderSql, workfineLegacyReceivedSumSql } from '@/lib/data-center/workfine-legacy-spend'
 import { getMemberThreshold } from '@/lib/member-threshold'
 import { withComparison } from '@/lib/data-center/comparison'
 import { resolveDeltaDisplay } from '@/lib/delta-display'
@@ -424,6 +427,35 @@ async function queryNewMemberSpend(
       AND spe.change_type IN ('首次支付', '回款', '退款')
       AND spe.legacy_source IS DISTINCT FROM 'workfine'
       AND spe.performance_date BETWEEN ${range.start} AND ${range.end}
+  `)
+  return num(first(rows).v)
+}
+
+/**
+ * 新增会员对应消费 · WorkFine 历史单分支（#289）。与上面的款项流水分支相加 = 新客客单价分子。
+ *
+ * WorkFine 单在款项流水里没有行，不补这条时「今年」这类跨割点区间低报约 4 成；
+ * 截至 2026-09-26 prod 数据，WorkFine 单归属日期最晚到 2026-08-01，区间起点 ≥ 2026-08-02 时本分支为 0、
+ * 结果与补之前一致 —— 这是数据现状不是约束：历史单拉取不限日期，以后再拉入更晚的单，本分支会随之计入。
+ * 人群条件与 scope 列（`c.bound_store_id`）同款项流水分支（#439 起归店跟着人走，与分母同源）；
+ * 口径与片段来源见 lib/data-center/workfine-legacy-spend.ts。
+ * staff 同口径副本：mgmt-traffic.js::queryNewMemberLegacySpend（consistency.customer.test.ts 逐字守护）。
+ * 与线上单时间重叠（12 家店 113 张）不去重，2026-09-26 拍板接受。
+ */
+async function queryNewMemberLegacySpend(
+  session: AuthSession,
+  scope: DataCenterScope,
+  range: ResolvedRange,
+): Promise<number> {
+  const sc = scopeFilterSql(session, scope, 'c.bound_store_id')
+  const rows = await db.execute(sql`
+    SELECT ${workfineLegacyReceivedSumSql()} AS v
+    FROM sale_orders o
+    JOIN client_wechat_users c ON c.user_id = o.client_user_id
+    WHERE ${sc}
+      AND c.became_member_at IS NOT NULL
+      AND c.became_member_at::date BETWEEN ${range.start} AND ${range.end}
+      AND ${workfineLegacyOrderSql(range)}
   `)
   return num(first(rows).v)
 }
@@ -809,6 +841,18 @@ async function queryOpsBreakdown(
         AND spe.performance_date BETWEEN ${start} AND ${end}
       GROUP BY ${groupId}
     ),
+    -- 新增会员对应消费 · WorkFine 历史单分支（#289，与 KPI queryNewMemberLegacySpend 共用片段）
+    newmem_legacy_spend AS (
+      SELECT ${groupId} AS group_id,
+             ${workfineLegacyReceivedSumSql()} AS legacy_spend
+      FROM sale_orders o
+      JOIN client_wechat_users c ON c.user_id = o.client_user_id
+      JOIN skel sk ON sk.store_id = c.bound_store_id
+      WHERE c.became_member_at IS NOT NULL
+        AND c.became_member_at::date BETWEEN ${start} AND ${end}
+        AND ${workfineLegacyOrderSql(range)}
+      GROUP BY ${groupId}
+    ),
     -- 流量客人数（成交率分母，D-conv-denom=1c）：期初未达会员的到店活跃池 ∪ 本期全部新增会员。
     -- 与 KPI 的 queryTrialFootfall 同口径；② 分支的 JOIN 与 newmem（分子）逐字一致，
     -- 组内分子 ⊆ 分母由此成立 —— 明细行的成交率不会再 > 100%，也不会因分母 0 显示 '--'。
@@ -895,7 +939,7 @@ async function queryOpsBreakdown(
       COALESCE(spend_agg.member_spend_total, 0) AS member_spend_total,
       COALESCE(spend_agg.member_spend_count, 0) AS member_spend_count,
       COALESCE(newmem.new_members, 0) AS new_members,
-      COALESCE(newmem_spend.new_spend, 0) AS new_spend,
+      COALESCE(newmem_spend.new_spend, 0) + COALESCE(newmem_legacy_spend.legacy_spend, 0) AS new_spend,
       COALESCE(traffic_cust.traffic_customers, 0) AS traffic_customers,
       COALESCE(visits_agg.traffic_visits, 0) AS traffic_visits,
       COALESCE(visits_agg.member_visits, 0) AS member_visits,
@@ -906,6 +950,7 @@ async function queryOpsBreakdown(
     LEFT JOIN spend_agg ON spend_agg.group_id = gs.group_id
     LEFT JOIN newmem ON newmem.group_id = gs.group_id
     LEFT JOIN newmem_spend ON newmem_spend.group_id = gs.group_id
+    LEFT JOIN newmem_legacy_spend ON newmem_legacy_spend.group_id = gs.group_id
     LEFT JOIN traffic_cust ON traffic_cust.group_id = gs.group_id
     LEFT JOIN visits_agg ON visits_agg.group_id = gs.group_id
     LEFT JOIN proj_agg ON proj_agg.group_id = gs.group_id
@@ -1086,14 +1131,15 @@ export const getCustomerBoard = withPermission(
       withComparison((r) => queryTrialFootfall(session, scope, r), comparison, 'count', false),
       // 会员客单价
       withComparison((r) => queryMemberAvgTicket(session, scope, r), comparison, 'amount', enabled),
-      // 新客客单价
+      // 新客客单价 =（款项流水 + WorkFine 历史单）÷ 会员新增（#289：分母不动）
       withComparison(
         async (r) => {
-          const [spend, count] = await Promise.all([
+          const [spend, legacySpend, count] = await Promise.all([
             queryNewMemberSpend(session, scope, r),
+            queryNewMemberLegacySpend(session, scope, r),
             queryNewMemberCount(session, scope, r),
           ])
-          return count > 0 ? round2(spend / count) : null
+          return count > 0 ? round2((spend + legacySpend) / count) : null
         },
         comparison,
         'amount',

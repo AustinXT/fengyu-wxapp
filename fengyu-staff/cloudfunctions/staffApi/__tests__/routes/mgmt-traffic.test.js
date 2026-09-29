@@ -130,7 +130,8 @@ function setupDefaultMocks({
  * 而不是把那组的正则放宽成 `(store_id|bound_store_id)` —— 放宽等于让整组断言失去区分力。
  */
 const isNewMemberSpendSql = (s) =>
-  /COALESCE\(SUM\(spe\.amount::numeric\), 0\) AS v/.test(s) && /c\.became_member_at::date BETWEEN/.test(s)
+  (/COALESCE\(SUM\(spe\.amount::numeric\), 0\) AS v/.test(s) || /legacy_source\s*=\s*'workfine'/.test(s)) &&
+  /c\.became_member_at::date BETWEEN/.test(s)
 
 describe('mgmtTraffic.summary 入参/权限校验', () => {
   test('缺 period 抛 INVALID_PARAMS', async () => {
@@ -604,7 +605,34 @@ describe('mgmtTraffic.summary 新会员经营 + trialFootfall', () => {
     const ctx = makeHqCtx({ period: 'month', scopeType: 'all' })
     await summary(ctx)
 
-    expect(ctx.result.newMembers).toEqual({ count: 7, spend: 7, trialFootfall: 7 })
+    // spend = 款项流水分支 7 + WorkFine 历史单分支 7（#289，默认 mock 标量一律 7）
+    expect(ctx.result.newMembers).toEqual({ count: 7, spend: 14, trialFootfall: 7 })
+  })
+
+  /**
+   * #289：新会员消费 = 款项流水 + WorkFine 历史单（订单级实收），分母（count）不变。
+   * 两条分支取不同金额，任一条没参与相加 / 被当成 count 都会算错；先断言各自恰好命中一次防空跑。
+   */
+  test('#289 newMembers.spend = 款项流水分支 + WorkFine 历史单分支（两分位），count 不受影响', async () => {
+    setupDefaultMocks()
+    const base = pg.query.getMockImplementation()
+    const hits = { spe: 0, legacy: 0 }
+    pg.query.mockImplementation(async (sql, params) => {
+      if (/FROM sale_order_performance_events spe/.test(sql) && /became_member_at::date BETWEEN/.test(sql)) {
+        hits.spe++
+        return [{ v: '3000.105' }]
+      }
+      if (/o\.legacy_source = 'workfine'/.test(sql) && /FROM sale_orders o/.test(sql)) {
+        hits.legacy++
+        return [{ v: '2249.9' }]
+      }
+      return base(sql, params)
+    })
+    const ctx = makeHqCtx({ period: 'year', scopeType: 'all' })
+    await summary(ctx)
+
+    expect(hits).toEqual({ spe: 1, legacy: 1 })
+    expect(ctx.result.newMembers).toEqual({ count: 7, spend: 5250.01, trialFootfall: 7 })
   })
 })
 
@@ -637,7 +665,8 @@ describe('mgmtTraffic.summary scope 三档 SQL 拼接', () => {
 
     // service_orders / sale_orders（不含 client_wechat_users 表的纯 client SQL）类
     const newMemberSpendSqls = sqlList.filter(isNewMemberSpendSql)
-    expect(newMemberSpendSqls, '新会员消费查询应恰好 1 条（#439 例外的定位前提）').toHaveLength(1)
+    // spe 分支 + #289 的 WorkFine 历史单分支各 1 条，scope 都随 #439 用 bound_store_id
+    expect(newMemberSpendSqls, '新会员消费查询应恰好 2 条（spe + legacy，#439 例外的定位前提）').toHaveLength(2)
     for (const s of newMemberSpendSqls) {
       // ⚠ 必须在**剥掉 active 段之后**再比：`activeStoreCondition('c.bound_store_id')` 展开本身就是
       // `c.bound_store_id IN ( SELECT active_store.store_id …`，直接对原文 match 的话
@@ -681,7 +710,8 @@ describe('mgmtTraffic.summary scope 三档 SQL 拼接', () => {
     const sqlList = pg.query.mock.calls.map((c) => c[0])
 
     const newMemberSpendSqls = sqlList.filter(isNewMemberSpendSql)
-    expect(newMemberSpendSqls, '新会员消费查询应恰好 1 条（#439 例外的定位前提）').toHaveLength(1)
+    // spe 分支 + #289 的 WorkFine 历史单分支各 1 条，scope 都随 #439 用 bound_store_id
+    expect(newMemberSpendSqls, '新会员消费查询应恰好 2 条（spe + legacy，#439 例外的定位前提）').toHaveLength(2)
     for (const s of newMemberSpendSqls) {
       expect(withoutActive(s)).toMatch(/c\.bound_store_id\s*=\s*\$\d/)
       expect(withoutActive(s)).not.toMatch(/(so|o)\.store_id\s*=\s*\$\d/)
