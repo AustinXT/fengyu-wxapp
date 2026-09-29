@@ -167,6 +167,7 @@ describe('门店在营判定跨端字面量守护（#400）', () => {
       .sort()
     expect(dbFiles).toEqual([
       'app/api/health/route.ts',
+      'instrumentation.ts', // #291 仅启动 SELECT 1 建连/时区断言，无经营取数
       'lib/analyst-scope.ts',
       'lib/assistant-chat-store.ts',
       'lib/assistant-org-names.ts', // 助手识别不可见门店 / 市场名称（#436），不取数

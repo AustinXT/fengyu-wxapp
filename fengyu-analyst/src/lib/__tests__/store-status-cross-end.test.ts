@@ -408,6 +408,7 @@ describe("在营门店口径跨端守护（#421）", () => {
       .sort()
     expect(dbFiles).toEqual([
       "app/api/health/route.ts", // SELECT 1 探活
+      "instrumentation.ts", // #291 仅启动 SELECT 1 建连/时区断言，无经营取数
       "lib/analyst-scope.ts", // 范围下拉 / 旧参数解析
       "lib/assistant-chat-store.ts", // 会话存储，无经营数据
       "lib/assistant-org-names.ts", // 助手识别不可见门店 / 市场名称（#436），不取数
