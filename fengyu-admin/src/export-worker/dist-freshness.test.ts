@@ -455,8 +455,12 @@ describe('dist/export-worker.mjs 新鲜度 · 进出明细导出接线（#360）
   it.each([
     ['src/lib/data-center/comparison.ts', 'withComparison'],
     ['src/lib/data-center/format.ts', 'safeDiv'],
+    // #270/#363 已在 dev 源码合入：此次重建补同步它们，并守住直跑导出与源码一致。
+    ['src/lib/inventory/engine.ts', 'syncInventoryLocations'],
+    ['src/lib/inventory/engine.ts', 'loadInventoryDocLineage'],
+    ['src/lib/inventory/engine.ts', 'getInventoryCoreDocById'],
   ])('#311 导出产物中的 %s.%s 与源码语义等价', (file, declaration) => {
-    expect(equivalenceIssues(file, [declaration]), `对比去重/安全除法未同步导出产物${REBUILD_HINT}`).toEqual([])
+    expect(equivalenceIssues(file, [declaration]), `数据中心/已合入库存逻辑未同步导出产物${REBUILD_HINT}`).toEqual([])
   })
 
   it('#361 收货跟进取数与action运行时代码同步产物', () => {
