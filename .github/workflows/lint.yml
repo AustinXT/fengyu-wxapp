@@ -333,6 +333,15 @@ jobs:
             src/actions/data-center/__tests__/member-threshold-sync.test.ts \
             src/lib/member-threshold.no-next-cache.test.ts
 
+      # #300：三处生美 SQL 的完整等值与单端回退守护在 admin 测试文件中。
+      # staff/client 任一端源码改动都会触发本 workflow，必须实际执行此守护。
+      - name: Run sales board caliber guards (#300)
+        working-directory: fengyu-admin
+        run: |
+          npx vitest run \
+            src/actions/data-center/__tests__/consistency.sales.test.ts \
+            src/actions/data-center/__tests__/sales.test.ts
+
       # SKU 供货商关联档案（#132）：`supplierId` 三态（undefined=不动 / null=清空 / id=写两列）
       # 与「供货商必须是 select 而不是自由文本」的守护。不进 CI 的话，把下拉改回 <Input>、
       # 或让 engine 重新收自由文本，GitHub 检查照样全绿 —— 而 issue 的根因正是自由文本。
