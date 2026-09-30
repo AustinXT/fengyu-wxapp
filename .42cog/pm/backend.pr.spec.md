@@ -442,6 +442,12 @@
 >
 > **索引**: `INDEX(employee_id)`
 
+### 2.10.1 sale_payment_item_allocations（现行回款级营业额分配）
+
+> **人数规则（#475，2026-09-30）**：每笔回款按 `(sale_item_id, role_type)` 建立独立分配池，池内可分配给任意数量的不同员工，不设固定人数上限；同一员工在同池只能出现一次，池内分配比例合计不得超过 100%。同 SKU 的多个销售明细实例须逐项保存和回显。员工端、管理后台及各自保存接口遵循同一规则。2026-03-24 会议纪要与早期适配计划中的「最多 3 人」已由 #475 取代；服务提成人数规则不受此变更影响。
+>
+> 本表以 `sale_payment_item_receipt_id` 关联逐项实收记录，活动行唯一键为 `(sale_payment_item_receipt_id, employee_id, role_type) WHERE is_void = false`；上节 `sale_allocations` 是旧订单级表，其 `(sale_item_id, employee_id)` 唯一约束不适用于本表。
+
 ### 2.11 service_orders（服务单主表）
 
 > 与订单的关联通过 `service_items.sale_item_id → sale_items` 实现，主表不存 `sale_order_id`，支持跨订单核销。

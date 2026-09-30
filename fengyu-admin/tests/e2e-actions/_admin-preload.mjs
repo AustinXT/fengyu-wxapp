@@ -53,6 +53,7 @@ plugin({
         requireAnyPermission: () => {},
         requireAdmin: () => {},
         isInScope: () => true,
+        isAdminScope: () => false,
         scopeCondition: () => undefined,
         hasPermission: () => true,
         PERMISSION_MATRIX: {},
