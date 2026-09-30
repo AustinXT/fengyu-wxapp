@@ -206,7 +206,8 @@ export default function PaymentAllocationDetailPageClient({
   )
   const marketName = payment.marketName ?? ''
   const eventAmount = payment.eventAmount
-  const statusInfo = allocationStatusMap[payment.allocationStatus || "待分配"] || allocationStatusMap.待分配
+  const statusInfo = allocationStatusMap[payment.allocationStatus || ""]
+    || { label: "不可分配", className: "border-[#888888] text-[#888888] bg-[#F5F2EE]" }
   const isRefundAllocation = payment.changeType === '退款'
 
   const [groupAllocs, setGroupAllocs] = useState<Record<string, AllocationEntry[]>>(() =>

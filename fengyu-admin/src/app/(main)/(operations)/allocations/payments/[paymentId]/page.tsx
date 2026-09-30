@@ -39,7 +39,9 @@ export default async function Page({ params }: { params: Promise<{ paymentId: st
       employees={employees}
       commissionRates={commissionRates}
       skillTags={skillTags}
-      canSave={canSaveAllocation(session, order.storeId, payment.frozen)}
+      canSave={['待分配', '已分配'].includes(payment.allocationStatus ?? '')
+        && payment.changeType !== '退款'
+        && canSaveAllocation(session, order.storeId, payment.frozen)}
     />
   )
 }
