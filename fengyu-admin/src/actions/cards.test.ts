@@ -440,6 +440,16 @@ describe('getCustomerHeldCards — 权限与 scope', () => {
     expect(result).toEqual([])
     expect(db.select).not.toHaveBeenCalled()
   })
+
+  it('当前店在 scope 内时，候选不再按来源门店过滤', async () => {
+    ;(isInScope as any).mockReturnValue(true)
+    mockSelectRows([{ saleItemId: 'away', storeId: 'store-999', storeName: '汇东店',
+      productType: '疗程卡', saleOrderType: '寄存单', unitRealPrice: '100.00',
+      remainingSessions: 1, quantity: 1 }])
+    const rows = await getCustomerHeldCards('user-1', 'store-1')
+    expect(rows[0]).toMatchObject({ saleItemId: 'away', storeId: 'store-999', storeName: '汇东店' })
+    expect(eq).not.toHaveBeenCalledWith('store_id', 'store-1')
+  })
 })
 
 describe('getCustomerHeldCards — 数据映射', () => {

@@ -3447,7 +3447,7 @@ describe('createConversionOrder — 权限与入参校验', () => {
 })
 
 describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
-  const mockClient = { userId: 'user-1', phone: '13812345678', name: '张小姐', customerType: '会员客' }
+  const mockClient = { userId: 'user-1', phone: '13812345678', name: '张小姐', customerType: '会员客', boundStoreId: 'store-1', isCrossStoreTemp: false }
 
   /**
    * 构造模拟 tx：
@@ -3615,6 +3615,25 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     expect(outRow.received).toBe('-700.00')
   })
 
+  it('跨店家居来源可折抵，新转换单与转出镜像归当前店', async () => {
+    const inserted: any[] = []
+    let createdOrder: any
+    mockConvTx({
+      heldRows: [homeHeldRow({ store_id: 'store-999' })],
+      skuRows: homeSkuRows,
+      onInsertOrder: (v) => { createdOrder = v },
+      onInsertItem: (v) => inserted.push(v),
+    })
+
+    const result = await createConversionOrder(homeConvData)
+
+    expect(result.success).toBe(true)
+    expect(createdOrder.storeId).toBe('store-1')
+    expect(inserted.find((v) => v.itemDirection === '转出')).toMatchObject({
+      storeId: 'store-1', refSaleItemId: 'home-1', saleAmount: '-700.00',
+    })
+  })
+
   it('#125/#154 家居转出数量落 converted_quantity 且带不可超转守卫，不走 remaining_sessions', async () => {
     const { executeSql } = mockConvTx({
       heldRows: [homeHeldRow()],
@@ -3730,6 +3749,8 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
       name: '张小姐',
       customerType: '会员客',
       memberLevel: null,
+      boundStoreId: 'store-1',
+      isCrossStoreTemp: false,
     }))
 
     ;(db.transaction as any).mockImplementation(async (fn: any) => {
@@ -4442,6 +4463,7 @@ describe('createConversionOrder — 异常路径', () => {
     ;(isInScope as any).mockReturnValue(true)
     ;(db.select as any).mockImplementation(mockSelectFound({
       userId: 'user-1', phone: '13812345678', name: '张小姐', customerType: '流量客',
+      boundStoreId: 'store-1', isCrossStoreTemp: false,
     }))
   })
 
@@ -4461,23 +4483,14 @@ describe('createConversionOrder — 异常路径', () => {
     }],
   }
 
-  it('跨店（heldRow.store_id != ctx.storeId）→ CARD_STORE_MISMATCH', async () => {
-    ;(db.transaction as any).mockImplementation(async (fn: any) => {
-      const tx = {
-        execute: vi.fn().mockResolvedValue([{
-          sale_item_id: 'card-1', store_id: 'store-999', item_direction: '购买',
-          product_type: '疗程卡', remaining_sessions: 5, unit_real_price: '100',
-          client_user_id: 'user-1', order_status: '已支付', quantity: 1,
-          picked_up_quantity: 0, unit_price: '100', service_fee: '0',
-          session_count: 5, product_kind: '护理项目',
-        }]),
-        select: vi.fn(), insert: vi.fn(), update: vi.fn(),
-      }
-      return fn(tx)
-    })
+  it('顾客归属其他门店且无临时跨店授权 → 拒绝', async () => {
+    ;(db.select as any).mockImplementation(mockSelectFound({
+      userId: 'user-1', boundStoreId: 'store-999', isCrossStoreTemp: false,
+    }))
     const result = await createConversionOrder(baseConvData)
     expect(result.success).toBe(false)
     expect(result.message).toContain('不属于当前门店')
+    expect(db.transaction).not.toHaveBeenCalled()
   })
 
   // #182：remaining_sessions=0 本身不再是拒绝理由（overpay 余数仍可折），
