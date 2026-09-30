@@ -1,6 +1,6 @@
 'use client'
 
-import { useId, useState, type ChangeEvent, type ComponentProps, type FocusEvent, type InvalidEvent } from 'react'
+import { useEffect, useId, useRef, useState, type ChangeEvent, type ComponentProps, type FocusEvent, type InvalidEvent } from 'react'
 import { Input } from '@/components/ui/input'
 
 type Props = ComponentProps<typeof Input>
@@ -14,7 +14,9 @@ function errorFor(input: HTMLInputElement): string {
   if (input.max && value > Number(input.max)) return `不能大于 ${input.max}`
   if (input.step && input.step !== 'any') {
     const quotient = (value - Number(input.min || 0)) / Number(input.step)
-    if (!Number.isFinite(quotient) || Math.abs(quotient - Math.round(quotient)) > 1e-7) {
+    // 大数值除以小步长时商可达 1e12，浮点误差随商增大。
+    const tolerance = Math.max(1e-7, Number.EPSILON * Math.abs(quotient) * 2)
+    if (!Number.isFinite(quotient) || Math.abs(quotient - Math.round(quotient)) > tolerance) {
       return `请按 ${input.step} 的步长输入`
     }
   }
@@ -26,6 +28,12 @@ export function InventoryNumberInput({ onBlur, onChange, onInvalid, 'aria-descri
   const [error, setError] = useState('')
   const [touched, setTouched] = useState(false)
   const errorId = useId()
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  // 草稿回填或汇总会从父组件替换受控 value；同步清除旧值留下的错误。
+  useEffect(() => {
+    if (touched && inputRef.current) setError(errorFor(inputRef.current))
+  }, [props.value, touched])
 
   function handleBlur(event: FocusEvent<HTMLInputElement>) {
     setTouched(true)
@@ -49,6 +57,7 @@ export function InventoryNumberInput({ onBlur, onChange, onInvalid, 'aria-descri
     <span className="block">
       <Input
         {...props}
+        ref={inputRef}
         type="number"
         onBlur={handleBlur}
         onChange={handleChange}

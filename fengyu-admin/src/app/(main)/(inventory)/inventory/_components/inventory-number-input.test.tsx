@@ -37,4 +37,23 @@ describe('库存数值输入', () => {
     fireEvent.click(screen.getByRole('button', { name: '提交' }))
     expect(onSubmit).toHaveBeenCalledOnce()
   })
+
+  it('大数值的合法两位小数不会被浮点误差误报为步长错误', () => {
+    render(<InventoryNumberInput min="0" max="9999999999.99" step="0.01" defaultValue="100000000.01" />)
+    const input = screen.getByRole('spinbutton') as HTMLInputElement
+    fireEvent.blur(input)
+    expect(screen.queryByRole('alert')).toBeNull()
+    fireEvent.change(input, { target: { value: '9999999999.98' } })
+    fireEvent.blur(input)
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('草稿回填替换受控值后清除旧错误', () => {
+    const { rerender } = render(<InventoryNumberInput min="0" max="10" step="0.01" value="-1" readOnly />)
+    const input = screen.getByRole('spinbutton') as HTMLInputElement
+    fireEvent.blur(input)
+    expect(screen.getByRole('alert')).toHaveTextContent('不能小于')
+    rerender(<InventoryNumberInput min="0" max="10" step="0.01" value="1.01" readOnly />)
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
 })

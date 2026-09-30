@@ -1820,8 +1820,8 @@ interface SimpleSkuLine {
 
 function validStoreRequestQuantity(raw: string): boolean {
   const quantity = Number(raw)
-  return /^\d+(?:\.\d{1,2})?$/.test(raw.trim()) && Number.isFinite(quantity) && quantity >= 0.01
-    && quantity <= 9999999999.99
+  return raw.trim() !== '' && Number.isFinite(quantity) && quantity >= 0.01
+    && quantity <= 9999999999.99 && Number(quantity.toFixed(2)) === quantity
 }
 
 function StoreRequestForm({

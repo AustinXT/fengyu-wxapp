@@ -348,8 +348,8 @@ export function InventoryDocCreateForm({
     const invalidQuantityIndex = items.findIndex((item) => {
       const raw = item.quantity.trim()
       const quantity = Number(raw)
-      return raw !== '' && (!/^\d+(?:\.\d{1,2})?$/.test(raw) || !Number.isFinite(quantity)
-        || quantity < 0 || quantity > 9999999999.99)
+      return raw !== '' && (!Number.isFinite(quantity) || quantity < 0 || quantity > 9999999999.99
+        || Number(quantity.toFixed(2)) !== quantity)
     })
     if (invalidQuantityIndex >= 0) {
       toast.error(`明细 ${invalidQuantityIndex + 1} 数量须为 0 至 9999999999.99，且最多两位小数`)
