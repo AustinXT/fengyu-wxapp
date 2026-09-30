@@ -168117,10 +168117,18 @@ var createConversionOrder = withPermission("sale_order:create", async (session4,
     phone: clientWechatUsers.phone,
     name: clientWechatUsers.name,
     customerType: clientWechatUsers.customerType,
-    memberLevel: clientWechatUsers.memberLevel
+    memberLevel: clientWechatUsers.memberLevel,
+    boundStoreId: clientWechatUsers.boundStoreId,
+    isCrossStoreTemp: clientWechatUsers.isCrossStoreTemp
   }).from(clientWechatUsers).where(import_drizzle_orm33.eq(clientWechatUsers.userId, data.clientUserId)).limit(1);
   if (!client2) {
     return { success: false, message: "顾客不存在" };
+  }
+  if (!client2.boundStoreId) {
+    return { success: false, message: "顾客未注册小程序或未绑定门店" };
+  }
+  if (client2.boundStoreId !== data.storeId && !client2.isCrossStoreTemp) {
+    return { success: false, message: "该顾客不属于当前门店，无法开单" };
   }
   const getCustomerMarketScope = createCustomerMarketScopeProvider(data.clientUserId);
   let result;
@@ -168244,8 +168252,6 @@ var createConversionOrder = withPermission("sale_order:create", async (session4,
       const refundedByItem = new Map((Array.isArray(refundedRows) ? refundedRows : []).map((r) => [r.sale_item_id, Number(r.refunded ?? 0)]));
       const outItems = [];
       for (const row of held) {
-        if (row.store_id !== data.storeId)
-          throw new ApiError("INVALID_STATE", "CARD_STORE_MISMATCH: 所选卡不属于当前门店");
         if (row.client_user_id !== data.clientUserId)
           throw new ApiError("INVALID_STATE", "CARD_OWNER_MISMATCH: 所选卡不属于该顾客");
         const isEntitlement = isConvertibleEntitlementRow({
@@ -168292,7 +168298,7 @@ var createConversionOrder = withPermission("sale_order:create", async (session4,
             received: row.received,
             unitRealPrice: row.unit_real_price
           });
-          qty = Math.max(0, Number(row.quantity ?? 0) - Number(row.picked_up_quantity ?? 0));
+          qty = Math.max(0, Number(row.quantity ?? 0) - Number(row.picked_up_quantity ?? 0) - Number(row.refunded_quantity ?? 0) - Number(row.converted_quantity ?? 0));
           lineAmount = Math.round(home.amount * 100) / 100;
         }
         if (isDepositOrGift ? qty <= 0 : lineAmount <= 0) {
@@ -168313,6 +168319,7 @@ var createConversionOrder = withPermission("sale_order:create", async (session4,
         const outServiceFee = qty > 0 ? -Math.round(origServiceFee * qty / feeBase * 100) / 100 : 0;
         outItems.push({
           refSaleItemId: row.sale_item_id,
+          sourceStoreId: row.store_id,
           skuId: row.sku_id ?? null,
           productName: row.product_name ?? null,
           productType,
@@ -168626,11 +168633,11 @@ var createConversionOrder = withPermission("sale_order:create", async (session4,
           pendingReceived: out.refPendingReceived.toFixed(2)
         });
         if (out.productType === "疗程卡") {
-          const upd = await tx.update(saleItems).set({ remainingSessions: import_drizzle_orm33.sql`${saleItems.remainingSessions} - ${out.quantity}`, updatedAt: import_drizzle_orm33.sql`NOW()` }).where(import_drizzle_orm33.and(import_drizzle_orm33.eq(saleItems.saleItemId, out.refSaleItemId), import_drizzle_orm33.eq(saleItems.storeId, data.storeId), import_drizzle_orm33.sql`COALESCE(${saleItems.remainingSessions}, 0) >= ${out.quantity}`));
+          const upd = await tx.update(saleItems).set({ remainingSessions: import_drizzle_orm33.sql`${saleItems.remainingSessions} - ${out.quantity}`, updatedAt: import_drizzle_orm33.sql`NOW()` }).where(import_drizzle_orm33.and(import_drizzle_orm33.eq(saleItems.saleItemId, out.refSaleItemId), import_drizzle_orm33.eq(saleItems.storeId, out.sourceStoreId), import_drizzle_orm33.sql`COALESCE(${saleItems.remainingSessions}, 0) >= ${out.quantity}`));
           if (rowsAffected(upd) === 0)
             throw new ApiError("CONFLICT", "CARD_CONCURRENT_CHANGED: 卡状态变化，请重试");
         } else if (out.productType === "家居产品") {
-          const upd = await tx.update(saleItems).set({ convertedQuantity: import_drizzle_orm33.sql`COALESCE(${saleItems.convertedQuantity}, 0) + ${out.quantity}`, updatedAt: import_drizzle_orm33.sql`NOW()` }).where(import_drizzle_orm33.and(import_drizzle_orm33.eq(saleItems.saleItemId, out.refSaleItemId), import_drizzle_orm33.eq(saleItems.storeId, data.storeId), import_drizzle_orm33.eq(saleItems.productType, "家居产品"), import_drizzle_orm33.sql`(COALESCE(${saleItems.pickedUpQuantity}, 0) + COALESCE(${saleItems.refundedQuantity}, 0) + COALESCE(${saleItems.convertedQuantity}, 0) + ${out.quantity}) <= ${saleItems.quantity}`));
+          const upd = await tx.update(saleItems).set({ convertedQuantity: import_drizzle_orm33.sql`COALESCE(${saleItems.convertedQuantity}, 0) + ${out.quantity}`, updatedAt: import_drizzle_orm33.sql`NOW()` }).where(import_drizzle_orm33.and(import_drizzle_orm33.eq(saleItems.saleItemId, out.refSaleItemId), import_drizzle_orm33.eq(saleItems.storeId, out.sourceStoreId), import_drizzle_orm33.eq(saleItems.productType, "家居产品"), import_drizzle_orm33.sql`(COALESCE(${saleItems.pickedUpQuantity}, 0) + COALESCE(${saleItems.refundedQuantity}, 0) + COALESCE(${saleItems.convertedQuantity}, 0) + ${out.quantity}) <= ${saleItems.quantity}`));
           if (rowsAffected(upd) === 0)
             throw new ApiError("CONFLICT", "HOME_PRODUCT_CONCURRENT_CHANGED: 家居产品可提数量变化，请重试");
         }
@@ -174256,7 +174263,7 @@ var getServiceStaffCandidates = withPermission("service:create", async (session4
 });
 var searchEmployees = withPermission("employee:list", async (session4, keyword) => {
   const trimmed = keyword.trim();
-  if (trimmed.length < 3)
+  if (trimmed.length < 2)
     return [];
   const pattern = `%${trimmed}%`;
   const rows = await db2.select({
@@ -175464,6 +175471,7 @@ var getCustomerHeldCards = withPermission("sale_order:list", async (session4, cl
     marketName: saleOrders.marketName,
     legacySource: saleOrders.legacySource,
     storeId: saleItems.storeId,
+    storeName: stores.storeName,
     skuId: saleItems.skuId,
     itemDirection: saleItems.itemDirection,
     refSaleItemId: saleItems.refSaleItemId,
@@ -175489,7 +175497,12 @@ var getCustomerHeldCards = withPermission("sale_order:list", async (session4, cl
     productKind: productCategories.productKind,
     categoryId: productSkus.categoryId,
     categoryName: productCategories.categoryName
-  }).from(saleItems).innerJoin(saleOrders, import_drizzle_orm55.eq(saleItems.saleOrderId, saleOrders.saleOrderId)).leftJoin(productSkus, import_drizzle_orm55.eq(saleItems.skuId, productSkus.skuId)).leftJoin(productCategories, import_drizzle_orm55.eq(productSkus.categoryId, productCategories.categoryId)).where(import_drizzle_orm55.and(import_drizzle_orm55.eq(saleItems.storeId, storeId), import_drizzle_orm55.eq(saleOrders.clientUserId, clientUserId), cardEntitlementDirectionCondition(), import_drizzle_orm55.inArray(saleOrders.status, [...CARD_ENTITLEMENT_ORDER_STATUSES]), import_drizzle_orm55.inArray(saleItems.productType, ["疗程卡", "家居产品"]), import_drizzle_orm55.sql`(
+  }).from(saleItems).innerJoin(saleOrders, import_drizzle_orm55.eq(saleItems.saleOrderId, saleOrders.saleOrderId)).leftJoin(stores, import_drizzle_orm55.eq(saleItems.storeId, stores.storeId)).leftJoin(productSkus, import_drizzle_orm55.eq(saleItems.skuId, productSkus.skuId)).leftJoin(productCategories, import_drizzle_orm55.eq(productSkus.categoryId, productCategories.categoryId)).where(import_drizzle_orm55.and(import_drizzle_orm55.eq(saleOrders.clientUserId, clientUserId), import_drizzle_orm55.sql`EXISTS (
+          SELECT 1 FROM client_wechat_users cu
+          WHERE cu.user_id = ${clientUserId}
+            AND cu.bound_store_id IS NOT NULL
+            AND (cu.bound_store_id = ${storeId} OR cu.is_cross_store_temp = TRUE)
+        )`, cardEntitlementDirectionCondition(), import_drizzle_orm55.inArray(saleOrders.status, [...CARD_ENTITLEMENT_ORDER_STATUSES]), import_drizzle_orm55.inArray(saleItems.productType, ["疗程卡", "家居产品"]), import_drizzle_orm55.sql`(
           CASE WHEN ${saleOrders.saleOrderType} = '寄存单' OR ${saleItems.saleAmount} <= 0
                THEN (
                  CASE WHEN ${saleItems.productType} = '疗程卡'
@@ -175538,6 +175551,7 @@ var getCustomerHeldCards = withPermission("sale_order:list", async (session4, cl
       marketName: r.marketName,
       legacySource: r.legacySource,
       storeId: r.storeId,
+      storeName: r.storeName ?? null,
       skuId: r.skuId ?? null,
       itemDirection: r.itemDirection,
       refSaleItemId: r.refSaleItemId ?? null,
@@ -175943,6 +175957,136 @@ var GENERIC_DOC_BUSINESS_LEVEL = {
 function genericDocBusinessLevel(docType) {
   return GENERIC_DOC_BUSINESS_LEVEL[docType] ?? null;
 }
+// src/lib/inventory/operation-doc-types.ts
+var INVENTORY_OPERATION_IDS = [
+  "store-request",
+  "market-report",
+  "item-company-request",
+  "purchase-order",
+  "market-report-summary",
+  "company-shipment",
+  "market-receipt",
+  "supply-chain-receipt",
+  "supply-chain-purchase-cancel",
+  "store-allocation",
+  "store-receipt",
+  "store-return",
+  "market-return",
+  "store-return-approval",
+  "market-return-approval",
+  "staff-purchase",
+  "supply-chain-staff-purchase",
+  "self-purchase",
+  "external-outbound",
+  "supply-chain-conversion",
+  "shipment-cancel",
+  "shipment-cancel-approval"
+];
+var INVENTORY_OPERATION_DOC_QUERY = {
+  "item-company-request": { produced: { docTypes: ["品项公司报货需求"] } },
+  "market-report-summary": { produced: { docTypes: ["市场报货汇总"] } },
+  "purchase-order": { produced: { docTypes: ["采购订单"] } },
+  "company-shipment": {
+    produced: { docTypes: ["品项公司发货"] },
+    inbox: {
+      docTypes: ["市场报货"],
+      statuses: ["已完成"],
+      scopeRole: "target",
+      pendingItemScope: "company-shipment"
+    }
+  },
+  "supply-chain-receipt": {
+    produced: { docTypes: ["供应链采购入库"] },
+    inbox: {
+      docTypes: ["采购订单"],
+      statuses: ["待收货"],
+      scopeRole: "target",
+      pendingItemScope: "supply-chain"
+    }
+  },
+  "supply-chain-purchase-cancel": {
+    produced: { docTypes: ["采购订单"], statuses: ["已取消"] },
+    inbox: { docTypes: ["采购订单"], statuses: ["待收货"], scopeRole: "target" }
+  },
+  "market-return-approval": {
+    produced: { docTypes: ["供应链退货入库"] },
+    inbox: { docTypes: ["市场退货"], statuses: ["待审批"], scopeRole: "target" }
+  },
+  "shipment-cancel-approval": {
+    produced: {
+      docTypes: ["品项公司发货"],
+      statuses: ["已取消"],
+      cancellationRequested: true
+    },
+    inbox: {
+      docTypes: ["品项公司发货"],
+      statuses: ["待审批"],
+      scopeRole: "source",
+      cancellationRequested: true
+    }
+  },
+  "supply-chain-conversion": {
+    produced: {
+      docTypes: ["库存转换出库", "库存转换入库"],
+      locationType: "总部"
+    }
+  },
+  "external-outbound": { produced: { docTypes: ["非凤御市场出库"] } },
+  "supply-chain-staff-purchase": { produced: { docTypes: ["供应链员工购出库"] } },
+  "market-report": {
+    produced: { docTypes: ["市场报货"], statuses: ["已完成"] },
+    inbox: { docTypes: ["市场报货"], statuses: ["草稿"], scopeRole: "source" }
+  },
+  "market-receipt": {
+    produced: { docTypes: ["市场采购入库"] },
+    inbox: { docTypes: ["品项公司发货"], statuses: ["待收货"], scopeRole: "target" }
+  },
+  "store-allocation": { produced: { docTypes: ["分院配货"] } },
+  "store-return-approval": {
+    produced: { docTypes: ["市场退货入库"] },
+    inbox: { docTypes: ["院退货"], statuses: ["待审批"], scopeRole: "target" }
+  },
+  "market-return": { produced: { docTypes: ["市场退货"] } },
+  "shipment-cancel": { produced: { docTypes: ["品项公司发货"], cancellationRequested: true } },
+  "staff-purchase": { produced: { docTypes: ["员工购出库"] } },
+  "self-purchase": { produced: { docTypes: ["自采产品入库"] } },
+  "store-request": {
+    produced: { docTypes: ["门店报货"], statuses: ["已完成"] },
+    inbox: { docTypes: ["门店报货"], statuses: ["草稿"], scopeRole: "source" }
+  },
+  "store-receipt": {
+    produced: { docTypes: ["院入库"] },
+    inbox: { docTypes: ["分院配货"], statuses: ["待收货"], scopeRole: "target" }
+  },
+  "store-return": { produced: { docTypes: ["院退货"] } }
+};
+var GENERIC_OPERATION_PREFIX = "generic:";
+function genericOperationId(docType) {
+  return `${GENERIC_OPERATION_PREFIX}${docType}`;
+}
+function asGenericDocType(value) {
+  if (!value)
+    return null;
+  return INVENTORY_GENERIC_DOC_TYPES.includes(value) ? value : null;
+}
+function parseGenericOperationId(operationId) {
+  if (!operationId.startsWith(GENERIC_OPERATION_PREFIX))
+    return null;
+  return asGenericDocType(operationId.slice(GENERIC_OPERATION_PREFIX.length));
+}
+var INVENTORY_GENERIC_OPERATION_INBOX = {
+  分院调货出库: { docTypes: ["分院调货出库"], statuses: ["待收货"], scopeRole: "target" },
+  市场间调货出库: { docTypes: ["市场间调货出库"], statuses: ["待收货"], scopeRole: "target" }
+};
+function resolveOperationDocQuery(operationId) {
+  const genericDocType = parseGenericOperationId(operationId);
+  if (genericDocType) {
+    const inbox = INVENTORY_GENERIC_OPERATION_INBOX[genericDocType];
+    return inbox ? { produced: { docTypes: [genericDocType] }, inbox } : { produced: { docTypes: [genericDocType] } };
+  }
+  return INVENTORY_OPERATION_IDS.includes(operationId) ? INVENTORY_OPERATION_DOC_QUERY[operationId] : null;
+}
+
 // src/lib/inventory/stocktake.ts
 var STOCKTAKE_DOC_TYPES = new Set(["市场库存盘点", "分院库存盘点"]);
 
@@ -177125,7 +177269,8 @@ function docRow(row) {
     cancelledAt: doc.cancelledAt?.toISOString() ?? null,
     createdAt: doc.createdAt.toISOString(),
     updatedAt: doc.updatedAt.toISOString(),
-    partiallyReceived: row.partiallyReceived === true
+    partiallyReceived: row.partiallyReceived === true,
+    processProgress: row.processProgress ?? null
   };
 }
 var partiallyReceivedSql = import_drizzle_orm58.sql`(
@@ -177688,9 +177833,68 @@ var exportInventoryLots = withPermission("inventory:export", async (session4, pa
     priceVisibility
   };
 });
+function progressLinkQuantitySql(relationTypes) {
+  return import_drizzle_orm58.sql`(
+    SELECT COALESCE(SUM(progress_link.quantity), 0)
+      FROM inventory_doc_links progress_link
+      JOIN inventory_docs progress_target ON progress_target.id = progress_link.to_doc_id
+     WHERE progress_link.from_doc_id = ${inventoryDocs.id}
+       AND progress_link.relation_type IN (${import_drizzle_orm58.sql.join(relationTypes.map((value) => import_drizzle_orm58.sql`${value}`), import_drizzle_orm58.sql`, `)})
+       AND progress_target.status <> '已取消'
+  )`;
+}
+var progressOrderedQuantitySql = import_drizzle_orm58.sql`(
+  SELECT COALESCE(SUM(COALESCE(progress_item.fulfilled_quantity, 0)), 0)
+    FROM inventory_doc_items progress_item
+   WHERE progress_item.doc_id = ${inventoryDocs.id}
+)`;
+var progressSummarizedQuantitySql = progressLinkQuantitySql(["市场报货汇总"]);
+var progressStoreSummarizedQuantitySql = progressLinkQuantitySql(["门店报货汇总"]);
+var progressAllocatedQuantitySql = progressLinkQuantitySql(["门店报货配货"]);
+var progressPurchasedQuantitySql = progressLinkQuantitySql(["市场报货采购订单"]);
+var progressShippedQuantitySql = progressLinkQuantitySql(["市场报货发货"]);
+var progressReceivedQuantitySql = import_drizzle_orm58.sql`(
+  SELECT COALESCE(SUM(receipt_link.quantity), 0)
+    FROM inventory_doc_links shipment_link
+    JOIN inventory_docs shipment_doc ON shipment_doc.id = shipment_link.to_doc_id
+    JOIN inventory_doc_links receipt_link ON receipt_link.from_item_id = shipment_link.to_item_id
+    JOIN inventory_docs receipt_doc ON receipt_doc.id = receipt_link.to_doc_id
+   WHERE shipment_link.from_doc_id = ${inventoryDocs.id}
+     AND shipment_link.relation_type = '市场报货发货'
+     AND shipment_doc.status <> '已取消'
+     AND receipt_link.relation_type = '发货收货'
+     AND receipt_doc.status = '已完成'
+)`;
+var inventoryDocProcessProgressSql = import_drizzle_orm58.sql`(
+  CASE
+    WHEN ${inventoryDocs.status} = '已取消' THEN NULL
+    WHEN ${inventoryDocs.docType} IN ('市场报货汇总', '品项公司报货需求') THEN
+      CASE WHEN ${progressOrderedQuantitySql} >= ${inventoryDocs.totalQuantity} AND ${progressOrderedQuantitySql} > 0 THEN '已采购'
+           WHEN ${progressOrderedQuantitySql} > 0 THEN '部分采购' ELSE '未采购' END
+    WHEN ${inventoryDocs.docType} = '门店报货' THEN
+      CASE WHEN ${inventoryDocs.status} <> '已完成' THEN '未提交'
+           WHEN ${progressAllocatedQuantitySql} >= ${inventoryDocs.totalQuantity} AND ${progressAllocatedQuantitySql} > 0 THEN '已配货'
+           WHEN ${progressAllocatedQuantitySql} > 0 THEN '部分配货'
+           WHEN ${progressStoreSummarizedQuantitySql} >= ${inventoryDocs.totalQuantity} AND ${progressStoreSummarizedQuantitySql} > 0 THEN '已汇总'
+           WHEN ${progressStoreSummarizedQuantitySql} > 0 THEN '部分汇总' ELSE '未汇总' END
+    WHEN ${inventoryDocs.docType} = '市场报货' THEN
+      CASE WHEN ${inventoryDocs.status} <> '已完成' THEN '未提交'
+           WHEN ${progressReceivedQuantitySql} >= ${inventoryDocs.totalQuantity} AND ${progressReceivedQuantitySql} > 0 THEN '已入库'
+           WHEN ${progressReceivedQuantitySql} > 0 THEN '部分入库'
+           WHEN ${progressShippedQuantitySql} >= ${inventoryDocs.totalQuantity} AND ${progressShippedQuantitySql} > 0 THEN '已发货'
+           WHEN ${progressShippedQuantitySql} > 0 THEN '部分发货'
+           WHEN ${progressPurchasedQuantitySql} >= ${inventoryDocs.totalQuantity} AND ${progressPurchasedQuantitySql} > 0 THEN '已采购'
+           WHEN ${progressPurchasedQuantitySql} > 0 THEN '部分采购'
+           WHEN ${progressSummarizedQuantitySql} >= ${inventoryDocs.totalQuantity} AND ${progressSummarizedQuantitySql} > 0 THEN '已汇总'
+           WHEN ${progressSummarizedQuantitySql} > 0 THEN '部分汇总' ELSE '未汇总' END
+    ELSE NULL
+  END
+)`;
 var listInventoryCoreDocs = withPermission("inventory:list", async (session4, filters = {}) => {
   const startDate = filters.startDate == null || filters.startDate === "" ? undefined : normalizeYmd(filters.startDate, "开始日期");
   const endDate = filters.endDate == null || filters.endDate === "" ? undefined : normalizeYmd(filters.endDate, "结束日期");
+  if (startDate && endDate && startDate > endDate)
+    throw new ApiError("INVALID_PARAMS", "开始日期不能晚于结束日期");
   await syncInventoryLocations();
   const scoped = inventoryScopedOrgNodeIds(session4);
   const { page, pageSize, offset } = resolvePaging({
@@ -177752,6 +177956,30 @@ var listInventoryCoreDocs = withPermission("inventory:list", async (session4, fi
              AND COALESCE(pending_item.fulfilled_quantity, 0) < pending_item.quantity
         )`);
   }
+  if (filters.processProgress) {
+    const allowed = new Set([
+      "未提交",
+      "未汇总",
+      "部分汇总",
+      "已汇总",
+      "未采购",
+      "部分采购",
+      "已采购",
+      "部分配货",
+      "已配货",
+      "部分发货",
+      "已发货",
+      "部分入库",
+      "已入库"
+    ]);
+    if (!allowed.has(filters.processProgress))
+      throw new ApiError("INVALID_PARAMS", "未知的流程进度");
+    conditions3.push(filters.processProgress === "未采购" ? import_drizzle_orm58.sql`${inventoryDocs.docType} IN ('市场报货汇总', '品项公司报货需求')
+          AND ${inventoryDocs.status} <> '已取消'
+          AND EXISTS (SELECT 1 FROM inventory_doc_items progress_pending_item
+                       WHERE progress_pending_item.doc_id = ${inventoryDocs.id}
+                         AND COALESCE(progress_pending_item.fulfilled_quantity, 0) < progress_pending_item.quantity)` : import_drizzle_orm58.sql`${inventoryDocProcessProgressSql} = ${filters.processProgress}`);
+  }
   if (startDate)
     conditions3.push(import_drizzle_orm58.gte(inventoryDocs.docDate, startDate));
   if (endDate)
@@ -177768,7 +177996,8 @@ var listInventoryCoreDocs = withPermission("inventory:list", async (session4, fi
     sourceOrgNodeType: sourceLocation.locationType,
     targetOrgNodeName: targetLocation.name,
     targetOrgNodeType: targetLocation.locationType,
-    partiallyReceived: partiallyReceivedSql
+    partiallyReceived: partiallyReceivedSql,
+    processProgress: inventoryDocProcessProgressSql
   }).from(inventoryDocs).leftJoin(sourceLocation, import_drizzle_orm58.eq(sourceLocation.orgNodeId, inventoryDocs.sourceOrgNodeId)).leftJoin(targetLocation, import_drizzle_orm58.eq(targetLocation.orgNodeId, inventoryDocs.targetOrgNodeId)).where(whereClause).orderBy(import_drizzle_orm58.desc(inventoryDocs.docDate), import_drizzle_orm58.desc(inventoryDocs.createdAt), import_drizzle_orm58.desc(inventoryDocs.id)).limit(pageSize).offset(offset);
   const priceVisibility = inventoryPriceVisibility(session4);
   const priceTiers = inventoryPriceScopeByTier(session4);
@@ -177782,6 +178011,63 @@ var listInventoryCoreDocs = withPermission("inventory:list", async (session4, fi
     canViewPrice: priceVisibility !== "none",
     priceVisibility
   };
+});
+var listInventoryOperationInboxTotals = withPermission("inventory:list", async (session4) => {
+  await syncInventoryLocations();
+  const scoped = inventoryScopedOrgNodeIds(session4);
+  const operationIds = [
+    ...INVENTORY_OPERATION_IDS,
+    ...INVENTORY_GENERIC_DOC_TYPES.map(genericOperationId)
+  ];
+  const inboxes = operationIds.flatMap((operationId) => {
+    const inbox = resolveOperationDocQuery(operationId)?.inbox;
+    return inbox ? [{ operationId, inbox }] : [];
+  });
+  if (inboxes.length === 0)
+    return {};
+  const locationTypes = [...new Set(inboxes.flatMap(({ inbox }) => inbox.locationType ? [inbox.locationType] : []))];
+  const typedIds = new Map;
+  for (const locationType of locationTypes) {
+    const rows = await db2.select({ orgNodeId: inventoryLocations.orgNodeId }).from(inventoryLocations).where(import_drizzle_orm58.eq(inventoryLocations.locationType, locationType));
+    typedIds.set(locationType, rows.flatMap((row2) => row2.orgNodeId ? [row2.orgNodeId] : []));
+  }
+  const conditionFor = (filter) => {
+    const conditions3 = [import_drizzle_orm58.inArray(inventoryDocs.docType, [...filter.docTypes])];
+    if (scoped !== null) {
+      conditions3.push(scoped.length > 0 ? import_drizzle_orm58.or(import_drizzle_orm58.inArray(inventoryDocs.sourceOrgNodeId, scoped), import_drizzle_orm58.inArray(inventoryDocs.targetOrgNodeId, scoped)) : import_drizzle_orm58.sql`FALSE`);
+    }
+    if (filter.scopeRole && scoped !== null) {
+      const endpoint = filter.scopeRole === "source" ? inventoryDocs.sourceOrgNodeId : inventoryDocs.targetOrgNodeId;
+      conditions3.push(scoped.length > 0 ? import_drizzle_orm58.inArray(endpoint, scoped) : import_drizzle_orm58.sql`FALSE`);
+    }
+    if (filter.statuses)
+      conditions3.push(import_drizzle_orm58.inArray(inventoryDocs.status, [...filter.statuses]));
+    if (filter.locationType) {
+      const ids = typedIds.get(filter.locationType) ?? [];
+      conditions3.push(ids.length > 0 ? import_drizzle_orm58.or(import_drizzle_orm58.inArray(inventoryDocs.sourceOrgNodeId, ids), import_drizzle_orm58.inArray(inventoryDocs.targetOrgNodeId, ids)) : import_drizzle_orm58.sql`FALSE`);
+    }
+    if (filter.cancellationRequested)
+      conditions3.push(import_drizzle_orm58.isNotNull(inventoryDocs.cancellationRequestReason));
+    if (filter.pendingItemScope === "company-shipment") {
+      conditions3.push(import_drizzle_orm58.sql`EXISTS (
+          SELECT 1 FROM inventory_doc_items pending_item
+           WHERE pending_item.doc_id = ${inventoryDocs.id}
+             AND ${reportItemShippedSql(import_drizzle_orm58.sql`pending_item.id`)} < pending_item.quantity
+        )`);
+    } else if (filter.pendingItemScope === "supply-chain") {
+      conditions3.push(import_drizzle_orm58.sql`EXISTS (
+          SELECT 1 FROM inventory_doc_items pending_item
+           WHERE pending_item.doc_id = ${inventoryDocs.id}
+             AND COALESCE(pending_item.fulfilled_quantity, 0) < pending_item.quantity
+        )`);
+    }
+    return import_drizzle_orm58.and(...conditions3);
+  };
+  const projections = inboxes.map(({ inbox }, index3) => import_drizzle_orm58.sql`
+      COUNT(*) FILTER (WHERE ${conditionFor(inbox)})::int AS ${import_drizzle_orm58.sql.identifier(`inbox_${index3}`)}
+    `);
+  const [row] = await db2.execute(import_drizzle_orm58.sql`SELECT ${import_drizzle_orm58.sql.join(projections, import_drizzle_orm58.sql`, `)} FROM ${inventoryDocs}`);
+  return Object.fromEntries(inboxes.map(({ operationId }, index3) => [operationId, Number(row?.[`inbox_${index3}`] ?? 0)]));
 });
 function reportItemShippedSql(reportItemId) {
   return import_drizzle_orm58.sql`(
@@ -178002,80 +178288,65 @@ function visibleInventoryDocsSql(scoped) {
 function asDocDate(value) {
   return fmtDate(value);
 }
-async function loadInventoryDocLineage(docId, docType, scoped) {
-  const linkedDocVisible = scoped === null ? import_drizzle_orm58.sql`TRUE` : import_drizzle_orm58.sql`(
-      (doc_link.from_doc_id = ${docId} AND ${inventoryDocScopeSql(scoped, import_drizzle_orm58.sql`to_doc.source_org_node_id`, import_drizzle_orm58.sql`to_doc.target_org_node_id`)})
-      OR
-      (doc_link.to_doc_id = ${docId} AND ${inventoryDocScopeSql(scoped, import_drizzle_orm58.sql`from_doc.source_org_node_id`, import_drizzle_orm58.sql`from_doc.target_org_node_id`)})
-    )`;
+async function loadInventoryDocLineage(docId, scoped) {
   const rows = await db2.execute(import_drizzle_orm58.sql`
-    SELECT
-      CASE WHEN doc_link.from_doc_id = ${docId} THEN '下游' ELSE '上游' END AS direction,
-      doc_link.relation_type,
-      CASE WHEN doc_link.from_doc_id = ${docId} THEN to_doc.id ELSE from_doc.id END AS doc_id,
-      CASE WHEN doc_link.from_doc_id = ${docId} THEN to_doc.doc_type ELSE from_doc.doc_type END AS doc_type,
-      CASE WHEN doc_link.from_doc_id = ${docId} THEN to_doc.status ELSE from_doc.status END AS status,
-      CASE WHEN doc_link.from_doc_id = ${docId} THEN to_doc.doc_date ELSE from_doc.doc_date END AS doc_date,
-      CASE WHEN doc_link.from_doc_id = ${docId} THEN to_doc.total_quantity ELSE from_doc.total_quantity END AS total_quantity,
-      MAX(CASE WHEN doc_link.from_doc_id = ${docId} THEN to_source.name ELSE from_source.name END) AS source_org_node_name,
-      COALESCE(SUM(doc_link.quantity), 0) AS linked_quantity,
-      MAX(doc_link.created_at) AS linked_at
-    FROM inventory_doc_links doc_link
-    JOIN inventory_docs from_doc ON from_doc.id = doc_link.from_doc_id
-    JOIN inventory_docs to_doc ON to_doc.id = doc_link.to_doc_id
-    LEFT JOIN inventory_locations from_source ON from_source.org_node_id = from_doc.source_org_node_id
-    LEFT JOIN inventory_locations to_source ON to_source.org_node_id = to_doc.source_org_node_id
-    WHERE (doc_link.from_doc_id = ${docId} OR doc_link.to_doc_id = ${docId})
-      AND ${linkedDocVisible}
-    GROUP BY
-      doc_link.from_doc_id,
-      doc_link.to_doc_id,
-      doc_link.relation_type,
-      from_doc.id,
-      from_doc.doc_type,
-      from_doc.status,
-      from_doc.doc_date,
-      from_doc.total_quantity,
-      to_doc.id,
-      to_doc.doc_type,
-      to_doc.status,
-      to_doc.doc_date,
-      to_doc.total_quantity
-    ORDER BY linked_at DESC, doc_link.relation_type ASC
+    WITH RECURSIVE lineage_walk(direction, depth, doc_id, via_doc_id, relation_type, linked_quantity, path) AS (
+      SELECT seed.direction, 0, ${docId}::text, NULL::text, NULL::text, 0::numeric, ARRAY[${docId}::text]
+        FROM (VALUES ('上游'::text), ('下游'::text)) seed(direction)
+      UNION ALL
+      SELECT walk.direction, walk.depth + 1,
+             CASE WHEN walk.direction = '上游' THEN edge.from_doc_id ELSE edge.to_doc_id END,
+             walk.doc_id, edge.relation_type, edge.linked_quantity,
+             walk.path || (CASE WHEN walk.direction = '上游' THEN edge.from_doc_id ELSE edge.to_doc_id END)
+        FROM lineage_walk walk
+        JOIN LATERAL (
+          SELECT local_link.from_doc_id, local_link.to_doc_id, local_link.relation_type,
+                 COALESCE(SUM(local_link.quantity), 0) AS linked_quantity
+            FROM (
+              SELECT upstream.from_doc_id, upstream.to_doc_id, upstream.relation_type, upstream.quantity
+                FROM inventory_doc_links upstream
+               WHERE walk.direction = '上游' AND upstream.to_doc_id = walk.doc_id
+              UNION ALL
+              SELECT downstream.from_doc_id, downstream.to_doc_id, downstream.relation_type, downstream.quantity
+                FROM inventory_doc_links downstream
+               WHERE walk.direction = '下游' AND downstream.from_doc_id = walk.doc_id
+            ) local_link
+            JOIN inventory_docs from_doc ON from_doc.id = local_link.from_doc_id
+            JOIN inventory_docs to_doc ON to_doc.id = local_link.to_doc_id
+           WHERE ${inventoryDocScopeSql(scoped, import_drizzle_orm58.sql`from_doc.source_org_node_id`, import_drizzle_orm58.sql`from_doc.target_org_node_id`)}
+             AND ${inventoryDocScopeSql(scoped, import_drizzle_orm58.sql`to_doc.source_org_node_id`, import_drizzle_orm58.sql`to_doc.target_org_node_id`)}
+           GROUP BY local_link.from_doc_id, local_link.to_doc_id, local_link.relation_type
+        ) edge ON TRUE
+       WHERE (CASE WHEN walk.direction = '上游' THEN edge.from_doc_id ELSE edge.to_doc_id END) <> ALL(walk.path)
+    ),
+    ranked_lineage AS (
+      -- 同一条关系边可能经多条路径抵达；只去重该边，保留正常/赠送等不同关系的数量。
+      SELECT walk.direction, walk.depth, walk.doc_id, walk.via_doc_id,
+             walk.relation_type, walk.linked_quantity,
+             ROW_NUMBER() OVER (
+               PARTITION BY walk.direction, walk.doc_id, walk.via_doc_id, walk.relation_type
+               ORDER BY walk.depth DESC, walk.via_doc_id, walk.relation_type
+             ) AS row_rank
+        FROM lineage_walk walk
+       WHERE walk.depth > 0
+    )
+    SELECT walk.direction, walk.depth, walk.via_doc_id, walk.relation_type,
+           linked_doc.id AS doc_id, linked_doc.doc_type, linked_doc.status,
+           linked_doc.doc_date, linked_doc.total_quantity,
+           source_location.name AS source_org_node_name, walk.linked_quantity
+      FROM ranked_lineage walk
+      JOIN inventory_docs linked_doc ON linked_doc.id = walk.doc_id
+      LEFT JOIN inventory_locations source_location ON source_location.org_node_id = linked_doc.source_org_node_id
+     WHERE walk.row_rank = 1
+     ORDER BY walk.direction, walk.depth, linked_doc.doc_date, linked_doc.id, walk.relation_type
   `);
-  if (docType !== "市场采购入库")
-    return mapLineageRows(rows);
-  const reportVisible = scoped === null ? import_drizzle_orm58.sql`TRUE` : inventoryDocScopeSql(scoped, import_drizzle_orm58.sql`origin_report.source_org_node_id`, import_drizzle_orm58.sql`origin_report.target_org_node_id`);
-  const originReportRows = await db2.execute(import_drizzle_orm58.sql`
-    SELECT
-      '上游' AS direction,
-      '原始报货单（经品项公司发货）' AS relation_type,
-      origin_report.id AS doc_id,
-      origin_report.doc_type,
-      origin_report.status,
-      origin_report.doc_date,
-      origin_report.total_quantity,
-      MAX(origin_source.name) AS source_org_node_name,
-      COALESCE(SUM(origin_receipt_link.quantity), 0) AS linked_quantity,
-      MAX(origin_receipt_link.created_at) AS linked_at
-    FROM inventory_doc_links origin_receipt_link
-    JOIN inventory_doc_links origin_ship_link
-      ON origin_ship_link.to_item_id = origin_receipt_link.from_item_id
-     AND origin_ship_link.relation_type IN ('市场报货发货', '市场报货赠送发货')
-    JOIN inventory_docs origin_report ON origin_report.id = origin_ship_link.from_doc_id
-    LEFT JOIN inventory_locations origin_source ON origin_source.org_node_id = origin_report.source_org_node_id
-    WHERE origin_receipt_link.to_doc_id = ${docId}
-      AND origin_receipt_link.relation_type = '发货收货'
-      AND ${reportVisible}
-    GROUP BY origin_report.id, origin_report.doc_type, origin_report.status,
-             origin_report.doc_date, origin_report.total_quantity
-    ORDER BY linked_at DESC
-  `);
-  return mapLineageRows([...rows, ...originReportRows]);
+  return mapLineageRows(rows);
 }
 function mapLineageRows(rows) {
   return rows.map((row) => ({
     direction: row.direction,
+    depth: Number(row.depth),
+    viaDocId: row.via_doc_id,
     relationType: row.relation_type,
     docId: row.doc_id,
     docType: row.doc_type,
@@ -178510,6 +178781,25 @@ async function loadInventoryDocFulfillmentProgress(docType, docId, scoped) {
   if (docType === "品项公司报货需求") {
     return loadItemCompanyRequestFulfillmentProgress(docId, scoped);
   }
+  if (docType === "市场报货汇总") {
+    const rows = await db2.execute(import_drizzle_orm58.sql`
+      SELECT item.id AS item_id,
+             COALESCE(item.fulfilled_quantity, 0) AS ordered_quantity,
+             GREATEST(item.quantity - COALESCE(item.fulfilled_quantity, 0), 0) AS outstanding_quantity
+        FROM inventory_doc_items item
+        JOIN (${visibleInventoryDocsSql(scoped)}) visible_summary ON visible_summary.id = item.doc_id
+       WHERE item.doc_id = ${docId}
+       ORDER BY item.id
+    `);
+    return {
+      kind: "市场汇总采购",
+      items: rows.map((row) => ({
+        itemId: Number(row.item_id),
+        orderedQuantity: Number(row.ordered_quantity),
+        outstandingQuantity: Number(row.outstanding_quantity)
+      }))
+    };
+  }
   if (docType === "采购订单") {
     return loadSupplyChainPurchaseReceiptProgress(docId, scoped);
   }
@@ -178557,7 +178847,7 @@ var getInventoryCoreDocById = withPermission("inventory:list", async (session4, 
   const includeItemAmount = itemPriceVisibility !== "none";
   const [items, lineage, fulfillmentProgress] = await Promise.all([
     db2.select().from(inventoryDocItems).where(import_drizzle_orm58.eq(inventoryDocItems.docId, id)).orderBy(import_drizzle_orm58.asc(inventoryDocItems.id)),
-    loadInventoryDocLineage(id, head.docType, scoped),
+    loadInventoryDocLineage(id, scoped),
     loadInventoryDocFulfillmentProgress(head.docType, id, scoped)
   ]);
   const itemMarketIds = [...new Set(items.map((item) => item.marketId).filter((id2) => Boolean(id2)))];
