@@ -27,6 +27,7 @@ interface HeldCard {
   marketName?: string;
   legacySource?: string | null;
   storeId?: string;
+  storeName?: string;
   skuId?: string | null;
   itemDirection?: string;
   refSaleItemId?: string | null;

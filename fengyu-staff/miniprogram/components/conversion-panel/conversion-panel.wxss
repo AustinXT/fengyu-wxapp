@@ -148,6 +148,10 @@
   font-size: 22rpx;
   color: var(--color-text-secondary);
 }
+.conv-card-source {
+  font-size: 22rpx;
+  color: var(--color-text-secondary);
+}
 .conv-card-meta {
   display: flex;
   align-items: center;
