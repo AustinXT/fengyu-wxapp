@@ -13,13 +13,13 @@
 import './setup.mjs'
 import {
   NS,
-  TEST_STORE_ID, TEST_MANAGER_EMP_ID, TEST_MANAGER_OPENID,
+  TEST_STORE_ID, TEST_STORES_MULTI, TEST_MANAGER_EMP_ID, TEST_MANAGER_OPENID,
   TEST_CLIENT_USER_ID, TEST_CLIENT_PHONE,
   pgQuery, closePool,
 } from './setup.mjs'
 import { invokeStaffApi } from './helpers/invoke.mjs'
 import {
-  ensureTestStore, createTestStaff, createTestClient,
+  ensureTestStore, createTestOrg, createTestStaff, createTestClient,
   createTestProduct, createTestSaleOrder, cleanupTestData,
 } from './helpers/fixtures.mjs'
 
@@ -33,6 +33,7 @@ async function main() {
 
   await cleanupTestData(NS)
   await ensureTestStore()
+  await createTestOrg({ markets: ['A'], stores: ['A2'] })
   await createTestStaff()
   await createTestClient()
 
@@ -63,6 +64,7 @@ async function main() {
   const sourceOrderId = `${NS}_CONV_SRC`
   await createTestSaleOrder({
     saleOrderId: sourceOrderId,
+    storeId: TEST_STORES_MULTI.A2.storeId,
     clientUserId: TEST_CLIENT_USER_ID,
     skuId: sourceSku.skuId,
     productName: sourceSku.specName,
@@ -81,6 +83,20 @@ async function main() {
   )
   const sourceItemId = sourceItems[0].sale_item_id
   rec(`  ✓ fixture: 源卡 ${sourceItemId} (5次×¥500=¥2500), 目标 ${targetSku.skuId} (¥200)`)
+
+  const candidates = await invokeStaffApi('order.customerHeldCards', {
+    _testOpenid: TEST_MANAGER_OPENID,
+    clientUserId: TEST_CLIENT_USER_ID,
+  })
+  if (candidates.code !== 0) {
+    rec(`  ✗ FAIL: customerHeldCards code=${candidates.code} msg=${candidates.message}`)
+    return
+  }
+  const candidateRows = candidates.data?.items || candidates.data?.cards || []
+  if (!candidateRows.some((item) => item.saleItemId === sourceItemId)) {
+    rec('  ✗ FAIL: 跨店来源卡未进入转换候选')
+    return
+  }
 
   // ─── 调用 createConversion ───
   const result = await invokeStaffApi('order.createConversion', {
@@ -107,7 +123,7 @@ async function main() {
 
   // 2. 转换单主表
   const orders = await pgQuery(
-    `SELECT sale_order_type, status, total_amount, payable_amount FROM sale_orders WHERE sale_order_id = $1`,
+    `SELECT sale_order_type, status, total_amount, payable_amount, store_id FROM sale_orders WHERE sale_order_id = $1`,
     [saleOrderId]
   )
   if (orders.length !== 1) errors.push(`sale_orders 行数=${orders.length}`)
@@ -115,6 +131,7 @@ async function main() {
     const o = orders[0]
     if (o.sale_order_type !== '转换单') errors.push(`sale_order_type 应='转换单'，实际='${o.sale_order_type}'`)
     if (Number(o.total_amount) !== 0) errors.push(`total_amount 应=0（负差额时取 max(0, diff)），实际=${o.total_amount}`)
+    if (o.store_id !== TEST_STORE_ID) errors.push(`新转换单应归当前门店，实际=${o.store_id}`)
   }
 
   // 3. 转出 + 转入双行
@@ -142,11 +159,14 @@ async function main() {
 
   // 4. 源卡 remaining_sessions = 0（已折抵）
   const sourceAfter = await pgQuery(
-    `SELECT remaining_sessions FROM sale_items WHERE sale_item_id = $1`,
+    `SELECT remaining_sessions, store_id FROM sale_items WHERE sale_item_id = $1`,
     [sourceItemId]
   )
   if (Number(sourceAfter[0]?.remaining_sessions) !== 0) {
     errors.push(`源卡 remaining_sessions 应=0（已折抵），实际=${sourceAfter[0]?.remaining_sessions}`)
+  }
+  if (sourceAfter[0]?.store_id !== TEST_STORES_MULTI.A2.storeId) {
+    errors.push(`源卡门店应保留购买门店，实际=${sourceAfter[0]?.store_id}`)
   }
 
   // 5. prepaid_cards 充值 2300
@@ -176,7 +196,7 @@ async function main() {
 
   pass = true
   exitCode = 0
-  rec(`  ✅ PASS — 转换单完整链路正确（折抵 ¥2500, 转入 ¥200, 储值卡入账 ¥2300）`)
+  rec(`  ✅ PASS — 跨店转换完整链路正确（折抵 ¥2500, 转入 ¥200, 储值卡入账 ¥2300）`)
 }
 
 try {
