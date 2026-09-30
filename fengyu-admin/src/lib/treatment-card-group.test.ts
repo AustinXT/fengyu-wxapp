@@ -88,6 +88,20 @@ describe('treatment-card-group', () => {
     expect(groups.slice(1).every((group) => group.sourceItems.length === 1)).toBe(true)
   })
 
+  it('相同项目的不同购买门店不合并，来源门店标签保持准确', () => {
+    const cards = [
+      { saleItemId: 'old', storeId: 'store-old', storeName: '原店', quantity: 1, productName: '护理' },
+      { saleItemId: 'current', storeId: 'store-current', storeName: '现店', quantity: 1, productName: '护理' },
+    ]
+    const groups = groupTreatmentCards(cards, {
+      getId: (card) => card.saleItemId,
+      getQuantity: (card) => card.quantity,
+      getIdentity: getTreatmentCardBusinessIdentity,
+    })
+    expect(groups).toHaveLength(2)
+    expect(groups.map((group) => group.primary.storeName)).toEqual(['原店', '现店'])
+  })
+
   it('操作列表不拆分历史 quantity 大于 1 的单行', () => {
     const cards = [
       { saleItemId: 'legacy', status: '已支付', paidSessions: 3, quantity: 2, amount: '20', availableSessions: 3 },

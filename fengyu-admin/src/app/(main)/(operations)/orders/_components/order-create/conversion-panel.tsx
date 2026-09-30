@@ -241,11 +241,11 @@ export function ConversionPanel({
               <p className="text-xs text-[#999999] py-4 text-center">正在加载候选卡…</p>
             )}
             {!loading && groupedHeldCards.length === 0 && (
-              <p className="text-xs text-[#999999] py-4 text-center">该顾客在当前门店无可折抵项</p>
+              <p className="text-xs text-[#999999] py-4 text-center">该顾客暂无可折抵项</p>
             )}
             {!loading && groupedHeldCards.length > 0 && filteredHeldCards.length === 0 && (
               <p className="text-xs text-[#999999] py-4 text-center">
-                {hasCardFilters ? "未找到匹配的折抵项" : "该顾客在当前门店无可折抵项"}
+                {hasCardFilters ? "未找到匹配的折抵项" : "该顾客暂无可折抵项"}
               </p>
             )}
             <div className="space-y-1 max-h-72 overflow-y-auto">
@@ -283,6 +283,7 @@ export function ConversionPanel({
                           ¥{c.deductibleAmount}
                         </span>
                       </div>
+                      <div className="text-[#777777] mt-0.5">购买门店：{c.storeName || c.storeId}</div>
                       <div className="text-[#999999] mt-0.5 flex items-center gap-2">
                         <span>{c.productType}</span>
                         <span>{remainLabel}</span>
