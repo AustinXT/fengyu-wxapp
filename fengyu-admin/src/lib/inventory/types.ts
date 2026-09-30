@@ -530,6 +530,13 @@ export interface InventoryDocRow {
   partiallyReceived?: boolean
 }
 
+/** 列表展示用派生进度，不参与单据状态机。 */
+export type InventoryDocProcessProgress =
+  | '未提交' | '未汇总' | '部分汇总' | '已汇总'
+  | '未采购' | '部分采购' | '已采购'
+  | '部分配货' | '已配货'
+  | '部分发货' | '已发货' | '部分入库' | '已入库'
+
 export interface InventoryDocItemRow {
   id: number
   docId: string
@@ -633,6 +640,11 @@ export interface InventoryItemCompanyRequestFulfillmentProgress {
   items: InventoryItemCompanyRequestFulfillmentItem[]
 }
 
+export interface InventoryMarketSummaryFulfillmentProgress {
+  kind: '市场汇总采购'
+  items: Array<{ itemId: number; orderedQuantity: number; outstandingQuantity: number }>
+}
+
 /** 采购订单按明细展示分批入库的实收与待收入库数量（#335 起统计所有行）。 */
 export interface InventorySupplyChainPurchaseReceiptProgressItem {
   itemId: number
@@ -654,6 +666,7 @@ export type InventoryDocFulfillmentProgress =
   | InventoryReportFulfillmentProgress
   | InventoryShipmentReceiptProgress
   | InventoryItemCompanyRequestFulfillmentProgress
+  | InventoryMarketSummaryFulfillmentProgress
   | InventorySupplyChainPurchaseReceiptProgress
 
 export interface InventoryDocDetail extends InventoryDocRow {

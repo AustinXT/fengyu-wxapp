@@ -2444,6 +2444,7 @@ export const listInventoryCoreDocs = withPermission(
   ): Promise<{ data: InventoryDocRow[]; total: number; pageSize: number; canViewPrice: boolean; priceVisibility: import('./types').InventoryPriceVisibility }> => {
     const startDate = filters.startDate == null || filters.startDate === '' ? undefined : normalizeYmd(filters.startDate, '开始日期')
     const endDate = filters.endDate == null || filters.endDate === '' ? undefined : normalizeYmd(filters.endDate, '结束日期')
+    if (startDate && endDate && startDate > endDate) throw new ApiError('INVALID_PARAMS', '开始日期不能晚于结束日期')
     await syncInventoryLocations()
     const scoped = inventoryScopedOrgNodeIds(session)
     const { page, pageSize, offset } = resolvePaging({
@@ -3566,6 +3567,25 @@ async function loadInventoryDocFulfillmentProgress(
   if (docType === '门店报货') return loadStoreReportFulfillmentProgress(docId, scoped)
   if (docType === '品项公司报货需求') {
     return loadItemCompanyRequestFulfillmentProgress(docId, scoped)
+  }
+  if (docType === '市场报货汇总') {
+    const rows = await db.execute(sql`
+      SELECT item.id AS item_id,
+             COALESCE(item.fulfilled_quantity, 0) AS ordered_quantity,
+             GREATEST(item.quantity - COALESCE(item.fulfilled_quantity, 0), 0) AS outstanding_quantity
+        FROM inventory_doc_items item
+        JOIN (${visibleInventoryDocsSql(scoped)}) visible_summary ON visible_summary.id = item.doc_id
+       WHERE item.doc_id = ${docId}
+       ORDER BY item.id
+    `) as unknown as Array<{ item_id: number | string; ordered_quantity: string | number; outstanding_quantity: string | number }>
+    return {
+      kind: '市场汇总采购',
+      items: rows.map((row) => ({
+        itemId: Number(row.item_id),
+        orderedQuantity: Number(row.ordered_quantity),
+        outstandingQuantity: Number(row.outstanding_quantity),
+      })),
+    }
   }
   // 采购订单的所有行（不论有无市场归属）都经供应链采购入库（#335），收货进度统计全部明细；
   // 市场行另带正常发货量，供品项公司发货表单算剩余可发量。

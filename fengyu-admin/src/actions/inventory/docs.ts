@@ -58,7 +58,7 @@ export const listInventoryOperationDocs = withPermission(
   'inventory:list',
   async (
     _session,
-    input: { operationId: string; page?: number; inboxPage?: number; pageSize?: number },
+    input: { operationId: string; page?: number; inboxPage?: number; pageSize?: number; startDate?: string; endDate?: string },
   ) => {
     /*
      * `resolveOperationDocQuery` 内部先过白名单再查表，**不能**退回成
@@ -84,6 +84,8 @@ export const listInventoryOperationDocs = withPermission(
       pendingItemScope: filter.pendingItemScope,
       page,
       pageSize: input.pageSize,
+      startDate: input.startDate,
+      endDate: input.endDate,
     })
     const produced = await listInventoryCoreDocsImpl(toFilters(query.produced, input.page))
     const inbox = query.inbox

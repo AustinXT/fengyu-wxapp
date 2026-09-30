@@ -80,6 +80,9 @@ export default async function Page({
   const itemCompanyRequestFulfillment = doc.fulfillmentProgress?.kind === '品项公司报货履约'
     ? doc.fulfillmentProgress
     : null
+  const marketSummaryFulfillment = doc.fulfillmentProgress?.kind === '市场汇总采购'
+    ? doc.fulfillmentProgress
+    : null
   const supplyChainPurchaseFulfillment = doc.fulfillmentProgress?.kind === '供应链采购收货'
     ? doc.fulfillmentProgress
     : null
@@ -92,6 +95,9 @@ export default async function Page({
   const itemCompanyRequestProgressByItemId = new Map(
     itemCompanyRequestFulfillment?.items.map((item) => [item.itemId, item]) ?? [],
   )
+  const marketSummaryProgressByItemId = new Map(
+    marketSummaryFulfillment?.items.map((item) => [item.itemId, item]) ?? [],
+  )
   const supplyChainPurchaseProgressByItemId = new Map(
     supplyChainPurchaseFulfillment?.items.map((item) => [item.itemId, item]) ?? [],
   )
@@ -100,6 +106,7 @@ export default async function Page({
     : 0
   const shipmentColumnCount = shipmentFulfillment ? 2 : 0
   const itemCompanyRequestColumnCount = itemCompanyRequestFulfillment ? 3 : 0
+  const marketSummaryColumnCount = marketSummaryFulfillment ? 2 : 0
   // 采购订单的市场行（#335）：同样经供应链采购入库，另列市场结算价（参考）。
   // 发货自 #336 起直连市场报货单，采购单上不再有「已发货」列。
   const hasPurchaseMarketLine = doc.docType === '采购订单' && doc.items.some((item) => item.marketId)
@@ -131,7 +138,7 @@ export default async function Page({
   const priceColumnCount = showPrice ? (showMarketReportPrice ? 4 + Number(showMarketReportStorePrice) : showStoreAllocationPrice ? 4 : 2 + marketReferencePriceColumnCount) : 0
   const promotionColumnCount = doc.items.some((item) => item.promotionPlanId || item.promotionPlanNoSnapshot) ? 1 : 0
   const itemColumnCount = 9 + lineOwnershipColumnCount + priceColumnCount + reportColumnCount + shipmentColumnCount +
-    itemCompanyRequestColumnCount + supplyChainPurchaseColumnCount + promotionColumnCount +
+    itemCompanyRequestColumnCount + marketSummaryColumnCount + supplyChainPurchaseColumnCount + promotionColumnCount +
     stocktakeColumnCount
   // 市场报货单的整单履约（#336）：已发 / 已收都按「市场报货发货」直连血缘累计，只算正常量（赠送不占报货量），
   // 用来判断「是否已全部发出 / 全部入库」。
@@ -337,6 +344,10 @@ export default async function Page({
                 <th className="px-3 py-2 text-right">已下单</th>
                 <th className="px-3 py-2 text-right">已入库</th>
               </>}
+              {marketSummaryFulfillment && <>
+                <th className="px-3 py-2 text-right">已下单</th>
+                <th className="px-3 py-2 text-right">未下单</th>
+              </>}
               {supplyChainPurchaseFulfillment && <>
                 <th className="px-3 py-2 text-right">已入库</th>
                 <th className="px-3 py-2 text-right">待入库</th>
@@ -350,6 +361,7 @@ export default async function Page({
               const reportProgress = reportProgressByItemId.get(item.id)
               const shipmentProgress = shipmentProgressByItemId.get(item.id)
               const itemCompanyRequestProgress = itemCompanyRequestProgressByItemId.get(item.id)
+              const marketSummaryProgress = marketSummaryProgressByItemId.get(item.id)
               const supplyChainPurchaseProgress = supplyChainPurchaseProgressByItemId.get(item.id)
               return (
                 <tr key={item.id} className="border-t border-[var(--border)]">
@@ -417,6 +429,10 @@ export default async function Page({
                     <td className="px-3 py-2 text-right">{fmt(itemCompanyRequestProgress?.demandQuantity)}</td>
                     <td className="px-3 py-2 text-right">{fmt(itemCompanyRequestProgress?.orderedQuantity)}</td>
                     <td className="px-3 py-2 text-right">{fmt(itemCompanyRequestProgress?.receivedQuantity)}</td>
+                  </>}
+                  {marketSummaryFulfillment && <>
+                    <td className="px-3 py-2 text-right">{fmt(marketSummaryProgress?.orderedQuantity)}</td>
+                    <td className="px-3 py-2 text-right">{fmt(marketSummaryProgress?.outstandingQuantity)}</td>
                   </>}
                   {supplyChainPurchaseFulfillment && <>
                     <td className="px-3 py-2 text-right">{fmt(supplyChainPurchaseProgress?.receivedQuantity)}</td>

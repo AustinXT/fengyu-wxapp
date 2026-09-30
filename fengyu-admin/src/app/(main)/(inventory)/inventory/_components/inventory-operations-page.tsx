@@ -1484,6 +1484,8 @@ export function OperationDocsTab({
   const [inboxPage, setInboxPage] = useState(1)
   const [inboxPageSize, setInboxPageSize] = useState(OPERATION_DOCS_PAGE_SIZE)
   const [inboxFailed, setInboxFailed] = useState(false)
+  const [startDate, setStartDate] = useState('')
+  const [endDate, setEndDate] = useState('')
   /*
    * 行内动作跑完之后的重取券。**这是最容易漏的一条**：本 Tab 的数据是客户端 action 拉的，
    * `router.refresh()` 对它完全无效 —— 只调后者的话「提示 + 刷新」只完成了提示，
@@ -1529,6 +1531,8 @@ export function OperationDocsTab({
       page,
       inboxPage,
       pageSize: OPERATION_DOCS_PAGE_SIZE,
+      startDate,
+      endDate,
     })
       .then((result) => {
         if (cancelled) return
@@ -1564,7 +1568,7 @@ export function OperationDocsTab({
         if (!cancelled) setLoading(false)
       })
     return () => { cancelled = true }
-  }, [operation, page, inboxPage, reloadToken, candidateVersion])
+  }, [operation, page, inboxPage, reloadToken, candidateVersion, startDate, endDate])
 
   useEffect(() => {
     onInboxTotalChange(hasInbox ? inboxTotal : 0)
@@ -1717,6 +1721,11 @@ export function OperationDocsTab({
 
   return (
     <div className="space-y-6">
+      <div className="flex flex-wrap items-center gap-2" aria-label="单据日期筛选">
+        <DatePicker aria-label="开始日期" value={startDate} onValueChange={(value) => { setStartDate(value); setPage(1); setInboxPage(1) }} placeholder="开始日期" />
+        <span className="text-sm text-[#888888]">至</span>
+        <DatePicker aria-label="结束日期" value={endDate} onValueChange={(value) => { setEndDate(value); setPage(1); setInboxPage(1) }} placeholder="结束日期" />
+      </div>
       {/* 无 inbox 语义的业务（16 个内置 + 其余通用，#336b 起品项公司发货有「待发货」段）整段不渲染，外观与 #190 完全一致。 */}
       {hasInbox && (
         <section className="space-y-2" aria-label="待我处理">

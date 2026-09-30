@@ -291,6 +291,8 @@ export default function InventoryDocsPage({
               <option key={status} value={status}>{status}</option>
             ))}
           </Select>
+          <DatePicker value={get('startDate')} onValueChange={(value) => setMany({ startDate: value, page: '' })} placeholder="开始日期" />
+          <DatePicker value={get('endDate')} onValueChange={(value) => setMany({ endDate: value, page: '' })} placeholder="结束日期" />
           <Input
             className="w-64"
             placeholder="搜索单据 / 顾客 / 员工 / 备注"
@@ -304,6 +306,8 @@ export default function InventoryDocsPage({
               orgNodeId: locationFilterOptions?.defaultLocationId ?? '',
               docType: '',
               status: '',
+              startDate: '',
+              endDate: '',
               create: '',
               page: '',
             })}
