@@ -612,8 +612,8 @@ FROM (
   WHERE so.status='已完成'
     AND so.client_user_id IS NOT NULL
     AND so.service_date BETWEEN $startDate AND $endDate
-    AND (c.customer_type IN ('体验客','小美客')                 -- 当前仍未达会员
-         OR c.became_member_at::date BETWEEN $startDate AND $endDate)  -- 或本期内才转化
+    AND ((c.became_member_at IS NULL AND c.customer_type IN ('体验客','小美客'))
+         OR c.became_member_at::date >= $startDate) -- 期初未达会员；之后转化仍归历史到店池
     AND <scope on so.store_id>
   UNION
   -- ② 本期全部新增会员（兜住本期无已完成服务单者）
@@ -646,7 +646,9 @@ FROM (
 > **不含流量客**：维持升级链「体验客 + 小美客」这一层，只把本期已转化者补回。
 > 含流量客的方案 2 实测分母 1861 / 成交率 8.11%，与升级链口径脱钩且量级突变，已否决。
 >
-> **判定时点**：期初判定（当前 `customer_type` 仍未达会员 **OR** `became_member_at` 落在本期），
+> **判定时点（#470，2026-09-30 已拍板）**：期初判定（当前仍是体验/小美且从未转会员，
+> **OR** `became_member_at::date >= startDate`）。之后才转会员者仍计入旧区间，历史分母可重算。
+> 这可能包含极少数区间内仍是流量客、之后才转会员的人；用户已选择接受这一方案。
 > 不采用逐次到店日判定（方案 1b 实测只差 1.06pp，不值得引入 `service_date` 与
 > `became_member_at` 的逐行比较）。
 >
@@ -749,13 +751,10 @@ FROM (
 **守护**：`consistency.customer.test.ts` 第 10 组（派生式：从分母现读归店列/骨架 JOIN，
 再断言分子一致；admin KPI / admin 明细 / staff 三处 + 4 条反向变异）。
 
-> ⚠️ **已知限制（待拍板，#284 遗留）**：① 分支的判定 `became_member_at::date BETWEEN start AND end`
-> **带上界**，于是「在该区间之后才转化」的人会被排除出该历史区间的活跃池 —— 因为 `customer_type`
-> 只升不降，他们今天已是会员客，两个分支同时为假。后果是**历史区间的分母随时间单调缩水、
-> 成交率单调上飘，数字不可重算**。2026-09-23 实测：2026-07 漏 35 人（24%）、2026-08 漏 69 人（10%）、
-> 当期为 0。直写形式 `(became_member_at IS NULL AND customer_type IN ('体验客','小美客'))
-> OR became_member_at::date >= start` 可修复，但会纳入「区间内仍是流量客、之后才转化」的人
-> （实测 2 人，< 0.3%），与「不含流量客」的拍板有张力，故**等业务裁决后再改**。
+> **历史重算（#470）**：① 分支不再把 `became_member_at` 限在选定区间上界。
+> 2026-09-23 旧口径复核曾在 2026-07 漏 35 人、2026-08 漏 69 人；这些是旧口径的
+> 漏数证据，不能作为改后固定 KPI 目标值。按相同快照和范围比较前后分母，之后再转会员者
+> 应被补回；当前会员状态继续变化时，历史区间人数不应因此缩小。
 > **D-newMemberSpend（已决 D-3=A）**：分子 `newMemberSpend` = 这群新增会员在区间内的**全部消费**，
 > 不区分是"成为会员前"还是"成为会员后"的订单——UI 文案"新增会员对应消费"读作"对应这群人的整体经营贡献"。
 

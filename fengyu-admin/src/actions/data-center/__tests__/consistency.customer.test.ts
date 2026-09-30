@@ -755,8 +755,8 @@ describe('客量板块两端口径一致性守护', () => {
       ['外层对 UNION 结果去重', /COUNT\(DISTINCT\s+t\.uid\)/],
       ['① 到店活跃池取已完成服务单', /FROM\s+service_orders\s+so[\s\S]*?so\.status\s*=\s*'已完成'/],
       [
-        '① 期初未达会员 = 当前仍未达会员 OR 本期内才转化（缺 OR 即回到只升不降的快照口径）',
-        /c\.customer_type\s+IN\s*\(\s*'体验客'\s*,\s*'小美客'\s*\)\s*OR\s+c\.became_member_at::date\s+BETWEEN/,
+        '① 期初未达会员 = 从未转会员的体验/小美 OR 区间开始后转会员（含区间之后）',
+        /c\.became_member_at\s+IS\s+NULL\s+AND\s+c\.customer_type\s+IN\s*\(\s*'体验客'\s*,\s*'小美客'\s*\)\s*\)\s*OR\s+c\.became_member_at::date\s*>=/,
       ],
       [
         '② 本期全部新增会员 UNION 进分母（缺它则分子 ⊄ 分母，单店成交率仍可能 > 100%）',
@@ -770,6 +770,15 @@ describe('客量板块两端口径一致性守护', () => {
 
     it.each(DENOM_INVARIANTS)('staff：%s', (_label, re) => {
       expect(staffTrial).toMatch(re)
+    })
+
+    it('① 历史到店池不受区间上界限制，之后才转会员者不丢失', () => {
+      for (const [side, sqlText] of [['admin', adminTrial], ['staff', staffTrial]] as const) {
+        const firstBranch = sqlText.split(/\bUNION\b/)[0]
+        expect(firstBranch, `${side} ① 分支不应限定转会员时间上界`).not.toMatch(/c\.became_member_at::date\s+BETWEEN/)
+      }
+      expect(adminTrial.split(/\bUNION\b/)[0]).toMatch(/c\.became_member_at::date\s*>=\s*\$\{range\.start\}/)
+      expect(staffTrial.split(/\bUNION\b/)[0]).toMatch(/c\.became_member_at::date\s*>=\s*\$\{startDateExpr\(period\)\}/)
     })
 
     /**
@@ -1382,13 +1391,13 @@ describe('客量板块两端口径一致性守护', () => {
       // 边界取到下一个 CTE，避免非贪婪在 COUNT(...) 的右括号上提前收口
       const trafficCust = /traffic_cust\s+AS\s*\(([\s\S]*?)visits_agg\s+AS\s*\(/.exec(adminSql)?.[1]
       expect(trafficCust, 'traffic_cust CTE 未能定位（被删除/改名，或 visits_agg 不再紧随其后）').toBeTruthy()
-      // ① 到店活跃池：期初未达会员 = 当前仍未达会员 OR 本期内才转化
+      // ① 到店活跃池：期初未达会员 = 从未转会员的体验/小美 OR 区间开始后转会员
       expect(trafficCust).toMatch(/JOIN\s+skel\s+sk\s+ON\s+sk\.store_id\s*=\s*so\.store_id/)
       expect(
         trafficCust,
-        '① 分支缺 became_member_at OR 分支 —— 本期已转化的人会被重新抹出明细分母',
+        '① 分支缺历史转会员分支 —— 区间之后转会员的人会被抹出明细分母',
       ).toMatch(
-        /c\.customer_type\s+IN\s*\(\s*'体验客'\s*,\s*'小美客'\s*\)\s*OR\s+c\.became_member_at::date\s+BETWEEN/,
+        /c\.became_member_at\s+IS\s+NULL\s+AND\s+c\.customer_type\s+IN\s*\(\s*'体验客'\s*,\s*'小美客'\s*\)\s*\)\s*OR\s+c\.became_member_at::date\s*>=\s*\$\{start\}/,
       )
       // ② 本期全部新增会员，归店方式必须与 newmem 的 JOIN 逐字一致
       expect(trafficCust, '② 分支（本期全部新增会员）缺失或未按 bound_store_id 归店').toMatch(

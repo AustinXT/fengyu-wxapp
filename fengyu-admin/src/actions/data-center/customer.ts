@@ -462,7 +462,7 @@ async function queryNewMemberLegacySpend(
 }
 
 /**
- * 当月流量客人数（成交率分母）= 期初未达会员的到店活跃池 ∪ 本期全部新增会员
+ * 成交率分母 = 期初未达会员的到店活跃池 ∪ 本期全部新增会员
  * （D-conv-denom=1c，#284 于 2026-09-22 拍板；推翻原 D-2=B）
  *
  * 为什么不能只用 `customer_type IN ('体验客','小美客')`：该字段是**只升不降的当前快照**
@@ -487,7 +487,7 @@ async function queryTrialFootfall(
   const rows = await db.execute(sql`
     SELECT COUNT(DISTINCT t.uid) AS v
     FROM (
-      -- ① 本期到店 且 期初未达会员（当前仍未达会员 OR 本期内才转化）
+      -- ① 本期到店 且 期初未达会员（之后才转会员者仍属历史到店池）
       SELECT so.client_user_id AS uid
       FROM service_orders so
       JOIN client_wechat_users c ON c.user_id = so.client_user_id
@@ -496,8 +496,8 @@ async function queryTrialFootfall(
         AND so.client_user_id IS NOT NULL
         AND so.service_date BETWEEN ${range.start} AND ${range.end}
         AND (
-          c.customer_type IN ('体验客', '小美客')
-          OR c.became_member_at::date BETWEEN ${range.start} AND ${range.end}
+          (c.became_member_at IS NULL AND c.customer_type IN ('体验客', '小美客'))
+          OR c.became_member_at::date >= ${range.start}
         )
       UNION
       -- ② 本期全部新增会员（兜住本期无已完成服务单者，保证分子 ⊆ 分母）
@@ -869,8 +869,8 @@ async function queryOpsBreakdown(
           AND so.client_user_id IS NOT NULL
           AND so.service_date BETWEEN ${start} AND ${end}
           AND (
-            c.customer_type IN ('体验客', '小美客')
-            OR c.became_member_at::date BETWEEN ${start} AND ${end}
+            (c.became_member_at IS NULL AND c.customer_type IN ('体验客', '小美客'))
+            OR c.became_member_at::date >= ${start}
           )
         UNION
         SELECT ${groupId} AS group_id, c.user_id AS uid
