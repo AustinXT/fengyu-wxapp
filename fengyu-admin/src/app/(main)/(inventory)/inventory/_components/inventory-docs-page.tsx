@@ -268,8 +268,8 @@ export default function InventoryDocsPage({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-2">
           {locationFilterOptions && (
             <InventoryLocationFilter
               options={locationFilterOptions}
@@ -297,8 +297,8 @@ export default function InventoryDocsPage({
               <option key={status} value={status}>{status}</option>
             ))}
           </Select>
-          <DatePicker value={get('startDate')} onValueChange={(value) => setMany({ startDate: value, page: '' })} placeholder="开始日期" />
-          <DatePicker value={get('endDate')} onValueChange={(value) => setMany({ endDate: value, page: '' })} placeholder="结束日期" />
+          <DatePicker aria-label="开始日期" value={get('startDate')} onValueChange={(value) => setMany({ startDate: value, page: '' })} placeholder="开始日期" />
+          <DatePicker aria-label="结束日期" value={get('endDate')} onValueChange={(value) => setMany({ endDate: value, page: '' })} placeholder="结束日期" />
           <Select value={get('processProgress')} onChange={(e) => setMany({ processProgress: e.target.value, page: '' })} aria-label="流程进度" className="w-40">
             <option value="">全部进度</option>
             {PROCESS_PROGRESS_OPTIONS.map((progress) => <option key={progress} value={progress}>{progress === '未采购' ? '未采购（含部分）' : progress}</option>)}
