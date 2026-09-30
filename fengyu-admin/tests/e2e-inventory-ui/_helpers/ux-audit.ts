@@ -145,7 +145,7 @@ export function checkBusinessErrorProbe(probe: BusinessErrorProbe | null, now = 
   }
   const visibleText = (probe.visibleText || '').trim()
   if (/期初|暂不可办理/.test(visibleText) && !/An error occurred in the Server Components render/.test(visibleText)) return []
-  if (/An error occurred in the Server Components render|^\d{9,}$|\berror digest\b/i.test(visibleText)) {
+  if (/An error occurred in the Server Components render|\b\d{9,}\b|\berror digest\b/i.test(visibleText)) {
     return [{ rule: '业务错误提示被生产构建脱敏', severity: 'P1', page,
       detail: 'INV-02 实测门禁已拦截，页面显示框架脱敏文案或裸 digest',
       evidence: `INV-02 ${probe.at}；页面反馈：${visibleText}` }]

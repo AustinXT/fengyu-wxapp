@@ -40,4 +40,9 @@ describe('INV-10 审计证据', () => {
     expect(lotLoadingVerdict(10, false, 1)).toBe(false)
     expect(lotLoadingVerdict(10, true, 2)).toBe(true)
   })
+
+  it('混在普通文案里的裸 digest 仍报告脱敏', () => {
+    expect(checkBusinessErrorProbe({ at: new Date(now).toISOString(), page, blocked: true,
+      visibleText: '创建失败 1956068727' }, now)[0]).toMatchObject({ severity: 'P1', rule: '业务错误提示被生产构建脱敏' })
+  })
 })

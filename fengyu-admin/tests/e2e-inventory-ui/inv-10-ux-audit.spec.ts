@@ -215,7 +215,7 @@ test('INV-10：交互合理性扫描 → UX-FINDINGS.md', async ({ browser }) =>
       at?: string
     }>('inv05')
     const lotDocs = inv05?.genericDocsCreated
-    const lotEvidence = `INV-05 判定 lotLoadingOk=${String(inv05?.lotLoadingOk)} / 来源在手量=${inv05?.sourceOnHandQty ?? '(未记)'} / 下拉可用=${String(inv05?.lotEnabled)} / option 数=${inv05?.lotOptionCount ?? '(未记)'}，本轮建出通用单据 ${lotDocs?.length ? lotDocs.join(' / ') : '(无)'}，写于 ${inv05?.at ?? '(缺失)'}`
+    const lotEvidence = `INV-05 ${inv05?.at ?? '(缺失)'}：lotLoadingOk=${String(inv05?.lotLoadingOk)} / 来源在手量=${inv05?.sourceOnHandQty ?? '(未记)'} / 下拉可用=${String(inv05?.lotEnabled)} / option 数=${inv05?.lotOptionCount ?? '(未记)'}，本轮建出通用单据 ${lotDocs?.length ? lotDocs.join(' / ') : '(无)'}`
     if (inv05?.lotLoadingOk == null || inv05.sourceOnHandQty == null) {
       findings.push({
         rule: '批次下拉状态未覆盖（缺判定或来源库存）',
@@ -411,6 +411,13 @@ test('INV-10：交互合理性扫描 → UX-FINDINGS.md', async ({ browser }) =>
     }
     const gateError = readCtx<NonNullable<Parameters<typeof checkBusinessErrorProbe>[0]>>('inv02_gate')
     findings.push(...checkBusinessErrorProbe(gateError))
+    findings.push({
+      rule: '其它业务错误路径未覆盖',
+      severity: 'P2',
+      page: '库存其它 Server Action 错误路径',
+      detail: '本轮只受控触发 INV-02 期初门禁；员工加载失败及其它建单失败路径未执行负例，不能从门禁可读推断它们也可读',
+      evidence: '无对应路径的当轮错误反馈',
+    })
 
     // ══ 写报告 ════════════════════════════════════════════════════
     const outPath = path.resolve(__dirname, 'UX-FINDINGS.md')
