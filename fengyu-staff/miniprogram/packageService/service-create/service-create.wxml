@@ -74,7 +74,7 @@
 
       <view wx:if="{{paidItemsError}}" class="empty-tip">
         <van-empty description="疗程项目加载失败：{{paidItemsError}}" />
-        <button size="mini" bindtap="onRetryPaidOrders">重新加载</button>
+        <button wx:if="{{paidItemsCanRetry}}" size="mini" bindtap="onRetryPaidOrders">重新加载</button>
       </view>
       <view wx:elif="{{paidItems.length === 0}}" class="empty-tip">
         <van-empty wx:if="{{hasPaidItemFilter}}" description="未找到匹配的疗程卡" />

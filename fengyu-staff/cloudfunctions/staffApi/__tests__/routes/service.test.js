@@ -2114,7 +2114,7 @@ describe('service.create clientUserId 解析', () => {
     expect(ctx.result.status).toBe('待服务')
   })
 
-  test('从 sale_orders 兜底解析 clientUserId', async () => {
+  test('未传顾客时从来源订单行解析 clientUserId', async () => {
     const ctx = createManagerCtx({
       // 不传 clientUserId 也不传 clientPhone
       items: [{ saleItemId: 'item-001', sessionUsed: 1 }],
@@ -2129,11 +2129,9 @@ describe('service.create clientUserId 解析', () => {
         product_type: '疗程卡',
         order_status: '已支付',
         store_id: 'store-001',
-        client_user_id: null,
+        client_user_id: 'fallback-user',
         client_phone: null,
       }])
-      // 从 sale_orders 兜底获取 client_user_id
-      .mockResolvedValueOnce([{ client_user_id: 'fallback-user' }])
       // 顾客无进行中的服务单
       .mockResolvedValueOnce([])
       // became_member + bound_store_id（绑定门店校验：== effectiveStoreId）

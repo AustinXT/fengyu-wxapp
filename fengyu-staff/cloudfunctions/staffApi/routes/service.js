@@ -179,19 +179,6 @@ async function create(ctx) {
     resolvedClientUserId = itemOwners.values().next().value
   }
 
-  if (!resolvedClientUserId && normalizedItems.length > 0) {
-    const orderRow = await pg.query(
-      'SELECT o.client_user_id FROM sale_items si INNER JOIN sale_orders o ON si.sale_order_id = o.sale_order_id WHERE si.sale_item_id = $1',
-      [normalizedItems[0].saleItemId]
-    )
-    if (orderRow.length > 0 && orderRow[0].client_user_id) {
-      resolvedClientUserId = orderRow[0].client_user_id
-      itemOwners.add(resolvedClientUserId)
-      const firstUnownedIndex = unownedItems.findIndex((item) => item.saleItemId === normalizedItems[0].saleItemId)
-      if (firstUnownedIndex >= 0) unownedItems.splice(firstUnownedIndex, 1)
-    }
-  }
-
   if (itemOwners.size > 1 || (resolvedClientUserId && itemOwners.size > 0 && !itemOwners.has(resolvedClientUserId))) {
     throw new Error('PERMISSION_DENIED: 所选疗程项目不属于当前顾客')
   }
