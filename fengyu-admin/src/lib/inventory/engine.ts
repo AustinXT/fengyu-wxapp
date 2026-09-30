@@ -3133,15 +3133,26 @@ async function loadInventoryDocLineage(
            GROUP BY local_link.from_doc_id, local_link.to_doc_id, local_link.relation_type
         ) edge ON TRUE
        WHERE (CASE WHEN walk.direction = '上游' THEN edge.from_doc_id ELSE edge.to_doc_id END) <> ALL(walk.path)
+    ),
+    ranked_lineage AS (
+      -- 采购同时有市场报货直连与经汇总的链路；同一单据保留最完整的路径，避免重复展示。
+      SELECT walk.direction, walk.depth, walk.doc_id, walk.via_doc_id,
+             walk.relation_type, walk.linked_quantity,
+             ROW_NUMBER() OVER (
+               PARTITION BY walk.direction, walk.doc_id
+               ORDER BY walk.depth DESC, walk.via_doc_id, walk.relation_type
+             ) AS row_rank
+        FROM lineage_walk walk
+       WHERE walk.depth > 0
     )
     SELECT walk.direction, walk.depth, walk.via_doc_id, walk.relation_type,
            linked_doc.id AS doc_id, linked_doc.doc_type, linked_doc.status,
            linked_doc.doc_date, linked_doc.total_quantity,
            source_location.name AS source_org_node_name, walk.linked_quantity
-      FROM lineage_walk walk
+      FROM ranked_lineage walk
       JOIN inventory_docs linked_doc ON linked_doc.id = walk.doc_id
       LEFT JOIN inventory_locations source_location ON source_location.org_node_id = linked_doc.source_org_node_id
-     WHERE walk.depth > 0
+     WHERE walk.row_rank = 1
      ORDER BY walk.direction, walk.depth, linked_doc.doc_date, linked_doc.id, walk.relation_type
   `)
   return mapLineageRows(rows)

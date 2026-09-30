@@ -87,6 +87,13 @@ describe.runIf(enabled)('#357 私有 PG 链路与 SQL 断言', () => {
     getSessionMock.mockResolvedValue(session('admin'))
     const adminDetail = await getInventoryCoreDocById('V357-Q')
     expect(adminDetail?.lineage).toContainEqual(expect.objectContaining({ docId: 'V357-S', depth: 4, sourceOrgNodeName: '测试门店' }))
+    const upstream = adminDetail?.lineage.filter((step) => step.direction === '上游') ?? []
+    expect(new Set(upstream.map((step) => step.docId)).size).toBe(upstream.length)
+    expect(upstream.find((step) => step.docId === 'V357-M')?.depth).toBe(3)
+    const adminReport = await getInventoryCoreDocById('V357-M')
+    const downstream = adminReport?.lineage.filter((step) => step.direction === '下游') ?? []
+    expect(new Set(downstream.map((step) => step.docId)).size).toBe(downstream.length)
+    expect(downstream.find((step) => step.docId === 'V357-P')?.depth).toBe(2)
     getSessionMock.mockResolvedValue(session('市场'))
     const marketDetail = await getInventoryCoreDocById('V357-M')
     expect(marketDetail?.lineage.map((step) => step.docId)).toContain('V357-S')

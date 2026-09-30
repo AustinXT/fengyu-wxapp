@@ -83,6 +83,7 @@ export default function InventoryDocsPage({
   allowedCreateDocTypes,
   locationFilterOptions,
   selectedOrgNodeId,
+  filterError,
 }: {
   rows: InventoryDocRow[]
   total: number
@@ -107,6 +108,7 @@ export default function InventoryDocsPage({
   allowedCreateDocTypes?: readonly InventoryDocType[]
   locationFilterOptions?: InventoryLocationFilterOptions
   selectedOrgNodeId?: string | null
+  filterError?: string
 }) {
   const router = useRouter()
   const { get, setMany } = useUrlFilters()
@@ -340,7 +342,8 @@ export default function InventoryDocsPage({
         </div>
       </div>
 
-      <DataTable columns={columns} data={rows} emptyText="暂无库存单据" />
+      {filterError && <p role="alert" className="text-sm text-[#D94040]">{filterError}</p>}
+      <DataTable columns={columns} data={rows} emptyText={filterError ?? '暂无库存单据'} />
       <Pagination
         total={total}
         page={page}
