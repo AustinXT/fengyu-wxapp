@@ -94,6 +94,8 @@ export function checkForeignKeyInputs(controls: FormControl[], pageName: string)
     if (c.tag !== 'input' && c.tag !== 'textarea') continue
     const bare = c.label.replace(/\s*\*\s*$/, '').trim()
     if (!bare) continue
+    // 新建档案时填写的是档案自身名称，不是引用另一条既有档案。
+    if (bare === '供应商名称' || bare === '方案名称') continue
     if (FREE_TEXT_EXCEPTIONS.some((ex) => bare === ex || bare.endsWith(ex))) continue
     if (NUMERIC_SEMANTIC.some((kw) => bare.includes(kw))) continue
     const hit = FOREIGN_KEY_LIKE_LABELS.find((kw) => bare.includes(kw))
@@ -108,6 +110,49 @@ export function checkForeignKeyInputs(controls: FormControl[], pageName: string)
     }
   }
   return findings
+}
+
+export interface BusinessErrorProbe {
+  at?: string
+  page?: string
+  blocked?: boolean
+  visibleText?: string
+}
+
+/** 没有来源批次时空下拉是预期结果，不能定性为加载故障。 */
+export function lotLoadingVerdict(sourceOnHandQty: number, enabled: boolean, optionCount: number): boolean | null {
+  return sourceOnHandQty > 0 ? enabled && optionCount > 1 : null
+}
+
+/** 只转述当轮门禁负例。跨运行 ctx 过期或负例没有执行时明确列为未覆盖。 */
+export function checkBusinessErrorProbe(probe: BusinessErrorProbe | null, now = Date.now()): Finding[] {
+  const page = probe?.page || '/inventory/docs → 新建库存单据（期初门禁）'
+  const age = probe?.at ? now - Date.parse(probe.at) : NaN
+  if (!probe || probe.blocked === undefined) {
+    return [{ rule: '业务错误提示未覆盖', severity: 'P2', page,
+      detail: '本轮缺少 INV-02 门禁负例判定，不能判断业务错误是否可读',
+      evidence: probe?.at ? `INV-02 写于 ${probe.at}，无门禁判定` : 'ctx 无 inv02 门禁判定' }]
+  }
+  if (!Number.isFinite(age) || age < 0 || age > 6 * 3600_000) {
+    return [{ rule: '业务错误提示证据过期未复核', severity: 'P2', page,
+      detail: 'INV-02 门禁负例判定超过 6 小时或时间戳异常，请重跑后再定性',
+      evidence: `INV-02 写于 ${probe.at ?? '(缺失)'}` }]
+  }
+  if (!probe.blocked) {
+    return [{ rule: '业务错误提示未覆盖', severity: 'P2', page,
+      detail: 'INV-02 门禁负例没有成功拦截，无法验证错误提示路径',
+      evidence: `INV-02 写于 ${probe.at}` }]
+  }
+  const visibleText = (probe.visibleText || '').trim()
+  if (/期初|暂不可办理/.test(visibleText) && !/An error occurred in the Server Components render/.test(visibleText)) return []
+  if (/An error occurred in the Server Components render|(?:创建失败|error digest|digest)\s*[:：]?\s*\d{9,}/i.test(visibleText)) {
+    return [{ rule: '业务错误提示被生产构建脱敏', severity: 'P1', page,
+      detail: 'INV-02 实测门禁已拦截，页面显示框架脱敏文案或裸 digest',
+      evidence: `INV-02 ${probe.at}；页面反馈：${visibleText}` }]
+  }
+  return [{ rule: '业务错误提示无法判定', severity: 'P2', page,
+    detail: visibleText ? 'INV-02 已拦截，但页面反馈不是预期业务文案，也不是可确认的脱敏文案，需人工复核' : 'INV-02 已拦截，但探针未捕获到可见反馈；不能据此断言脱敏',
+    evidence: `INV-02 ${probe.at}；页面反馈：${visibleText || '(未捕获)'}` }]
 }
 
 /** 规则 2：label 与控件未建立关联（屏幕阅读器读不到字段名） */
@@ -244,7 +289,9 @@ export function renderFindings(findings: Finding[]): string {
   const lines = ['| 严重度 | 规则 | 位置 | 说明 | 证据 |', '|---|---|---|---|---|']
   for (const f of sorted) {
     const esc = (s: string) => s.replace(/\|/g, '\\|').replace(/\n/g, ' ')
-    lines.push(`| ${f.severity} | ${esc(f.rule)} | \`${esc(f.page)}\` | ${esc(f.detail)} | ${f.evidence ? `\`${esc(f.evidence).slice(0, 80)}\`` : '—'} |`)
+    // P0/P1 的原始错误文本是验收证据，不能截断成只剩「INV-02 时间戳」。
+    const evidence = f.evidence ? esc(f.evidence) : ''
+    lines.push(`| ${f.severity} | ${esc(f.rule)} | \`${esc(f.page)}\` | ${esc(f.detail)} | ${evidence ? `\`${f.severity === 'P2' ? evidence.slice(0, 160) : evidence}\`` : '—'} |`)
   }
   return lines.join('\n') + '\n'
 }
