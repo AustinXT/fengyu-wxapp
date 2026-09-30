@@ -1820,9 +1820,8 @@ interface SimpleSkuLine {
 
 function validStoreRequestQuantity(raw: string): boolean {
   const quantity = Number(raw)
-  return raw.trim() !== '' && Number.isFinite(quantity) && quantity >= 0.01
+  return /^\d+(?:\.\d{1,2})?$/.test(raw.trim()) && Number.isFinite(quantity) && quantity >= 0.01
     && quantity <= 9999999999.99
-    && Math.abs(quantity * 100 - Math.round(quantity * 100)) < 0.000001
 }
 
 function StoreRequestForm({
@@ -2490,6 +2489,10 @@ function MarketReportForm({
     if (saving) return
     if (!marketId || !supplyChainLocationId) {
       toast.error('请选择市场和供应链库存主体')
+      return
+    }
+    if (lines.some((line) => line.selected && !validStoreRequestQuantity(line.purchaseQuantity))) {
+      toast.error('实际采购数量须为 0.01 至 9999999999.99，且最多两位小数')
       return
     }
     const items = lines.filter((line) => line.selected).map((line) => ({

@@ -2955,6 +2955,26 @@ describe('市场报货草稿（#348）', () => {
     await waitFor(() => expect(saveMarketReplenishmentDraft).toHaveBeenLastCalledWith(expect.objectContaining({ draftId: 'MBH-D9' })))
   })
 
+  it('#469 市场报货存草稿拒绝非法步长，修正后可保存', async () => {
+    mockDocs({})
+    vi.mocked(summarizeStoreReplenishmentRequests).mockResolvedValue({ marketId: 'M1', items: [summaryLine('SKU-1', [11], 4)] })
+    renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1] })
+    fireEvent.click(await screen.findByRole('button', { name: '汇总门店报货' }))
+    const quantity = await screen.findByRole('spinbutton', { name: '实际采购 商品SKU-1 SKU-1' })
+    await waitFor(() => expect(screen.getByText('无匹配福利，按标准价')).toBeInTheDocument())
+    fireEvent.change(quantity, { target: { value: '1.005' } })
+    fireEvent.blur(quantity)
+    expect(screen.getByRole('alert')).toHaveTextContent('步长')
+    fireEvent.click(screen.getByRole('button', { name: '存草稿' }))
+    expect(saveMarketReplenishmentDraft).not.toHaveBeenCalled()
+    fireEvent.change(quantity, { target: { value: '1' } })
+    fireEvent.blur(quantity)
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.getByText('无匹配福利，按标准价')).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: '存草稿' }))
+    await waitFor(() => expect(saveMarketReplenishmentDraft).toHaveBeenCalled())
+  })
+
   it('草稿里有、当前已无待汇总门店需求的商品：仍列出可存草稿，但提交前拦下', async () => {
     const lines = mergeMarketReportDraftLines([], [{ skuId: 'SKU-X', skuName: '商品X', specName: null, quantity: 2 }])
     expect(lines).toEqual([expect.objectContaining({ skuId: 'SKU-X', requestItemIds: [], selected: true, purchaseQuantity: '2' })])

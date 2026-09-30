@@ -8,9 +8,16 @@ type Props = ComponentProps<typeof Input>
 function errorFor(input: HTMLInputElement): string {
   if (!input.value && !input.validity.badInput) return ''
   if (input.validity.badInput) return '请输入有效数字'
-  if (input.validity.rangeUnderflow) return `不能小于 ${input.min}`
-  if (input.validity.rangeOverflow) return `不能大于 ${input.max}`
-  if (input.validity.stepMismatch) return `请按 ${input.step} 的步长输入`
+  const value = Number(input.value)
+  if (!Number.isFinite(value)) return '请输入有效数字'
+  if (input.min && value < Number(input.min)) return `不能小于 ${input.min}`
+  if (input.max && value > Number(input.max)) return `不能大于 ${input.max}`
+  if (input.step && input.step !== 'any') {
+    const quotient = (value - Number(input.min || 0)) / Number(input.step)
+    if (!Number.isFinite(quotient) || Math.abs(quotient - Math.round(quotient)) > 1e-7) {
+      return `请按 ${input.step} 的步长输入`
+    }
+  }
   return ''
 }
 
