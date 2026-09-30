@@ -440,7 +440,7 @@ async function queryNewMemberSpend(
  * 人群条件与 scope 列（`c.bound_store_id`）同款项流水分支（#439 起归店跟着人走，与分母同源）；
  * 口径与片段来源见 lib/data-center/workfine-legacy-spend.ts。
  * staff 同口径副本：mgmt-traffic.js::queryNewMemberLegacySpend（consistency.customer.test.ts 逐字守护）。
- * 与线上单时间重叠（12 家店 113 张）不去重，2026-09-26 拍板接受。
+ * #471 割点后的 WorkFine 单不参与本 KPI；此前发现的线上单重叠样本均在割点后。
  */
 async function queryNewMemberLegacySpend(
   session: AuthSession,

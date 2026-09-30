@@ -7,7 +7,7 @@
  *   金额 = 有明细取明细 `SUM(si.received)`，否则取订单 `o.received`
  *   过滤 = 状态 已支付 / 部分支付 / 已完成 ∩ 销售单 / 转换单 ∩ legacy_source='workfine' ∩ 归属日期落区间且 ≤ 2026-07-03
  *
- * 订单别名固定为 `o`（`sale_orders o`）；scope 与人群条件由调用方另加（scope 必须挂在 `o.store_id` 上）。
+ * 订单别名固定为 `o`（`sale_orders o`）；scope 与人群条件由调用方另加（本 KPI scope 挂在 `c.bound_store_id` 上）。
  *
  * ⚠️ 四份副本（项目禁止跨端共享代码，靠 consistency.customer.test.ts 整段等值守护）：
  *   1. staff `routes/mgmt-customer.js` 详情页 `legacy_year_stats`

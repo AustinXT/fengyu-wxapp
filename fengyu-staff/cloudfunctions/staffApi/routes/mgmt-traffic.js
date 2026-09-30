@@ -534,7 +534,8 @@ async function queryNewMemberSpend(scopeType, scopeId, period) {
  * WorkFine 单在款项流水里没有行，不补这条时「本年」这类跨 2026-07-03 割点的区间低报约 4 成；
  * #471 明确只接入归属日期不晚于 2026-07-03 的旧源；纯割点后区间本分支恒为 0。
  * 金额 / 过滤口径照搬本端顾客详情页 legacy_year_stats（mgmt-customer.js / customer.js），
- * 人群条件与 scope 列（c.bound_store_id）同 queryNewMemberSpend（#439 起归店跟着人走）。与线上单时间重叠不去重（2026-09-26 拍板）。
+ * 人群条件与 scope 列（c.bound_store_id）同 queryNewMemberSpend（#439 起归店跟着人走）。
+ * #471 割点后的 WorkFine 单不参与本 KPI；此前发现的线上单重叠样本均在割点后。
  *
  * ⚠️ admin 同口径副本：fengyu-admin customer.ts::queryNewMemberLegacySpend + lib/data-center/workfine-legacy-spend.ts，
  * 两端逐字一致、legacy 片段四份副本整段等值，由 fengyu-admin consistency.customer.test.ts 守护。
