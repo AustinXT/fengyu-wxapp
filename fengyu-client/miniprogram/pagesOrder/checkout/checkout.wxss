@@ -1,5 +1,10 @@
 /* pages/checkout/checkout.wxss */
 
+page {
+  --toast-default-width: 480rpx;
+  --toast-max-width: 88%;
+}
+
 .container {
   min-height: 100vh;
   background: var(--color-bg-page);
