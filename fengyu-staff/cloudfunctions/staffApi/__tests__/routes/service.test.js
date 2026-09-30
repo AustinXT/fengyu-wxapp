@@ -45,7 +45,7 @@ describe('service.create', () => {
       }])
       // 顾客无进行中的服务单
       .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([{ became_member_at: null, bound_store_id: 'store-001' }])
+      .mockResolvedValueOnce([{ became_member_at: null, bound_store_id: 'store-001', phone: '13800001111' }])
 
     // 单一 transaction：generateServiceOrderId（advisory lock + SELECT 最大 ID）+ INSERT 服务单 + 服务明细
     pg.transaction.mockImplementationOnce(async (cb) => {
@@ -144,14 +144,46 @@ describe('service.create', () => {
       clientUserId: 'client-001',
       items: [{ saleItemId: 'legacy-card', sessionUsed: 1 }],
     })
-    pg.query.mockResolvedValueOnce([{
-      sale_item_id: 'legacy-card', session_count: 1, remaining_sessions: 1,
-      paid_sessions: 1, product_type: '疗程卡', order_status: '已支付',
-      store_id: 'source-store', client_user_id: null, client_phone: null,
-    }])
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_item_id: 'legacy-card', session_count: 1, remaining_sessions: 1,
+        paid_sessions: 1, product_type: '疗程卡', order_status: '已支付',
+        store_id: 'source-store', client_user_id: null, client_phone: null,
+      }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ phone: '13800001111', bound_store_id: 'store-001' }])
 
     await expect(serviceRoutes.create(ctx)).rejects.toThrow(/PERMISSION_DENIED.*缺少可核对的顾客归属/)
     expect(pg.transaction).not.toHaveBeenCalled()
+  })
+
+  test('历史原店卡无顾客 ID 但手机号匹配时可在现归属店开单', async () => {
+    const ctx = createManagerCtx({
+      clientUserId: 'client-001',
+      items: [{ saleItemId: 'legacy-card', sessionUsed: 1 }],
+    })
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_item_id: 'legacy-card', session_count: 1, remaining_sessions: 1,
+        paid_sessions: 1, product_type: '疗程卡', order_status: '已支付',
+        store_id: 'source-store', client_user_id: null, client_phone: '13800001111',
+      }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{
+        phone: '13800001111', became_member_at: null, bound_store_id: 'store-001',
+      }])
+    pg.transaction.mockImplementationOnce(async (cb) => {
+      const client = { query: vi.fn(async (sql) => {
+        if (sql.includes('pg_advisory_xact_lock')) return { rows: [], rowCount: 0 }
+        if (sql.includes('FROM service_orders') && sql.includes('LIKE $1')) return { rows: [], rowCount: 0 }
+        return { rows: [{ unit_real_price: 100 }], rowCount: 1 }
+      }) }
+      return await cb(client)
+    })
+
+    await serviceRoutes.create(ctx)
+    expect(ctx.result.status).toBe('待服务')
+    expect(pg.transaction).toHaveBeenCalledOnce()
   })
 
   test('创建服务单时持久化自定义备注并写入备注审计摘要', async () => {
@@ -2087,7 +2119,7 @@ describe('service.create clientUserId 解析', () => {
       // 顾客无进行中的服务单
       .mockResolvedValueOnce([])
       // became_member + bound_store_id（绑定门店校验：== effectiveStoreId）
-      .mockResolvedValueOnce([{ became_member_at: null, bound_store_id: 'store-001' }])
+      .mockResolvedValueOnce([{ became_member_at: null, bound_store_id: 'store-001', phone: '13800001111' }])
 
     // 单一 transaction：generateServiceOrderId + INSERT 服务单 + 服务明细
     pg.transaction.mockImplementationOnce(async (cb) => {

@@ -123,7 +123,7 @@ async function create(ctx) {
 
     const si = saleItemRows[0]
     if (si.client_user_id) itemOwners.add(si.client_user_id)
-    else unownedItems.push({ saleItemId: item.saleItemId, storeId: si.store_id, phone: si.client_phone })
+    else unownedItems.push(si.client_phone)
 
     // 订单状态门槛（ticket 2026-05-19 D2=A）：允许 已支付 / 部分支付 两种状态消费
     if (!['已支付', '部分支付'].includes(si.order_status)) {
@@ -182,16 +182,6 @@ async function create(ctx) {
   if (itemOwners.size > 1 || (resolvedClientUserId && itemOwners.size > 0 && !itemOwners.has(resolvedClientUserId))) {
     throw new Error('PERMISSION_DENIED: 所选疗程项目不属于当前顾客')
   }
-  // 没有 owner 的历史单只能走手机号精确解析或原店门店 scope 兜底。
-  // 明确选了顾客 user_id 时，不得把未知归属的外店卡挂到该顾客名下。
-  if (unownedItems.length > 0 && resolvedClientUserId) {
-    const phoneMatched = !clientUserId && clientPhone
-      && unownedItems.every((item) => item.phone && item.phone === clientPhone)
-    if (!phoneMatched) {
-      throw new Error('PERMISSION_DENIED: 所选疗程项目缺少可核对的顾客归属')
-    }
-  }
-
   // 校验：同一顾客只能有一个进行中的服务单（含待客户确认，与 uq_so_client_active 索引谓词一致）
   if (resolvedClientUserId) {
     const activeSo = await pg.query(
@@ -208,9 +198,15 @@ async function create(ctx) {
   let serviceOrderType = '售前'
   if (resolvedClientUserId) {
     const cuRows = await pg.query(
-      'SELECT became_member_at, bound_store_id FROM client_wechat_users WHERE user_id = $1',
+      'SELECT became_member_at, bound_store_id, phone FROM client_wechat_users WHERE user_id = $1',
       [resolvedClientUserId]
     )
+    // 历史单没有 client_user_id 时，以订单手机号和已解析顾客的手机号逐行比对；
+    // 无手机号或不一致均不能借外店卡开单。
+    if (unownedItems.length > 0 && (!cuRows[0]?.phone
+      || !unownedItems.every((phone) => phone && phone === cuRows[0].phone))) {
+      throw new Error('PERMISSION_DENIED: 所选疗程项目缺少可核对的顾客归属')
+    }
     // 疗程卡使用限当前绑定门店：开单门店必须 == 顾客绑定门店（卡跟顾客走、只能用在绑定门店）
     if (cuRows[0]?.bound_store_id !== ctx.auth.effectiveStoreId) {
       throw new Error('INVALID_PARAMS: 顾客当前绑定门店非本门店，疗程卡只能在其绑定门店核销/开单')
