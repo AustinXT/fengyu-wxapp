@@ -17,6 +17,7 @@
           resolve-default="{{ scopeResolveDefault }}"
           bind:change="onScopeChange"
           bind:defaultresolved="onScopeDefaultResolved"
+          bind:optionsfailed="onScopeOptionsFailed"
         />
       </view>
 

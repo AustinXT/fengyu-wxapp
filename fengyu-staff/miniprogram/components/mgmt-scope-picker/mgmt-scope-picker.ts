@@ -138,7 +138,10 @@ Component({
       } catch (err) {
         if (seq !== this.data.optionsSeq) return
         // 重拉失败保留已有列表，不打扰；首次失败才提示
-        if (initial) wx.showToast({ title: '加载范围失败', icon: 'none' })
+        if (initial) {
+          wx.showToast({ title: '加载范围失败', icon: 'none' })
+          this.triggerEvent('optionsfailed')
+        }
       }
     },
 
@@ -156,7 +159,8 @@ Component({
       const onKnownInactive = applied.scopeType === 'store'
         && ((this.data.inactiveStoreIds as string[] | null) || []).includes(applied.scopeId || '')
       // 弹窗开着时不纠正（首次加载失败、onOpen 重拉才首次拿到选项）：会覆盖弹窗里正在选的项
-      const resolving = this.properties.resolveDefault && !this.data.userPicked && !onKnownInactive && !this.data.showPopup
+      const finishDefault = this.properties.resolveDefault && !this.data.userPicked && !this.data.showPopup
+      const resolving = finishDefault && !onKnownInactive
       if (resolving) {
         const resolved = resolveDefaultMgmtScope(
           {
@@ -170,7 +174,6 @@ Component({
         if (resolved) nextApplied = resolved
         // 初判纠正每个会话只做一次：页面据此关掉 resolveDefault。否则 wx:if 切 tab 重建 picker 时会再纠正一遍，
         // 把会话中组织变动后、已展示过数字的范围换掉（违背 #400「展示过就不换店」）
-        this.triggerEvent('defaultresolved')
       }
       // 若调用方传入的 defaultScope 是 market 维度但 scopeName / marketId 缺失（页面层占位），
       // 按返回数据回填真实市场名，并广播一次 change 同步页面显示。
@@ -233,6 +236,7 @@ Component({
           ...(nextApplied.closed ? { closed: true } : {}),
         })
       }
+      if (finishDefault) this.triggerEvent('defaultresolved')
     },
 
     onOpen() {

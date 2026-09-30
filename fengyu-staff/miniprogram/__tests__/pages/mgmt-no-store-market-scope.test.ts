@@ -157,7 +157,7 @@ describe('scope-picker · 无门店市场回填与默认纠正', () => {
     expect(picker.data.applied).toMatchObject({ scopeType: 'market', scopeId: PX.id, scopeName: '品项公司', marketId: PX.id })
     expect(picker.data.marketList).toEqual([{ id: PX.id, name: '品项公司' }])
     expect(picker.data.currentAllowsMarket).toBe(true)
-    expect(picker.events.map((e: any) => e.name)).toEqual(['defaultresolved', 'change'])
+    expect(picker.events.map((e: any) => e.name)).toEqual(['change', 'defaultresolved'])
   })
 
   test('店长 + hr@品项公司：默认纠正到门店；切到品项公司、再切门店、再切回品项公司都可以', async () => {
@@ -227,8 +227,8 @@ describe('scope-picker · 无门店市场回填与默认纠正', () => {
     picker.onCancel()
     expect(picker.data.applied).toMatchObject({ scopeType: 'store', scopeId: 'store-lw' })
     // 首个 change 是弹窗加载时的 marketId 回填；关弹窗后才纠正
-    expect(picker.events.map((e: any) => e.name)).toEqual(['change', 'defaultresolved', 'change'])
-    expect(picker.events[2].detail).toMatchObject({ scopeType: 'store', scopeId: 'store-lw' })
+    expect(picker.events.map((e: any) => e.name)).toEqual(['change', 'change', 'defaultresolved'])
+    expect(picker.events[1].detail).toMatchObject({ scopeType: 'store', scopeId: 'store-lw' })
   })
 
   test('scopeOptions 先于页面初判返回：占位「全部市场」不纠正，页面下发初判后经 observer 纠正', async () => {
@@ -241,7 +241,7 @@ describe('scope-picker · 无门店市场回填与默认纠正', () => {
     picker.properties.resolveDefault = true // initDashboard 与 defaultScope 同一次 setData 下发
     picker.observers.defaultScope.call(picker, { scopeType: 'market', scopeId: PX.id, scopeName: '品项公司' })
     expect(picker.data.applied).toMatchObject({ scopeType: 'store', scopeId: 'store-lw' })
-    expect(picker.events.map((e: any) => e.name)).toEqual(['defaultresolved', 'change'])
+    expect(picker.events.map((e: any) => e.name)).toEqual(['change', 'defaultresolved'])
   })
 
   test('inactiveStores=null 时的停用门店初判 → 不换店（#400：未知不纠正）', async () => {

@@ -314,7 +314,8 @@ Page({
     if (defaultScope.scopeType === 'store' && !defaultScope.scopeId) {
       this.setData({ summaryState: 'empty', summaryEmptyText: '当前账号没有可用的在营门店', summaryEmptyHint: '请联系管理员检查门店授权' })
     } else {
-      this.loadSummary()
+      // 先等 scopeOptions 确认关店状态和默认替代门店，避免冷启动请求旧门店并闪现 0。
+      this.setData({ summaryState: 'loading', display: null, displayKey: '' })
     }
   },
 
@@ -374,7 +375,7 @@ Page({
       showCalendar: false,
       defaultCalendarDate: d.getTime(),
     })
-    this.loadSummary()
+    if (!this.data.scopeResolveDefault) this.loadSummary()
   },
 
   onScopeChange(e: WechatMiniprogram.CustomEvent<ScopeValue & { userPicked?: boolean }>) {
@@ -393,20 +394,30 @@ Page({
   /** picker 已按 scopeOptions 纠正过默认范围（#424）：之后重建的 picker 不再纠正 */
   onScopeDefaultResolved() {
     this.setData({ scopeResolveDefault: false })
+    this.loadSummary()
+  },
+
+  onScopeOptionsFailed() {
+    if (!this.data.scopeResolveDefault) return
+    ++summarySeq
+    this.setData({ loading: false, display: null, displayKey: '', summaryState: 'error' })
   },
 
   async loadSummary() {
     if (!this.data.selectedDate) return
+    if (this.data.scopeResolveDefault) return
     // 只认最后一次请求：切 scope / 日期后，迟到的旧响应（含失败）一律丢弃
     const seq = ++summarySeq
-    if (this.data.scope.scopeType === 'store' && this.data.scope.closed && !this.data.scopeUserPicked && !this.data.scopeResolveDefault) {
+    const today = new Date()
+    const todayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
+    if (this.data.scope.scopeType === 'store' && this.data.scope.closed && !this.data.scopeUserPicked && this.data.selectedDate === todayKey) {
       this.setData({
         loading: false,
         display: null,
         displayKey: '',
         summaryState: 'empty',
         summaryEmptyText: `「${this.data.scope.scopeName || '该门店'}」已关店`,
-        summaryEmptyHint: '可在上方切换范围查看其它在营门店',
+        summaryEmptyHint: '可选择关店前日期查看历史数据',
       })
       return
     }

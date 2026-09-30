@@ -111,9 +111,37 @@ beforeEach(() => {
 })
 
 describe('hub · 默认关店空态与手选历史（#473）', () => {
+  const today = () => {
+    const d = new Date()
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  }
+
+  test('冷启动先等待范围选项，未确认关店状态前不请求 summary', () => {
+    setGlobalData({ scopedStores: [{ storeId: 'closed', storeName: '已关店', isActive: true }] })
+    const hub = instantiate('hub')
+    hub.initDashboard()
+    expect(hub.data.scopeResolveDefault).toBe(true)
+    expect(hub.data.summaryState).toBe('loading')
+    expect(mocked).not.toHaveBeenCalled()
+  })
+
+  test('首次范围请求失败显示错误，不能把未知关店状态显示成 0', async () => {
+    const hub = instantiate('hub')
+    hub.data.selectedDate = today()
+    hub.data.scopeResolveDefault = true
+    hub.data.scope = { scopeType: 'store', scopeId: 'closed', scopeName: '已关店' }
+    const picker = instantiate('picker')
+    mocked.mockRejectedValueOnce(new Error('network'))
+    await picker.loadOptions()
+    expect(picker.events.at(-1)?.name).toBe('optionsfailed')
+    hub.onScopeOptionsFailed()
+    expect(hub.data.summaryState).toBe('error')
+    expect(mocked).not.toHaveBeenCalledWith('mgmtDashboard.summary', expect.anything())
+  })
+
   test('picker 默认纠正事件传到页面：有在营替代时只查询替代门店', async () => {
     const hub = instantiate('hub')
-    hub.data.selectedDate = '2026-09-25'
+    hub.data.selectedDate = today()
     hub.data.scopeResolveDefault = true
     hub.data.scope = { scopeType: 'store', scopeId: 'closed', scopeName: '已关店' }
     const picker = instantiate('picker')
@@ -140,7 +168,7 @@ describe('hub · 默认关店空态与手选历史（#473）', () => {
 
   test('picker 默认纠正事件传到页面：只有关店时显示空态且不查询', async () => {
     const hub = instantiate('hub')
-    hub.data.selectedDate = '2026-09-25'
+    hub.data.selectedDate = today()
     hub.data.scopeResolveDefault = true
     hub.data.scope = { scopeType: 'store', scopeId: 'closed', scopeName: '已关店' }
     const picker = instantiate('picker')
@@ -163,7 +191,7 @@ describe('hub · 默认关店空态与手选历史（#473）', () => {
 
   test('权限内只有关店门店时默认不发 summary，展示关店空态', async () => {
     const hub = instantiate('hub')
-    hub.data.selectedDate = '2026-09-25'
+    hub.data.selectedDate = today()
     hub.data.scope = { scopeType: 'store', scopeId: 'closed', scopeName: '已关店', closed: true }
     await hub.loadSummary()
     expect(mocked).not.toHaveBeenCalled()
@@ -181,6 +209,16 @@ describe('hub · 默认关店空态与手选历史（#473）', () => {
     expect(mocked).toHaveBeenCalledWith('mgmtDashboard.summary', expect.objectContaining({ scopeId: 'closed', date: '2026-07-01' }))
     expect(hub.data.summaryState).toBe('content')
     expect(decodeURIComponent(hub.buildScopeQuery())).toContain('scopeName=蓝湾店（已关店）')
+  })
+
+  test('默认关店门店切到历史日期后也能查数', async () => {
+    const hub = instantiate('hub')
+    hub.data.selectedDate = '2026-07-01'
+    hub.data.scope = { scopeType: 'store', scopeId: 'closed', scopeName: '蓝湾店', closed: true }
+    mocked.mockResolvedValueOnce(summaryResp({ type: 'store', id: 'closed', name: '蓝湾店', inactive: false }))
+    await hub.loadSummary()
+    expect(mocked).toHaveBeenCalledWith('mgmtDashboard.summary', expect.objectContaining({ scopeId: 'closed', date: '2026-07-01' }))
+    expect(hub.data.summaryState).toBe('content')
   })
 })
 
