@@ -185,11 +185,10 @@ Component({
         )
         if (market) {
           const store = (storeListByMarket[market.id] || []).find((item) => item.storeId === nextApplied.scopeId)
-          nextApplied = {
-            ...nextApplied,
-            marketId: market.id,
-            scopeName: nextApplied.scopeName || `${market.name} · ${store?.storeName || ''}`,
-            closed: store?.closed === true,
+          const scopeName = nextApplied.scopeName || `${market.name} · ${store?.storeName || ''}`
+          const closed = store?.closed === true
+          if (nextApplied.marketId !== market.id || nextApplied.scopeName !== scopeName || nextApplied.closed !== closed) {
+            nextApplied = { ...nextApplied, marketId: market.id, scopeName, closed }
           }
         }
       }

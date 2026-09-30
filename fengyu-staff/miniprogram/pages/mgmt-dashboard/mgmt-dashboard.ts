@@ -399,14 +399,14 @@ Page({
     if (!this.data.selectedDate) return
     // 只认最后一次请求：切 scope / 日期后，迟到的旧响应（含失败）一律丢弃
     const seq = ++summarySeq
-    if (this.data.scope.scopeType === 'store' && this.data.scope.closed && !this.data.scopeUserPicked) {
+    if (this.data.scope.scopeType === 'store' && this.data.scope.closed && !this.data.scopeUserPicked && !this.data.scopeResolveDefault) {
       this.setData({
         loading: false,
         display: null,
         displayKey: '',
         summaryState: 'empty',
         summaryEmptyText: `「${this.data.scope.scopeName || '该门店'}」已关店`,
-        summaryEmptyHint: '当前账号没有其它在营门店可查看',
+        summaryEmptyHint: '可在上方切换范围查看其它在营门店',
       })
       return
     }

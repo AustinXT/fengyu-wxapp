@@ -367,6 +367,17 @@ describe('scope-picker · 纠正落在停用门店的默认范围', () => {
     expect(picker.events).toEqual([{ name: 'change', detail: { scopeType: 'store', scopeId: 'store-lw', scopeName: '九江凤御 · 九江蓝湾店', marketId: 'mkt-jj', inactive: false } }])
   })
 
+  test('停用门店自动替代跳过已关店候选', async () => {
+    mocked.mockResolvedValueOnce(options({ markets: [{ id: 'mkt-jj', name: '九江凤御', stores: [
+      { storeId: 'store-closed', storeName: '已关店', closed: true },
+      { storeId: 'store-lw', storeName: '九江蓝湾店' },
+    ] }] }))
+    const picker = pickerWith({ scopeType: 'store', scopeId: 'store-zh', scopeName: '九江中辉店' })
+    await picker.loadOptions()
+    expect(picker.data.applied).toMatchObject({ scopeId: 'store-lw' })
+    expect(picker.events.at(-1).detail).toMatchObject({ scopeId: 'store-lw' })
+  })
+
   test('没有在营门店 → 保留停用门店，标 inactive（触发器显示「（已停用）」）', async () => {
     mocked.mockResolvedValueOnce(options({ markets: [] }))
     const picker = pickerWith({ scopeType: 'store', scopeId: 'store-zh', scopeName: '九江中辉店' })
