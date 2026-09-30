@@ -69,6 +69,51 @@ describe('service.create', () => {
     expect(pg.transaction).toHaveBeenCalled()
   })
 
+  test('原店寄存疗程可在顾客当前归属门店开服务单', async () => {
+    const ctx = createManagerCtx({
+      clientUserId: 'client-001',
+      items: [{ saleItemId: 'held-other-store', sessionUsed: 1 }],
+    })
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_item_id: 'held-other-store', session_count: 1, remaining_sessions: 1,
+        paid_sessions: 1, product_type: '疗程卡', order_status: '已支付',
+        store_id: 'source-store', client_user_id: 'client-001', has_pending_refund: false,
+      }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ became_member_at: null, bound_store_id: 'store-001' }])
+    let insertOrderParams
+    pg.transaction.mockImplementationOnce(async (cb) => {
+      const client = { query: vi.fn(async (sql, params) => {
+        if (sql.includes('pg_advisory_xact_lock')) return { rows: [], rowCount: 0 }
+        if (sql.includes('FROM service_orders') && sql.includes('LIKE $1')) return { rows: [], rowCount: 0 }
+        if (sql.includes('INSERT INTO service_orders')) insertOrderParams = params
+        return { rows: [{ unit_real_price: 100 }], rowCount: 1 }
+      }) }
+      return await cb(client)
+    })
+
+    await serviceRoutes.create(ctx)
+    expect(ctx.result.status).toBe('待服务')
+    expect(insertOrderParams[3]).toBe('store-001')
+    expect(insertOrderParams[7]).toBe('client-001')
+  })
+
+  test('拒绝把他人原店卡混入当前顾客服务单', async () => {
+    const ctx = createManagerCtx({
+      clientUserId: 'client-001',
+      items: [{ saleItemId: 'other-customer-card', sessionUsed: 1 }],
+    })
+    pg.query.mockResolvedValueOnce([{
+      sale_item_id: 'other-customer-card', session_count: 1, remaining_sessions: 1,
+      paid_sessions: 1, product_type: '疗程卡', order_status: '已支付',
+      store_id: 'source-store', client_user_id: 'client-002', has_pending_refund: false,
+    }])
+
+    await expect(serviceRoutes.create(ctx)).rejects.toThrow(/PERMISSION_DENIED.*不属于当前顾客/)
+    expect(pg.transaction).not.toHaveBeenCalled()
+  })
+
   test('创建服务单时持久化自定义备注并写入备注审计摘要', async () => {
     const ctx = createManagerCtx({
       clientUserId: 'client-001',

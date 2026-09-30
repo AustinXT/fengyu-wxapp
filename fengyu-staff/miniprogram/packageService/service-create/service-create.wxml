@@ -72,9 +72,13 @@
         <van-search value="{{paidItemNameQuery}}" placeholder="搜索疗程卡名称" bind:change="onPaidItemNameChange" />
       </view>
 
-      <view wx:if="{{paidItems.length === 0}}" class="empty-tip">
+      <view wx:if="{{paidItemsError}}" class="empty-tip">
+        <van-empty description="疗程项目加载失败：{{paidItemsError}}" />
+        <button size="mini" bindtap="onRetryPaidOrders">重新加载</button>
+      </view>
+      <view wx:elif="{{paidItems.length === 0}}" class="empty-tip">
         <van-empty wx:if="{{hasPaidItemFilter}}" description="未找到匹配的疗程卡" />
-        <van-empty wx:else description="该顾客在本店暂无可核销的已支付订单（跨店卡需在购买门店使用）" />
+        <van-empty wx:else description="该顾客暂无可核销的疗程项目" />
       </view>
 
       <view wx:else class="order-list">
@@ -100,7 +104,7 @@
               <view class="order-item-meta">
               <text class="order-item-sessions">剩余 {{si.consumableSessions}} / 已付 {{si.paidSessions == null ? '—' : si.paidSessions}} / 共 {{si.totalSessions || si.sessionCount}} {{si.unit || '次'}} · 共 {{si.cardCount || 1}} 张{{si.unitRealPrice ? ' · 单' + (si.unit || '次') + '实付 ¥' + si.unitRealPrice : ''}}{{si.disabledReason ? ' · ' + si.disabledReason : ''}}</text>
               </view>
-              <view class="order-item-sub" wx:if="{{si.saleOrderId}}">{{si.saleOrderId}} · {{si.paidAt}}</view>
+              <view class="order-item-sub" wx:if="{{si.saleOrderId}}">{{si.saleOrderId}} · {{si.storeName || '来源门店未知'}} · {{si.paidAt}}</view>
               <view class="order-remark-list" wx:if="{{si.sourceOrderRemarks && si.sourceOrderRemarks.length}}">
                 <view class="order-remark" wx:for="{{si.sourceOrderRemarks}}" wx:for-item="remarkItem" wx:key="saleOrderId">
                   <text class="order-remark__order">{{remarkItem.saleOrderId}}</text>

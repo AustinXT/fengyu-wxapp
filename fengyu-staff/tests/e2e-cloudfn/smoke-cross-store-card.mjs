@@ -115,6 +115,50 @@ async function main() {
     }
   }
 
+  // 旧店寄存单是历史剩余次数快照，不经收款；当前绑定店仍应可选、可开单并扣次。
+  const depositOrderId = `${NS}_XSTORE_DEPOSIT`
+  const deposit = await createTestSaleOrder({
+    saleOrderId: depositOrderId, clientUserId: TEST_CLIENT_USER_ID,
+    storeId: OLD_STORE_ID, saleOrderType: '寄存单',
+    productName: `${NS}_旧店寄存疗程`, productType: '疗程卡',
+    quantity: 1, sessionCount: 5, totalAmount: 0, status: '已支付',
+    salesCategory: '他销自耗',
+  })
+  await pgQuery(
+    `UPDATE sale_items SET unit_price = 100, unit_real_price = 100,
+       sale_amount = 500, paid_sessions = 5 WHERE sale_item_id = $1`,
+    [deposit.saleItemId],
+  )
+  const depositPaid = await invokeStaffApi('customer.paidOrders', {
+    _testOpenid: TEST_MANAGER_OPENID, clientUserId: TEST_CLIENT_USER_ID,
+  })
+  const depositVisible = depositPaid.code === 0 && depositPaid.data.some((order) =>
+    order.saleOrderId === depositOrderId && order.items.some((item) => item.saleItemId === deposit.saleItemId))
+  if (!depositVisible) errors.push('原店寄存项目未出现在现店服务单的数据源中')
+  else rec('  ✓ 原店寄存项目进入现店服务单的数据源')
+
+  const depositCreated = await invokeStaffApi('service.create', {
+    _testOpenid: TEST_MANAGER_OPENID,
+    clientUserId: TEST_CLIENT_USER_ID,
+    items: [{ saleItemId: deposit.saleItemId, sessionUsed: 1, employeeId: TEST_MANAGER_EMP_ID, serviceDuration: 60 }],
+  })
+  if (depositCreated.code !== 0) {
+    errors.push(`原店寄存项目在现店开单应成功，实际 code=${depositCreated.code} ${depositCreated.message}`)
+  } else {
+    const depositServiceOrderId = depositCreated.data.serviceOrderId
+    await invokeStaffApi('service.start', { _testOpenid: TEST_MANAGER_OPENID, serviceOrderId: depositServiceOrderId })
+    await invokeStaffApi('service.complete', { _testOpenid: TEST_MANAGER_OPENID, serviceOrderId: depositServiceOrderId })
+    const depositConfirmed = await invokeStaffApi('service.confirm', {
+      _testOpenid: TEST_MANAGER_OPENID, serviceOrderId: depositServiceOrderId,
+    })
+    const afterDeposit = await pgQuery(
+      `SELECT remaining_sessions, store_id FROM sale_items WHERE sale_item_id = $1`, [deposit.saleItemId])
+    if (depositConfirmed.code !== 0 || Number(afterDeposit[0]?.remaining_sessions) !== 4
+      || afterDeposit[0]?.store_id !== OLD_STORE_ID) {
+      errors.push(`原店寄存项目核销应扣 1 次且保留原门店，实际 code=${depositConfirmed.code}`)
+    } else rec('  ✓ 原店寄存项目在现店开单并核销成功，原卡门店不变')
+  }
+
   // ── 4) 负向：把顾客绑定门店改到旧店 A，则在 B 开单被拒（使用限当前绑定门店）──
   await pgQuery(`UPDATE client_wechat_users SET bound_store_id = $1 WHERE user_id = $2`, [OLD_STORE_ID, TEST_CLIENT_USER_ID])
   const denied = await invokeStaffApi('service.create', {

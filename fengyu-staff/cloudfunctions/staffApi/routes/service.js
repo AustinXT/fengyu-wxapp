@@ -82,6 +82,8 @@ async function create(ctx) {
     }
   }
 
+  // 每张卡必须属于所选顾客；来源门店可不同，权益仍只能由当前归属门店的顾客使用。
+  const itemOwners = new Set()
   // 验证订单行
   for (const item of normalizedItems) {
     if (!item.saleItemId) {
@@ -119,6 +121,7 @@ async function create(ctx) {
     }
 
     const si = saleItemRows[0]
+    if (si.client_user_id) itemOwners.add(si.client_user_id)
 
     // 订单状态门槛（ticket 2026-05-19 D2=A）：允许 已支付 / 部分支付 两种状态消费
     if (!['已支付', '部分支付'].includes(si.order_status)) {
@@ -177,6 +180,10 @@ async function create(ctx) {
     if (orderRow.length > 0 && orderRow[0].client_user_id) {
       resolvedClientUserId = orderRow[0].client_user_id
     }
+  }
+
+  if (itemOwners.size > 1 || (resolvedClientUserId && itemOwners.size > 0 && !itemOwners.has(resolvedClientUserId))) {
+    throw new Error('PERMISSION_DENIED: 所选疗程项目不属于当前顾客')
   }
 
   // 校验：同一顾客只能有一个进行中的服务单（含待客户确认，与 uq_so_client_active 索引谓词一致）
