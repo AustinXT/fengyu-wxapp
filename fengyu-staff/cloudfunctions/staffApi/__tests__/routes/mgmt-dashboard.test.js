@@ -66,6 +66,20 @@ function makeMarketCtx(payload = {}) {
   })
 }
 
+function makeZeroStoreMarketCtx(payload = {}) {
+  return createCtx({
+    payload,
+    auth: {
+      staffLevel: 'market',
+      loginLevel: 'management',
+      hasDataCenterDashboard: true,
+      roleBindings: [{ role: 'finance', scopeId: 'mkt-px', scopeType: '市场' }],
+      scopeOrgNodeIds: ['mkt-px'],
+      scopeStoreIds: [],
+    },
+  })
+}
+
 function isStoreCountSql(sql) {
   return (
     /COUNT\(\*\)::int\s+AS\s+cnt/.test(sql) &&
@@ -105,6 +119,26 @@ function setupDefaultMocks({
 }
 
 describe('mgmtDashboard.summary 参数与权限校验', () => {
+  test('零门店市场账号：本市场返回零值，其它范围在路由层拒绝', async () => {
+    setupDefaultMocks({ metricValue: 0, storeCount: 0, marketName: '品项公司' })
+    const ctx = makeZeroStoreMarketCtx({ date: '2026-09-25', scopeType: 'market', scopeId: 'mkt-px' })
+    await summary(ctx)
+    expect(ctx.result.scope).toMatchObject({ type: 'market', id: 'mkt-px', name: '品项公司' })
+    expect(ctx.result.storeCount).toEqual({ day: 0, month: 0 })
+    expect(ctx.result.storeRevenue.today).toBe(0)
+
+    for (const scope of [
+      { scopeType: 'all' },
+      { scopeType: 'market', scopeId: 'mkt-other' },
+      { scopeType: 'store', scopeId: 'store-other' },
+    ]) {
+      pg.query.mockClear()
+      await expect(summary(makeZeroStoreMarketCtx({ date: '2026-09-25', ...scope })))
+        .rejects.toThrow(/PERMISSION_DENIED/)
+      expect(pg.query).not.toHaveBeenCalled()
+    }
+  })
+
   test('缺 date 抛 INVALID_PARAMS', async () => {
     const ctx = makeHqCtx({ scopeType: 'all' })
     await expect(summary(ctx)).rejects.toThrow(/INVALID_PARAMS.*日期/)
