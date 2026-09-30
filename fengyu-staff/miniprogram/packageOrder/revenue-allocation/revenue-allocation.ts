@@ -13,7 +13,6 @@ import {
 } from '../utils/allocation-group';
 
 const RATIO_OPTIONS = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
-const MAX_PER_POOL = 3;
 let allocationLineSequence = 0;
 
 function nextAllocationLineId(groupId: string): string {
@@ -671,7 +670,7 @@ Page({
       return;
     }
 
-    // 前端轻量预校验：同 SKU 组的技能标签池 ≤3 人 / 比例合计 ≤100%
+    // 前端轻量预校验：同 SKU 组的技能标签池比例合计 ≤100%
     const pools = new Map<string, AllocLine[]>();
     for (const l of effectiveLines) {
       const key = `${l.groupId}|${l.roleType}`;
@@ -679,10 +678,6 @@ Page({
       pools.get(key)!.push(l);
     }
     for (const [, pool] of pools) {
-      if (pool.length > MAX_PER_POOL) {
-        wx.showToast({ title: `每个商品每个技能标签最多分配 ${MAX_PER_POOL} 人`, icon: 'none' });
-        return;
-      }
       // 容差 0.01%：仅吸收浮点漂移，不放过 ≥0.1% 真实超额（与后端 ratioSum>1.0001 同口径）
       const sum = pool.reduce((s, l) => s + l.ratioPercent, 0);
       if (sum > 100.01) {
