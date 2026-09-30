@@ -67,6 +67,14 @@ async function main() {
   const saleItemId = items[0].sale_item_id
   rec(`  fixture: order=${orderId} item=${saleItemId} 卡售出门店=${items[0].store_id} 绑定门店=B(${TEST_STORE_ID})`)
 
+  const localOrder = await createTestSaleOrder({
+    saleOrderId: `${NS}_XSTORE_LOCAL`, clientUserId: TEST_CLIENT_USER_ID,
+    storeId: TEST_STORE_ID, productName: `${NS}_本店疗程卡`, productType: '疗程卡',
+    quantity: 1, sessionCount: 3, totalAmount: 300,
+    status: '已支付', salesCategory: '他销自耗',
+  })
+  await pgQuery(`UPDATE sale_items SET paid_sessions = session_count WHERE sale_item_id = $1`, [localOrder.saleItemId])
+
   const errors = []
 
   // ── 1) 展示跟顾客走：paidOrders 跨店列出旧店 A 卡 ──
@@ -88,7 +96,9 @@ async function main() {
   const created = await invokeStaffApi('service.create', {
     _testOpenid: TEST_MANAGER_OPENID,
     clientUserId: TEST_CLIENT_USER_ID,
-    items: [{ saleItemId, sessionUsed: 1, employeeId: TEST_MANAGER_EMP_ID, serviceDuration: 60 }],
+    items: [saleItemId, localOrder.saleItemId].map((id) => ({
+      saleItemId: id, sessionUsed: 1, employeeId: TEST_MANAGER_EMP_ID, serviceDuration: 60,
+    })),
   })
   let serviceOrderId = null
   if (created.code !== 0) {
@@ -111,6 +121,11 @@ async function main() {
         errors.push(`确认核销后旧店 A 卡剩余应=4，实际=${after[0]?.remaining_sessions}`)
       } else {
         rec('  ✓ confirm 跨店扣次成功（旧店 A 卡 5→4）')
+      }
+      const localAfter = await pgQuery(
+        `SELECT remaining_sessions FROM sale_items WHERE sale_item_id = $1`, [localOrder.saleItemId])
+      if (Number(localAfter[0]?.remaining_sessions) !== 2) {
+        errors.push(`混选核销后本店卡剩余应=2，实际=${localAfter[0]?.remaining_sessions}`)
       }
     }
   }
