@@ -19,6 +19,7 @@ import { actionErrorMessage } from '@/lib/action-error'
 import { Button } from '@/components/ui/button'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Input } from '@/components/ui/input'
+import { InventoryNumberInput } from './inventory-number-input'
 import { Select } from '@/components/ui/select'
 import InventorySubjectSelect from '@/components/inventory-subject-select'
 import { InventorySkuSearchSelect } from './inventory-sku-search-select'
@@ -565,7 +566,7 @@ export function InventoryDocCreateForm({
             />
             <Input placeholder="批号" value={item.batchNo} onChange={(e) => updateItem(index, { batchNo: e.target.value })} />
             <DatePicker value={item.expiryDate} onValueChange={(value) => updateItem(index, { expiryDate: value })} aria-label={`明细 ${index + 1} 效期`} />
-            <Input type="number" min="0" step="0.01" max="9999999999.99" placeholder="数量" value={item.quantity} onChange={(e) => updateItem(index, { quantity: e.target.value })} />
+            <InventoryNumberInput type="number" min="0" step="0.01" max="9999999999.99" placeholder="数量" value={item.quantity} onChange={(e) => updateItem(index, { quantity: e.target.value })} />
             <Input placeholder="原因" value={item.reason} onChange={(e) => updateItem(index, { reason: e.target.value })} />
             <Button
               variant="outline"

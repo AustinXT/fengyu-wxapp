@@ -21,6 +21,7 @@ import { DataTable, type Column } from '@/components/ui/data-table'
 import InventorySubjectSelect from '@/components/inventory-subject-select'
 import { Dialog, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { InventoryNumberInput } from './inventory-number-input'
 import { Pagination } from '@/components/ui/pagination'
 import { Select } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
@@ -706,11 +707,11 @@ function SkuFormDialog({
           <section className="space-y-3 border-t border-[var(--border)] pt-4">
             <h3 className="text-sm font-medium">价格资料</h3>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Field label="供应链采购价"><Input type="number" min="0" step="0.01" max="9999999999.99" value={form.supplyChainPurchasePrice} onChange={(event) => setField('supplyChainPurchasePrice', event.target.value)} /></Field>
-              <Field label="门店进货价"><Input type="number" min="0" step="0.01" max="9999999999.99" value={form.storePurchasePrice} onChange={(event) => setField('storePurchasePrice', event.target.value)} /></Field>
-              <Field label="市场员工购价"><Input type="number" min="0" step="0.01" max="9999999999.99" value={form.marketStaffPurchasePrice} onChange={(event) => setField('marketStaffPurchasePrice', event.target.value)} /></Field>
-              <Field label="顾客零售价"><Input type="number" min="0" step="0.01" max="9999999999.99" value={form.retailPrice} onChange={(event) => setField('retailPrice', event.target.value)} /></Field>
-              <Field label="核算价"><Input type="number" min="0" step="0.01" max="9999999999.99" value={form.accountingPrice} onChange={(event) => setField('accountingPrice', event.target.value)} /></Field>
+              <Field label="供应链采购价"><InventoryNumberInput type="number" min="0" step="0.01" max="9999999999.99" value={form.supplyChainPurchasePrice} onChange={(event) => setField('supplyChainPurchasePrice', event.target.value)} /></Field>
+              <Field label="门店进货价"><InventoryNumberInput type="number" min="0" step="0.01" max="9999999999.99" value={form.storePurchasePrice} onChange={(event) => setField('storePurchasePrice', event.target.value)} /></Field>
+              <Field label="市场员工购价"><InventoryNumberInput type="number" min="0" step="0.01" max="9999999999.99" value={form.marketStaffPurchasePrice} onChange={(event) => setField('marketStaffPurchasePrice', event.target.value)} /></Field>
+              <Field label="顾客零售价"><InventoryNumberInput type="number" min="0" step="0.01" max="9999999999.99" value={form.retailPrice} onChange={(event) => setField('retailPrice', event.target.value)} /></Field>
+              <Field label="核算价"><InventoryNumberInput type="number" min="0" step="0.01" max="9999999999.99" value={form.accountingPrice} onChange={(event) => setField('accountingPrice', event.target.value)} /></Field>
               {/*
                 市场折扣的边界与其它金额字段**不同**，不能套用 numeric(12,2) 那组：
                 列是 `numeric(8,4)`（db/schema/inventory.ts:82），业务侧
@@ -718,7 +719,7 @@ function SkuFormDialog({
                 所以合法区间是 0–100，不是 0–9999999999.99。
                 step 取 0.0001 以匹配列的 4 位小数（用小数写比率时 0.8125 也要能填）。
               */}
-              <Field label="市场折扣（25 表示 25%）"><Input type="number" min="0" step="0.0001" max="100" value={form.marketPurchaseDiscount} onChange={(event) => setField('marketPurchaseDiscount', event.target.value)} /></Field>
+              <Field label="市场折扣（25 表示 25%）"><InventoryNumberInput type="number" min="0" step="0.0001" max="100" value={form.marketPurchaseDiscount} onChange={(event) => setField('marketPurchaseDiscount', event.target.value)} /></Field>
               <Field label="市场进货价">
                 <div className="space-y-1">
                   {form.sourceType === '供应链' && (
@@ -727,7 +728,7 @@ function SkuFormDialog({
                       <option value="手工覆盖">手工覆盖</option>
                     </Select>
                   )}
-                  <Input
+                  <InventoryNumberInput
                     type="number" min="0" step="0.01" max="9999999999.99"
                     value={form.marketPurchasePrice}
                     placeholder={calculatedMarketPrice == null ? undefined : String(calculatedMarketPrice)}
@@ -740,7 +741,7 @@ function SkuFormDialog({
               {form.sourceType === '供应链' && form.marketPurchasePriceMode === '手工覆盖' && (
                 <Field label="手工覆盖原因 *"><Textarea value={form.marketPurchasePriceOverrideReason} onChange={(event) => setField('marketPurchasePriceOverrideReason', event.target.value)} /></Field>
               )}
-              <Field label="自采实际进货价"><Input type="number" min="0" step="0.01" max="9999999999.99" value={form.itemCompanyPurchasePrice} onChange={(event) => setField('itemCompanyPurchasePrice', event.target.value)} /></Field>
+              <Field label="自采实际进货价"><InventoryNumberInput type="number" min="0" step="0.01" max="9999999999.99" value={form.itemCompanyPurchasePrice} onChange={(event) => setField('itemCompanyPurchasePrice', event.target.value)} /></Field>
             </div>
           </section>
         )}

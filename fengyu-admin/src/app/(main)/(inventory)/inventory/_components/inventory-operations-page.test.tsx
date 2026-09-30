@@ -3142,6 +3142,19 @@ describe('门店报货草稿（#348 · 348a）', () => {
     expect(screen.getByRole('button', { name: '提交门店报货单' })).toBeInTheDocument()
   })
 
+  it('门店报货草稿的非法数量不能绕过提交约束', async () => {
+    mockDocs({ inbox: segment([draftRow()]) })
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue(draftDetail())
+    renderPage({ level: 'store', operation: 'store-request', locations: [M1, S1] })
+    await openDocsTab()
+    fireEvent.click(screen.getByRole('button', { name: '继续编辑 DBH-D1' }))
+    await screen.findByText('DBH-D1', { selector: 'span.font-mono' })
+    fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '-1' } })
+    fireEvent.click(screen.getByRole('button', { name: '存草稿' }))
+    expect(saveStoreReplenishmentDraft).not.toHaveBeenCalled()
+    expect(toast.error).toHaveBeenCalledWith('报货数量须为 0.01 至 9999999999.99，且最多两位小数')
+  })
+
   it('删除草稿按业务分派到门店报货的 action，不串到市场报货', async () => {
     mockDocs({ inbox: segment([draftRow()]) })
     vi.mocked(deleteStoreReplenishmentDraft).mockResolvedValue({ id: 'DBH-D1' })
