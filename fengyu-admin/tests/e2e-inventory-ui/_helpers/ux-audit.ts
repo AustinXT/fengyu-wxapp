@@ -145,7 +145,7 @@ export function checkBusinessErrorProbe(probe: BusinessErrorProbe | null, now = 
   }
   const visibleText = (probe.visibleText || '').trim()
   if (/期初|暂不可办理/.test(visibleText) && !/An error occurred in the Server Components render/.test(visibleText)) return []
-  if (/An error occurred in the Server Components render|\b\d{9,}\b|\berror digest\b/i.test(visibleText)) {
+  if (/An error occurred in the Server Components render|(?:创建失败|error digest|digest)\s*[:：]?\s*\d{9,}/i.test(visibleText)) {
     return [{ rule: '业务错误提示被生产构建脱敏', severity: 'P1', page,
       detail: 'INV-02 实测门禁已拦截，页面显示框架脱敏文案或裸 digest',
       evidence: `INV-02 ${probe.at}；页面反馈：${visibleText}` }]
@@ -289,7 +289,9 @@ export function renderFindings(findings: Finding[]): string {
   const lines = ['| 严重度 | 规则 | 位置 | 说明 | 证据 |', '|---|---|---|---|---|']
   for (const f of sorted) {
     const esc = (s: string) => s.replace(/\|/g, '\\|').replace(/\n/g, ' ')
-    lines.push(`| ${f.severity} | ${esc(f.rule)} | \`${esc(f.page)}\` | ${esc(f.detail)} | ${f.evidence ? `\`${esc(f.evidence).slice(0, 80)}\`` : '—'} |`)
+    // P0/P1 的原始错误文本是验收证据，不能截断成只剩「INV-02 时间戳」。
+    const evidence = f.evidence ? esc(f.evidence) : ''
+    lines.push(`| ${f.severity} | ${esc(f.rule)} | \`${esc(f.page)}\` | ${esc(f.detail)} | ${evidence ? `\`${f.severity === 'P2' ? evidence.slice(0, 160) : evidence}\`` : '—'} |`)
   }
   return lines.join('\n') + '\n'
 }

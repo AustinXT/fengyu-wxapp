@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { checkBusinessErrorProbe, checkForeignKeyInputs, lotLoadingVerdict } from './ux-audit'
+import { checkBusinessErrorProbe, checkForeignKeyInputs, lotLoadingVerdict, renderFindings } from './ux-audit'
 
 const now = Date.parse('2026-09-30T08:00:00.000Z')
 const page = '/inventory/docs → 新建库存单据（期初门禁）'
@@ -42,7 +42,11 @@ describe('INV-10 审计证据', () => {
   })
 
   it('混在普通文案里的裸 digest 仍报告脱敏', () => {
+    const findings = checkBusinessErrorProbe({ at: new Date(now).toISOString(), page, blocked: true,
+      visibleText: '创建失败 1956068727' }, now)
+    expect(findings[0]).toMatchObject({ severity: 'P1', rule: '业务错误提示被生产构建脱敏' })
+    expect(renderFindings(findings)).toContain('创建失败 1956068727')
     expect(checkBusinessErrorProbe({ at: new Date(now).toISOString(), page, blocked: true,
-      visibleText: '创建失败 1956068727' }, now)[0]).toMatchObject({ severity: 'P1', rule: '业务错误提示被生产构建脱敏' })
+      visibleText: '请拨打 12345678901 联系管理员' }, now)[0].severity).toBe('P2')
   })
 })
