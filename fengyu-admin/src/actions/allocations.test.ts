@@ -483,6 +483,76 @@ describe('销售回款冻结权限 #480', () => {
   })
 })
 
+describe('savePaymentAllocations — 同池不限人数', () => {
+  const pay = {
+    id: 7, sale_order_id: 'order-1', allocation_status: '待分配',
+    store_id: 'store-1', market_name: 'M', sale_order_type: '销售单', legacy_source: null,
+  }
+  const receipts = [
+    { receipt_id: '101', sale_item_id: 'item-1', amount: '100.00', sales_category: '自销自耗' },
+    { receipt_id: '102', sale_item_id: 'item-2', amount: '80.00', sales_category: '自销自耗' },
+  ]
+  const employees = ['EMP-1', 'EMP-2', 'EMP-3', 'EMP-4']
+  const lines = (ratio = '0.250', roleType = '养生师') =>
+    receipts.flatMap((item) => employees.map((employeeId) => ({
+      saleItemId: item.sale_item_id, employeeId, roleType, allocationRatio: ratio,
+    })))
+  let insertedValues: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    ;(isInScope as any).mockReturnValue(true)
+    ;(db.execute as any).mockReset()
+      .mockResolvedValueOnce([pay])
+      .mockResolvedValueOnce(receipts)
+      .mockResolvedValueOnce([])
+    insertedValues = vi.fn().mockResolvedValue(undefined)
+    ;(db.transaction as any).mockReset().mockImplementation(async (callback: any) => {
+      const execute = vi.fn()
+        .mockResolvedValueOnce([{}])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce({ count: 1 })
+        .mockResolvedValueOnce([])
+      await callback({ execute, insert: vi.fn(() => ({ values: insertedValues })) })
+    })
+  })
+
+  it('两个商品实例每池 4 人各 25%，逐 receipt 保存并由服务端重算金额', async () => {
+    const result = await savePaymentAllocations(7, lines())
+
+    expect(result.success).toBe(true)
+    expect(insertedValues).toHaveBeenCalledOnce()
+    const inserted = insertedValues.mock.calls[0][0]
+    expect(inserted).toHaveLength(8)
+    expect(inserted.filter((row: any) => row.salePaymentItemReceiptId === 101).map((row: any) => [row.employeeId, row.allocationRatio, row.allocatedAmount])).toEqual([
+      ['EMP-1', '0.250', '25.00'], ['EMP-2', '0.250', '25.00'], ['EMP-3', '0.250', '25.00'], ['EMP-4', '0.250', '25.00'],
+    ])
+    expect(inserted.filter((row: any) => row.salePaymentItemReceiptId === 102).map((row: any) => row.allocatedAmount)).toEqual(['20.00', '20.00', '20.00', '20.00'])
+  })
+
+  it.each([
+    ['比例超 100%', lines('0.300'), '比例合计不能超过 100%'],
+    ['同池重复员工', [...lines('0.200'), { saleItemId: 'item-1', employeeId: 'EMP-1', roleType: '养生师', allocationRatio: '0.100' }], '不能重复分配同一员工'],
+    ['单行无效比例', [{ saleItemId: 'item-1', employeeId: 'EMP-1', roleType: '养生师', allocationRatio: '0' }], '分配比例必须'],
+  ])('%s 仍被拒绝，事务未开始', async (_name, allocations, message) => {
+    const result = await savePaymentAllocations(7, allocations)
+    expect(result.success).toBe(false)
+    expect(result.message).toContain(message)
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('不同技能标签独立计算比例', async () => {
+    const allocations = [
+      ...employees.map((employeeId) => ({ saleItemId: 'item-1', employeeId, roleType: '养生师', allocationRatio: '0.250' })),
+      { saleItemId: 'item-1', employeeId: 'EMP-1', roleType: '美容师', allocationRatio: '1.000' },
+    ]
+    const result = await savePaymentAllocations(7, allocations)
+    expect(result.success).toBe(true)
+    expect(insertedValues.mock.calls[0][0]).toHaveLength(5)
+  })
+})
+
 // ── getPendingPayments — 全部状态 + 日期筛选（防「全部状态」假全部回归） ─────────
 // fluent select 链：支持 .from().innerJoin().leftJoin().where().orderBy().limit().offset()
 // 以及直接 await .where()（count 查询）。builder 自身是 thenable，await 得 result。

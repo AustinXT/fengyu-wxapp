@@ -39,6 +39,7 @@ import { isGateOpen, openCutoverGate } from './_helpers/cutover'
 import {
   createGenericDoc, docIdByRemark, docMovementCount, docStatus, lotQtyAll, pickSku, rowAction, selectContaining,
 } from './_helpers/ui'
+import { lotLoadingVerdict } from './_helpers/ux-audit'
 
 // 恢复真实链路后跑完五段要好几分钟（两次建单 + 两次收货 + 两次必失败的提交），
 // 对齐 inv-03 的 600s；原来的 400s 是「只复现缺陷」时代的余量。
@@ -116,6 +117,10 @@ const ctxState: {
   at: string
   /** 单据中心批次下拉是否解禁并出现真实批次（#129 的核心症状） */
   lotLoadingOk: boolean | null
+  /** 来源门店当轮是否确有可选批次；无库存时不能把空下拉定性为加载故障。 */
+  sourceOnHandQty: number | null
+  lotEnabled: boolean | null
+  lotOptionCount: number | null
   /** 换 SKU / 换出库主体后批次列表是否跟随刷新且不卡死（#129 验收标准第 3 条） */
   lotRefreshOk: boolean | null
   /** 本轮**经通用建单弹窗**真正建出来的单据号（收货自动派生的 DTI/MTI 不计入，见下面四个专列字段） */
@@ -127,6 +132,9 @@ const ctxState: {
 } = {
   at: new Date().toISOString(),
   lotLoadingOk: null,
+  sourceOnHandQty: null,
+  lotEnabled: null,
+  lotOptionCount: null,
   lotRefreshOk: null,
   genericDocsCreated: [],
   dtoId: '',
@@ -239,7 +247,11 @@ test('INV-05：调货链路 —— 分院调货收货闭环 / §10.3 归属 / �
       lotOptionCount > 1,
       `option数=${lotOptionCount}（1 = 只有占位项）｜建单页 POST 200 次数=${docPostResponses}`,
     )
-    ctxState.lotLoadingOk = lotEnabled && lotOptionCount > 1
+    const sourceOnHandQty = lotQtyAll(TOPO.STORE_A_ORG, inv01.supplySkuId)
+    ctxState.sourceOnHandQty = sourceOnHandQty
+    ctxState.lotEnabled = lotEnabled
+    ctxState.lotOptionCount = lotOptionCount
+    ctxState.lotLoadingOk = lotLoadingVerdict(sourceOnHandQty, lotEnabled, lotOptionCount)
     flushCtx()
 
     /*

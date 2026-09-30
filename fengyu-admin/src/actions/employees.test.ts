@@ -131,7 +131,7 @@ import { stores, orgNodes } from '@db/org'
 import { permissionRoles } from '@db/permission'
 import { staffWechatUsers } from '@db/user'
 import { getSession } from '@/lib/auth'
-import { isInScope, isOrgNodeInScope, isAdminScope, isEmployeeRowVisible } from '@/lib/permissions'
+import { isInScope, isOrgNodeInScope, isAdminScope, isEmployeeRowVisible, requirePermission } from '@/lib/permissions'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { eq, ilike, inArray, isNull, sql, gt } from 'drizzle-orm'
 import { countActiveAdmins, isAdminEmployee } from '@/lib/admin-guard'
@@ -146,6 +146,17 @@ const mockSession = {
 }
 
 describe('searchEmployees — 推荐员工检索（全部在职员工，可跨店）', () => {
+  function mockSearchRows(rows: unknown[]) {
+    const chain: any = {}
+    chain.from = vi.fn().mockReturnValue(chain)
+    chain.leftJoin = vi.fn().mockReturnValue(chain)
+    chain.where = vi.fn().mockReturnValue(chain)
+    chain.orderBy = vi.fn().mockReturnValue(chain)
+    chain.limit = vi.fn().mockResolvedValue(rows)
+    ;(db.select as any).mockReturnValue(chain)
+    return chain
+  }
+
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue({
@@ -154,9 +165,39 @@ describe('searchEmployees — 推荐员工检索（全部在职员工，可跨�
     })
   })
 
-  it('少于 3 位关键词直接返回空，不查数据库', async () => {
-    await expect(searchEmployees('12')).resolves.toEqual([])
+  it('去首尾空格后不足 2 位直接返回空，不查数据库', async () => {
+    await expect(searchEmployees('王')).resolves.toEqual([])
+    await expect(searchEmployees(' 王 ')).resolves.toEqual([])
     expect(db.select).not.toHaveBeenCalled()
+    expect(requirePermission).toHaveBeenCalledWith(expect.anything(), 'employee:list')
+  })
+
+  it('两字姓名去首尾空格后可检索全部在职员工', async () => {
+    const rows = [{
+      employeeId: 'EMP-002', name: '王芳', phone: '13812345678',
+      storeName: '二店', isResigned: false,
+    }]
+    const chain = mockSearchRows(rows)
+
+    const result = await searchEmployees(' 王芳 ')
+
+    expect(result).toEqual([{
+      employeeId: 'EMP-002', name: '王芳', phoneMasked: '138****5678',
+      storeName: '二店', isResigned: false,
+    }])
+    expect(ilike).toHaveBeenCalledWith(staffWechatUsers.name, '%王芳%')
+    expect(eq).toHaveBeenCalledWith(staffWechatUsers.isResigned, false)
+    expect(chain.limit).toHaveBeenCalledWith(20)
+    expect(requirePermission).toHaveBeenCalledWith(expect.anything(), 'employee:list')
+  })
+
+  it('两位手机号片段可检索', async () => {
+    const chain = mockSearchRows([])
+
+    await expect(searchEmployees(' 13 ')).resolves.toEqual([])
+
+    expect(ilike).toHaveBeenCalledWith(staffWechatUsers.phone, '%13%')
+    expect(chain.limit).toHaveBeenCalledWith(20)
   })
 
   it('返回员工编号、门店和脱敏手机号，不泄露完整手机号', async () => {
@@ -164,13 +205,7 @@ describe('searchEmployees — 推荐员工检索（全部在职员工，可跨�
       employeeId: 'EMP-001', name: '王员工', phone: '13812345678',
       storeName: '一店', isResigned: false,
     }]
-    const chain: any = {}
-    chain.from = vi.fn().mockReturnValue(chain)
-    chain.leftJoin = vi.fn().mockReturnValue(chain)
-    chain.where = vi.fn().mockReturnValue(chain)
-    chain.orderBy = vi.fn().mockReturnValue(chain)
-    chain.limit = vi.fn().mockResolvedValue(rows)
-    ;(db.select as any).mockReturnValue(chain)
+    const chain = mockSearchRows(rows)
 
     const result = await searchEmployees('13812345678')
 

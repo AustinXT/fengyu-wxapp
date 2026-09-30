@@ -31,7 +31,6 @@ import { ReturnContextLink, useReturnContext } from "@/components/return-context
 // --------------- 常量 ---------------
 
 const PERCENTAGE_OPTIONS = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100] as const
-const MAX_PER_GROUP = 3
 
 const allocationStatusMap: Record<string, { label: string; className: string }> = {
   待分配: { label: "待分配", className: "border-[#D4820A] text-[#D4820A] bg-[#FFF8E6]" },
@@ -612,11 +611,6 @@ function SaveButton({
       }
 
       for (const [roleType, poolEntries] of Object.entries(pools)) {
-        if (poolEntries.length > MAX_PER_GROUP) {
-          toast.error(`${item.productName || '商品'} 的${roleType}最多分配 3 人`)
-          return
-        }
-
         const empIds = new Set<string>()
         for (const e of poolEntries) {
           if (empIds.has(e.employeeId)) {

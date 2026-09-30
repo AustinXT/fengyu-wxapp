@@ -550,7 +550,7 @@ export const getPaymentAllocatables = withPermission(
   },
 )
 
-/** 保存某笔回款的营业额分配（镜像 staff savePayment；档位按本回款额；池 ≤3，池内 Σ ≤ 该项可分配额） */
+/** 保存某笔回款的营业额分配（镜像 staff savePayment；档位按本回款额；池内 Σ ≤ 该项可分配额） */
 export const savePaymentAllocations = withPermission(
   'allocation:save',
   async (
@@ -671,7 +671,7 @@ export const savePaymentAllocations = withPermission(
       })
     }
 
-    // 按 (saleItemId, roleType) 分池校验：≤3 人、池内 Σ ≤ 该项可分配额、同员工不重复
+    // 按 (saleItemId, roleType) 分池校验：池内 Σ ≤ 该项可分配额、同员工不重复
     const pools = new Map<string, typeof enriched>()
     for (const a of enriched) {
       const key = `${a.saleItemId}|${getPoolKey(a.roleType)}`
@@ -680,9 +680,6 @@ export const savePaymentAllocations = withPermission(
       pools.set(key, pool)
     }
     for (const [, pool] of pools) {
-      if (pool.length > 3) {
-        return { success: false, message: '每个商品每个技能标签最多分配 3 人' }
-      }
       // 池内分配比例合计 ≤ 100%（容差 0.0001：仅吸收浮点漂移，不放过 ≥0.1% 真实超额）。回款级 base 恒正，比例校验与原金额校验等价；
       // 改用比例校验避免对负数 received（转换单转出行等）方向反转误报，与订单级/前端统一「只看比例」。
       const ratioSum = pool.reduce((s, a) => s + Number(a.allocationRatio), 0)
