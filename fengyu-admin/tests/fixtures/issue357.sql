@@ -25,7 +25,7 @@ INSERT INTO inventory_docs (id, doc_type, status, source_org_node_id, target_org
   ('V357-A', '市场报货汇总', '已完成', NULL, 'V357-HQ', '2026-09-22', 10, 'V357-E'),
   ('V357-P', '采购订单', '待收货', NULL, 'V357-HQ', '2026-09-23', 4, 'V357-E'),
   ('V357-Q', '供应链采购入库', '已完成', NULL, 'V357-HQ', '2026-09-24', 2, 'V357-E'),
-  ('V357-H', '品项公司发货', '待收货', 'V357-HQ', 'V357-MA', '2026-09-25', 3, 'V357-E'),
+  ('V357-H', '品项公司发货', '待收货', 'V357-HQ', 'V357-MA', '2026-09-25', 5, 'V357-E'),
   ('V357-R', '市场采购入库', '已完成', 'V357-HQ', 'V357-MA', '2026-09-26', 2, 'V357-E'),
   ('V357-A0', '市场报货汇总', '已完成', NULL, 'V357-HQ', '2026-09-27', 10, 'V357-E'),
   ('V357-A10', '市场报货汇总', '已完成', NULL, 'V357-HQ', '2026-09-28', 10, 'V357-E'),
@@ -55,6 +55,8 @@ INSERT INTO inventory_doc_items (id, doc_id, sku_id, sku_name, quantity, fulfill
   (357012, 'V357-HC', 'V357-SKU', '测试商品', 10, 0),
   (357013, 'V357-SC', 'V357-SKU', '测试商品', 10, 0),
   (357014, 'V357-AC', 'V357-SKU', '测试商品', 10, 0);
+INSERT INTO inventory_doc_items (id, doc_id, sku_id, sku_name, quantity, fulfilled_quantity, is_gift)
+VALUES (357018, 'V357-H', 'V357-SKU', '测试商品', 2, 0, true);
 INSERT INTO inventory_doc_links (from_doc_id, to_doc_id, relation_type, from_item_id, to_item_id, quantity) VALUES
   ('V357-S', 'V357-M', '门店报货汇总', 357001, 357002, 10),
   ('V357-M', 'V357-A', '市场报货汇总', 357002, 357003, 10),
@@ -62,6 +64,7 @@ INSERT INTO inventory_doc_links (from_doc_id, to_doc_id, relation_type, from_ite
   ('V357-M', 'V357-P', '市场报货采购订单', 357002, 357004, 4),
   ('V357-P', 'V357-Q', '采购订单供应链采购入库', 357004, 357005, 2),
   ('V357-M', 'V357-H', '市场报货发货', 357002, 357006, 3),
+  ('V357-M', 'V357-H', '市场报货赠送发货', 357002, 357018, 2),
   ('V357-H', 'V357-R', '发货收货', 357006, 357007, 2),
   ('V357-MC', 'V357-HC', '市场报货发货', 357011, 357012, 10),
   ('V357-SC', 'V357-AC', '门店报货配货', 357013, 357014, 10);

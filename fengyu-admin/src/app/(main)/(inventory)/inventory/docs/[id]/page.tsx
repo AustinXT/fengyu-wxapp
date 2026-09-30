@@ -255,6 +255,7 @@ export default async function Page({
       <Card>
         <CardContent className="p-5">
           <h2 className="mb-4 text-base font-medium">关联单据血缘</h2>
+          <p className="mb-3 text-xs text-[#888888]">同一单据涉及不同关系时分别列出，关联数量按关系计算。</p>
           <div className="overflow-x-auto rounded-md border border-[var(--border)]">
             <table className="w-full min-w-[760px] text-sm">
               <thead className="bg-[#F8F8F8] text-xs text-[#666666]">

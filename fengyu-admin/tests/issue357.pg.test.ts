@@ -88,12 +88,16 @@ describe.runIf(enabled)('#357 私有 PG 链路与 SQL 断言', () => {
     const adminDetail = await getInventoryCoreDocById('V357-Q')
     expect(adminDetail?.lineage).toContainEqual(expect.objectContaining({ docId: 'V357-S', depth: 4, sourceOrgNodeName: '测试门店' }))
     const upstream = adminDetail?.lineage.filter((step) => step.direction === '上游') ?? []
-    expect(new Set(upstream.map((step) => step.docId)).size).toBe(upstream.length)
-    expect(upstream.find((step) => step.docId === 'V357-M')?.depth).toBe(3)
+    expect(new Set(upstream.map((step) => [step.docId, step.viaDocId, step.relationType].join('/'))).size).toBe(upstream.length)
+    expect(upstream.filter((step) => step.docId === 'V357-S')).toHaveLength(1)
+    expect(upstream.some((step) => step.docId === 'V357-M' && step.depth === 3)).toBe(true)
     const adminReport = await getInventoryCoreDocById('V357-M')
     const downstream = adminReport?.lineage.filter((step) => step.direction === '下游') ?? []
-    expect(new Set(downstream.map((step) => step.docId)).size).toBe(downstream.length)
-    expect(downstream.find((step) => step.docId === 'V357-P')?.depth).toBe(2)
+    expect(new Set(downstream.map((step) => [step.docId, step.viaDocId, step.relationType].join('/'))).size).toBe(downstream.length)
+    expect(downstream.filter((step) => step.docId === 'V357-P')).toHaveLength(2)
+    expect(downstream.filter((step) => step.docId === 'V357-H').map((step) => [step.relationType, step.linkedQuantity]).sort()).toEqual([
+      ['市场报货发货', 3], ['市场报货赠送发货', 2],
+    ])
     getSessionMock.mockResolvedValue(session('市场'))
     const marketDetail = await getInventoryCoreDocById('V357-M')
     expect(marketDetail?.lineage.map((step) => step.docId)).toContain('V357-S')

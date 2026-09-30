@@ -3135,11 +3135,11 @@ async function loadInventoryDocLineage(
        WHERE (CASE WHEN walk.direction = '上游' THEN edge.from_doc_id ELSE edge.to_doc_id END) <> ALL(walk.path)
     ),
     ranked_lineage AS (
-      -- 采购同时有市场报货直连与经汇总的链路；同一单据保留最完整的路径，避免重复展示。
+      -- 同一条关系边可能经多条路径抵达；只去重该边，保留正常/赠送等不同关系的数量。
       SELECT walk.direction, walk.depth, walk.doc_id, walk.via_doc_id,
              walk.relation_type, walk.linked_quantity,
              ROW_NUMBER() OVER (
-               PARTITION BY walk.direction, walk.doc_id
+               PARTITION BY walk.direction, walk.doc_id, walk.via_doc_id, walk.relation_type
                ORDER BY walk.depth DESC, walk.via_doc_id, walk.relation_type
              ) AS row_rank
         FROM lineage_walk walk
