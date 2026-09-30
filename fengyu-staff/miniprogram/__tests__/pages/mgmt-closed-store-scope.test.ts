@@ -10,7 +10,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest'
 import { callStaffApi } from '../../utils/cloud'
-import { resolveDefaultMgmtScope } from '../../utils/mgmt-scope'
+import { resolveDefaultMgmtScope } from '../../utils/mgmt-scope.ts'
 
 vi.mock('../../utils/cloud', () => ({
   callStaffApi: vi.fn(),
@@ -52,7 +52,7 @@ beforeAll(async () => {
   ;(globalThis as any).Component = (d: Record<string, any>) => { def = d }
   ;(globalThis as any).getApp = () => ({ globalData: {} })
   Object.assign((globalThis as any).wx, { showToast: vi.fn() })
-  await import('../../components/mgmt-scope-picker/mgmt-scope-picker')
+  await import('../../components/mgmt-scope-picker/mgmt-scope-picker.ts')
 })
 
 afterAll(() => {

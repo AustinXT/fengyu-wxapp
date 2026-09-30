@@ -551,10 +551,13 @@ Page({
    */
   buildScopeQuery(): string {
     const { scope } = this.data
+    const scopeName = scope.closed && !scope.scopeName.endsWith('（已关店）')
+      ? `${scope.scopeName}（已关店）`
+      : scope.scopeName
     return [
       `scopeType=${scope.scopeType}`,
       scope.scopeId ? `scopeId=${encodeURIComponent(scope.scopeId)}` : '',
-      `scopeName=${encodeURIComponent(scope.scopeName || '')}`,
+      `scopeName=${encodeURIComponent(scopeName || '')}`,
       scope.inactive ? `${SCOPE_INACTIVE_QUERY_KEY}=1` : '',
     ].filter(Boolean).join('&')
   },

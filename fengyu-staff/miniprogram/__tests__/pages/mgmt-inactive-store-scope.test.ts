@@ -175,11 +175,12 @@ describe('hub · 默认关店空态与手选历史（#473）', () => {
     const hub = instantiate('hub')
     hub.data.selectedDate = '2026-07-01'
     mocked.mockResolvedValueOnce(summaryResp({ type: 'store', id: 'closed', name: '已关店', inactive: false }))
-    hub.onScopeChange({ detail: { scopeType: 'store', scopeId: 'closed', scopeName: '已关店', closed: true, userPicked: true } })
+    hub.onScopeChange({ detail: { scopeType: 'store', scopeId: 'closed', scopeName: '蓝湾店', closed: true, userPicked: true } })
     await Promise.resolve()
     await Promise.resolve()
     expect(mocked).toHaveBeenCalledWith('mgmtDashboard.summary', expect.objectContaining({ scopeId: 'closed', date: '2026-07-01' }))
     expect(hub.data.summaryState).toBe('content')
+    expect(decodeURIComponent(hub.buildScopeQuery())).toContain('scopeName=蓝湾店（已关店）')
   })
 })
 
