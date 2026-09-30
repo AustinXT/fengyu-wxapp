@@ -9,7 +9,7 @@
  *
  * 订单别名固定为 `o`（`sale_orders o`）；scope 与人群条件由调用方另加（本 KPI scope 挂在 `c.bound_store_id` 上）。
  *
- * ⚠️ 四份副本（项目禁止跨端共享代码，靠 consistency.customer.test.ts 整段等值守护）：
+ * ⚠️ 四份副本（项目禁止跨端共享代码；consistency.customer.test.ts 守护共同金额表达式与各自日期边界）：
  *   1. staff `routes/mgmt-customer.js` 详情页 `legacy_year_stats`
  *   2. staff `routes/customer.js` 详情页 `legacy_year_stats`
  *   3. 本文件（admin 客量板新客客单价：KPI `queryNewMemberLegacySpend` + 明细 `newmem_legacy_spend` 共用）
