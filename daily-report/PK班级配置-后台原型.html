@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PK 班级配置 · 凤御管理后台原型</title>
+  <style>
+    :root { --red:#c0322a; --soft:#fff0ee; --line:#e8e8e8; --muted:#777; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:#fafafa; color:#1a1a1a; font:14px/1.6 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif; }
+    button,select,input { font:inherit; }
+    button { cursor:pointer; }
+    .layout { display:flex; min-height:100vh; }
+    .sidebar { width:224px; flex:none; background:#fff; border-right:1px solid var(--line); }
+    .logo { height:56px; display:flex; align-items:center; padding:0 16px; border-bottom:1px solid var(--line); }
+    .logo strong { color:var(--red); letter-spacing:2px; }
+    .nav { padding:12px 8px; }
+    .nav-title { font-size:11px; color:#999; padding:13px 12px 7px; }
+    .nav a { display:block; padding:10px 12px; border-radius:8px; color:#666; text-decoration:none; }
+    .nav a.indent { padding-left:28px; }
+    .nav a.active { background:var(--soft); color:var(--red); font-weight:700; }
+    .main-wrap { flex:1; min-width:0; }
+    .topbar { height:56px; padding:0 20px; display:flex; align-items:center; justify-content:space-between; background:#fff; border-bottom:1px solid var(--line); color:#666; }
+    main { max-width:1300px; padding:24px; }
+    .breadcrumb { color:#999; font-size:12px; margin-bottom:22px; }
+    h1 { margin:0; font-size:24px; }
+    h2 { margin:0 0 6px; font-size:17px; }
+    p { margin:5px 0 0; color:var(--muted); font-size:13px; }
+    .header,.controls,.row,.actions { display:flex; align-items:center; gap:12px; }
+    .header { justify-content:space-between; margin-bottom:20px; }
+    .controls { flex-wrap:wrap; margin-bottom:18px; }
+    .card { margin-bottom:18px; padding:20px; background:#fff; border:1px solid var(--line); border-radius:12px; }
+    select,input { min-height:38px; padding:7px 10px; border:1px solid #dcdcdc; border-radius:7px; background:#fff; }
+    .button { display:inline-block; padding:8px 14px; border:1px solid var(--line); border-radius:8px; background:#fff; color:#333; text-decoration:none; }
+    .button.primary { background:var(--red); border-color:var(--red); color:#fff; }
+    .button:disabled { opacity:.45; cursor:not-allowed; }
+    .class-name { font-weight:700; color:var(--red); }
+    .store-list { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin-top:16px; }
+    .store-row { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:12px; border:1px solid var(--line); border-radius:8px; }
+    .store-row select { min-width:150px; max-width:180px; }
+    .store-row small { display:block; color:#999; }
+    .table-wrap { overflow:auto; margin-top:15px; border:1px solid var(--line); border-radius:8px; }
+    table { border-collapse:collapse; width:100%; min-width:720px; }
+    th,td { padding:10px 12px; border-bottom:1px solid var(--line); text-align:left; white-space:nowrap; }
+    th { background:#fafafa; color:#666; font-size:12px; }
+    tr:last-child td { border-bottom:0; }
+    .actions { justify-content:flex-end; }
+    .hint { padding:12px; background:#f8f7f6; border-radius:8px; color:#666; font-size:12px; }
+    .error { color:#bb302b; font-size:12px; }
+    #toast { position:fixed; right:24px; bottom:24px; padding:11px 16px; color:#fff; background:#222; border-radius:8px; display:none; }
+    @media(max-width:800px) { .sidebar{display:none}main{padding:14px}.header{align-items:flex-start;flex-direction:column}.store-list{grid-template-columns:1fr} }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="logo"><strong>凤御美业</strong></div>
+      <nav class="nav"><div class="nav-title">系统管理</div><a href="./经营周期配置-后台原型.html" class="indent">经营周期配置</a><a class="indent active" href="./PK班级配置-后台原型.html">PK 班级配置</a></nav>
+    </aside>
+    <div class="main-wrap">
+      <div class="topbar"><span>管理后台 / 页面原型</span><span>演示管理员 · 总部管理</span></div>
+      <main>
+        <div class="breadcrumb">系统管理 / 系统配置 / PK 班级配置</div>
+        <div class="header"><div><h1>本月 PK 班级配置</h1><p>按经营月给门店分班，店长与员工随门店进入同一班级。</p></div><a class="button" href="./daily-summary-miniapp-v2.html" target="_blank">打开日报小程序原型 ↗</a></div>
+        <section class="card"><div class="controls"><label>经营月 <select id="month"><option value="2026-07">2026 年 7 月</option><option value="2026-08">2026 年 8 月</option><option value="2026-06">2026 年 6 月</option></select></label><label>新增班级 <input id="new-class" placeholder="例如：浙江红军 PK 班" maxlength="30"></label><button class="button" id="add-class">添加班级</button></div><div class="hint">一个门店在同一经营月只能选择一个班级；门店人员由员工档案自动带入。本页保存后，返回日报原型刷新即可查看榜单。</div></section>
+        <section class="card"><h2>参与门店与班级</h2><p>选择班级即划入整家门店。选择“不参与”可移出本月 PK。</p><div class="store-list" id="store-list"></div></section>
+        <section id="class-list"></section>
+        <div class="actions"><span id="error" class="error"></span><button class="button primary" id="save">保存本月班级配置</button></div>
+      </main>
+    </div>
+  </div>
+  <div id="toast" role="status"></div>
+  <script>
+    const KEY='fengyu-daily-pk-classes-v1';
+    const stores=[
+      {id:'westlake',name:'杭州西湖旗舰店',area:'浙江',legion:'红军',group:'红一组',mentor:'赵店长'},
+      {id:'binjiang',name:'杭州滨江店',area:'浙江',legion:'红军',group:'红二组',mentor:'周指导'},
+      {id:'ningbo',name:'宁波鄞州店',area:'浙江',legion:'红军',group:'红三组',mentor:'吴敏'},
+      {id:'shaoxing',name:'绍兴柯桥店',area:'浙江',legion:'红军',group:'红四组',mentor:'何指导'},
+      {id:'suzhou',name:'苏州中心店',area:'江苏',legion:'蓝军',group:'蓝一组',mentor:'林指导'},
+      {id:'shanghai',name:'上海静安店',area:'上海',legion:'蓝军',group:'蓝二组',mentor:'陈九'}
+    ];
+    const people=[
+      {name:'张三',role:'美容顾问',storeId:'westlake'},{name:'李四',role:'美容顾问',storeId:'westlake'},
+      {name:'王五',role:'养生师',storeId:'westlake'},{name:'赵店长',role:'店长',storeId:'westlake'},
+      {name:'孙七',role:'美容顾问',storeId:'binjiang'},{name:'吴敏',role:'店长',storeId:'ningbo'},
+      {name:'徐佳',role:'美容顾问',storeId:'westlake'},{name:'何婷',role:'养生师',storeId:'westlake'},
+      {name:'林悦',role:'店长',storeId:'binjiang'},{name:'钱宁',role:'美容顾问',storeId:'binjiang'},{name:'高蕾',role:'养生师',storeId:'binjiang'},
+      {name:'江晓',role:'美容顾问',storeId:'ningbo'},{name:'姚晴',role:'养生师',storeId:'ningbo'},
+      {name:'方琳',role:'店长',storeId:'shaoxing'},{name:'陆雪',role:'美容顾问',storeId:'shaoxing'},{name:'唐静',role:'养生师',storeId:'shaoxing'},
+      {name:'蒋雯',role:'美容顾问',storeId:'westlake'},{name:'郑洁',role:'养生师',storeId:'westlake'},
+      {name:'石楠',role:'美容顾问',storeId:'binjiang'},{name:'罗丹',role:'养生师',storeId:'binjiang'},
+      {name:'胡悦',role:'美容顾问',storeId:'ningbo'},{name:'曾静',role:'养生师',storeId:'ningbo'},
+      {name:'董婷',role:'美容顾问',storeId:'shaoxing'},{name:'叶琳',role:'养生师',storeId:'shaoxing'},
+      {name:'周八',role:'美容顾问',storeId:'suzhou'},{name:'陈九',role:'店长',storeId:'shanghai'}
+    ];
+    const defaults=[
+      {id:'class-zhejiang',name:'浙江红军 PK 班',storeIds:['westlake','binjiang','ningbo','shaoxing']},
+      {id:'class-cross',name:'江沪蓝军 PK 班',storeIds:['suzhou','shanghai']}
+    ];
+    const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+    const readAll=()=>{try{return JSON.parse(localStorage.getItem(KEY)||'{}')}catch{return {}}};
+    const load=month=>structuredClone(readAll().byMonth?.[month]||(month==='2026-07'?defaults:[]));
+    let month='2026-07',classes=load(month);
+    const assignedClass=storeId=>classes.find(item=>item.storeIds.includes(storeId))?.id||'';
+    function render(){
+      document.getElementById('store-list').innerHTML=stores.map(store=>`<div class="store-row"><div><strong>${esc(store.name)}</strong><small>${store.area} · ${store.legion} · ${store.group}</small></div><select data-store="${store.id}" aria-label="${esc(store.name)}的 PK 班级"><option value="">不参与</option>${classes.map(item=>`<option value="${esc(item.id)}" ${assignedClass(store.id)===item.id?'selected':''}>${esc(item.name)}</option>`).join('')}</select></div>`).join('');
+      document.getElementById('class-list').innerHTML=classes.map(item=>{const members=people.filter(person=>item.storeIds.includes(person.storeId));return `<section class="card"><h2 class="class-name">${esc(item.name)}</h2><p>${item.storeIds.length} 家门店 · ${members.length} 位参与人员。指导员为班级展示字段，未预设等于店长。</p><div class="table-wrap"><table><thead><tr><th>区域</th><th>军团</th><th>小组</th><th>指导员</th><th>姓名</th><th>岗位</th><th>门店</th></tr></thead><tbody>${members.map(person=>{const s=stores.find(x=>x.id===person.storeId);return `<tr><td>${esc(s.area)}</td><td>${esc(s.legion)}</td><td>${esc(s.group)}</td><td>${esc(s.mentor)}</td><td>${esc(person.name)}</td><td>${esc(person.role)}</td><td>${esc(s.name)}</td></tr>`}).join('')||'<tr><td colspan="7">暂无参与人员</td></tr>'}</tbody></table></div></section>`}).join('')||'<section class="card">本经营月尚未建立 PK 班级。</section>';
+    }
+    document.getElementById('month').addEventListener('change',event=>{month=event.target.value;classes=load(month);document.getElementById('error').textContent='';render()});
+    document.getElementById('add-class').addEventListener('click',()=>{const input=document.getElementById('new-class'),name=input.value.trim();if(!name){document.getElementById('error').textContent='请输入班级名称。';return}if(classes.some(item=>item.name===name)){document.getElementById('error').textContent='班级名称不能重复。';return}classes.push({id:`class-${Date.now()}`,name,storeIds:[]});input.value='';document.getElementById('error').textContent='';render()});
+    document.getElementById('store-list').addEventListener('change',event=>{if(!event.target.matches('[data-store]'))return;const id=event.target.dataset.store;classes.forEach(item=>item.storeIds=item.storeIds.filter(storeId=>storeId!==id));const selected=classes.find(item=>item.id===event.target.value);if(selected)selected.storeIds.push(id);render()});
+    document.getElementById('save').addEventListener('click',()=>{const all=readAll();all.byMonth??={};all.byMonth[month]=structuredClone(classes);localStorage.setItem(KEY,JSON.stringify(all));const toast=document.getElementById('toast');toast.textContent=`${month} PK 班级配置已保存（演示）`;toast.style.display='block';setTimeout(()=>toast.style.display='none',2200)});
+    render();
+  </script>
+</body>
+</html>
