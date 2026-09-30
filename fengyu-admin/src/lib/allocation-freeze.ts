@@ -13,7 +13,8 @@ export function isAllocationFrozen(anchor: Date | string | null | undefined, now
 /** 冻结后仅系统管理员或在目标门店有保存权限的财务角色可调整。 */
 export function canAdjustFrozenAllocation(session: AuthSession, storeId: string): boolean {
   return session.roles.some((role) =>
-    (role.isSuperAdmin ?? role.role === 'admin')
+    ((role.isSuperAdmin ?? role.role === 'admin')
+      && role.actions?.includes('allocation:save') === true)
     || (role.role === 'finance'
       && role.actions?.includes('allocation:save') === true
       && role.scopeStoreIds?.includes(storeId) === true),
