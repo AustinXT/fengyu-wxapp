@@ -69,9 +69,9 @@ beforeAll(async () => {
     stopPullDownRefresh: vi.fn(),
   })
   registering = 'hub'
-  await import('../../pages/mgmt-dashboard/mgmt-dashboard')
+  await import('../../pages/mgmt-dashboard/mgmt-dashboard.ts')
   registering = 'picker'
-  await import('../../components/mgmt-scope-picker/mgmt-scope-picker')
+  await import('../../components/mgmt-scope-picker/mgmt-scope-picker.ts')
 })
 
 afterAll(() => {

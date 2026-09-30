@@ -85,17 +85,17 @@ beforeAll(async () => {
   })
 
   registering = 'hub'
-  await import('../../pages/mgmt-dashboard/mgmt-dashboard')
+  await import('../../pages/mgmt-dashboard/mgmt-dashboard.ts')
   registering = 'picker'
-  await import('../../components/mgmt-scope-picker/mgmt-scope-picker')
+  await import('../../components/mgmt-scope-picker/mgmt-scope-picker.ts')
   registering = 'traffic'
-  await import('../../packageMgmt/mgmt-traffic-stats/mgmt-traffic-stats')
+  await import('../../packageMgmt/mgmt-traffic-stats/mgmt-traffic-stats.ts')
   registering = 'sales'
-  await import('../../pages/sales-data/sales-data')
+  await import('../../pages/sales-data/sales-data.ts')
   registering = 'products'
-  await import('../../packageMgmt/mgmt-product-cycle/mgmt-product-cycle')
+  await import('../../packageMgmt/mgmt-product-cycle/mgmt-product-cycle.ts')
   registering = 'customers'
-  await import('../../packageMgmt/mgmt-customer-list/mgmt-customer-list')
+  await import('../../packageMgmt/mgmt-customer-list/mgmt-customer-list.ts')
 })
 
 afterAll(() => {
@@ -111,6 +111,56 @@ beforeEach(() => {
 })
 
 describe('hub · 默认关店空态与手选历史（#473）', () => {
+  test('picker 默认纠正事件传到页面：有在营替代时只查询替代门店', async () => {
+    const hub = instantiate('hub')
+    hub.data.selectedDate = '2026-09-25'
+    hub.data.scopeResolveDefault = true
+    hub.data.scope = { scopeType: 'store', scopeId: 'closed', scopeName: '已关店' }
+    const picker = instantiate('picker')
+    picker.properties.resolveDefault = true
+    picker.data.applied = hub.data.scope
+    picker.data.current = hub.data.scope
+    mocked.mockResolvedValueOnce({
+      staffLevel: 'store_manager', allowAll: false, allowedMarketIds: [], inactiveStores: [],
+      markets: [{ id: 'm', name: '市场', stores: [
+        { storeId: 'closed', storeName: '已关店', closed: true },
+        { storeId: 'open', storeName: '在营店' },
+      ] }],
+    })
+    mocked.mockResolvedValueOnce(summaryResp({ type: 'store', id: 'open', name: '在营店', inactive: false }))
+    await picker.loadOptions()
+    for (const event of picker.events) {
+      if (event.name === 'defaultresolved') hub.onScopeDefaultResolved()
+      if (event.name === 'change') hub.onScopeChange({ detail: event.detail })
+    }
+    expect(hub.data.scope.scopeId).toBe('open')
+    expect(mocked).toHaveBeenCalledWith('mgmtDashboard.summary', expect.objectContaining({ scopeId: 'open' }))
+    expect(mocked).not.toHaveBeenCalledWith('mgmtDashboard.summary', expect.objectContaining({ scopeId: 'closed' }))
+  })
+
+  test('picker 默认纠正事件传到页面：只有关店时显示空态且不查询', async () => {
+    const hub = instantiate('hub')
+    hub.data.selectedDate = '2026-09-25'
+    hub.data.scopeResolveDefault = true
+    hub.data.scope = { scopeType: 'store', scopeId: 'closed', scopeName: '已关店' }
+    const picker = instantiate('picker')
+    picker.properties.resolveDefault = true
+    picker.data.applied = hub.data.scope
+    picker.data.current = hub.data.scope
+    mocked.mockResolvedValueOnce({
+      staffLevel: 'store_manager', allowAll: false, allowedMarketIds: [], inactiveStores: [],
+      markets: [{ id: 'm', name: '市场', stores: [{ storeId: 'closed', storeName: '已关店', closed: true }] }],
+    })
+    await picker.loadOptions()
+    for (const event of picker.events) {
+      if (event.name === 'defaultresolved') hub.onScopeDefaultResolved()
+      if (event.name === 'change') hub.onScopeChange({ detail: event.detail })
+    }
+    expect(hub.data.scope.closed).toBe(true)
+    expect(hub.data.summaryState).toBe('empty')
+    expect(mocked).not.toHaveBeenCalledWith('mgmtDashboard.summary', expect.anything())
+  })
+
   test('权限内只有关店门店时默认不发 summary，展示关店空态', async () => {
     const hub = instantiate('hub')
     hub.data.selectedDate = '2026-09-25'

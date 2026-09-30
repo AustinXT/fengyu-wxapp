@@ -261,6 +261,7 @@ describe('已关店门店展示标记（#422）', () => {
 
   it('信息条的已关店门店范围也显示关店标记', () => {
     expect(scopeLabel(options, { type: 'store', id: 'S1' })).toBe('蓝莱店（已关店）')
+    expect(scopeLabel(options, { type: 'stores', ids: ['S1', 'S2'] })).toBe('蓝莱店（已关店）、绿湖店')
   })
 
   it('scopeStores 透传 closed（提成明细门店下拉用），未关店不带该字段；店名本身不带后缀', () => {

@@ -17,7 +17,7 @@ import type { AuthSession } from '@/lib/types'
 import type { BoardMeta, BoardParams, DataCenterScope } from './types'
 import { resolveTimeRange } from './time-range'
 import { toComparisonRanges, type ComparisonRanges } from './comparison'
-import { multiStoreName } from './scope-options'
+import { multiStoreName, storeOptionLabel } from './scope-options'
 import { isValidStoresScopeIds, MAX_SCOPE_STORES, toTimeRangeInput } from './params'
 
 /** 账号能选的最高 scope 层级（驱动筛选器禁用「全部」等） */
@@ -90,19 +90,19 @@ export async function resolveScopeName(scope: DataCenterScope): Promise<string> 
   }
   if (scope.type === 'stores') {
     const rows = await db
-      .select({ id: stores.storeId, name: stores.storeName })
+      .select({ id: stores.storeId, name: stores.storeName, closed: stores.isClosed })
       .from(stores)
       .where(inArray(stores.storeId, scope.ids))
       .limit(scope.ids.length)
-    const names = new Map(rows.map((r) => [r.id, r.name]))
+    const names = new Map(rows.map((r) => [r.id, storeOptionLabel({ storeName: r.name, closed: r.closed })]))
     return multiStoreName(scope.ids.map((id) => names.get(id) ?? '未知门店'))
   }
   const [row] = await db
-    .select({ name: stores.storeName })
+    .select({ name: stores.storeName, closed: stores.isClosed })
     .from(stores)
     .where(eq(stores.storeId, scope.id))
     .limit(1)
-  return row?.name ?? '未知门店'
+  return row ? storeOptionLabel({ storeName: row.name, closed: row.closed }) : '未知门店'
 }
 
 /** meta 回显用的 scopeId：市场 / 单店为其 id，多店为逗号串（与 URL 同编码），all / authorized 为 null */
