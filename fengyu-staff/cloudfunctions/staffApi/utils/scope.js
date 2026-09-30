@@ -89,24 +89,27 @@ function deriveStaffLevel(roleBindings) {
 }
 
 /**
- * 基于 staffLevel、scopeStoreIds 和 data_center:dashboard 计算登录模式候选。
+ * 基于 staffLevel、scopeStoreIds、角色作用域和 data_center:dashboard 计算登录模式候选。
  *
  * 门店模式仍沿用 staffLevel 的既有语义；管理层模式只由权限矩阵 action
- * 决定，且必须至少拥有一间可见门店，避免无 scope 账号进入空视图。
+ * 决定。无门店市场账号仍可进入已授权市场的空视图；无合法市场绑定的空 scope 不开放。
  * @param {string|null} staffLevel
  * @param {string[]} scopeStoreIds
  * @param {boolean} hasDataCenterDashboard
+ * @param {Array<{scopeType?: string, scopeId?: string}>} roleBindings
  * @returns {Array<'store'|'management'>}
  */
-function deriveAvailableLoginLevels(staffLevel, scopeStoreIds, hasDataCenterDashboard = false) {
+function deriveAvailableLoginLevels(staffLevel, scopeStoreIds, hasDataCenterDashboard = false, roleBindings = []) {
   if (!staffLevel) return []
   const hasStores = Array.isArray(scopeStoreIds) && scopeStoreIds.length > 0
+  const hasMarketBinding = Array.isArray(roleBindings) && roleBindings.some((binding) =>
+    binding?.scopeType === '市场' && !!binding.scopeId)
   const levels = []
 
   if (STORE_LEVELS.has(staffLevel) || hasStores) {
     levels.push('store')
   }
-  if (hasDataCenterDashboard && hasStores) {
+  if (hasDataCenterDashboard && (hasStores || hasMarketBinding)) {
     levels.push('management')
   }
   return levels

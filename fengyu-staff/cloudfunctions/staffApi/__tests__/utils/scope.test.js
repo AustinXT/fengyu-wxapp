@@ -155,8 +155,15 @@ describe('deriveAvailableLoginLevels', () => {
     expect(deriveAvailableLoginLevels('headquarters', [], true)).toEqual([])
   })
 
-  test('market 无 store → []', () => {
+  test('market 无 store，缺少可核验的市场绑定 → []', () => {
     expect(deriveAvailableLoginLevels('market', [], true)).toEqual([])
+  })
+
+  test('market 无 store + dashboard 权限 + 合法市场绑定 → 仅 management', () => {
+    const binding = [{ role: 'finance', scopeType: '市场', scopeId: 'mkt-px' }]
+    expect(deriveAvailableLoginLevels('market', [], true, binding)).toEqual(['management'])
+    expect(deriveAvailableLoginLevels('market', [], false, binding)).toEqual([])
+    expect(deriveAvailableLoginLevels('market', [], true, [{ ...binding[0], scopeId: null }])).toEqual([])
   })
 
   test('market 有 store + dashboard → [store, management]', () => {
@@ -217,6 +224,14 @@ describe('validateManagementScope', () => {
   })
   test('market: 他人 store 拒绝', () => {
     expect(() => validateManagementScope(marketAuth, 'store', 'sOther')).toThrow(/PERMISSION_DENIED/)
+  })
+
+  test('无门店市场管理层只能选择自身市场，拒绝 all、他人市场与门店', () => {
+    const noStoreMarket = { ...marketAuth, scopeStoreIds: [], scopeOrgNodeIds: ['m1'] }
+    expect(() => validateManagementScope(noStoreMarket, 'market', 'm1')).not.toThrow()
+    expect(() => validateManagementScope(noStoreMarket, 'all', null)).toThrow(/PERMISSION_DENIED/)
+    expect(() => validateManagementScope(noStoreMarket, 'market', 'mOther')).toThrow(/PERMISSION_DENIED/)
+    expect(() => validateManagementScope(noStoreMarket, 'store', 's1')).toThrow(/PERMISSION_DENIED/)
   })
 
   test('门店店长管理层：使用全部角色的 scopeStoreIds，不受 managerStoreIds 收紧', () => {

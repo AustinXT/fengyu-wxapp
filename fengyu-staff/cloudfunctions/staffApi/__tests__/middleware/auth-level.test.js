@@ -336,6 +336,16 @@ describe('_resolveRuntimeAuth 纯函数边界', () => {
     expect(r).toEqual({ loginLevel: 'management', currentStoreId: null, effectiveStoreId: null })
   })
 
+  test('无门店市场绑定有 dashboard 权限可进入管理层，仍无门店写范围', () => {
+    const market = { staffLevel: 'market', scopeStoreIds: [], fallbackStoreId: null,
+      authData: { roleBindings: [{ role: 'finance', scopeType: '市场', scopeId: 'mkt-px' }] } }
+    expect(_resolveRuntimeAuth(market, 'management', null, true))
+      .toEqual({ loginLevel: 'management', currentStoreId: null, effectiveStoreId: null })
+    expect(_resolveRuntimeAuth(market, null, null, true).loginLevel).toBe('management')
+    expect(() => _resolveRuntimeAuth(market, 'store', null, true)).toThrow(/PERMISSION_DENIED/)
+    expect(() => _resolveRuntimeAuth(market, 'management', null, false)).toThrow(/PERMISSION_DENIED/)
+  })
+
   test('fallback fallbackStoreId 命中 scope → 用该值', () => {
     const r = _resolveRuntimeAuth(base, 'store', null)
     expect(r.effectiveStoreId).toBe('S1')
