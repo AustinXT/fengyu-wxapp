@@ -15,7 +15,7 @@ import { logOperation } from '@/lib/operation-log'
 import { hasPendingRefund, hasSettledRefundForPayment } from '@/lib/refund-cascade'
 import { rowsAffected } from '@/lib/pg-rows'
 import { refreshOrderAllocationRollup } from '@/lib/payment-allocatable'
-import { nowTs, beijingBoundaryTs, beijingNextDayBoundaryTs } from '@/lib/db-time'
+import { beijingBoundaryTs, beijingNextDayBoundaryTs } from '@/lib/db-time'
 import { storeInMarketCondition } from '@/lib/market-store-sql'
 import { getInvalidEmployeeAssignmentId } from '@/lib/employee-assignment-server'
 import { resolvePaging } from '@/lib/paging'
@@ -191,54 +191,9 @@ export const saveAllocation = withPermission(
 
 export const deleteAllocation = withPermission(
   'allocation:save',
-  async (session, id: number): Promise<{ success: boolean; message: string }> => {
-  const [alloc] = (await db.execute(sql`
-    SELECT spir.sale_item_id, spia.is_void, sop.id AS sale_payment_id,
-           sop.paid_at, sop.change_type, sop.allocation_status, so.store_id
-      FROM sale_payment_item_allocations spia
-      JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
-      JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
-      JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
-     WHERE spia.id = ${id}
-     LIMIT 1
-  `)) as any[]
-
-  if (!alloc) return { success: false, message: '分配记录不存在' }
-  if (alloc.is_void) return { success: false, message: '分配记录已被删除' }
-
-  if (!(await verifySaleItemScope(alloc.sale_item_id, session))) {
-    return { success: false, message: '无权操作该订单的分配' }
-  }
-  if (alloc.change_type === '退款') {
-    return { success: false, message: '退款赤字分配由系统自动生成，不可手动删除' }
-  }
-  if (!['待分配', '已分配'].includes(alloc.allocation_status)) {
-    return { success: false, message: '该回款状态不允许修改分配' }
-  }
-  if (isAllocationFrozen(alloc.paid_at) && !canAdjustFrozenAllocation(session, alloc.store_id as string)) {
-    return { success: false, message: '分配结果已冻结，回款到账超过 3 天不可修改' }
-  }
-
-  // 冻结闭环（Bug I）：退款审批中禁止删除营业额分配
-  const [delItemRow] = (await db.execute(sql`
-    SELECT sale_order_id FROM sale_items WHERE sale_item_id = ${alloc.sale_item_id} LIMIT 1
-  `)) as any[]
-  if (delItemRow?.sale_order_id && (await hasPendingRefund(db, delItemRow.sale_order_id as string))) {
-    return { success: false, message: '该订单退款审批中，暂不可删除分配' }
-  }
-  if (await hasSettledRefundForPayment(db, alloc.sale_payment_id)) {
-    return { success: false, message: '该订单已退款，营业额分配已锁定，不可再删除' }
-  }
-
-  await db
-    .update(salePaymentItemAllocations)
-    .set({ isVoid: true, voidedAt: nowTs() })
-    .where(eq(salePaymentItemAllocations.id, id))
-
-  await logOperation(session, 'allocation.delete', 'sale_payment_item_allocation', String(id))
-
-  revalidatePath('/allocations')
-  return { success: true, message: '分配已删除' }
+  async (_session, _id: number): Promise<{ success: boolean; message: string }> => {
+    // 无页面调用的旧单行入口缺少回款级事务与汇总，统一由回款详情整笔保存完成删除。
+    return { success: false, message: '单条分配删除入口已下线，请从回款详情保存分配' }
   },
 )
 
