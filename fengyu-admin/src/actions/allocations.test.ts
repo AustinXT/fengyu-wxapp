@@ -371,6 +371,27 @@ describe('销售回款冻结权限 #480', () => {
     expect(logOperation).toHaveBeenCalledOnce()
   })
 
+  it('财务冻结后可调整非空销售分配，金额由服务端重算并留日志', async () => {
+    ;(getSession as any).mockResolvedValue({
+      ...mockSession,
+      roles: [{ role: 'finance', scopeId: 'store-1', scopeType: '门店', actions: ['allocation:save'], scopeStoreIds: ['store-1'], scopeOrgNodeIds: ['store-1'] }],
+    })
+    ;(db.execute as any)
+      .mockResolvedValueOnce([oldPay])
+      .mockResolvedValueOnce([{ receipt_id: 21, sale_item_id: 'item-1', amount: '200.00', sales_category: '自销自耗' }])
+    const inserted: any[] = []
+    ;(db.transaction as any).mockImplementation(async (fn: any) => fn({
+      execute: vi.fn().mockResolvedValueOnce([1]).mockResolvedValueOnce([]).mockResolvedValueOnce({ count: 1 }),
+      insert: vi.fn().mockReturnValue({ values: vi.fn().mockImplementation((rows: any[]) => { inserted.push(...rows) }) }),
+    }))
+    const result = await savePaymentAllocations(7, [{
+      saleItemId: 'item-1', employeeId: 'EMP-001', roleType: '美容师', allocationRatio: '0.5', totalAmount: '9999.00',
+    }])
+    expect(result.success).toBe(true)
+    expect(inserted).toMatchObject([{ allocatedAmount: '100.00', allocationRatio: '0.500' }])
+    expect(logOperation).toHaveBeenCalledOnce()
+  })
+
   it('退款态对财务仍是只读', async () => {
     ;(getSession as any).mockResolvedValue({ ...mockSession, roles: [{ ...mockSession.roles[0], role: 'finance', actions: ['allocation:save'], scopeStoreIds: ['store-1'] }] })
     ;(db.execute as any).mockResolvedValueOnce([{ ...oldPay, change_type: '退款' }])

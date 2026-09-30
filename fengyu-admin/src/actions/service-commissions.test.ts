@@ -152,6 +152,34 @@ describe('服务提成冻结权限 #480', () => {
     expect(logOperation).toHaveBeenCalledOnce()
   })
 
+  it('财务冻结后可调整非空服务提成，提成金额由服务端重算并留日志', async () => {
+    ;(getSession as any).mockResolvedValue({
+      ...mockSession,
+      roles: [{ role: 'finance', scopeId: 'store-1', scopeType: '门店', actions: ['allocation:save'], scopeStoreIds: ['store-1'], scopeOrgNodeIds: ['store-1'] }],
+    })
+    mockOrder()
+    ;(db.select as any)
+      .mockImplementationOnce(makeSelectChain([{ serviceItemId: 'si-1' }]))
+      .mockImplementationOnce(makeSelectChain([{
+        serviceItemId: 'si-1', unitRealPrice: '100', sessionUsed: 1,
+        salesCategory: '自销自耗', serviceFee: '10',
+      }]))
+    const inserted: any[] = []
+    ;(db.transaction as any).mockImplementation(async (fn: any) => fn({
+      execute: vi.fn().mockResolvedValue({}),
+      update: vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({}) }) }),
+      insert: vi.fn().mockReturnValue({ values: vi.fn().mockImplementation((rows: any[]) => { inserted.push(...rows) }) }),
+      select: makeSelectChain([{ commissionRate: '0.2', priceThreshold: null }]),
+    }))
+    const result = await batchSaveServiceCommissions('so-1', [{
+      serviceItemId: 'si-1', employeeId: 'EMP-001', roleType: '美容师',
+      allocationRatio: '0.5', commissionRate: '999', commissionAmount: '9999',
+    }])
+    expect(result.success).toBe(true)
+    expect(inserted).toMatchObject([{ fixedFee: '5', consumeAmount: '10', commissionAmount: '15' }])
+    expect(logOperation).toHaveBeenCalledOnce()
+  })
+
   it('未完成服务单对财务仍不能分配', async () => {
     ;(getSession as any).mockResolvedValue({ ...mockSession, roles: [{ ...mockSession.roles[0], role: 'finance', actions: ['allocation:save'], scopeStoreIds: ['store-1'] }] })
     mockOrder({ ...oldOrder, status: '服务中' })

@@ -328,7 +328,7 @@ export default function ServiceCommissionDetailPageClient({
             </div>
             <div>
               <span className="text-[#999999]">提成分配</span>
-              <p className="mt-1">{frozen ? <Badge variant="outline">已冻结</Badge> : '可分配'}</p>
+              <p className="mt-1">{frozen ? <Badge variant="outline">已冻结</Badge> : canSave ? '可分配' : '仅可查看'}</p>
             </div>
             <div>
               <span className="text-[#999999]">美容师</span>
