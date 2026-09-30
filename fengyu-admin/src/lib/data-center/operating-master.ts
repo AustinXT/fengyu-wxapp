@@ -17,6 +17,7 @@
  *
  * 口径登记：notes/references/metrics.md §经营数据主表。
  */
+import { safeDiv } from '@/lib/data-center/format'
 import { computeMatrixTotals, type MatrixColumnGroup, type MatrixTotals } from './matrix'
 import type { MatrixExportColumnSpec } from './matrix-export'
 import { parseStoreIdList, scopeToParams } from './params'
@@ -186,12 +187,6 @@ function metricColumn(
   return { ...numberColumn(letter, key, header, group, unit, hint), value: metric(key), aggregate: { kind: 'sum' } }
 }
 
-/** 比率：分母 ≤ 0 或任一侧为空 → null（与 computeMatrixTotals 的合计口径一致） */
-function ratioOf(numerator: number | null | undefined, denominator: number | null | undefined): number | null {
-  if (numerator == null || denominator == null || !Number.isFinite(numerator) || !Number.isFinite(denominator)) return null
-  return denominator > 0 ? numerator / denominator : null
-}
-
 /** 比率列：门店 / 小计行由同行分子分母现算；合计行用合计后的分子分母重算 */
 function ratioColumn(
   letter: string,
@@ -207,7 +202,7 @@ function ratioColumn(
   const bottom = metric(denominator)
   return {
     ...numberColumn(letter, key, header, group, unit, hint),
-    value: (row) => ratioOf(top(row), bottom(row)),
+    value: (row) => safeDiv(top(row), bottom(row)),
     aggregate: { kind: 'ratio', numerator: top, denominator: bottom },
   }
 }

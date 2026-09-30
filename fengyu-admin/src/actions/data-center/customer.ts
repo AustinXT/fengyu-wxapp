@@ -42,6 +42,7 @@
  * 不做同比环比。激活/客活依赖 cron 重算的 customer_status，前端加小字提示。
  */
 
+import { safeDiv } from '@/lib/data-center/format'
 import { db } from '@/db'
 import { sql, type SQL } from 'drizzle-orm'
 import { withPermission } from '@/lib/with-permission'
@@ -985,9 +986,6 @@ async function queryOpsBreakdown(
   }
   return map
 }
-
-/** 安全除法（分母 0 → null，前端 '--'） */
-const safeDiv = (a: number, b: number): number | null => (b > 0 ? a / b : null)
 
 /** 组装 byMarket / byStore 行：骨架去重出组列表，逐组填 metrics */
 function buildBreakdownRows(

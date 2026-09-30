@@ -176542,6 +176542,7 @@ async function syncInventoryLocations() {
            OR loc.location_type IS DISTINCT FROM o.type::text
            OR loc.name IS DISTINCT FROM o.name
            OR loc.org_node_id IS DISTINCT FROM o.id
+           OR loc.store_id IS NOT NULL
            OR loc.parent_location_id IS DISTINCT FROM o.parent_id
            OR loc.is_active IS DISTINCT FROM o.is_active)
       UNION ALL
@@ -176556,39 +176557,58 @@ async function syncInventoryLocations() {
          OR loc.store_id IS DISTINCT FROM s.store_id
          OR loc.parent_location_id IS DISTINCT FROM o.parent_id
          OR loc.is_active IS DISTINCT FROM (COALESCE(o.is_active, false) AND NOT s.is_closed)
-    ) AS drifted
+    ) AS drifted,
+    (SELECT s.store_id
+       FROM stores s
+       JOIN org_nodes o ON o.id = s.store_id
+      WHERE o.type IN ('总部','市场')
+      ORDER BY s.store_id
+      LIMIT 1) AS collided_id
   `);
+  const collidedId = probe?.[0]?.collided_id;
+  if (collidedId != null) {
+    throw new ApiError("CONFLICT", `LOCATION_ID_AMBIGUOUS: 库存主体标识 ${collidedId} 与总部/市场组织节点冲突`);
+  }
   const drifted = probe?.[0]?.drifted;
   if (drifted === false)
     return;
-  await db2.execute(import_drizzle_orm58.sql`
-    INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, parent_location_id, is_active)
-    SELECT id, type, name, id, parent_id, is_active
-      FROM org_nodes
-     WHERE type IN ('总部','市场')
-    ON CONFLICT (location_id) DO UPDATE
-      SET location_type = EXCLUDED.location_type,
-          name = EXCLUDED.name,
-          org_node_id = EXCLUDED.org_node_id,
-          parent_location_id = EXCLUDED.parent_location_id,
-          is_active = EXCLUDED.is_active,
-          updated_at = NOW()
-  `);
-  await db2.execute(import_drizzle_orm58.sql`
-    INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, store_id, parent_location_id, is_active)
-    SELECT s.store_id, '门店', s.store_name, s.org_node_id, s.store_id, o.parent_id,
-           COALESCE(o.is_active, false) AND NOT s.is_closed
-      FROM stores s
-      LEFT JOIN org_nodes o ON o.id = s.org_node_id
-    ON CONFLICT (location_id) DO UPDATE
-      SET location_type = EXCLUDED.location_type,
-          name = EXCLUDED.name,
-          org_node_id = EXCLUDED.org_node_id,
-          store_id = EXCLUDED.store_id,
-          parent_location_id = EXCLUDED.parent_location_id,
-          is_active = EXCLUDED.is_active,
-          updated_at = NOW()
-  `);
+  try {
+    await db2.execute(import_drizzle_orm58.sql`
+      INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, parent_location_id, is_active)
+      SELECT id, type, name, id, parent_id, is_active
+        FROM org_nodes
+       WHERE type IN ('总部','市场')
+      ON CONFLICT (location_id) DO UPDATE
+        SET location_type = EXCLUDED.location_type,
+            name = EXCLUDED.name,
+            org_node_id = EXCLUDED.org_node_id,
+            store_id = NULL,
+            parent_location_id = EXCLUDED.parent_location_id,
+            is_active = EXCLUDED.is_active,
+            updated_at = NOW()
+    `);
+    await db2.execute(import_drizzle_orm58.sql`
+      INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, store_id, parent_location_id, is_active)
+      SELECT s.store_id, '门店', s.store_name, s.org_node_id, s.store_id, o.parent_id,
+             COALESCE(o.is_active, false) AND NOT s.is_closed
+        FROM stores s
+        LEFT JOIN org_nodes o ON o.id = s.org_node_id
+      ON CONFLICT (location_id) DO UPDATE
+        SET location_type = EXCLUDED.location_type,
+            name = EXCLUDED.name,
+            org_node_id = EXCLUDED.org_node_id,
+            store_id = EXCLUDED.store_id,
+            parent_location_id = EXCLUDED.parent_location_id,
+            is_active = EXCLUDED.is_active,
+            updated_at = NOW()
+    `);
+  } catch (error) {
+    const pgError = error?.cause ?? error;
+    if (pgError instanceof Error && pgError.message.startsWith("CONFLICT: LOCATION_ID_AMBIGUOUS:")) {
+      throw new ApiError("CONFLICT", pgError.message.slice("CONFLICT: ".length));
+    }
+    throw error;
+  }
 }
 async function scopedLocationIds(session4) {
   return inventoryScopedLocationIds(session4);
@@ -177997,11 +178017,14 @@ async function loadInventoryDocLineage(docId, docType, scoped) {
       CASE WHEN doc_link.from_doc_id = ${docId} THEN to_doc.status ELSE from_doc.status END AS status,
       CASE WHEN doc_link.from_doc_id = ${docId} THEN to_doc.doc_date ELSE from_doc.doc_date END AS doc_date,
       CASE WHEN doc_link.from_doc_id = ${docId} THEN to_doc.total_quantity ELSE from_doc.total_quantity END AS total_quantity,
+      MAX(CASE WHEN doc_link.from_doc_id = ${docId} THEN to_source.name ELSE from_source.name END) AS source_org_node_name,
       COALESCE(SUM(doc_link.quantity), 0) AS linked_quantity,
       MAX(doc_link.created_at) AS linked_at
     FROM inventory_doc_links doc_link
     JOIN inventory_docs from_doc ON from_doc.id = doc_link.from_doc_id
     JOIN inventory_docs to_doc ON to_doc.id = doc_link.to_doc_id
+    LEFT JOIN inventory_locations from_source ON from_source.org_node_id = from_doc.source_org_node_id
+    LEFT JOIN inventory_locations to_source ON to_source.org_node_id = to_doc.source_org_node_id
     WHERE (doc_link.from_doc_id = ${docId} OR doc_link.to_doc_id = ${docId})
       AND ${linkedDocVisible}
     GROUP BY
@@ -178032,6 +178055,7 @@ async function loadInventoryDocLineage(docId, docType, scoped) {
       origin_report.status,
       origin_report.doc_date,
       origin_report.total_quantity,
+      MAX(origin_source.name) AS source_org_node_name,
       COALESCE(SUM(origin_receipt_link.quantity), 0) AS linked_quantity,
       MAX(origin_receipt_link.created_at) AS linked_at
     FROM inventory_doc_links origin_receipt_link
@@ -178039,6 +178063,7 @@ async function loadInventoryDocLineage(docId, docType, scoped) {
       ON origin_ship_link.to_item_id = origin_receipt_link.from_item_id
      AND origin_ship_link.relation_type IN ('市场报货发货', '市场报货赠送发货')
     JOIN inventory_docs origin_report ON origin_report.id = origin_ship_link.from_doc_id
+    LEFT JOIN inventory_locations origin_source ON origin_source.org_node_id = origin_report.source_org_node_id
     WHERE origin_receipt_link.to_doc_id = ${docId}
       AND origin_receipt_link.relation_type = '发货收货'
       AND ${reportVisible}
@@ -178057,7 +178082,8 @@ function mapLineageRows(rows) {
     status: row.status,
     docDate: asDocDate(row.doc_date),
     totalQuantity: numberOrNull(row.total_quantity) ?? 0,
-    linkedQuantity: numberOrNull(row.linked_quantity) ?? 0
+    linkedQuantity: numberOrNull(row.linked_quantity) ?? 0,
+    sourceOrgNodeName: row.source_org_node_name ?? null
   }));
 }
 function reportFulfillmentItem(row, includeOrder) {
@@ -178563,6 +178589,9 @@ var getInventoryCoreDocById = withPermission("inventory:list", async (session4, 
       actualUnitPrice: itemPriceVisibility !== "none" ? numberOrNull(item.actualUnitPrice) : undefined,
       amount: includeItemAmount ? numberOrNull(item.amount) : undefined,
       supplyChainUnitCost: itemPriceVisibility === "all" || itemPriceVisibility === "supply_chain" ? numberOrNull(item.supplyChainUnitCost) : undefined,
+      marketStandardUnitPrice: head.docType === "市场报货" && itemPriceVisibility !== "none" ? numberOrNull(item.marketStandardUnitPrice) : undefined,
+      marketUnitDiscount: head.docType === "市场报货" && itemPriceVisibility !== "none" ? numberOrNull(item.marketUnitDiscount) : undefined,
+      storeStandardUnitPrice: head.docType === "市场报货" && (itemPriceVisibility === "all" || itemPriceVisibility === "market") ? numberOrNull(item.storeStandardUnitPrice) : undefined,
       marketActualUnitPrice: itemPriceVisibility !== "none" ? numberOrNull(item.marketActualUnitPrice) : undefined,
       storeActualUnitPrice: itemPriceVisibility === "all" || itemPriceVisibility === "market" ? numberOrNull(item.storeActualUnitPrice) : undefined,
       promotionPlanId: item.promotionPlanId,
@@ -180985,10 +181014,10 @@ async function withComparison(runner, ranges, unit, enabled = true) {
   if (!enabled) {
     return { value, unit };
   }
-  const [prev, ly] = await Promise.all([
-    ranges.previous ? runner(ranges.previous) : Promise.resolve(null),
-    ranges.lastYear ? runner(ranges.lastYear) : Promise.resolve(null)
-  ]);
+  const sameHistoryRange = ranges.previous != null && ranges.lastYear != null && ranges.previous.start === ranges.lastYear.start && ranges.previous.end === ranges.lastYear.end;
+  const previous = ranges.previous ? runner(ranges.previous) : Promise.resolve(null);
+  const lastYear = sameHistoryRange ? previous : ranges.lastYear ? runner(ranges.lastYear) : Promise.resolve(null);
+  const [prev, ly] = await Promise.all([previous, lastYear]);
   return {
     value,
     mom: resolveDeltaDisplay(value, prev),
@@ -181396,7 +181425,7 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
     employeeCount
   };
   const skeleton = scopeStoreSkeletonSql(session4, scope);
-  const openStoresByStoreSql = import_drizzle_orm67.sql`
+  const openStoresByStoreSql = import_drizzle_orm68.sql`
       SELECT s.store_id, COUNT(*)::int AS v
       FROM stores s
       JOIN org_nodes o ON s.org_node_id = o.id
@@ -181608,6 +181637,13 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
     byStore
   };
 });
+
+// src/lib/data-center/format.ts
+function safeDiv(numerator, denominator) {
+  if (numerator == null || denominator == null || !Number.isFinite(numerator) || !Number.isFinite(denominator))
+    return null;
+  return denominator > 0 ? numerator / denominator : null;
+}
 
 // src/actions/data-center/customer.ts
 init_db2();
@@ -182391,7 +182427,6 @@ async function queryOpsBreakdown(session4, scope, range, group, threshold) {
   }
   return map;
 }
-var safeDiv = (a, b2) => b2 > 0 ? a / b2 : null;
 function buildBreakdownRows(group, skeletonRows, regActive, ops) {
   const groups = new Map;
   for (const s of skeletonRows) {
@@ -182583,7 +182618,6 @@ var num2 = (v) => {
 };
 var round24 = (v) => Math.round(num2(v) * 100) / 100 || 0;
 var first2 = (rows) => rows[0] ?? {};
-var safeDiv2 = (a, b2) => b2 > 0 ? a / b2 : null;
 function resolveGrouping(params) {
   const kind = params.productKind?.trim() || "";
   const category = params.categoryName?.trim() || "";
@@ -182988,14 +183022,14 @@ async function queryCycleByStore(session4, scope, range, threshold, groupCol, fi
 function buildMetrics(agg, memberCount) {
   return {
     cardHolders: agg.cardHolders,
-    cardHolderRate: safeDiv2(agg.cardHolders, memberCount),
+    cardHolderRate: safeDiv(agg.cardHolders, memberCount),
     trialCount: agg.trialCount,
     newCount: agg.newCount,
     newRevenue: agg.newRevenue,
-    newAvgTicket: safeDiv2(round24(agg.newRevenue), agg.newCount),
+    newAvgTicket: safeDiv(round24(agg.newRevenue), agg.newCount),
     repurchaseCount: agg.repurchaseCount,
     repurchaseRevenue: agg.repurchaseRevenue,
-    repurchaseRate: safeDiv2(agg.repurchaseCount, agg.newCount)
+    repurchaseRate: safeDiv(agg.repurchaseCount, agg.newCount)
   };
 }
 var getProductBoard = withPermission("data_center:dashboard", async (session4, params) => {
@@ -183025,19 +183059,19 @@ var getProductBoard = withPermission("data_center:dashboard", async (session4, p
   ]);
   const cardHolders = { value: cardHoldersTotal, unit: "count" };
   const cardHolderRate = {
-    value: safeDiv2(cardHoldersTotal, memberCountTotal),
+    value: safeDiv(cardHoldersTotal, memberCountTotal),
     unit: "percent"
   };
   const newAvgTicket = {
-    value: safeDiv2(round24(newRevenue.value ?? 0), newCount.value ?? 0),
+    value: safeDiv(round24(newRevenue.value ?? 0), newCount.value ?? 0),
     unit: "amount"
   };
   const repurchaseAvgTicket = {
-    value: safeDiv2(round24(repurchaseRevenue.value ?? 0), repurchaseCount.value ?? 0),
+    value: safeDiv(round24(repurchaseRevenue.value ?? 0), repurchaseCount.value ?? 0),
     unit: "amount"
   };
   const repurchaseRate = {
-    value: safeDiv2(repurchaseCount.value ?? 0, newCount.value ?? 0),
+    value: safeDiv(repurchaseCount.value ?? 0, newCount.value ?? 0),
     unit: "percent"
   };
   const kpis = {
@@ -183142,11 +183176,6 @@ function scalar2(rows, key = "v") {
     return 0;
   const n = Number(r[key]);
   return Number.isFinite(n) ? n : 0;
-}
-function ratio(num3, den) {
-  if (num3 == null || den == null || den <= 0)
-    return null;
-  return num3 / den;
 }
 function performanceEventDateBetween(eventAlias, start, end) {
   return import_drizzle_orm73.sql`${import_drizzle_orm73.sql.raw(`${eventAlias}.status`)} = '已支付'
@@ -183739,10 +183768,10 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
   const managerCount = scalar2(managerCountR);
   const mk = (value, unit) => ({ value, unit });
   const scopeHasStore = skelRows.length > 0;
-  const perTechnician = (num3) => scopeHasStore ? ratio(num3, technicianCount) : null;
+  const perTechnician = (num3) => scopeHasStore ? safeDiv(num3, technicianCount) : null;
   const kpis = {
-    managerAvgMembers: mk(ratio(memberCount, managerCount), "count"),
-    managerAvgEmployees: mk(ratio(technicianCount, managerCount), "count"),
+    managerAvgMembers: mk(safeDiv(memberCount, managerCount), "count"),
+    managerAvgEmployees: mk(safeDiv(technicianCount, managerCount), "count"),
     empAvgRevenue: mk(perTechnician(revenueTotal), "amount"),
     empAvgConsume: mk(perTechnician(consumeTotal), "amount"),
     empAvgIncome: mk(perTechnician(incomeTotal), "amount"),
@@ -183798,13 +183827,13 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
   }
   const marketRows = Array.from(marketMap.values());
   const byMarket = marketRows.map((m) => {
-    const perTech = (num3) => m.storeCount > 0 ? ratio(num3, m.technicianCount) : null;
+    const perTech = (num3) => m.storeCount > 0 ? safeDiv(num3, m.technicianCount) : null;
     return {
       groupId: m.marketId,
       groupName: m.marketName,
       metrics: {
         managerCount: m.managerCount,
-        managerAvgIncome: ratio(m.income, m.managerCount),
+        managerAvgIncome: safeDiv(m.income, m.managerCount),
         technicianCount: m.technicianCount,
         techAvgRevenue: perTech(m.revenue),
         techAvgConsume: perTech(m.consume),
@@ -184216,17 +184245,12 @@ function numberColumn(letter, key, header, group, unit, hint) {
 function metricColumn(letter, key, header, group, unit, hint) {
   return { ...numberColumn(letter, key, header, group, unit, hint), value: metric(key), aggregate: { kind: "sum" } };
 }
-function ratioOf(numerator, denominator) {
-  if (numerator == null || denominator == null || !Number.isFinite(numerator) || !Number.isFinite(denominator))
-    return null;
-  return denominator > 0 ? numerator / denominator : null;
-}
 function ratioColumn(letter, key, header, group, unit, numerator, denominator, hint) {
   const top = metric(numerator);
   const bottom = metric(denominator);
   return {
     ...numberColumn(letter, key, header, group, unit, hint),
-    value: (row) => ratioOf(top(row), bottom(row)),
+    value: (row) => safeDiv(top(row), bottom(row)),
     aggregate: { kind: "ratio", numerator: top, denominator: bottom }
   };
 }
@@ -186052,9 +186076,6 @@ function tierOf(visitDays) {
   }
   return null;
 }
-function ratio2(numerator, denominator) {
-  return denominator > 0 ? numerator / denominator : null;
-}
 function summarizeCustomerFrequency(rows) {
   const tierCounts = { low: 0, mid: 0, high: 0 };
   let visitedCount = 0;
@@ -186071,17 +186092,17 @@ function summarizeCustomerFrequency(rows) {
     amountCents += row.amountCents;
     consumeCents += row.consumeCents;
   }
-  const tiers = Object.fromEntries(CUSTOMER_FREQUENCY_TIERS.map((tier) => [tier.key, { count: tierCounts[tier.key], share: ratio2(tierCounts[tier.key], visitedCount) }]));
+  const tiers = Object.fromEntries(CUSTOMER_FREQUENCY_TIERS.map((tier) => [tier.key, { count: tierCounts[tier.key], share: safeDiv(tierCounts[tier.key], visitedCount) }]));
   return {
     customerCount: rows.length,
     visitedCount,
-    visitRate: ratio2(visitedCount, rows.length),
+    visitRate: safeDiv(visitedCount, rows.length),
     tiers,
     visitTotal,
-    visitsPerVisitor: ratio2(visitTotal, visitedCount),
+    visitsPerVisitor: safeDiv(visitTotal, visitedCount),
     amountTotal: amountCents / 100,
     consumeTotal: consumeCents / 100,
-    consumeRatio: ratio2(consumeCents, amountCents)
+    consumeRatio: safeDiv(consumeCents, amountCents)
   };
 }
 var FULL_PHONE2 = /^1\d{10}$/;
@@ -186987,9 +187008,6 @@ function toNullableNumber(value) {
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
 }
-function ratio3(numerator, denominator) {
-  return denominator > 0 ? numerator / denominator : null;
-}
 async function resolveContext(session4, query) {
   const get = (key) => firstQueryValue(query[key]);
   const scope = parseScope({ scope: get("scope"), scopeId: get("scopeId") });
@@ -187037,15 +187055,15 @@ var getCommissionDaily = withAllPermissions(DATA_CENTER_STAFF_COMMISSION_ACTIONS
       total,
       sale,
       service,
-      saleShare: ratio3(sale, total),
-      serviceShare: ratio3(service, total),
+      saleShare: safeDiv(sale, total),
+      serviceShare: safeDiv(service, total),
       earningEmployees: toNumber(kpi.earning_employees),
       employees: toNumber(kpi.employees),
       technicianCount,
       noStoreScope,
-      perTechnician: noStoreScope ? null : ratio3(total, technicianCount),
+      perTechnician: noStoreScope ? null : safeDiv(total, technicianCount),
       orders,
-      perOrder: ratio3(total, orders)
+      perOrder: safeDiv(total, orders)
     },
     pending: { count: toNumber(pending.count), amount: toNumber(pending.amount) },
     canLinkAllocations: grantedOnAllRoles(session4, "allocation:list")

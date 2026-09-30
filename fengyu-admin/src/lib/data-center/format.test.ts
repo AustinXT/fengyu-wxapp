@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { formatAmount, formatCount, formatPercent, formatByUnit, formatDelta } from './format'
+import { formatAmount, formatCount, formatPercent, formatByUnit, formatDelta, safeDiv } from './format'
 
 describe('data-center format（移植 staff number.ts 口径）', () => {
   it('formatAmount：2 位小数 + 千分位', () => {
@@ -64,5 +64,21 @@ describe('data-center format（移植 staff number.ts 口径）', () => {
       expect(formatDelta({ kind: 'na' })).toBe('--')
       expect(formatDelta(undefined)).toBe('--')
     })
+  })
+})
+
+
+describe('safeDiv（六份比率实现单源 #311）', () => {
+  it.each([[6, 3, 2], [0, 3, 0], [-6, 3, -2], [1, 4, 0.25]])(
+    '有限分子 %s / 正分母 %s = %s', (numerator, denominator, expected) => {
+      expect(safeDiv(numerator, denominator)).toBe(expected)
+    },
+  )
+  it.each([null, undefined, NaN, Infinity, -Infinity])('任一侧无效值 %s 返回 null', (value) => {
+    expect(safeDiv(value, 2)).toBeNull()
+    expect(safeDiv(2, value)).toBeNull()
+  })
+  it.each([0, -0, -2])('非正分母 %s 返回 null', (denominator) => {
+    expect(safeDiv(6, denominator)).toBeNull()
   })
 })

@@ -81,6 +81,7 @@
  *     而非 metrics.md 的双口径 day/month（本板块只有单一 TimeRange，取区间末快照最自洽）。
  */
 
+import { safeDiv } from '@/lib/data-center/format'
 import { db } from '@/db'
 import { sql } from 'drizzle-orm'
 import { withPermission } from '@/lib/with-permission'
@@ -107,12 +108,6 @@ function scalar(rows: unknown, key = 'v'): number {
   if (!r || r[key] == null) return 0
   const n = Number(r[key])
   return Number.isFinite(n) ? n : 0
-}
-
-/** 人均/店均派生：分子 / 分母；分母<=0 → null（前端 '--'） */
-function ratio(num: number | null, den: number | null): number | null {
-  if (num == null || den == null || den <= 0) return null
-  return num / den
 }
 
 function performanceEventDateBetween(
@@ -858,11 +853,11 @@ export const getEfficiencyBoard = withPermission(
      */
     const scopeHasStore = (skelRows as unknown[]).length > 0
     const perTechnician = (num: number): number | null =>
-      scopeHasStore ? ratio(num, technicianCount) : null
+      scopeHasStore ? safeDiv(num, technicianCount) : null
 
     const kpis: Record<string, KpiCell> = {
-      managerAvgMembers: mk(ratio(memberCount, managerCount), 'count'),
-      managerAvgEmployees: mk(ratio(technicianCount, managerCount), 'count'),
+      managerAvgMembers: mk(safeDiv(memberCount, managerCount), 'count'),
+      managerAvgEmployees: mk(safeDiv(technicianCount, managerCount), 'count'),
       empAvgRevenue: mk(perTechnician(revenueTotal), 'amount'),
       empAvgConsume: mk(perTechnician(consumeTotal), 'amount'),
       empAvgIncome: mk(perTechnician(incomeTotal), 'amount'),
@@ -948,13 +943,13 @@ export const getEfficiencyBoard = withPermission(
     const byMarket: BreakdownRow[] = marketRows.map((m) => {
       // 与顶部 KPI 同一条（#423）：该市场没有在营门店 → 门店口径分子恒 0，技师人均不适用
       const perTech = (num: number): number | null =>
-        m.storeCount > 0 ? ratio(num, m.technicianCount) : null
+        m.storeCount > 0 ? safeDiv(num, m.technicianCount) : null
       return {
         groupId: m.marketId,
         groupName: m.marketName,
         metrics: {
           managerCount: m.managerCount,
-          managerAvgIncome: ratio(m.income, m.managerCount),
+          managerAvgIncome: safeDiv(m.income, m.managerCount),
           technicianCount: m.technicianCount,
           techAvgRevenue: perTech(m.revenue),
           techAvgConsume: perTech(m.consume),

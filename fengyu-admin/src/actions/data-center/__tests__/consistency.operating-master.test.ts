@@ -10,7 +10,7 @@
  * V 生美项目数没有销售板对应物：钉成「X 生美实耗的模板，只把求和表达式换成 SUM(sit.session_used)」。
  *
  * #373 增量：
- *   - E 保有会员 = 客量板「有效保有会员」（customer.ts queryRetainedMembers）：WHERE 整段等值（只归一时点变量名）；
+ *   - E 保有会员 = 客量板「有效保有会员」（customer.ts queryRetainedMembers）：WHERE 整段等值（归一时点变量名与 #291 锁定时区下等价的日期表达式）；
  *   - K / L 被经营的款项 WHERE = P 的 WHERE，只把 sale_order_type 收窄为 ('销售单', '转换单')、再加「挂了顾客」一条。
  */
 import fs from 'node:fs'
@@ -115,7 +115,14 @@ describe('经营数据主表 × 销售板门店明细 口径同源（#372）', (
   })
 
   it('E 保有会员 = 客量板「有效保有会员」WHERE 整段（按绑定门店 scope、90 天窗口、became_member_at 守卫）', () => {
+    // #291：主表显式转上海日期；客量板直接 ::date 依赖锁定的 PG 会话时区，两者等价。
+    // 只归一这一处表达式，并守住连接时区及异常拒绝启动，其他 WHERE 仍逐字比较。
+    const dbConfig = fs.readFileSync(path.resolve(__dirname, '../../../db/index.ts'), 'utf8')
+    expect(dbConfig).toContain("connection: { TimeZone: 'Asia/Shanghai' }")
+    expect(dbConfig).toContain("key === 'TimeZone' && value !== 'Asia/Shanghai'")
+    expect(dbConfig).toContain('process.exit(1)')
     const board = whereClause(retained.customerBoard, null).replace(/\$\{sc\}/, "${scopeFilterSql(session, scope, 'c.bound_store_id')}")
+      .replace('c.became_member_at::date', "(c.became_member_at AT TIME ZONE 'Asia/Shanghai')::date")
       .replace(/\$\{end\}/g, '${T}') // template() 已把 range.end 归一成 end
     // 客量板的 scope 片段是先赋给 sc 再插值：确认 sc 就是按绑定门店过滤
     expect(slice(CUSTOMER, 'async function queryRetainedMembers', '// ====')).toContain(

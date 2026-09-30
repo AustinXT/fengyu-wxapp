@@ -675,3 +675,31 @@ describe('getCustomerBoard 装配', () => {
     expect(market.metrics.memberAvgTicket).toBe(2000)
   })
 })
+
+
+describe('customer — year 查询计数 (#311)', () => {
+  it('year 比三个不同区间少 12 次 db.execute', async () => {
+    const { prepareBoardContext } = await import('@/lib/data-center/context')
+    const { resolveTimeRange } = await import('@/lib/data-center/time-range')
+    const counts: number[] = []
+    for (const preset of ['month', 'year'] as const) {
+      const timeRange = resolveTimeRange({ preset }, new Date('2026-09-29T04:00:00Z'))
+      vi.mocked(prepareBoardContext).mockResolvedValueOnce({
+        ...fixedCtx,
+        meta: { ...fixedCtx.meta, timeRange: { ...timeRange.current, presetLabel: timeRange.presetLabel,
+          previous: timeRange.previous, lastYear: timeRange.lastYear } },
+        comparison: timeRange,
+        enabled: true,
+      })
+      vi.mocked(db.execute).mockClear()
+      const result = await getCustomerBoard({ ...PARAMS, timeRange: { preset }, withComparison: true })
+      if (preset === 'year') {
+        for (const cell of Object.values(result.kpis)) expect(cell.mom).toEqual(cell.yoy)
+        // 与 sales 同样，快照先在 b272a15e 的三路 comparison 实现上生成。
+        expect(result).toMatchSnapshot()
+      }
+      counts.push(vi.mocked(db.execute).mock.calls.length)
+    }
+    expect(counts[0] - counts[1]).toBe(12)
+  })
+})
