@@ -76,6 +76,7 @@ export default async function Page({
         orgNodeId: selectedOrgNodeId,
         docType: params.docType as never,
         status: params.status as never,
+        processProgress: params.processProgress as never,
         startDate: params.startDate,
         endDate: params.endDate,
         keyword: params.q,

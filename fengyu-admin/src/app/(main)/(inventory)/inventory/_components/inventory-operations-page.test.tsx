@@ -885,6 +885,7 @@ function renderPage(options: {
   receiptDiscountOrgNodeIds?: string[] | null
   marketPriceLocationIds?: string[] | null
   canViewPrice?: boolean
+  inboxTotals?: Record<string, number>
 }) {
   mockCandidates(options.candidates ?? [])
   return render(
@@ -893,6 +894,7 @@ function renderPage(options: {
       locations={options.locations ?? []}
       shipmentMarketTargets={options.shipmentMarketTargets}
       suppliers={[]}
+      inboxTotals={options.inboxTotals ?? {}}
       canCreate
       canApprove
       canSelfPurchase={options.canSelfPurchase ?? false}
@@ -913,6 +915,14 @@ async function openDocsTab() {
   fireEvent.click(screen.getByRole('tab', { name: /单据/ }))
   await screen.findByText('待我处理')
 }
+
+it('办理台卡片展示一次聚合返回的待处理数', () => {
+  mockDocs({})
+  renderPage({ level: 'market', inboxTotals: { 'market-receipt': 3 } })
+  const card = screen.getByRole('button', { name: /市场采购入库/ })
+  expect(within(card).getByText('待处理 3')).toBeInTheDocument()
+  expect(screen.getAllByText('待处理 3')).toHaveLength(1)
+})
 
 /** 整页渲染时 `getInventoryCoreDocById` 的最小可用替身（选中单据后表单要拿它装载明细）。 */
 function docDetail(row: InventoryDocRow): InventoryDocDetail {
@@ -1131,6 +1141,9 @@ describe('待办区与产出区的分段渲染（#192）', () => {
         page: 1,
         inboxPage: 2,
         pageSize: 20,
+        startDate: '',
+        endDate: '',
+        processProgress: undefined,
       }),
     )
 
@@ -1141,6 +1154,9 @@ describe('待办区与产出区的分段渲染（#192）', () => {
         page: 2,
         inboxPage: 2,
         pageSize: 20,
+        startDate: '',
+        endDate: '',
+        processProgress: undefined,
       }),
     )
   })

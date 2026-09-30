@@ -528,6 +528,7 @@ export interface InventoryDocRow {
   updatedAt: string
   /** 采购订单「部分入库」派生标签（#335）：待收货且已有入库。不是单据状态。 */
   partiallyReceived?: boolean
+  processProgress?: InventoryDocProcessProgress | null
 }
 
 /** 列表展示用派生进度，不参与单据状态机。 */
@@ -586,6 +587,9 @@ export interface InventoryDocItemRow {
  */
 export interface InventoryDocLineageRow {
   direction: '上游' | '下游'
+  /** 从当前单据出发的跳数；viaDocId 是本跳相邻的前一个单据。 */
+  depth: number
+  viaDocId: string
   relationType: string
   docId: string
   docType: InventoryDocType

@@ -113,6 +113,19 @@ describe('listInventoryOperationDocs 入参闸门', () => {
     expect(mockEngine.listInventoryCoreDocs).toHaveBeenNthCalledWith(2, expect.objectContaining({ page: 2, pageSize: 20 }))
   })
 
+  it('日期区间和流程进度同时转发给产出、待办两段', async () => {
+    await listInventoryOperationDocs({
+      operationId: 'market-receipt', startDate: '2026-09-01', endDate: '2026-09-30',
+      processProgress: '部分采购', page: 2, inboxPage: 3,
+    })
+    expect(mockEngine.listInventoryCoreDocs).toHaveBeenCalledTimes(2)
+    for (const [index, page] of [[1, 2], [2, 3]] as const) {
+      expect(mockEngine.listInventoryCoreDocs).toHaveBeenNthCalledWith(index, expect.objectContaining({
+        startDate: '2026-09-01', endDate: '2026-09-30', processProgress: '部分采购', page,
+      }))
+    }
+  })
+
   it('两段各自回传 engine 的 pageSize / canViewPrice，不互相覆盖', async () => {
     // engine 会把非白名单页长夹回 20 并回传实际值；两段必须各拿各的，
     // 前端按各自的 pageSize 算总页数（共用一个会让某一段的最后几页翻不到）。

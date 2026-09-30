@@ -74,6 +74,7 @@ import { actionErrorMessage, actionErrorType } from '@/lib/action-error'
 import type {
   InventoryDocDetail,
   InventoryDocRow,
+  InventoryDocProcessProgress,
   InventoryDocType,
   InventoryLocationRow,
   InventoryMarketTransferTarget,
@@ -688,6 +689,7 @@ export default function InventoryOperationsPage({
   marketTransferTargets,
   shipmentMarketTargets,
   suppliers,
+  inboxTotals,
   canCreate,
   canApprove,
   canSelfPurchase,
@@ -706,6 +708,8 @@ export default function InventoryOperationsPage({
   /** 品项公司发货的收货市场候选（#336b，不按 scope 的全部启用市场），只喂给发货表单 */
   shipmentMarketTargets?: readonly InventoryMarketTransferTarget[]
   suppliers: InventorySupplierRow[]
+  /** 所有业务卡片待办数由服务端一次聚合返回，口径与 inbox 段相同。 */
+  inboxTotals: Record<string, number>
   canCreate: boolean
   canApprove: boolean
   canSelfPurchase: boolean
@@ -877,6 +881,9 @@ export default function InventoryOperationsPage({
                     </span>
                     <span className="min-w-0 flex-1">
                       <span className="block text-sm font-medium">{operation.title}</span>
+                      {operationEnabled(operation) && (inboxTotals[operation.id] ?? 0) > 0 && (
+                        <Badge variant="outline" className="mt-1">待处理 {inboxTotals[operation.id]}</Badge>
+                      )}
                       {operation.approvalOnly && <Badge variant="outline" className="mt-1 text-[10px]">审批权限</Badge>}
                       {operation.shipmentCancellationAccess === '申请' && <Badge variant="outline" className="mt-1 text-[10px]">撤回申请权限</Badge>}
                       {operation.shipmentCancellationAccess === '审批' && <Badge variant="outline" className="mt-1 text-[10px]">撤回审批权限</Badge>}
@@ -1486,6 +1493,7 @@ export function OperationDocsTab({
   const [inboxFailed, setInboxFailed] = useState(false)
   const [startDate, setStartDate] = useState('')
   const [endDate, setEndDate] = useState('')
+  const [processProgress, setProcessProgress] = useState<InventoryDocProcessProgress | ''>('')
   /*
    * 行内动作跑完之后的重取券。**这是最容易漏的一条**：本 Tab 的数据是客户端 action 拉的，
    * `router.refresh()` 对它完全无效 —— 只调后者的话「提示 + 刷新」只完成了提示，
@@ -1533,6 +1541,7 @@ export function OperationDocsTab({
       pageSize: OPERATION_DOCS_PAGE_SIZE,
       startDate,
       endDate,
+      processProgress: processProgress || undefined,
     })
       .then((result) => {
         if (cancelled) return
@@ -1568,7 +1577,7 @@ export function OperationDocsTab({
         if (!cancelled) setLoading(false)
       })
     return () => { cancelled = true }
-  }, [operation, page, inboxPage, reloadToken, candidateVersion, startDate, endDate])
+  }, [operation, page, inboxPage, reloadToken, candidateVersion, startDate, endDate, processProgress])
 
   useEffect(() => {
     onInboxTotalChange(hasInbox ? inboxTotal : 0)
@@ -1613,6 +1622,7 @@ export function OperationDocsTab({
     { key: 'sourceOrgNodeName', header: '出库/发起', cell: (row) => row.sourceOrgNodeName ?? '—' },
     { key: 'targetOrgNodeName', header: '入库/接收', cell: (row) => row.targetOrgNodeName ?? '—' },
     { key: 'docDate', header: '日期', cell: (row) => row.docDate.slice(0, 10) },
+    { key: 'processProgress', header: '流程进度', cell: (row) => row.processProgress ?? '—' },
     { key: 'totalQuantity', header: '数量', cell: (row) => <span className="font-medium">{row.totalQuantity}</span> },
     /*
      * 列头只看会话级价格权限，**不从当前页数据反推**：行级遮蔽后 totalAmount 会变成
@@ -1725,6 +1735,10 @@ export function OperationDocsTab({
         <DatePicker aria-label="开始日期" value={startDate} onValueChange={(value) => { setStartDate(value); setPage(1); setInboxPage(1) }} placeholder="开始日期" />
         <span className="text-sm text-[#888888]">至</span>
         <DatePicker aria-label="结束日期" value={endDate} onValueChange={(value) => { setEndDate(value); setPage(1); setInboxPage(1) }} placeholder="结束日期" />
+        <Select aria-label="流程进度" value={processProgress} onChange={(event) => { setProcessProgress(event.target.value as InventoryDocProcessProgress | ''); setPage(1); setInboxPage(1) }} className="w-40">
+          <option value="">全部进度</option>
+          {(['未提交', '未汇总', '部分汇总', '已汇总', '未采购', '部分采购', '已采购', '部分配货', '已配货', '部分发货', '已发货', '部分入库', '已入库'] as const).map((progress) => <option key={progress} value={progress}>{progress === '未采购' ? '未采购（含部分）' : progress}</option>)}
+        </Select>
       </div>
       {/* 无 inbox 语义的业务（16 个内置 + 其余通用，#336b 起品项公司发货有「待发货」段）整段不渲染，外观与 #190 完全一致。 */}
       {hasInbox && (

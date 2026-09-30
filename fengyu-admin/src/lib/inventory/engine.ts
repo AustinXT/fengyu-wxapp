@@ -44,6 +44,8 @@ import {
   inventoryLevelOperateDeniedMessage,
 } from './business-level'
 import { scopeSessionToActions } from '@/lib/action-scope'
+import { INVENTORY_OPERATION_IDS, genericOperationId, resolveOperationDocQuery } from './operation-doc-types'
+import type { InventoryOperationDocFilter } from './operation-doc-types'
 // 账面数按**主体 + SKU 汇总**记录 —— 口径由甲方 2026-09-16 拍板（issue #131 Q1）：
 // 现场就是按商品数总盘、不区分批次，按批次记会造成假精确。类型清单与详情页共用单源。
 import { STOCKTAKE_DOC_TYPES } from './stocktake'
@@ -1359,6 +1361,7 @@ function docRow(row: {
   targetOrgNodeName: string | null
   targetOrgNodeType: string | null
   partiallyReceived?: boolean | null
+  processProgress?: import('./types').InventoryDocProcessProgress | null
   includePrice: boolean
 }): InventoryDocRow {
   const doc = row.doc
@@ -1400,6 +1403,7 @@ function docRow(row: {
     createdAt: doc.createdAt.toISOString(),
     updatedAt: doc.updatedAt.toISOString(),
     partiallyReceived: row.partiallyReceived === true,
+    processProgress: row.processProgress ?? null,
   }
 }
 
@@ -2378,6 +2382,66 @@ export const exportInventoryLots = withPermission(
   },
 )
 
+/** 报货进度只读派生。每个子查询按当前单据关联，不写回 status。 */
+function progressLinkQuantitySql(relationTypes: readonly string[]): SQL {
+  return sql`(
+    SELECT COALESCE(SUM(progress_link.quantity), 0)
+      FROM inventory_doc_links progress_link
+      JOIN inventory_docs progress_target ON progress_target.id = progress_link.to_doc_id
+     WHERE progress_link.from_doc_id = ${inventoryDocs.id}
+       AND progress_link.relation_type IN (${sql.join(relationTypes.map((value) => sql`${value}`), sql`, `)})
+       AND progress_target.status <> '已取消'
+  )`
+}
+
+const progressOrderedQuantitySql = sql`(
+  SELECT COALESCE(SUM(COALESCE(progress_item.fulfilled_quantity, 0)), 0)
+    FROM inventory_doc_items progress_item
+   WHERE progress_item.doc_id = ${inventoryDocs.id}
+)`
+const progressSummarizedQuantitySql = progressLinkQuantitySql(['市场报货汇总'])
+const progressStoreSummarizedQuantitySql = progressLinkQuantitySql(['门店报货汇总'])
+const progressAllocatedQuantitySql = progressLinkQuantitySql(['门店报货配货'])
+const progressPurchasedQuantitySql = progressLinkQuantitySql(['市场报货采购订单'])
+const progressShippedQuantitySql = progressLinkQuantitySql(['市场报货发货'])
+const progressReceivedQuantitySql = sql`(
+  SELECT COALESCE(SUM(receipt_link.quantity), 0)
+    FROM inventory_doc_links shipment_link
+    JOIN inventory_docs shipment_doc ON shipment_doc.id = shipment_link.to_doc_id
+    JOIN inventory_doc_links receipt_link ON receipt_link.from_item_id = shipment_link.to_item_id
+    JOIN inventory_docs receipt_doc ON receipt_doc.id = receipt_link.to_doc_id
+   WHERE shipment_link.from_doc_id = ${inventoryDocs.id}
+     AND shipment_link.relation_type = '市场报货发货'
+     AND shipment_doc.status <> '已取消'
+     AND receipt_link.relation_type = '发货收货'
+     AND receipt_doc.status = '已完成'
+)`
+
+const inventoryDocProcessProgressSql = sql<import('./types').InventoryDocProcessProgress | null>`(
+  CASE
+    WHEN ${inventoryDocs.docType} IN ('市场报货汇总', '品项公司报货需求') THEN
+      CASE WHEN ${progressOrderedQuantitySql} >= ${inventoryDocs.totalQuantity} AND ${progressOrderedQuantitySql} > 0 THEN '已采购'
+           WHEN ${progressOrderedQuantitySql} > 0 THEN '部分采购' ELSE '未采购' END
+    WHEN ${inventoryDocs.docType} = '门店报货' THEN
+      CASE WHEN ${inventoryDocs.status} <> '已完成' THEN '未提交'
+           WHEN ${progressAllocatedQuantitySql} >= ${inventoryDocs.totalQuantity} AND ${progressAllocatedQuantitySql} > 0 THEN '已配货'
+           WHEN ${progressAllocatedQuantitySql} > 0 THEN '部分配货'
+           WHEN ${progressStoreSummarizedQuantitySql} >= ${inventoryDocs.totalQuantity} AND ${progressStoreSummarizedQuantitySql} > 0 THEN '已汇总'
+           WHEN ${progressStoreSummarizedQuantitySql} > 0 THEN '部分汇总' ELSE '未汇总' END
+    WHEN ${inventoryDocs.docType} = '市场报货' THEN
+      CASE WHEN ${inventoryDocs.status} <> '已完成' THEN '未提交'
+           WHEN ${progressReceivedQuantitySql} >= ${inventoryDocs.totalQuantity} AND ${progressReceivedQuantitySql} > 0 THEN '已入库'
+           WHEN ${progressReceivedQuantitySql} > 0 THEN '部分入库'
+           WHEN ${progressShippedQuantitySql} >= ${inventoryDocs.totalQuantity} AND ${progressShippedQuantitySql} > 0 THEN '已发货'
+           WHEN ${progressShippedQuantitySql} > 0 THEN '部分发货'
+           WHEN ${progressPurchasedQuantitySql} >= ${inventoryDocs.totalQuantity} AND ${progressPurchasedQuantitySql} > 0 THEN '已采购'
+           WHEN ${progressPurchasedQuantitySql} > 0 THEN '部分采购'
+           WHEN ${progressSummarizedQuantitySql} >= ${inventoryDocs.totalQuantity} AND ${progressSummarizedQuantitySql} > 0 THEN '已汇总'
+           WHEN ${progressSummarizedQuantitySql} > 0 THEN '部分汇总' ELSE '未汇总' END
+    ELSE NULL
+  END
+)`
+
 export const listInventoryCoreDocs = withPermission(
   'inventory:list',
   async (
@@ -2435,6 +2499,7 @@ export const listInventoryCoreDocs = withPermission(
        * 只管剩余量；「报货单须已完成」由调用方的 statuses 表达（inbox 配置里带 `statuses: ['已完成']`）。
        */
       pendingItemScope?: 'supply-chain' | 'company-shipment'
+      processProgress?: import('./types').InventoryDocProcessProgress
       startDate?: string
       endDate?: string
       keyword?: string
@@ -2553,6 +2618,20 @@ export const listInventoryCoreDocs = withPermission(
              AND COALESCE(pending_item.fulfilled_quantity, 0) < pending_item.quantity
         )`)
     }
+    if (filters.processProgress) {
+      const allowed = new Set<import('./types').InventoryDocProcessProgress>([
+        '未提交', '未汇总', '部分汇总', '已汇总', '未采购', '部分采购', '已采购',
+        '部分配货', '已配货', '部分发货', '已发货', '部分入库', '已入库',
+      ])
+      if (!allowed.has(filters.processProgress)) throw new ApiError('INVALID_PARAMS', '未知的流程进度')
+      // 「未采购」用于找仍有未下单量的汇总/需求单，部分采购也应命中。
+      conditions.push(filters.processProgress === '未采购'
+        ? sql`${inventoryDocs.docType} IN ('市场报货汇总', '品项公司报货需求')
+          AND EXISTS (SELECT 1 FROM inventory_doc_items progress_pending_item
+                       WHERE progress_pending_item.doc_id = ${inventoryDocs.id}
+                         AND COALESCE(progress_pending_item.fulfilled_quantity, 0) < progress_pending_item.quantity)`
+        : sql`${inventoryDocProcessProgressSql} = ${filters.processProgress}`)
+    }
     if (startDate) conditions.push(gte(inventoryDocs.docDate, startDate))
     if (endDate) conditions.push(lte(inventoryDocs.docDate, endDate))
     if (filters.keyword) {
@@ -2579,6 +2658,7 @@ export const listInventoryCoreDocs = withPermission(
         targetOrgNodeName: targetLocation.name,
         targetOrgNodeType: targetLocation.locationType,
         partiallyReceived: partiallyReceivedSql,
+        processProgress: inventoryDocProcessProgressSql,
       })
       .from(inventoryDocs)
       .leftJoin(sourceLocation, eq(sourceLocation.orgNodeId, inventoryDocs.sourceOrgNodeId))
@@ -2613,6 +2693,70 @@ export const listInventoryCoreDocs = withPermission(
       canViewPrice: priceVisibility !== 'none',
       priceVisibility,
     }
+  },
+)
+
+/** 办理台卡片角标：一条聚合 SQL 为所有 inbox 算数，与单据 Tab 使用同一张业务映射表。 */
+export const listInventoryOperationInboxTotals = withPermission(
+  'inventory:list',
+  async (session): Promise<Record<string, number>> => {
+    await syncInventoryLocations()
+    const scoped = inventoryScopedOrgNodeIds(session)
+    const operationIds = [
+      ...INVENTORY_OPERATION_IDS,
+      ...INVENTORY_GENERIC_DOC_TYPES.map(genericOperationId),
+    ]
+    const inboxes = operationIds.flatMap((operationId) => {
+      const inbox = resolveOperationDocQuery(operationId)?.inbox
+      return inbox ? [{ operationId, inbox }] : []
+    })
+    if (inboxes.length === 0) return {}
+    const locationTypes = [...new Set(inboxes.flatMap(({ inbox }) => inbox.locationType ? [inbox.locationType] : []))]
+    const typedIds = new Map<InventoryLocationType, string[]>()
+    for (const locationType of locationTypes) {
+      const rows = await db.select({ orgNodeId: inventoryLocations.orgNodeId })
+        .from(inventoryLocations).where(eq(inventoryLocations.locationType, locationType))
+      typedIds.set(locationType, rows.flatMap((row) => row.orgNodeId ? [row.orgNodeId] : []))
+    }
+    const conditionFor = (filter: InventoryOperationDocFilter): SQL => {
+      const conditions: SQL[] = [inArray(inventoryDocs.docType, [...filter.docTypes])]
+      if (scoped !== null) {
+        conditions.push(scoped.length > 0
+          ? or(inArray(inventoryDocs.sourceOrgNodeId, scoped), inArray(inventoryDocs.targetOrgNodeId, scoped))!
+          : sql`FALSE`)
+      }
+      if (filter.scopeRole && scoped !== null) {
+        const endpoint = filter.scopeRole === 'source' ? inventoryDocs.sourceOrgNodeId : inventoryDocs.targetOrgNodeId
+        conditions.push(scoped.length > 0 ? inArray(endpoint, scoped) : sql`FALSE`)
+      }
+      if (filter.statuses) conditions.push(inArray(inventoryDocs.status, [...filter.statuses]))
+      if (filter.locationType) {
+        const ids = typedIds.get(filter.locationType) ?? []
+        conditions.push(ids.length > 0
+          ? or(inArray(inventoryDocs.sourceOrgNodeId, ids), inArray(inventoryDocs.targetOrgNodeId, ids))!
+          : sql`FALSE`)
+      }
+      if (filter.cancellationRequested) conditions.push(isNotNull(inventoryDocs.cancellationRequestReason))
+      if (filter.pendingItemScope === 'company-shipment') {
+        conditions.push(sql`EXISTS (
+          SELECT 1 FROM inventory_doc_items pending_item
+           WHERE pending_item.doc_id = ${inventoryDocs.id}
+             AND ${reportItemShippedSql(sql`pending_item.id`)} < pending_item.quantity
+        )`)
+      } else if (filter.pendingItemScope === 'supply-chain') {
+        conditions.push(sql`EXISTS (
+          SELECT 1 FROM inventory_doc_items pending_item
+           WHERE pending_item.doc_id = ${inventoryDocs.id}
+             AND COALESCE(pending_item.fulfilled_quantity, 0) < pending_item.quantity
+        )`)
+      }
+      return and(...conditions)!
+    }
+    const projections = inboxes.map(({ inbox }, index) => sql`
+      COUNT(*) FILTER (WHERE ${conditionFor(inbox)})::int AS ${sql.identifier(`inbox_${index}`)}
+    `)
+    const [row] = await db.execute(sql`SELECT ${sql.join(projections, sql`, `)} FROM ${inventoryDocs}`) as unknown as Array<Record<string, number | string>>
+    return Object.fromEntries(inboxes.map(({ operationId }, index) => [operationId, Number(row?.[`inbox_${index}`] ?? 0)]))
   },
 )
 
@@ -2956,99 +3100,50 @@ function asDocDate(value: string | Date): string {
 
 async function loadInventoryDocLineage(
   docId: string,
-  docType: InventoryDocType,
   scoped: string[] | null,
 ): Promise<InventoryDocLineageRow[]> {
-  const linkedDocVisible = scoped === null
-    ? sql`TRUE`
-    : sql`(
-      (doc_link.from_doc_id = ${docId} AND ${inventoryDocScopeSql(
-        scoped,
-        sql`to_doc.source_org_node_id`,
-        sql`to_doc.target_org_node_id`,
-      )})
-      OR
-      (doc_link.to_doc_id = ${docId} AND ${inventoryDocScopeSql(
-        scoped,
-        sql`from_doc.source_org_node_id`,
-        sql`from_doc.target_org_node_id`,
-      )})
-    )`
   const rows = await db.execute(sql`
-    SELECT
-      CASE WHEN doc_link.from_doc_id = ${docId} THEN '下游' ELSE '上游' END AS direction,
-      doc_link.relation_type,
-      CASE WHEN doc_link.from_doc_id = ${docId} THEN to_doc.id ELSE from_doc.id END AS doc_id,
-      CASE WHEN doc_link.from_doc_id = ${docId} THEN to_doc.doc_type ELSE from_doc.doc_type END AS doc_type,
-      CASE WHEN doc_link.from_doc_id = ${docId} THEN to_doc.status ELSE from_doc.status END AS status,
-      CASE WHEN doc_link.from_doc_id = ${docId} THEN to_doc.doc_date ELSE from_doc.doc_date END AS doc_date,
-      CASE WHEN doc_link.from_doc_id = ${docId} THEN to_doc.total_quantity ELSE from_doc.total_quantity END AS total_quantity,
-      MAX(CASE WHEN doc_link.from_doc_id = ${docId} THEN to_source.name ELSE from_source.name END) AS source_org_node_name,
-      COALESCE(SUM(doc_link.quantity), 0) AS linked_quantity,
-      MAX(doc_link.created_at) AS linked_at
-    FROM inventory_doc_links doc_link
-    JOIN inventory_docs from_doc ON from_doc.id = doc_link.from_doc_id
-    JOIN inventory_docs to_doc ON to_doc.id = doc_link.to_doc_id
-    LEFT JOIN inventory_locations from_source ON from_source.org_node_id = from_doc.source_org_node_id
-    LEFT JOIN inventory_locations to_source ON to_source.org_node_id = to_doc.source_org_node_id
-    WHERE (doc_link.from_doc_id = ${docId} OR doc_link.to_doc_id = ${docId})
-      AND ${linkedDocVisible}
-    GROUP BY
-      doc_link.from_doc_id,
-      doc_link.to_doc_id,
-      doc_link.relation_type,
-      from_doc.id,
-      from_doc.doc_type,
-      from_doc.status,
-      from_doc.doc_date,
-      from_doc.total_quantity,
-      to_doc.id,
-      to_doc.doc_type,
-      to_doc.status,
-      to_doc.doc_date,
-      to_doc.total_quantity
-    ORDER BY linked_at DESC, doc_link.relation_type ASC
+    WITH RECURSIVE visible_docs AS (${visibleInventoryDocsSql(scoped)}),
+    visible_edges AS (
+      SELECT doc_link.from_doc_id, doc_link.to_doc_id, doc_link.relation_type,
+             COALESCE(SUM(doc_link.quantity), 0) AS linked_quantity
+        FROM inventory_doc_links doc_link
+        JOIN visible_docs visible_from ON visible_from.id = doc_link.from_doc_id
+        JOIN visible_docs visible_to ON visible_to.id = doc_link.to_doc_id
+       GROUP BY doc_link.from_doc_id, doc_link.to_doc_id, doc_link.relation_type
+    ),
+    lineage_walk(direction, depth, doc_id, via_doc_id, relation_type, linked_quantity, path) AS (
+      SELECT seed.direction, 0, ${docId}::text, NULL::text, NULL::text, 0::numeric, ARRAY[${docId}::text]
+        FROM (VALUES ('上游'::text), ('下游'::text)) seed(direction)
+      UNION ALL
+      SELECT walk.direction, walk.depth + 1,
+             CASE WHEN walk.direction = '上游' THEN edge.from_doc_id ELSE edge.to_doc_id END,
+             walk.doc_id, edge.relation_type, edge.linked_quantity,
+             walk.path || (CASE WHEN walk.direction = '上游' THEN edge.from_doc_id ELSE edge.to_doc_id END)
+        FROM lineage_walk walk
+        JOIN visible_edges edge ON
+          (walk.direction = '上游' AND edge.to_doc_id = walk.doc_id)
+          OR (walk.direction = '下游' AND edge.from_doc_id = walk.doc_id)
+       WHERE (CASE WHEN walk.direction = '上游' THEN edge.from_doc_id ELSE edge.to_doc_id END) <> ALL(walk.path)
+    )
+    SELECT walk.direction, walk.depth, walk.via_doc_id, walk.relation_type,
+           linked_doc.id AS doc_id, linked_doc.doc_type, linked_doc.status,
+           linked_doc.doc_date, linked_doc.total_quantity,
+           source_location.name AS source_org_node_name, walk.linked_quantity
+      FROM lineage_walk walk
+      JOIN inventory_docs linked_doc ON linked_doc.id = walk.doc_id
+      LEFT JOIN inventory_locations source_location ON source_location.org_node_id = linked_doc.source_org_node_id
+     WHERE walk.depth > 0
+     ORDER BY walk.direction, walk.depth, linked_doc.doc_date, linked_doc.id, walk.relation_type
   `)
-  /*
-   * 市场采购入库 → 原始市场报货单（#336）：入库明细 ←「发货收货」← 发货明细 ←「市场报货发货 / 赠送发货」← 报货明细，
-   * 两跳推出来，让市场账号在入库单上也能看到并跳到自己报的单。只沿 #336 起的直连血缘推，
-   * 存量「采购订单 → 发货」的旧单不推算（拍板 C）。报货单按同一 scope 判可见。
-   */
-  if (docType !== '市场采购入库') return mapLineageRows(rows)
-  const reportVisible = scoped === null
-    ? sql`TRUE`
-    : inventoryDocScopeSql(scoped, sql`origin_report.source_org_node_id`, sql`origin_report.target_org_node_id`)
-  const originReportRows = await db.execute(sql`
-    SELECT
-      '上游' AS direction,
-      '原始报货单（经品项公司发货）' AS relation_type,
-      origin_report.id AS doc_id,
-      origin_report.doc_type,
-      origin_report.status,
-      origin_report.doc_date,
-      origin_report.total_quantity,
-      MAX(origin_source.name) AS source_org_node_name,
-      COALESCE(SUM(origin_receipt_link.quantity), 0) AS linked_quantity,
-      MAX(origin_receipt_link.created_at) AS linked_at
-    FROM inventory_doc_links origin_receipt_link
-    JOIN inventory_doc_links origin_ship_link
-      ON origin_ship_link.to_item_id = origin_receipt_link.from_item_id
-     AND origin_ship_link.relation_type IN ('市场报货发货', '市场报货赠送发货')
-    JOIN inventory_docs origin_report ON origin_report.id = origin_ship_link.from_doc_id
-    LEFT JOIN inventory_locations origin_source ON origin_source.org_node_id = origin_report.source_org_node_id
-    WHERE origin_receipt_link.to_doc_id = ${docId}
-      AND origin_receipt_link.relation_type = '发货收货'
-      AND ${reportVisible}
-    GROUP BY origin_report.id, origin_report.doc_type, origin_report.status,
-             origin_report.doc_date, origin_report.total_quantity
-    ORDER BY linked_at DESC
-  `)
-  return mapLineageRows([...rows, ...originReportRows])
+  return mapLineageRows(rows)
 }
 
 function mapLineageRows(rows: unknown[]): InventoryDocLineageRow[] {
   return (rows as unknown as Array<{
     direction: '上游' | '下游'
+    depth: number
+    via_doc_id: string
     relation_type: string
     doc_id: string
     doc_type: string
@@ -3059,6 +3154,8 @@ function mapLineageRows(rows: unknown[]): InventoryDocLineageRow[] {
     source_org_node_name: string | null
   }>).map((row) => ({
     direction: row.direction,
+    depth: Number(row.depth),
+    viaDocId: row.via_doc_id,
     relationType: row.relation_type,
     docId: row.doc_id,
     docType: row.doc_type as InventoryDocType,
@@ -3668,7 +3765,7 @@ export const getInventoryCoreDocById = withPermission(
         .from(inventoryDocItems)
         .where(eq(inventoryDocItems.docId, id))
         .orderBy(asc(inventoryDocItems.id)),
-      loadInventoryDocLineage(id, head.docType, scoped),
+      loadInventoryDocLineage(id, scoped),
       loadInventoryDocFulfillmentProgress(head.docType, id, scoped),
     ])
     // 采购订单与市场报货汇总把市场归属挂在明细行上（#193/#194），单头没有这个字段，

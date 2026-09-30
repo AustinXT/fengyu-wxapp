@@ -6,6 +6,7 @@ import {
   listInventoryShipmentMarketTargets,
 } from '@/actions/inventory/locations'
 import { listInventorySuppliers } from '@/actions/inventory/suppliers'
+import { listInventoryOperationInboxTotals } from '@/actions/inventory/docs'
 import { getSession } from '@/lib/auth'
 import { inventoryPriceScopeByTier, inventoryPriceVisibility, inventoryScopedLocationIds } from '@/lib/inventory/access'
 import { scopeSessionToAllActions } from '@/lib/action-scope'
@@ -56,7 +57,7 @@ export default async function Page({
   // 业务过滤（可报货 / 市场归属 / 供应链来源）也在服务端做，见 InventorySkuSearchSelect。
   // 来源单 / 待处理单候选同样不再预加载（#338）：原先这里拉「全类型混排最近 100 张」，
   // 老单在各表单里选不到；现在各表单按用途走服务端检索 + 分页，见 InventoryDocCandidatePicker。
-  const [locations, marketTransferTargets, shipmentMarketTargets, suppliers] = await Promise.all([
+  const [locations, marketTransferTargets, shipmentMarketTargets, suppliers, inboxTotals] = await Promise.all([
     listInventoryLocations(),
     /*
      * 市场间调货卡的接收主体候选（#340）：不按 scope 的全部启用市场。只在市场层、且能建单时取 ——
@@ -71,6 +72,7 @@ export default async function Page({
     // 刻意不传 pageSize：办理台的供应商下拉要的是整份名单，
     // 跟着列表页分页走会把靠后的供应商静默漏掉（#135）。
     listInventorySuppliers({ onlyActive: true }),
+    listInventoryOperationInboxTotals(),
   ])
   const approveAction = level === 'supply-chain'
     ? 'inventory:supply_chain_approve'
@@ -101,6 +103,7 @@ export default async function Page({
           marketTransferTargets={marketTransferTargets}
           shipmentMarketTargets={shipmentMarketTargets}
           suppliers={suppliers.data}
+          inboxTotals={inboxTotals}
           canCreate={canCreate}
           canApprove={canApprove}
           canSelfPurchase={hasUiCapability(actions, 'inventory:self_purchase_receive')}

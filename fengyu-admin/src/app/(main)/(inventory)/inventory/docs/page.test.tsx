@@ -257,3 +257,20 @@ describe('单据中心 · 关联销售单链接权限', () => {
     },
   )
 })
+
+it('单据中心将日期区间与流程进度送到同一分页查询', async () => {
+  mockFilterOptions.mockResolvedValue({
+    headquarters: [{ locationId: 'HQ', name: '总部' }], markets: [], defaultLocationId: 'HQ',
+  })
+  mockGetSession.mockResolvedValue({
+    employeeId: 'E-1',
+    permissions: { actions: BASE_ACTIONS, scopeStoreIds: [], scopeOrgNodeIds: [] },
+    roles: [],
+  })
+  render(await Page({ searchParams: Promise.resolve({
+    startDate: '2026-09-01', endDate: '2026-09-30', processProgress: '未采购', page: '2',
+  }) }))
+  expect(mockListDocs).toHaveBeenCalledWith(expect.objectContaining({
+    orgNodeId: 'HQ', startDate: '2026-09-01', endDate: '2026-09-30', processProgress: '未采购', page: 2,
+  }))
+})

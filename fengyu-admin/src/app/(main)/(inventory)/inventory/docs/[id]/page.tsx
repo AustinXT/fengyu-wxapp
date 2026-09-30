@@ -191,6 +191,11 @@ export default async function Page({
     [doc.docType === '市场报货' || doc.docType === '门店报货' ? '删除原因' : '撤回原因', doc.cancellationReason],
     ['备注', doc.remark],
   ] as const
+  const lineageSteps = [
+    ...doc.lineage.filter((step) => step.direction === '上游').sort((a, b) => b.depth - a.depth),
+    null,
+    ...doc.lineage.filter((step) => step.direction === '下游').sort((a, b) => a.depth - b.depth),
+  ]
 
   return (
     <div className="p-6 space-y-6">
@@ -254,7 +259,7 @@ export default async function Page({
             <table className="w-full min-w-[760px] text-sm">
               <thead className="bg-[#F8F8F8] text-xs text-[#666666]">
                 <tr>
-                  <th className="px-3 py-2 text-left">方向</th>
+                  <th className="px-3 py-2 text-left">链路环节</th>
                   <th className="px-3 py-2 text-left">关系</th>
                   <th className="px-3 py-2 text-left">关联单据</th>
                   <th className="px-3 py-2 text-left">类型</th>
@@ -266,10 +271,22 @@ export default async function Page({
                 </tr>
               </thead>
               <tbody>
-                {doc.lineage.map((lineage) => (
-                  <tr key={`${lineage.direction}-${lineage.relationType}-${lineage.docId}`} className="border-t border-[var(--border)]">
-                    <td className="px-3 py-2">{lineage.direction}</td>
-                    <td className="px-3 py-2">{lineage.relationType}</td>
+                {lineageSteps.map((lineage, index) => lineage === null ? (
+                  <tr key="current" className="border-t border-[var(--border)] bg-[#FFF8F7]">
+                    <td className="border-l-2 border-[var(--primary)] px-3 py-2 font-medium"><span className="mr-2 inline-block size-2 rounded-full bg-[var(--primary)]" />当前单据</td>
+                    <td className="px-3 py-2">—</td>
+                    <td className="px-3 py-2 font-mono text-xs">{doc.id}</td>
+                    <td className="px-3 py-2">{doc.docType}</td>
+                    <td className="px-3 py-2">{fmt(doc.sourceOrgNodeName)}</td>
+                    <td className="px-3 py-2">{doc.status}</td>
+                    <td className="px-3 py-2 text-right">—</td>
+                    <td className="px-3 py-2 text-right">{doc.totalQuantity}</td>
+                    <td className="px-3 py-2">{fmt(doc.docDate?.slice(0, 10))}</td>
+                  </tr>
+                ) : (
+                  <tr key={`${lineage.direction}-${lineage.depth}-${lineage.viaDocId}-${lineage.relationType}-${lineage.docId}-${index}`} className="border-t border-[var(--border)]">
+                    <td className="border-l-2 border-[var(--primary)] px-3 py-2 whitespace-nowrap"><span className="mr-2 inline-block size-2 rounded-full bg-[var(--primary)]" />{lineage.direction} · 第 {lineage.depth} 跳</td>
+                    <td className="px-3 py-2">{lineage.relationType}<span className="block text-xs text-[#888888]">{lineage.direction === '上游' ? `${lineage.docId} → ${lineage.viaDocId}` : `${lineage.viaDocId} → ${lineage.docId}`}</span></td>
                     <td className="px-3 py-2 font-mono text-xs">
                       <Link href={`/inventory/docs/${encodeURIComponent(lineage.docId)}`} className="text-[var(--primary)] hover:underline">
                         {lineage.docId}
@@ -284,11 +301,6 @@ export default async function Page({
                     <td className="px-3 py-2">{fmt(lineage.docDate?.slice(0, 10))}</td>
                   </tr>
                 ))}
-                {doc.lineage.length === 0 && (
-                  <tr>
-                    <td className="px-3 py-8 text-center text-[#999999]" colSpan={9}>暂无关联单据</td>
-                  </tr>
-                )}
               </tbody>
             </table>
           </div>

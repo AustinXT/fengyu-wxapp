@@ -18,6 +18,7 @@ import {
   type CreateInventoryDocInput,
   type InventoryDocItemInput,
   type InventoryDocRow,
+  type InventoryDocProcessProgress,
   type InventoryLotRow,
   type InventoryLocationFilterOptions,
   type InventoryLocationRow,
@@ -47,6 +48,10 @@ import { inventoryDocStatusLabel } from '@/lib/inventory/doc-status-label'
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100]
 const GENERIC_DOC_TYPE_SET = new Set<InventoryDocType>(INVENTORY_GENERIC_DOC_TYPES)
+const PROCESS_PROGRESS_OPTIONS: InventoryDocProcessProgress[] = [
+  '未提交', '未汇总', '部分汇总', '已汇总', '未采购', '部分采购', '已采购',
+  '部分配货', '已配货', '部分发货', '已发货', '部分入库', '已入库',
+]
 
 /*
  * 从共享建单表单 re-export：单据中心与办理台共用同一份表单（#191），
@@ -191,6 +196,7 @@ export default function InventoryDocsPage({
       },
     },
     { key: 'docDate', header: '日期', cell: (r) => formatDate(r.docDate) },
+    { key: 'processProgress', header: '流程进度', cell: (r) => r.processProgress ?? '—' },
     {
       key: 'totalQuantity',
       header: '数量',
@@ -293,6 +299,10 @@ export default function InventoryDocsPage({
           </Select>
           <DatePicker value={get('startDate')} onValueChange={(value) => setMany({ startDate: value, page: '' })} placeholder="开始日期" />
           <DatePicker value={get('endDate')} onValueChange={(value) => setMany({ endDate: value, page: '' })} placeholder="结束日期" />
+          <Select value={get('processProgress')} onChange={(e) => setMany({ processProgress: e.target.value, page: '' })} aria-label="流程进度" className="w-40">
+            <option value="">全部进度</option>
+            {PROCESS_PROGRESS_OPTIONS.map((progress) => <option key={progress} value={progress}>{progress === '未采购' ? '未采购（含部分）' : progress}</option>)}
+          </Select>
           <Input
             className="w-64"
             placeholder="搜索单据 / 顾客 / 员工 / 备注"
@@ -308,6 +318,7 @@ export default function InventoryDocsPage({
               status: '',
               startDate: '',
               endDate: '',
+              processProgress: '',
               create: '',
               page: '',
             })}

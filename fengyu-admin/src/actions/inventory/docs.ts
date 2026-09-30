@@ -7,12 +7,13 @@ import {
   getInventoryCoreDocById as getInventoryCoreDocByIdImpl,
   getInventoryCoreDocsByIds as getInventoryCoreDocsByIdsImpl,
   listInventoryCoreDocs as listInventoryCoreDocsImpl,
+  listInventoryOperationInboxTotals as listInventoryOperationInboxTotalsImpl,
   listInventoryDocCandidateIds as listInventoryDocCandidateIdsImpl,
   listInventoryDocCandidates as listInventoryDocCandidatesImpl,
   listStoreUnallocatedRequestSkus as listStoreUnallocatedRequestSkusImpl,
   rejectInventoryCoreDoc as rejectInventoryCoreDocImpl,
 } from '@/lib/inventory/engine'
-import type { CreateInventoryDocInput, InventoryCoreDocStatus, InventoryDocType, InventoryLocationType } from '@/lib/inventory/types'
+import type { CreateInventoryDocInput, InventoryCoreDocStatus, InventoryDocProcessProgress, InventoryDocType, InventoryLocationType } from '@/lib/inventory/types'
 import { INVENTORY_CORE_RECEIVE_ACTIONS } from '@/lib/inventory/business-level'
 import { resolveOperationDocQuery } from '@/lib/inventory/operation-doc-types'
 import type { InventoryOperationDocFilter } from '@/lib/inventory/operation-doc-types'
@@ -29,6 +30,7 @@ export const listInventoryCoreDocs = withPermission(
       locationType?: InventoryLocationType
       docType?: InventoryDocType
       status?: InventoryCoreDocStatus
+      processProgress?: InventoryDocProcessProgress
       startDate?: string
       endDate?: string
       keyword?: string
@@ -36,6 +38,11 @@ export const listInventoryCoreDocs = withPermission(
       pageSize?: number
     } = {},
   ) => listInventoryCoreDocsImpl(filters),
+)
+
+export const listInventoryOperationInboxTotals = withPermission(
+  'inventory:list',
+  async () => listInventoryOperationInboxTotalsImpl(),
 )
 
 /**
@@ -58,7 +65,7 @@ export const listInventoryOperationDocs = withPermission(
   'inventory:list',
   async (
     _session,
-    input: { operationId: string; page?: number; inboxPage?: number; pageSize?: number; startDate?: string; endDate?: string },
+    input: { operationId: string; page?: number; inboxPage?: number; pageSize?: number; startDate?: string; endDate?: string; processProgress?: InventoryDocProcessProgress },
   ) => {
     /*
      * `resolveOperationDocQuery` 内部先过白名单再查表，**不能**退回成
@@ -86,6 +93,7 @@ export const listInventoryOperationDocs = withPermission(
       pageSize: input.pageSize,
       startDate: input.startDate,
       endDate: input.endDate,
+      processProgress: input.processProgress,
     })
     const produced = await listInventoryCoreDocsImpl(toFilters(query.produced, input.page))
     const inbox = query.inbox
