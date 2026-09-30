@@ -81,8 +81,40 @@ try {
     || Number(restored[0]?.converted_quantity) !== 0) {
     throw new Error(`跨店家居转换关单回滚失败：${closed.message}`)
   }
+
+  // 仅付 ¥50、未达单件 ¥100 的权益仍要按已付余额折抵。
+  const partialOrderId = `${NS}_XHOME_PART`
+  const partial = await createTestSaleOrder({
+    saleOrderId: partialOrderId, clientUserId: TEST_CLIENT_USER_ID,
+    storeId: sourceStoreId, skuId: home.skuId, productName: home.specName,
+    productType: '家居产品', quantity: 1, totalAmount: 100, status: '部分支付',
+    salesCategory: '他销他耗',
+  })
+  await pgQuery(`UPDATE sale_items SET received = 50 WHERE sale_item_id = $1`, [partial.saleItemId])
+  await pgQuery(`UPDATE sale_orders SET received = 50 WHERE sale_order_id = $1`, [partialOrderId])
+  await pgQuery(
+    `INSERT INTO sale_order_payments (sale_order_id, change_type, amount, payment_method, status, source_end, created_at, paid_at)
+     VALUES ($1, '首次支付', 50, '线下', '已支付', 'staff', NOW(), NOW())`,
+    [partialOrderId],
+  )
+  const partialCandidates = await invokeStaffApi('order.customerHeldCards', {
+    _testOpenid: TEST_MANAGER_OPENID, clientUserId: TEST_CLIENT_USER_ID,
+  })
+  const partialCard = partialCandidates.data?.cards?.find((item) => item.saleItemId === partial.saleItemId)
+  if (partialCandidates.code !== 0 || Number(partialCard?.deductibleAmount) !== 50) {
+    throw new Error('不足一件单价的原店已付 ¥50 未进入折抵候选')
+  }
+  const partialConversion = await invokeStaffApi('order.createConversion', {
+    _testOpenid: TEST_MANAGER_OPENID, clientUserId: TEST_CLIENT_USER_ID,
+    convertOutSaleItemIds: [partial.saleItemId],
+    convertInItems: [{ skuId: target.skuId, quantity: 1 }],
+    paymentMethod: '线下', remark: 'e2e-cross-store-subunit',
+  })
+  if (partialConversion.code !== 0 || Number(partialConversion.data.priceDiff) !== 0) {
+    throw new Error(`不足单件单价的已付余额转换失败：${partialConversion.message}`)
+  }
   passed = true
-  console.log('PASS — 跨店未提货家居：候选、折抵、原新单归属、关单回滚')
+  console.log('PASS — 跨店未提货家居：候选、折抵、原新单归属、关单回滚、不足单价的已付余额')
 } catch (err) {
   console.error('FAIL —', err)
 } finally {
