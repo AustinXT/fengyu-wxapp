@@ -24,7 +24,11 @@ try {
   })
   const target = await createTestProduct({
     suffix: 'XTGT', productKind: '护理项目', productType: '疗程卡',
-    salesCategory: '他销自耗', price: 50, sessionCount: 1,
+    salesCategory: '他销自耗', price: 350, sessionCount: 1,
+  })
+  const targetWithDifference = await createTestProduct({
+    suffix: 'XTGT80', productKind: '护理项目', productType: '疗程卡',
+    salesCategory: '他销自耗', price: 80, sessionCount: 1,
   })
   const sourceOrderId = `${NS}_XHOME_SRC`
   const source = await createTestSaleOrder({
@@ -60,7 +64,8 @@ try {
     convertInItems: [{ skuId: target.skuId, quantity: 1 }],
     paymentMethod: '线下', remark: 'e2e-cross-store-home',
   })
-  if (created.code !== 0 || Number(created.data.priceDiff) !== -250) {
+  if (created.code !== 0 || Number(created.data.priceDiff) !== 50
+    || created.data.status !== '待支付') {
     throw new Error(`跨店家居转换失败：${created.message}`)
   }
   const orderId = created.data.saleOrderId
@@ -87,7 +92,6 @@ try {
     throw new Error('本店权益与跨店权益混选后未正确扣减')
   }
 
-  await pgQuery(`UPDATE sale_orders SET status = '待支付' WHERE sale_order_id = $1`, [orderId])
   const closed = await invokeStaffApi('order.close', {
     _testOpenid: TEST_MANAGER_OPENID, saleOrderId: orderId,
   })
@@ -130,11 +134,31 @@ try {
   const partialConversion = await invokeStaffApi('order.createConversion', {
     _testOpenid: TEST_MANAGER_OPENID, clientUserId: TEST_CLIENT_USER_ID,
     convertOutSaleItemIds: [partial.saleItemId],
-    convertInItems: [{ skuId: target.skuId, quantity: 1 }],
+    convertInItems: [{ skuId: targetWithDifference.skuId, quantity: 1 }],
     paymentMethod: '线下', remark: 'e2e-cross-store-subunit',
   })
-  if (partialConversion.code !== 0 || Number(partialConversion.data.priceDiff) !== 0) {
+  if (partialConversion.code !== 0 || Number(partialConversion.data.priceDiff) !== 30
+    || partialConversion.data.status !== '待支付') {
     throw new Error(`不足单件单价的已付余额转换失败：${partialConversion.message}`)
+  }
+  const waivedOrder = await pgQuery(
+    `SELECT total_amount, store_id FROM sale_orders WHERE sale_order_id = $1`, [partialOrderId])
+  if (Number(waivedOrder[0]?.total_amount) !== 50 || waivedOrder[0]?.store_id !== sourceStoreId) {
+    throw new Error('原店部分支付单的未付 ¥50 未正确豁免或门店归属变化')
+  }
+  const partialClosed = await invokeStaffApi('order.close', {
+    _testOpenid: TEST_MANAGER_OPENID, saleOrderId: partialConversion.data.saleOrderId,
+  })
+  const restoredOrder = await pgQuery(
+    `SELECT total_amount, store_id FROM sale_orders WHERE sale_order_id = $1`, [partialOrderId])
+  const restoredItem = await pgQuery(
+    `SELECT sale_amount, converted_quantity, store_id FROM sale_items WHERE sale_item_id = $1`, [partial.saleItemId])
+  if (partialClosed.code !== 0 || Number(restoredOrder[0]?.total_amount) !== 100
+    || restoredOrder[0]?.store_id !== sourceStoreId
+    || Number(restoredItem[0]?.sale_amount) !== 100
+    || Number(restoredItem[0]?.converted_quantity) !== 0
+    || restoredItem[0]?.store_id !== sourceStoreId) {
+    throw new Error(`不足单价余额转换关单回滚失败：${partialClosed.message}`)
   }
   passed = true
   console.log('PASS — 跨店未提货家居：本店混选、原新单归属、关单回滚、不足单价的已付余额')

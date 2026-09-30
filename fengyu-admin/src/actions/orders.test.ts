@@ -3469,6 +3469,7 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     onInsertItem?: (v: any) => void
   }) {
     const executeSql: string[] = []
+    const updateWheres: any[] = []
     ;(db.transaction as any).mockImplementation(async (fn: any) => {
       let execCall = 0
       const tx = {
@@ -3541,13 +3542,16 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
         })),
         update: vi.fn().mockReturnValue({
           set: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue({ count: opts.updateCount ?? 1 }),
+            where: vi.fn().mockImplementation(async (condition: any) => {
+              updateWheres.push(condition)
+              return { count: opts.updateCount ?? 1 }
+            }),
           }),
         }),
       }
       return fn(tx)
     })
-    return { executeSql }
+    return { executeSql, updateWheres }
   }
 
   beforeEach(() => {
@@ -3618,7 +3622,7 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
   it('跨店家居来源可折抵，新转换单与转出镜像归当前店', async () => {
     const inserted: any[] = []
     let createdOrder: any
-    mockConvTx({
+    const { updateWheres } = mockConvTx({
       heldRows: [homeHeldRow({ store_id: 'store-999' })],
       skuRows: homeSkuRows,
       onInsertOrder: (v) => { createdOrder = v },
@@ -3632,6 +3636,7 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     expect(inserted.find((v) => v.itemDirection === '转出')).toMatchObject({
       storeId: 'store-1', refSaleItemId: 'home-1', saleAmount: '-700.00',
     })
+    expect(JSON.stringify(updateWheres)).toContain('store-999')
   })
 
   it('跨店家居已退或已转换部分只折剩余未结算件数', async () => {

@@ -55,6 +55,10 @@ async function main() {
     price: 200,
     sessionCount: 1,
   })
+  const rollbackTargetSku = await createTestProduct({
+    suffix: 'RTGT', productKind: '护理项目', productType: '疗程卡',
+    salesCategory: '他销自耗', price: 3000, sessionCount: 1,
+  })
 
   // 源销售单（已支付，含 1 个疗程卡 sale_item，卡总额 ¥2500 = 5 次 × 单次价 ¥500）
   // 业务侧 conversion 折抵公式：amount = unit_real_price × remaining_sessions
@@ -188,15 +192,32 @@ async function main() {
     if (Number(txns[0].amount) !== 2300) errors.push(`card_transactions.amount 应=2300，实际=${txns[0].amount}`)
   }
 
-  // 关闭未支付转换单时，原店疗程剩余次数应按来源引用恢复。
-  await pgQuery(`UPDATE sale_orders SET status = '待支付' WHERE sale_order_id = $1`, [saleOrderId])
+  // 另造真实的「正差额待支付」转换单，关闭后原店疗程应按来源引用恢复。
+  const rollbackSourceOrderId = `${NS}_CONV_RSRC`
+  const rollbackSource = await createTestSaleOrder({
+    saleOrderId: rollbackSourceOrderId, clientUserId: TEST_CLIENT_USER_ID,
+    storeId: TEST_STORES_MULTI.A2.storeId, skuId: sourceSku.skuId,
+    productName: sourceSku.specName, productType: '疗程卡',
+    quantity: 1, sessionCount: 5, isShengmei: true,
+    salesCategory: '他销他耗', totalAmount: 2500, status: '已支付',
+  })
+  const rollbackConversion = await invokeStaffApi('order.createConversion', {
+    _testOpenid: TEST_MANAGER_OPENID, clientUserId: TEST_CLIENT_USER_ID,
+    convertOutSaleItemIds: [rollbackSource.saleItemId],
+    convertInItems: [{ skuId: rollbackTargetSku.skuId, quantity: 1 }],
+    paymentMethod: '线下', remark: 'e2e-cross-store-treatment-rollback',
+  })
+  if (rollbackConversion.code !== 0 || rollbackConversion.data.status !== '待支付'
+    || Number(rollbackConversion.data.priceDiff) !== 500) {
+    errors.push(`正差额跨店疗程转换应待支付，实际=${rollbackConversion.message}`)
+  }
   const closed = await invokeStaffApi('order.close', {
-    _testOpenid: TEST_MANAGER_OPENID, saleOrderId,
+    _testOpenid: TEST_MANAGER_OPENID, saleOrderId: rollbackConversion.data?.saleOrderId,
   })
   if (closed.code !== 0) errors.push(`跨店疗程转换单关单失败：${closed.message}`)
   const restored = await pgQuery(
     `SELECT remaining_sessions, store_id FROM sale_items WHERE sale_item_id = $1`,
-    [sourceItemId],
+    [rollbackSource.saleItemId],
   )
   if (Number(restored[0]?.remaining_sessions) !== 5
     || restored[0]?.store_id !== TEST_STORES_MULTI.A2.storeId) {
