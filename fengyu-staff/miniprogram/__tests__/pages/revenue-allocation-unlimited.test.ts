@@ -16,8 +16,15 @@ const employees = ['EMP-1', 'EMP-2', 'EMP-3', 'EMP-4']
 function createPage() {
   const page = { ...definition, data: JSON.parse(JSON.stringify(definition.data)) } as Record<string, any>
   page.data.salePaymentId = 7
-  page.data.candidateEmployees = employees.map((staffWfId) => ({ staffWfId, name: staffWfId }))
-  page.setData = (update: Record<string, unknown>) => Object.assign(page.data, update)
+  page.data.candidateEmployees = employees.map((staffWfId) => ({ staffWfId, name: staffWfId, skills: ['养生师'], assignmentScope: 'local' }))
+  page.setData = (update: Record<string, unknown>) => {
+    for (const [path, value] of Object.entries(update)) {
+      const parts = path.replace(/\[(\d+)\]/g, '.$1').split('.')
+      let target = page.data
+      for (const part of parts.slice(0, -1)) target = target[part]
+      target[parts[parts.length - 1]] = value
+    }
+  }
   return page
 }
 
@@ -51,6 +58,37 @@ beforeEach(() => {
 })
 
 describe('回款营业额分配同池不限人数', () => {
+  test('从空白分配逐行添加至第 5 人，选择技能、员工和自定义 20% 后保存', async () => {
+    const page = createPage()
+    const fiveEmployees = [...employees, 'EMP-5']
+    page.data.candidateEmployees = fiveEmployees.map((staffWfId) => ({
+      staffWfId, name: staffWfId, skills: ['养生师'], assignmentScope: 'local',
+    }))
+    page.restoreAllocations([], items)
+    for (const [index, employeeId] of fiveEmployees.entries()) {
+      page.onAddLine({ currentTarget: { dataset: { itemIdx: 0 } } })
+      page.setData({ pickerItemIdx: 0, pickerLineIdx: index })
+      page.onSkillSelect({ detail: { name: '养生师' } })
+      page.openEmployeePicker({ currentTarget: { dataset: { itemIdx: 0, lineIdx: index } } })
+      expect(page.data.empPopupList).toHaveLength(5)
+      page.onEmployeeSelect({ currentTarget: { dataset: { staffWfId: employeeId, name: employeeId } } })
+      page.setData({ customRatioInput: '20' })
+      page.onConfirmCustomRatio()
+    }
+    expect(page.data.displayItems[0].allocLines).toHaveLength(5)
+    expect(page.data.displayItems[0].allocLines.map((line: any) => line.allocAmount)).toEqual([
+      '36.00', '36.00', '36.00', '36.00', '36.00',
+    ])
+    vi.mocked(callStaffApi).mockResolvedValueOnce({})
+    await page.onSave()
+    expect(callStaffApi).toHaveBeenCalledWith('allocation.savePayment', {
+      salePaymentId: 7,
+      allocations: fiveEmployees.flatMap((employeeId) => items.map((item) => ({
+        saleItemId: item.sale_item_id, employeeId, roleType: '养生师', allocationRatio: 0.2,
+      }))),
+    })
+  })
+
   test('两个同 SKU 实例的 4 人历史分配完整回显，重新保存展开为 8 行', async () => {
     const page = createPage()
     page.restoreAllocations(existing(), items)

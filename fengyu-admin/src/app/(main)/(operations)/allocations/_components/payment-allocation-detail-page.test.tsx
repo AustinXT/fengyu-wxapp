@@ -49,6 +49,36 @@ describe('回款营业额分配页同池不限人数', () => {
     vi.mocked(savePaymentAllocations).mockResolvedValue({ success: true, message: '分配保存成功' })
   })
 
+  it('从空白分配逐行添加至第 5 人，并经选择器提交同 SKU 双实例共 10 行', async () => {
+    const user = userEvent.setup()
+    const blank = { ...payment(), existingAllocations: [] }
+    const fiveEmployees = [...employees, 'EMP-5']
+    const candidates = fiveEmployees.map((employeeId) => ({
+      employeeId, name: employeeId, storeId: 'store-1', positionName: '养生师',
+      skills: ['养生师'], isResigned: false as const, isOnBusinessTrip: false,
+      assignmentScope: 'local' as const,
+    }))
+    render(<PaymentAllocationDetailPageClient
+      payment={blank} storeId="store-1" customerName="测试顾客"
+      employees={candidates} skillTags={[{ id: 'tag-1', name: '养生师', sortOrder: 1, createdAt: '', updatedAt: '' }]}
+      canSave
+    />)
+
+    for (const [index, employeeId] of fiveEmployees.entries()) {
+      await user.click(screen.getByRole('button', { name: '+ 添加分配' }))
+      const selects = screen.getAllByRole('combobox')
+      await user.selectOptions(selects[index * 3], '养生师')
+      await user.selectOptions(selects[index * 3 + 1], employeeId)
+      await user.selectOptions(selects[index * 3 + 2], '20')
+    }
+    expect(screen.getAllByText('员工')).toHaveLength(5)
+    await user.click(screen.getByRole('button', { name: '保存分配' }))
+    await waitFor(() => expect(savePaymentAllocations).toHaveBeenCalledOnce())
+    expect(savePaymentAllocations).toHaveBeenCalledWith(7, fiveEmployees.flatMap((employeeId) => items.map((item) => ({
+      saleItemId: item.saleItemId, employeeId, roleType: '养生师', allocationRatio: '0.200',
+    }))))
+  })
+
   it('两个同 SKU 实例的 4 人历史分配完整回显，保存展开为 8 行', async () => {
     const user = userEvent.setup()
     render(<PaymentAllocationDetailPageClient payment={payment()} storeId="store-1" customerName="测试顾客" employees={[]} canSave />)

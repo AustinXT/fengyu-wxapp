@@ -8,12 +8,12 @@ import {
 } from './setup.mjs'
 import { invokeStaffApi } from './helpers/invoke.mjs'
 import {
-  ensureTestStore, createTestStaff, createTestClient,
-  createTestSaleOrder, cleanupTestData,
+  ensureTestStore, createTestStaff, createTestClient, createTestProduct,
+  createTestSaleOrder, createTestSaleItem, cleanupTestData,
 } from './helpers/fixtures.mjs'
 
 const saleOrderId = `${NS}_ALLOC_4`
-const employeeIds = [1, 2, 3, 4].map((i) => `${NS}_ALLOC_E${i}`)
+const employeeIds = [1, 2, 3, 4, 5].map((i) => `${NS}_ALLOC_E${i}`)
 let passed = false
 
 try {
@@ -32,18 +32,27 @@ try {
     })
   }
 
+  const { skuId } = await createTestProduct({ suffix: 'ALLOC4', salesCategory: '自销自耗', price: 100 })
   const { saleItemId } = await createTestSaleOrder({
     saleOrderId, clientUserId: TEST_CLIENT_USER_ID,
-    productName: `${NS}_四人分配`, totalAmount: 1000,
+    skuId, productName: `${NS}_四人分配`, totalAmount: 100,
     status: '已支付', salesCategory: '自销自耗',
   })
-  await pgQuery('UPDATE sale_orders SET received = 1000 WHERE sale_order_id = $1', [saleOrderId])
-  await pgQuery('UPDATE sale_items SET received = 1000 WHERE sale_item_id = $1', [saleItemId])
+  const secondSaleItemId = `${saleOrderId}_ITEM_2`
+  await createTestSaleItem({
+    saleOrderId, saleItemId: secondSaleItemId, skuId,
+    productName: `${NS}_四人分配`, unitPrice: 80, salesCategory: '自销自耗',
+  })
+  await pgQuery(
+    'UPDATE sale_orders SET total_amount = 180, payable_amount = 180, received = 180 WHERE sale_order_id = $1',
+    [saleOrderId],
+  )
+  await pgQuery('UPDATE sale_items SET received = 100 WHERE sale_item_id = $1', [saleItemId])
   const [{ id: salePaymentId }] = await pgQuery(
     `INSERT INTO sale_order_payments
       (sale_order_id, change_type, amount, payment_method, status, source_end,
        operator_employee_id, paid_at, allocation_status, created_at)
-     VALUES ($1, '首次支付'::payment_change_type, 1000, '线下'::payment_method,
+     VALUES ($1, '首次支付'::payment_change_type, 180, '线下'::payment_method,
        '已支付'::payment_flow_status, 'staff'::payment_source_end,
        $2, NOW(), '待分配'::allocation_status, NOW()) RETURNING id`,
     [saleOrderId, TEST_MANAGER_EMP_ID],
@@ -51,30 +60,53 @@ try {
   await pgQuery(
     `INSERT INTO sale_payment_item_receipts
       (sale_payment_id, sale_order_id, sale_item_id, amount, sales_category, created_at)
-     VALUES ($1, $2, $3, 1000, '自销自耗'::sales_category, NOW())`,
-    [salePaymentId, saleOrderId, saleItemId],
+     VALUES ($1, $2, $3, 100, '自销自耗'::sales_category, NOW()),
+            ($1, $2, $4, 80, '自销自耗'::sales_category, NOW())`,
+    [salePaymentId, saleOrderId, saleItemId, secondSaleItemId],
   )
 
-  const allocations = employeeIds.map((employeeId) => ({
-    saleItemId, employeeId, roleType: '养生师', allocationRatio: 0.25,
-  }))
+  const allocations = [saleItemId, secondSaleItemId].flatMap((itemId) =>
+    employeeIds.slice(0, 4).map((employeeId) => ({
+      saleItemId: itemId, employeeId, roleType: '养生师', allocationRatio: 0.25,
+    })),
+  )
   const payload = { _testOpenid: TEST_MANAGER_OPENID, salePaymentId, allocations }
   const saved = await invokeStaffApi('allocation.savePayment', payload)
   assert.equal(saved.code, 0, `4 人合法分配应保存：${saved.message}`)
-  assert.equal(saved.data?.allocationCount, 4)
+  assert.equal(saved.data?.allocationCount, 8)
 
   const reloaded = await invokeStaffApi('allocation.suggestPayment', {
     _testOpenid: TEST_MANAGER_OPENID, salePaymentId,
   })
   assert.equal(reloaded.code, 0, `重新加载应成功：${reloaded.message}`)
   const existing = reloaded.data?.existingAllocations || []
-  assert.deepEqual(existing.map((row) => row.employee_id).sort(), [...employeeIds].sort())
-  assert.deepEqual(existing.map((row) => Number(row.allocation_ratio)), [0.25, 0.25, 0.25, 0.25])
-  assert.deepEqual(existing.map((row) => Number(row.total_amount)), [250, 250, 250, 250])
+  assert.equal(existing.length, 8)
+  for (const [itemId, amount] of [[saleItemId, 25], [secondSaleItemId, 20]]) {
+    const itemRows = existing.filter((row) => row.sale_item_id === itemId)
+    assert.deepEqual(itemRows.map((row) => row.employee_id).sort(), employeeIds.slice(0, 4).sort())
+    assert.deepEqual(itemRows.map((row) => Number(row.allocation_ratio)), [0.25, 0.25, 0.25, 0.25])
+    assert.deepEqual(itemRows.map((row) => Number(row.total_amount)), [amount, amount, amount, amount])
+  }
+
+  const expanded = [saleItemId, secondSaleItemId].flatMap((itemId) =>
+    employeeIds.map((employeeId) => ({
+      saleItemId: itemId, employeeId, roleType: '养生师', allocationRatio: 0.2,
+    })),
+  )
+  const expandedSave = await invokeStaffApi('allocation.savePayment', {
+    _testOpenid: TEST_MANAGER_OPENID, salePaymentId, allocations: expanded,
+  })
+  assert.equal(expandedSave.code, 0, `5 人合法分配应保存：${expandedSave.message}`)
+  assert.equal(expandedSave.data?.allocationCount, 10)
+  const expandedReload = await invokeStaffApi('allocation.suggestPayment', {
+    _testOpenid: TEST_MANAGER_OPENID, salePaymentId,
+  })
+  assert.equal(expandedReload.code, 0)
+  assert.equal(expandedReload.data?.existingAllocations?.length, 10)
 
   const invalidCases = [
-    ['比例超额', allocations.map((row) => ({ ...row, allocationRatio: 0.3 }))],
-    ['重复员工', [{ ...allocations[0] }, { ...allocations[0] }, allocations[1], allocations[2]]],
+    ['比例超额', allocations.map((row) => row.saleItemId === saleItemId ? { ...row, allocationRatio: 0.3 } : row)],
+    ['重复员工', [{ ...allocations[0] }, { ...allocations[0] }, ...allocations.slice(2)]],
     ['无效比例', [{ ...allocations[0], allocationRatio: 0 }]],
   ]
   for (const [name, badAllocations] of invalidCases) {
@@ -90,9 +122,9 @@ try {
       WHERE spir.sale_payment_id = $1 AND spia.is_void = false`,
     [salePaymentId],
   )
-  assert.equal(rows.length, 4, '拒绝的请求不得覆盖已保存分配')
+  assert.equal(rows.length, 10, '拒绝的请求不得覆盖已保存分配')
   passed = true
-  console.log('PASS — 4 人同池保存、回显及超额/重复/无效比例拦截')
+  console.log('PASS — 同 SKU 双实例各 4/5 人保存、回显及超额/重复/无效比例拦截')
 } catch (error) {
   console.error('[smoke-allocation-unlimited] FAIL:', error)
 } finally {
