@@ -60,6 +60,14 @@ describe.runIf(enabled)('#357 私有 PG 链路与 SQL 断言', () => {
     expect(reports.data.find((row) => row.id === 'V357-M')?.processProgress).toBe('部分入库')
   })
 
+  it('已取消的报货草稿不显示未提交，也不进入未提交筛选', async () => {
+    getSessionMock.mockResolvedValue(session('admin'))
+    const reports = await listInventoryCoreDocs({ docType: '市场报货' })
+    expect(reports.data.find((row) => row.id === 'V357-DX')?.processProgress).toBeNull()
+    const drafts = await listInventoryCoreDocs({ processProgress: '未提交' })
+    expect(drafts.data.map((row) => row.id)).toEqual(['V357-D'])
+  })
+
   it('详情下单数与 fulfilled_quantity 同源，日期过滤的 total 与行一致', async () => {
     getSessionMock.mockResolvedValue(session('admin'))
     const detail = await getInventoryCoreDocById('V357-A')

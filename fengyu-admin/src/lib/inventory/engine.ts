@@ -2419,6 +2419,7 @@ const progressReceivedQuantitySql = sql`(
 
 const inventoryDocProcessProgressSql = sql<import('./types').InventoryDocProcessProgress | null>`(
   CASE
+    WHEN ${inventoryDocs.status} = '已取消' THEN NULL
     WHEN ${inventoryDocs.docType} IN ('市场报货汇总', '品项公司报货需求') THEN
       CASE WHEN ${progressOrderedQuantitySql} >= ${inventoryDocs.totalQuantity} AND ${progressOrderedQuantitySql} > 0 THEN '已采购'
            WHEN ${progressOrderedQuantitySql} > 0 THEN '部分采购' ELSE '未采购' END
