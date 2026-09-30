@@ -188,6 +188,21 @@ async function main() {
     if (Number(txns[0].amount) !== 2300) errors.push(`card_transactions.amount 应=2300，实际=${txns[0].amount}`)
   }
 
+  // 关闭未支付转换单时，原店疗程剩余次数应按来源引用恢复。
+  await pgQuery(`UPDATE sale_orders SET status = '待支付' WHERE sale_order_id = $1`, [saleOrderId])
+  const closed = await invokeStaffApi('order.close', {
+    _testOpenid: TEST_MANAGER_OPENID, saleOrderId,
+  })
+  if (closed.code !== 0) errors.push(`跨店疗程转换单关单失败：${closed.message}`)
+  const restored = await pgQuery(
+    `SELECT remaining_sessions, store_id FROM sale_items WHERE sale_item_id = $1`,
+    [sourceItemId],
+  )
+  if (Number(restored[0]?.remaining_sessions) !== 5
+    || restored[0]?.store_id !== TEST_STORES_MULTI.A2.storeId) {
+    errors.push(`关单后原店疗程应恢复 5 次且门店不变，实际=${restored[0]?.remaining_sessions}`)
+  }
+
   if (errors.length) {
     rec(`  ✗ FAIL: ${errors.length} 项断言失败`)
     for (const e of errors) rec(`    - ${e}`)
@@ -196,7 +211,7 @@ async function main() {
 
   pass = true
   exitCode = 0
-  rec(`  ✅ PASS — 跨店转换完整链路正确（折抵 ¥2500, 转入 ¥200, 储值卡入账 ¥2300）`)
+  rec(`  ✅ PASS — 跨店转换与关单回滚正确（折抵 ¥2500, 转入 ¥200, 储值卡入账 ¥2300）`)
 }
 
 try {
