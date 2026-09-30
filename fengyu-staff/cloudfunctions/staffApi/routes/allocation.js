@@ -15,6 +15,7 @@ const pg = require('../db/pg')
 const { requireManager } = require('../middleware/auth')
 const { logOperation } = require('../utils/operation-log')
 const { normalizeListFilters, addDateRange } = require('../utils/list-filters')
+const { SALE_PAYMENT_CONDITIONS } = require('../utils/allocation-list-conditions')
 const { assertPaymentAttributionReady } = require('../utils/attribution-guard')
 const { assertNoPendingRefund, assertNoSettledRefundForPayment } = require('../utils/refund')
 const { resolveMarketNameByStore } = require('../utils/market')
@@ -196,12 +197,7 @@ async function pendingPayments(ctx) {
   }
   const { page, pageSize, offset, keyword, keywordPattern, phoneKeyword, startDate, endDate } = normalizeListFilters(payload)
   const params = [ctx.auth.effectiveStoreId]
-  const conditions = [
-    'o.store_id = $1',
-    'p.allocation_status IS NOT NULL',
-    "o.sale_order_type IN ('销售单', '转换单')",
-    "o.legacy_source IS DISTINCT FROM 'workfine'",
-  ]
+  const conditions = [...SALE_PAYMENT_CONDITIONS]
 
   if (allocationStatus !== '全部') {
     params.push(allocationStatus)
@@ -245,27 +241,6 @@ async function pendingPayments(ctx) {
       JOIN sale_orders o ON o.sale_order_id = p.sale_order_id
       LEFT JOIN client_wechat_users c ON c.user_id = o.client_user_id
      WHERE ${conditions.join('\n       AND ')}
-        AND (
-          p.allocation_status <> '待分配'
-          OR EXISTS (
-            SELECT 1
-              FROM sale_payment_item_receipts spir
-             WHERE spir.sale_payment_id = p.id
-               AND spir.amount::numeric <> 0
-               AND NOT EXISTS (
-                 SELECT 1
-                   FROM sale_payment_item_allocations spia
-                  WHERE spia.sale_payment_item_receipt_id = spir.id
-                    AND spia.is_void = false
-               )
-          )
-          OR (
-            NOT EXISTS (
-              SELECT 1 FROM sale_payment_item_receipts spir WHERE spir.sale_payment_id = p.id
-            )
-            AND GREATEST(COALESCE(o.received::numeric, 0) - COALESCE(o.refunded_amount::numeric, 0), 0) > 0
-          )
-        )
       ORDER BY p.paid_at DESC NULLS LAST, p.id DESC
       LIMIT $${limitParam} OFFSET $${offsetParam}`,
     params
