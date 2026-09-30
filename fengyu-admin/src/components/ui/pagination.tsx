@@ -12,10 +12,11 @@ export interface PaginationProps {
   /** 提供后渲染"N条/页"下拉选择器 */
   pageSizeOptions?: number[]
   onPageSizeChange?: (size: number) => void
+  showControlsWhenSinglePage?: boolean
   className?: string
 }
 
-function Pagination({ total: rawTotal, page: rawPage, pageSize: rawPageSize, onPageChange, pageSizeOptions, onPageSizeChange, className }: PaginationProps) {
+function Pagination({ total: rawTotal, page: rawPage, pageSize: rawPageSize, onPageChange, pageSizeOptions, onPageSizeChange, showControlsWhenSinglePage = false, className }: PaginationProps) {
   // 输入防护：防止 NaN/Infinity/负值导致渲染异常
   const total = Math.max(0, Math.floor(rawTotal) || 0)
   const pageSize = Math.max(1, Math.floor(rawPageSize) || 20)
@@ -41,7 +42,7 @@ function Pagination({ total: rawTotal, page: rawPage, pageSize: rawPageSize, onP
     correctedPageRef.current = null
   }, [onPageChange, rawPage, totalPages])
 
-  if (totalPages <= 1 && total <= pageSize) {
+  if (!showControlsWhenSinglePage && totalPages <= 1 && total <= pageSize) {
     return (
       <div className={cn("flex items-center justify-between px-2 py-3", className)}>
         <span className="text-sm text-[var(--muted-foreground)]">
@@ -102,6 +103,7 @@ function Pagination({ total: rawTotal, page: rawPage, pageSize: rawPageSize, onP
         </Button>
         {pageSizeOptions && onPageSizeChange && (
           <select
+            aria-label="每页条数"
             value={pageSize}
             onChange={(e) => onPageSizeChange(Number(e.target.value))}
             className="ml-2 h-8 rounded-[var(--radius)] border border-[var(--border)] bg-transparent px-2 text-sm"

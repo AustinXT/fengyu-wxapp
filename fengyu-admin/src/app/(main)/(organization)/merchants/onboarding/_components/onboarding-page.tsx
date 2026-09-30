@@ -1,9 +1,10 @@
 "use client"
 
-import { useEffect, useMemo, useState, useTransition } from "react"
+import { useEffect, useMemo, useRef, useState, useTransition } from "react"
 import Link from "next/link"
 import { PreserveListContextLink, ReturnContextLink } from "@/components/return-context"
 import { useRouter } from "next/navigation"
+import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import { toast } from "sonner"
 import {
   ArrowLeft,
@@ -39,6 +40,7 @@ import {
   type OnboardingBankOption,
   type OnboardingDetail,
   type OnboardingListItem,
+  type OnboardingListResult,
   type OnboardingStatus,
   type OnboardingStoreOption,
 } from "@/actions/lakala-onboarding"
@@ -54,6 +56,12 @@ import {
 } from "@/lib/lakala-merchant-area"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Select, SelectOption } from "@/components/ui/select"
+import { Pagination } from "@/components/ui/pagination"
+import MarketStoreFilter from "@/components/market-store-filter"
+import type { MarketStoreFilterOptions } from "@/lib/market-store-filter-types"
+import { normalizePage } from "@/lib/paging"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { DatePicker } from "@/components/ui/date-picker"
 import {
@@ -76,6 +84,23 @@ const statusText: Record<OnboardingStatus, string> = {
   SUCCESS: "成功",
   FAILED: "失败",
   CANCELLED: "已取消",
+}
+
+const listStatusOptions = [
+  { value: "missing", label: "待补资料" },
+  { value: "ready", label: "待提交" },
+  { value: "reviewing", label: "拉卡拉审核中" },
+  { value: "completed", label: "办理完成" },
+] as const
+
+const listTodoByStatus: Partial<Record<OnboardingStatus, string>> = {
+  DRAFT: "请确认资料并提交",
+  FILES_UPLOADING: "请确认资料和附件已保存",
+  FILES_READY: "资料已保存，可确认提交",
+  SUBMITTING: "正在提交拉卡拉",
+  SUBMITTED: "等待拉卡拉审核",
+  FAILED: "请修正资料后重新提交",
+  CANCELLED: "申请已取消",
 }
 
 function StatusBadge({ status, label }: { status: OnboardingStatus; label?: string }) {
@@ -647,22 +672,37 @@ function IdCardExpiryField({
 
 export function OnboardingList({
   applications,
+  total,
+  counts,
+  filterOptions,
   embedded = false,
   canCreate = true,
 }: {
   applications: OnboardingListItem[]
+  total: number
+  counts: OnboardingListResult["counts"]
+  filterOptions: MarketStoreFilterOptions
   embedded?: boolean
   canCreate?: boolean
 }) {
   const router = useRouter()
+  const { get, setMany } = useUrlFilters()
+  const [searchInput, setSearchInput] = useState(get("oq"))
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<OnboardingListItem | null>(null)
   const [deleting, setDeleting] = useState(false)
-  const counts = useMemo(() => ({
-    missing: applications.filter((item) => item.status === "DRAFT" || item.status === "FAILED").length,
-    ready: applications.filter((item) => item.status === "FILES_READY").length,
-    reviewing: applications.filter((item) => item.status === "SUBMITTED" || item.status === "REGISTERING" || applicationBusinessStatus(item).label !== "办理完成" && item.status === "SUCCESS").length,
-    completed: applications.filter((item) => applicationBusinessStatus(item).label === "办理完成").length,
-  }), [applications])
+  const page = normalizePage(get("opage", "1"))
+  const pageSize = [10, 20, 50].includes(Number(get("osize"))) ? Number(get("osize")) : 20
+
+  useEffect(() => () => {
+    if (searchTimer.current) clearTimeout(searchTimer.current)
+  }, [])
+
+  const handleSearchChange = (value: string) => {
+    setSearchInput(value)
+    if (searchTimer.current) clearTimeout(searchTimer.current)
+    searchTimer.current = setTimeout(() => setMany({ oq: value, opage: "" }), 300)
+  }
 
   const handleDelete = async () => {
     if (!deleteTarget) return
@@ -706,6 +746,28 @@ export function OnboardingList({
       <Card>
         <CardHeader className="flex-row items-center justify-between space-y-0"><div><CardTitle className="text-base">门店入网申请列表</CardTitle><p className="mt-1 text-xs font-normal text-[#999999]">列表负责查找待办；点进一条申请后，所有资料、协议、提交和记录都在同一详情页完成。</p></div><Button variant="outline" size="sm" onClick={() => location.reload()}><RefreshCw />刷新状态</Button></CardHeader>
         <CardContent>
+          <div className="mb-4 flex flex-wrap items-center gap-3">
+            <Input
+              placeholder="主体名称 / 申请编号 / 商户号"
+              aria-label="搜索入网申请"
+              value={searchInput}
+              onChange={(event) => handleSearchChange(event.target.value)}
+              className="w-56"
+            />
+            <MarketStoreFilter
+              options={filterOptions}
+              marketValue={get("omarket")}
+              storeValue={get("ostore")}
+              onMarketChange={(value) => setMany({ omarket: value, ostore: "", opage: "" })}
+              onStoreChange={(value) => setMany({ ostore: value, opage: "" })}
+              marketClassName="w-40"
+              storeClassName="w-48"
+            />
+            <Select value={get("ostatus")} onChange={(event) => setMany({ ostatus: event.target.value, opage: "" })} className="w-40" aria-label="入网申请状态">
+              <SelectOption value="">全部状态</SelectOption>
+              {listStatusOptions.map(({ value, label }) => <SelectOption key={value} value={value}>{label}</SelectOption>)}
+            </Select>
+          </div>
           <div className="overflow-x-auto">
             <table className="w-full min-w-[940px] text-sm">
               <thead className="border-b border-[var(--border)] text-xs text-[#999999]">
@@ -726,14 +788,16 @@ export function OnboardingList({
                   <tr><td colSpan={9} className="px-3 py-10 text-center text-[#999999]">暂无入网申请</td></tr>
                 ) : applications.map((application) => {
                   const businessStatus = applicationBusinessStatus(application)
+                  const groupLabel = listStatusOptions.find((option) => option.value === application.statusGroup)?.label
+                  const todo = businessStatus.todo ?? listTodoByStatus[application.status] ?? application.missing ?? "资料齐全，可确认提交"
                   return (
                     <tr key={application.id} className="border-b border-[var(--border)] last:border-0 hover:bg-[var(--muted)]">
                       <td className="px-3 py-3 font-mono text-xs text-[#666666]">{application.orderNo}</td>
                       <td className="px-3 py-3 font-medium">{application.storeName}</td>
                       <td className="px-3 py-3 text-[#666666]">{application.marketName ?? "—"}</td>
                       <td className="px-3 py-3 text-[#666666]">{application.subjectName}</td>
-                      <td className="px-3 py-3"><StatusBadge status={application.status} label={businessStatus.label} /></td>
-                      <td className="px-3 py-3 text-[#666666]">{businessStatus.todo ?? application.missing ?? "资料齐全，可确认提交"}</td>
+                      <td className="px-3 py-3"><StatusBadge status={application.status} label={groupLabel ?? businessStatus.label} /></td>
+                      <td className="px-3 py-3 text-[#666666]">{todo}</td>
                       <td className="px-3 py-3">{application.owner ?? "—"}</td>
                       <td className="px-3 py-3 text-[#666666]">{formatDateTime(application.updatedAt)}</td>
                       <td className="px-3 py-3">
@@ -755,6 +819,15 @@ export function OnboardingList({
               </tbody>
             </table>
           </div>
+          <Pagination
+            total={total}
+            page={page}
+            pageSize={pageSize}
+            pageSizeOptions={[10, 20, 50]}
+            showControlsWhenSinglePage
+            onPageChange={(nextPage) => setMany({ opage: String(nextPage) })}
+            onPageSizeChange={(size) => setMany({ osize: String(size), opage: "1" })}
+          />
         </CardContent>
       </Card>
 
@@ -958,6 +1031,9 @@ export function OnboardingEditor({
           ...(data.larIdcardExpDt ? { larIdcardExpDt: data.larIdcardExpDt } : {}),
           ...(data.larIdcardLongTerm ? { larIdcardLongTerm: data.larIdcardLongTerm } : {}),
         },
+        ...(displayName === "法人身份证正面" && data.larName ? {
+          contactData: { ...current.contactData, merContactName: data.larName },
+        } : {}),
       }
     })
     setOcrStatus((current) => ({ ...current, [displayName]: "OCR 已识别并填入下方字段，可手动修改" }))

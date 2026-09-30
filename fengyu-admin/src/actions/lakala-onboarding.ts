@@ -4,7 +4,7 @@ import { randomBytes, randomUUID } from "crypto";
 import { mkdir, readFile, rm, writeFile } from "fs/promises";
 import path from "path";
 import { revalidatePath } from "next/cache";
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, inArray, or, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { withPermission } from "@/lib/with-permission";
 import { logOperation } from "@/lib/operation-log";
@@ -61,6 +61,7 @@ import {
 } from "@/lib/lakala-onboarding";
 import { areaCodeFromAddress, getAreaPathByCode } from "@/lib/china-area";
 import { bufferToUploadFileLike, type UploadFileLike } from "@/lib/upload-file";
+import { resolvePaging } from "@/lib/paging";
 
 type JsonRecord = Record<string, string>;
 
@@ -74,6 +75,8 @@ export type OnboardingStatus =
   | "SUCCESS"
   | "FAILED"
   | "CANCELLED";
+
+export type OnboardingStatusGroup = "missing" | "ready" | "reviewing" | "completed";
 
 export type OnboardingApplicationInput = {
   merchantData: JsonRecord;
@@ -92,6 +95,7 @@ export type OnboardingListItem = {
   marketName: string | null;
   subjectName: string;
   status: OnboardingStatus;
+  statusGroup: OnboardingStatusGroup | null;
   missing: string | null;
   owner: string | null;
   updatedAt: string;
@@ -101,6 +105,21 @@ export type OnboardingListItem = {
   lakalaMerchantEnabled: boolean | null;
   channelData: Record<string, unknown>;
   subMerchantCheckedAt: string | null;
+};
+
+export type OnboardingListFilters = {
+  search?: string;
+  marketId?: string;
+  storeId?: string;
+  status?: OnboardingStatusGroup;
+  page?: number;
+  pageSize?: number;
+};
+
+export type OnboardingListResult = {
+  data: OnboardingListItem[];
+  total: number;
+  counts: { missing: number; ready: number; reviewing: number; completed: number };
 };
 
 export type OnboardingStoreOption = {
@@ -136,7 +155,7 @@ export type OnboardingAttachment = {
   lastErrorMessage: string | null;
 };
 
-export type OnboardingDetail = OnboardingListItem & {
+export type OnboardingDetail = Omit<OnboardingListItem, "statusGroup"> & {
   merchantData: JsonRecord;
   legalPersonData: JsonRecord;
   contactData: JsonRecord;
@@ -717,10 +736,70 @@ export const getOnboardingStoreOptions = withPermission(
 
 export const listOnboardingApplications = withPermission(
   "merchant:list",
-  async (session): Promise<OnboardingListItem[]> => {
+  async (session, filters: OnboardingListFilters = {}): Promise<OnboardingListResult> => {
     await ensureOnboardingSchema();
     const visibleIds = session.permissions.scopeStoreIds;
-    const rows = await db
+    const { pageSize, offset } = resolvePaging({
+      page: filters.page,
+      pageSize: filters.pageSize,
+      defaultPageSize: 20,
+      allowedPageSizes: [10, 20, 50],
+    });
+    const scope = visibleIds.length ? inArray(stores.storeId, visibleIds) : sql`FALSE`;
+    const summaryRows = await db.select({
+      id: lakalaOnboardingApplications.id,
+      status: lakalaOnboardingApplications.status,
+      merCupNo: lakalaOnboardingApplications.merCupNo,
+      terminalData: lakalaOnboardingApplications.terminalData,
+      channelData: lakalaOnboardingApplications.channelData,
+      lakalaMerchantId: lakalaOnboardingApplications.lakalaMerchantId,
+      lakalaMerchantEnabled: sql<boolean | null>`(SELECT lm.enabled FROM lakala_merchants lm WHERE lm.id = ${lakalaOnboardingApplications.lakalaMerchantId} LIMIT 1)`,
+    }).from(lakalaOnboardingApplications)
+      .innerJoin(stores, eq(stores.storeId, lakalaOnboardingApplications.storeId))
+      .where(scope);
+    const counts = { missing: 0, ready: 0, reviewing: 0, completed: 0 };
+    const idsByStatus: Record<OnboardingStatusGroup, string[]> = { missing: [], ready: [], reviewing: [], completed: [] };
+    const statusGroupById = new Map<string, OnboardingStatusGroup>();
+    for (const row of summaryRows) {
+      const channel = (row.channelData ?? {}) as Record<string, unknown>;
+      const hasSubMerchant = (key: "wechat" | "alipay") => Array.isArray(channel[key]) && (channel[key] as unknown[]).some((item) => {
+        const no = item && typeof item === "object" ? (item as Record<string, unknown>).subMerchantNo : null;
+        return typeof no === "string" && no.length > 0;
+      });
+      const completed = row.status === "SUCCESS" && Boolean(row.merCupNo)
+        && Boolean(getStoredTerminalNo(row.terminalData)) && hasSubMerchant("wechat") && hasSubMerchant("alipay")
+        && Boolean(row.lakalaMerchantId && row.lakalaMerchantEnabled);
+      const group: OnboardingStatusGroup | null = completed ? "completed"
+        : row.status === "DRAFT" || row.status === "FILES_UPLOADING" || row.status === "FAILED" ? "missing"
+        : row.status === "FILES_READY" ? "ready"
+        : row.status === "SUBMITTING" || row.status === "SUBMITTED" || row.status === "REGISTERING" || row.status === "SUCCESS" ? "reviewing"
+        : null;
+      if (group) {
+        counts[group]++;
+        idsByStatus[group].push(row.id);
+        statusGroupById.set(row.id, group);
+      }
+    }
+    const conditions = [scope];
+    if (filters.search?.trim()) {
+      const escaped = filters.search.trim().replace(/[%_]/g, "\\$&");
+      const pattern = `%${escaped}%`;
+      conditions.push(or(
+        ilike(lakalaOnboardingApplications.orderNo, pattern),
+        ilike(stores.storeName, pattern),
+        ilike(lakalaOnboardingApplications.merCupNo, pattern),
+        ilike(sql<string>`concat_ws(' ', ${lakalaOnboardingApplications.merchantData}->>'subjectName', ${lakalaOnboardingApplications.merchantData}->>'merBlisName', ${lakalaOnboardingApplications.merchantData}->>'merRegName')`, pattern),
+      )!);
+    }
+    if (filters.marketId) conditions.push(sql`${stores.orgNodeId} IN (SELECT id FROM org_nodes WHERE parent_id = ${filters.marketId})`);
+    if (filters.storeId) conditions.push(eq(stores.storeId, filters.storeId));
+    if (filters.status && Object.hasOwn(idsByStatus, filters.status)) {
+      const ids = idsByStatus[filters.status];
+      conditions.push(ids.length ? inArray(lakalaOnboardingApplications.id, ids) : sql`FALSE`);
+    }
+    const whereClause = and(...conditions);
+    const [rows, [{ count }]] = await Promise.all([
+      db
       .select({
         id: lakalaOnboardingApplications.id,
         orderNo: lakalaOnboardingApplications.orderNo,
@@ -750,9 +829,16 @@ export const listOnboardingApplications = withPermission(
       })
       .from(lakalaOnboardingApplications)
       .innerJoin(stores, eq(stores.storeId, lakalaOnboardingApplications.storeId))
-      .where(visibleIds.length ? inArray(stores.storeId, visibleIds) : sql`FALSE`)
-      .orderBy(desc(lakalaOnboardingApplications.updatedAt));
-    return rows.map((row) => {
+      .where(whereClause)
+      .orderBy(desc(lakalaOnboardingApplications.updatedAt), desc(lakalaOnboardingApplications.createdAt), desc(lakalaOnboardingApplications.id))
+      .limit(pageSize)
+      .offset(offset),
+      db.select({ count: sql<number>`count(*)::int` })
+        .from(lakalaOnboardingApplications)
+        .innerJoin(stores, eq(stores.storeId, lakalaOnboardingApplications.storeId))
+        .where(whereClause),
+    ]);
+    return { total: count, counts, data: rows.map((row) => {
       const merchantData = (row.merchantData ?? {}) as JsonRecord;
       return {
         id: row.id,
@@ -762,6 +848,7 @@ export const listOnboardingApplications = withPermission(
         marketName: row.marketName,
         subjectName: merchantData.subjectName || merchantData.merBlisName || merchantData.merRegName || "未填写",
         status: row.status as OnboardingStatus,
+        statusGroup: statusGroupById.get(row.id) ?? null,
         missing: row.status === "DRAFT" || row.status === "FILES_READY" ? "待确认资料" : null,
         owner: row.owner,
         updatedAt: row.updatedAt.toISOString(),
@@ -772,7 +859,7 @@ export const listOnboardingApplications = withPermission(
         channelData: (row.channelData as Record<string, unknown>) ?? {},
         subMerchantCheckedAt: row.subMerchantCheckedAt?.toISOString() ?? null,
       };
-    });
+    }) };
   },
 );
 
