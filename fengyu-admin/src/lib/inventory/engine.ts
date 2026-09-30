@@ -2628,6 +2628,7 @@ export const listInventoryCoreDocs = withPermission(
       // 「未采购」用于找仍有未下单量的汇总/需求单，部分采购也应命中。
       conditions.push(filters.processProgress === '未采购'
         ? sql`${inventoryDocs.docType} IN ('市场报货汇总', '品项公司报货需求')
+          AND ${inventoryDocs.status} <> '已取消'
           AND EXISTS (SELECT 1 FROM inventory_doc_items progress_pending_item
                        WHERE progress_pending_item.doc_id = ${inventoryDocs.id}
                          AND COALESCE(progress_pending_item.fulfilled_quantity, 0) < progress_pending_item.quantity)`

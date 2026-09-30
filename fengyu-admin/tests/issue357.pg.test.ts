@@ -46,7 +46,10 @@ describe.runIf(enabled)('#357 私有 PG 链路与 SQL 断言', () => {
     const listed = await listInventoryCoreDocs({ docType: '市场报货汇总' })
     expect(Object.fromEntries(listed.data.map((row) => [row.id, row.processProgress]))).toMatchObject({
       'V357-A0': '未采购', 'V357-A': '部分采购', 'V357-A10': '已采购',
+      'V357-AX': null,
     })
+    const cancelledRequest = await listInventoryCoreDocs({ docType: '品项公司报货需求' })
+    expect(cancelledRequest.data.find((row) => row.id === 'V357-RX')?.processProgress).toBeNull()
     const pending = await listInventoryCoreDocs({ processProgress: '未采购' })
     expect(pending.data.map((row) => row.id).sort()).toEqual(['V357-A', 'V357-A0'])
     expect(pending.total).toBe(2)
