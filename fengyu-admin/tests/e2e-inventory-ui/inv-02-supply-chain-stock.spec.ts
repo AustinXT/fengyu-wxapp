@@ -8,8 +8,7 @@
  *   C. 供应链备货：品项公司报货需求 → 采购订单（供应链行）→ 供应链采购入库
  *      —— 总部批次由此产生，是 INV-03 三级主链的前提
  *
- * ⚠️ 建单失败时 inventory-docs-page.tsx:402 走的是原生 alert()，不是 toast。
- * 必须挂 page.on('dialog') 接管，否则弹窗会阻塞整个页面。这本身是 UX 发现之一。
+ * 同时监听原生弹窗和页面 toast，记录门禁负例的用户可见反馈。
  */
 
 import { test, expect } from '@playwright/test'
@@ -40,6 +39,8 @@ const OVERFLOW_REMARK = `${NS}-盘溢-${STAMP}`
 
 test('INV-02：门禁 fail-closed → 开闸 → 供应链备货', async ({ browser }) => {
   const verdicts: Verdict[] = []
+  // 即使前置失败，也不能让 INV-10 消费上一次运行的门禁结论。
+  writeCtx('inv02_gate', { at: new Date().toISOString() })
   const inv01 = readCtx<{ supplySkuId: string; supplySkuName: string; supplierName: string }>('inv01')
   if (!inv01?.supplySkuId) {
     throw new Error('缺少 INV-01 上下文，请先跑 inv-01-master-data.spec.ts')
@@ -65,7 +66,7 @@ test('INV-02：门禁 fail-closed → 开闸 → 供应链备货', async ({ brow
     recordVerdict(verdicts, 'gate: 已置为关闭态', readCutoverStatus() === '待初始化', readCutoverStatus())
 
     const docsBefore = Number(psql(`SELECT count(*) FROM inventory_docs`))
-    await createOverflowDoc(page, inv01.supplySkuName, GATE_PROBE_REMARK)
+    const gateToast = await createOverflowDoc(page, inv01.supplySkuName, GATE_PROBE_REMARK)
 
     const docsAfterBlocked = Number(psql(`SELECT count(*) FROM inventory_docs`))
     recordVerdict(
@@ -74,17 +75,20 @@ test('INV-02：门禁 fail-closed → 开闸 → 供应链备货', async ({ brow
       docsAfterBlocked === docsBefore,
       `before=${docsBefore} after=${docsAfterBlocked}`,
     )
-    // 功能上门禁已生效（单据没落库）。这里单独考察「用户能不能看懂为什么被拒」。
-    // 实测：通用建单弹窗 catch 里是 alert((err as Error).message)，而 Server Action
-    // 抛出的 ApiError 在**生产构建**下被 Next.js 统一脱敏成 "An error occurred in the
-    // Server Components render..."，业务文案「库存期初尚未导入并核验完成」完全丢失。
-    // 用户只看到一句英文技术提示，不知道该做什么 —— 记为 UX 发现而非功能失败。
-    const gateAlert = nativeDialogs.find((d) => /期初|暂不可办理/.test(d.message))
+    // 报告只消费本轮实际可见反馈，不再转述历史上的原生 alert 结论。
+    const gateVisibleText = gateToast || nativeDialogs.map((d) => d.message).join(' / ')
+    const gateError = {
+      at: new Date().toISOString(),
+      page: '/inventory/docs → 新建库存单据（期初门禁）',
+      blocked: docsAfterBlocked === docsBefore,
+      visibleText: gateVisibleText,
+    }
+    writeCtx('inv02_gate', gateError)
     recordVerdict(
       verdicts,
-      'UX-ERRMSG-01: 拒绝原因应可读（期望含「期初」/「暂不可办理」，实测将失败）',
-      Boolean(gateAlert),
-      gateAlert?.message ?? `实际提示: ${nativeDialogs.map((d) => d.message).join(' || ')}`,
+      'UX-ERRMSG-01: 拒绝原因应可读',
+      /期初|暂不可办理/.test(gateVisibleText),
+      `实际提示: ${gateVisibleText || '(无)'}`,
     )
     // UX 规则 #4：建单失败用原生 alert 而非页面内提示
     recordVerdict(
@@ -344,7 +348,7 @@ async function createOverflowDoc(
   page: import('@playwright/test').Page,
   skuName: string,
   remark: string,
-) {
+): Promise<string> {
   await page.goto(`${BASE}/inventory/docs`)
   await page.waitForLoadState('networkidle')
   await page.getByRole('button', { name: /新建/ }).first().click()
@@ -362,7 +366,9 @@ async function createOverflowDoc(
   await dialog.getByPlaceholder('数量').fill('10')
 
   await dialog.getByRole('button', { name: '提交' }).click()
-  // 成功则弹窗关闭；失败走原生 alert（已由 page.on('dialog') 接管）
+  // 成功则弹窗关闭；失败反馈可能走 toast 或原生 dialog。
   await page.waitForTimeout(3000)
+  const toastText = (await page.locator('[data-sonner-toast]').first().innerText().catch(() => '')).trim()
   await page.keyboard.press('Escape').catch(() => null)
+  return toastText
 }
