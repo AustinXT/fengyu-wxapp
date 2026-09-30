@@ -343,6 +343,18 @@ describe('销售回款冻结权限 #480', () => {
     expect(logOperation).not.toHaveBeenCalled()
   })
 
+  it('店长在未冻结窗口内仍可清空并记录操作', async () => {
+    ;(db.execute as any)
+      .mockResolvedValueOnce([{ ...oldPay, paid_at: new Date(Date.now() - 2 * 86400000).toISOString() }])
+      .mockResolvedValueOnce([])
+    ;(db.transaction as any).mockImplementation(async (fn: any) => fn({
+      execute: vi.fn().mockResolvedValueOnce([1]).mockResolvedValueOnce([]).mockResolvedValueOnce({ count: 1 }),
+    }))
+    const result = await savePaymentAllocations(7, [])
+    expect(result.success).toBe(true)
+    expect(logOperation).toHaveBeenCalledOnce()
+  })
+
   it.each(['finance', 'admin'] as const)('%s 在冻结后仍可保存空分配并记录操作', async (role) => {
     ;(getSession as any).mockResolvedValue({
       ...mockSession,
@@ -382,6 +394,37 @@ describe('销售回款冻结权限 #480', () => {
       .mockImplementationOnce(makeSelectChain([{ storeId: 'store-1' }]))
     const result = await deleteAllocation(9)
     expect(result.message).toContain('已冻结')
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
+  it('财务不能直删系统生成的退款赤字分配', async () => {
+    ;(getSession as any).mockResolvedValue({ ...mockSession, roles: [{ ...mockSession.roles[0], role: 'finance', actions: ['allocation:save'], scopeStoreIds: ['store-1'] }] })
+    ;(db.execute as any).mockResolvedValueOnce([{
+      sale_item_id: 'item-1', is_void: false, sale_payment_id: 7,
+      paid_at: new Date().toISOString(), change_type: '退款', store_id: 'store-1',
+    }])
+    ;(db.select as any)
+      .mockImplementationOnce(makeSelectChain([{ saleOrderId: 'order-1' }]))
+      .mockImplementationOnce(makeSelectChain([{ storeId: 'store-1' }]))
+    const result = await deleteAllocation(9)
+    expect(result.message).toContain('退款赤字')
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
+  it('财务不能直删已结算退款关联回款的分配', async () => {
+    ;(getSession as any).mockResolvedValue({ ...mockSession, roles: [{ ...mockSession.roles[0], role: 'finance', actions: ['allocation:save'], scopeStoreIds: ['store-1'] }] })
+    ;(db.execute as any)
+      .mockResolvedValueOnce([{
+        sale_item_id: 'item-1', is_void: false, sale_payment_id: 7,
+        paid_at: new Date().toISOString(), change_type: '回款', store_id: 'store-1',
+      }])
+      .mockResolvedValueOnce([{ sale_order_id: 'order-1' }])
+    ;(db.select as any)
+      .mockImplementationOnce(makeSelectChain([{ saleOrderId: 'order-1' }]))
+      .mockImplementationOnce(makeSelectChain([{ storeId: 'store-1' }]))
+    ;(hasSettledRefundForPayment as any).mockResolvedValueOnce(true)
+    const result = await deleteAllocation(9)
+    expect(result.message).toContain('已退款')
     expect(db.update).not.toHaveBeenCalled()
   })
 

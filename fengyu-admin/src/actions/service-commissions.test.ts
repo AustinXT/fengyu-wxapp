@@ -126,6 +126,17 @@ describe('服务提成冻结权限 #480', () => {
     expect(logOperation).not.toHaveBeenCalled()
   })
 
+  it('店长在未冻结窗口内仍可清空并记录操作', async () => {
+    mockOrder({ ...oldOrder, completedAt: new Date(Date.now() - 2 * 86400000).toISOString() })
+    ;(db.transaction as any).mockImplementation(async (fn: any) => fn({
+      execute: vi.fn().mockResolvedValue({}),
+      update: vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({}) }) }),
+    }))
+    const result = await batchSaveServiceCommissions('so-1', [])
+    expect(result.success).toBe(true)
+    expect(logOperation).toHaveBeenCalledOnce()
+  })
+
   it.each(['finance', 'admin'] as const)('%s 在冻结后可清空并记录操作', async (role) => {
     ;(getSession as any).mockResolvedValue({
       ...mockSession,
