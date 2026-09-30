@@ -873,17 +873,7 @@ Page({
           });
         }).catch(() => {});
       } else {
-        const message = err?.message || '下单失败，请重试';
-        if (message.length > 20) {
-          wx.showModal({
-            title: '支付未完成',
-            content: message,
-            showCancel: false,
-            confirmText: '我知道了',
-          });
-        } else {
-          Toast.fail(message);
-        }
+        Toast.fail(err?.message || '下单失败，请重试');
       }
     } finally {
       this.setData({ submitting: false });

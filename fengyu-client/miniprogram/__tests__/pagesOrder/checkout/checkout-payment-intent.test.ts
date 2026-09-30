@@ -11,7 +11,6 @@
 import { vi } from 'vitest';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
-import Toast from '@vant/weapp/toast/toast';
 
 const callClientApiMock = vi.fn();
 vi.mock('../../../utils/cloud', () => ({
@@ -196,44 +195,6 @@ describe('#214 渠道单建好后页面立即冻结', () => {
     expect(actions).not.toContain('order.scanAdjust');
     expect(actions).not.toContain('order.create');
     expect(actions).toContain('order.pay');
-  });
-});
-
-describe('结算页支付错误提示', () => {
-  test('支付宝较长的渠道错误用可完整阅读的弹窗展示', async () => {
-    const message = 'LA_PREORDER_FA6270 当前商户未认证，请商户在支付宝搜索“认证助手”小程序开通交易';
-    callClientApiMock.mockRejectedValueOnce(new Error(message));
-    const inst = createPageInstance({
-      agreed: true,
-      existingOrderNo: 'FY-XSD-WX-2609220011',
-      hasActivePaymentIntent: true,
-      paidAmount: 70.8,
-      paymentMethod: '支付宝',
-    });
-
-    await inst.onSubmitOrder();
-
-    expect(wxMock.showModal).toHaveBeenCalledWith(expect.objectContaining({
-      title: '支付未完成', content: message, showCancel: false,
-    }));
-    expect(Toast.fail).not.toHaveBeenCalled();
-    expect(inst.data.submitting).toBe(false);
-  });
-
-  test('短错误仍使用原有轻提示', async () => {
-    callClientApiMock.mockRejectedValueOnce(new Error('支付失败'));
-    const inst = createPageInstance({
-      agreed: true,
-      existingOrderNo: 'FY-XSD-WX-2609220012',
-      hasActivePaymentIntent: true,
-      paidAmount: 70.8,
-      paymentMethod: '支付宝',
-    });
-
-    await inst.onSubmitOrder();
-
-    expect(Toast.fail).toHaveBeenCalledWith('支付失败');
-    expect(wxMock.showModal).not.toHaveBeenCalled();
   });
 });
 
