@@ -45,6 +45,7 @@ describe('service.create', () => {
       }])
       // 顾客无进行中的服务单
       .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ became_member_at: null, bound_store_id: 'store-001' }])
 
     // 单一 transaction：generateServiceOrderId（advisory lock + SELECT 最大 ID）+ INSERT 服务单 + 服务明细
     pg.transaction.mockImplementationOnce(async (cb) => {
@@ -111,6 +112,45 @@ describe('service.create', () => {
     }])
 
     await expect(serviceRoutes.create(ctx)).rejects.toThrow(/PERMISSION_DENIED.*不属于当前顾客/)
+    expect(pg.transaction).not.toHaveBeenCalled()
+  })
+
+  test('拒绝把两名顾客的疗程项目混入同一服务单', async () => {
+    const ctx = createManagerCtx({
+      clientUserId: 'client-001',
+      items: [
+        { saleItemId: 'card-1', sessionUsed: 1 },
+        { saleItemId: 'card-2', sessionUsed: 1 },
+      ],
+    })
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_item_id: 'card-1', session_count: 1, remaining_sessions: 1,
+        paid_sessions: 1, product_type: '疗程卡', order_status: '已支付',
+        store_id: 'source-store', client_user_id: 'client-001',
+      }])
+      .mockResolvedValueOnce([{
+        sale_item_id: 'card-2', session_count: 1, remaining_sessions: 1,
+        paid_sessions: 1, product_type: '疗程卡', order_status: '已支付',
+        store_id: 'store-001', client_user_id: 'client-002',
+      }])
+
+    await expect(serviceRoutes.create(ctx)).rejects.toThrow(/PERMISSION_DENIED.*不属于当前顾客/)
+    expect(pg.transaction).not.toHaveBeenCalled()
+  })
+
+  test('拒绝把未挂顾客的原店历史卡指定给任意现店顾客', async () => {
+    const ctx = createManagerCtx({
+      clientUserId: 'client-001',
+      items: [{ saleItemId: 'legacy-card', sessionUsed: 1 }],
+    })
+    pg.query.mockResolvedValueOnce([{
+      sale_item_id: 'legacy-card', session_count: 1, remaining_sessions: 1,
+      paid_sessions: 1, product_type: '疗程卡', order_status: '已支付',
+      store_id: 'source-store', client_user_id: null, client_phone: null,
+    }])
+
+    await expect(serviceRoutes.create(ctx)).rejects.toThrow(/PERMISSION_DENIED.*缺少可核对的顾客归属/)
     expect(pg.transaction).not.toHaveBeenCalled()
   })
 
@@ -190,8 +230,7 @@ describe('service.create', () => {
         product_type: '疗程卡', order_status: '已支付', store_id: 'store-001',
         client_user_id: 'cu-001', client_phone: '138',
       }])
-      // 2. resolvedClientUserId 从 order 获取（L130-136）
-      .mockResolvedValueOnce([{ client_user_id: 'cu-001' }])
+      // 2. 单行联表已给出 client_user_id，无需重复查询来源单
       // 3. 无进行中服务单
       .mockResolvedValueOnce([])
       // 4. became_member + bound_store_id（绑定门店校验：== effectiveStoreId）

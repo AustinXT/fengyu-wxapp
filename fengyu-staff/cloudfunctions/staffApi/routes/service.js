@@ -84,6 +84,7 @@ async function create(ctx) {
 
   // 每张卡必须属于所选顾客；来源门店可不同，权益仍只能由当前归属门店的顾客使用。
   const itemOwners = new Set()
+  const unownedItems = []
   // 验证订单行
   for (const item of normalizedItems) {
     if (!item.saleItemId) {
@@ -122,6 +123,7 @@ async function create(ctx) {
 
     const si = saleItemRows[0]
     if (si.client_user_id) itemOwners.add(si.client_user_id)
+    else unownedItems.push({ saleItemId: item.saleItemId, storeId: si.store_id, phone: si.client_phone })
 
     // 订单状态门槛（ticket 2026-05-19 D2=A）：允许 已支付 / 部分支付 两种状态消费
     if (!['已支付', '部分支付'].includes(si.order_status)) {
@@ -172,6 +174,11 @@ async function create(ctx) {
     }
   }
 
+  // 首行可能没有顾客 ID；只要其他来源行给出唯一 owner，就以其做绑定店校验。
+  if (!resolvedClientUserId && itemOwners.size === 1) {
+    resolvedClientUserId = itemOwners.values().next().value
+  }
+
   if (!resolvedClientUserId && normalizedItems.length > 0) {
     const orderRow = await pg.query(
       'SELECT o.client_user_id FROM sale_items si INNER JOIN sale_orders o ON si.sale_order_id = o.sale_order_id WHERE si.sale_item_id = $1',
@@ -179,11 +186,23 @@ async function create(ctx) {
     )
     if (orderRow.length > 0 && orderRow[0].client_user_id) {
       resolvedClientUserId = orderRow[0].client_user_id
+      itemOwners.add(resolvedClientUserId)
+      const firstUnownedIndex = unownedItems.findIndex((item) => item.saleItemId === normalizedItems[0].saleItemId)
+      if (firstUnownedIndex >= 0) unownedItems.splice(firstUnownedIndex, 1)
     }
   }
 
   if (itemOwners.size > 1 || (resolvedClientUserId && itemOwners.size > 0 && !itemOwners.has(resolvedClientUserId))) {
     throw new Error('PERMISSION_DENIED: 所选疗程项目不属于当前顾客')
+  }
+  // 没有 owner 的历史单只能走手机号精确解析或原店门店 scope 兜底。
+  // 明确选了顾客 user_id 时，不得把未知归属的外店卡挂到该顾客名下。
+  if (unownedItems.length > 0 && resolvedClientUserId) {
+    const phoneMatched = !clientUserId && clientPhone
+      && unownedItems.every((item) => item.phone && item.phone === clientPhone)
+    if (!phoneMatched) {
+      throw new Error('PERMISSION_DENIED: 所选疗程项目缺少可核对的顾客归属')
+    }
   }
 
   // 校验：同一顾客只能有一个进行中的服务单（含待客户确认，与 uq_so_client_active 索引谓词一致）
