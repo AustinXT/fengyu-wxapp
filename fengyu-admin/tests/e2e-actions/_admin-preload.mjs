@@ -53,6 +53,7 @@ plugin({
         requireAnyPermission: () => {},
         requireAdmin: () => {},
         isInScope: () => true,
+        isDepositOrderApprover: () => true,
         scopeCondition: () => undefined,
         hasPermission: () => true,
         PERMISSION_MATRIX: {},
