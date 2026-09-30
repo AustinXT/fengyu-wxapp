@@ -2316,7 +2316,7 @@ describe('#289 新客客单价 WorkFine 分支（两端逐字一致 + legacy 片
       'o.performance_attribution_date >= $2::date',
       "o.performance_attribution_date < ($2::date + INTERVAL '1 year')",
     ],
-    adminHelper: [STATUS, ORDER_TYPE, LEGACY, 'o.performance_attribution_date BETWEEN ${range.start} AND ${range.end}'],
+    adminHelper: [STATUS, ORDER_TYPE, LEGACY, 'o.performance_attribution_date BETWEEN ${range.start} AND ${range.end}', "o.performance_attribution_date <= DATE '2026-07-03'"],
     mgmtTraffic: [
       '${sc.sql}',
       'c.became_member_at IS NOT NULL',
@@ -2325,6 +2325,7 @@ describe('#289 新客客单价 WorkFine 分支（两端逐字一致 + legacy 片
       ORDER_TYPE,
       LEGACY,
       'o.performance_attribution_date BETWEEN ${startDateExpr(period)} AND ${endDateExpr(period)}',
+      "o.performance_attribution_date <= DATE '2026-07-03'",
     ],
   }
 
@@ -2395,6 +2396,32 @@ describe('#289 新客客单价 WorkFine 分支（两端逐字一致 + legacy 片
     const staffTraffic = splitQuery(sqlInFunction(staffSrc, STAFF_MGMT_TRAFFIC, 'queryNewMemberLegacySpend'), 'v')
     expect(staffTraffic.from).toBe('FROM sale_orders o JOIN client_wechat_users c ON c.user_id = o.client_user_id')
     expect(conjuncts(staffTraffic.where), 'staff mgmt-traffic.js').toEqual(EXPECTED_CONJUNCTS.mgmtTraffic)
+  })
+
+  it('#471 割点前、跨割点、纯割点后仅纳入旧源截止日以前的订单', () => {
+    const staffTraffic = splitQuery(sqlInFunction(staffSrc, STAFF_MGMT_TRAFFIC, 'queryNewMemberLegacySpend'), 'v')
+    const cutoffPattern = /o\.performance_attribution_date <= DATE '(\d{4}-\d{2}-\d{2})'/
+    const adminCutoff = cutoffPattern.exec(helperFilter)?.[1]
+    const staffCutoff = cutoffPattern.exec(staffTraffic.where)?.[1]
+    expect(adminCutoff).toBe('2026-07-03')
+    expect(staffCutoff).toBe(adminCutoff)
+
+    const orders = [
+      { date: '2026-07-02', amount: 100 },
+      { date: '2026-07-03', amount: 200 },
+      { date: '2026-07-04', amount: 300 },
+      { date: '2026-07-20', amount: 400 },
+    ]
+    const legacyAmount = (start: string, end: string, cutoff: string, rows = orders) =>
+      rows.filter((o) => o.date >= start && o.date <= end && o.date <= cutoff)
+        .reduce((sum, o) => sum + o.amount, 0)
+    for (const cutoff of [adminCutoff!, staffCutoff!]) {
+      expect(legacyAmount('2026-07-01', '2026-07-03', cutoff)).toBe(300)
+      expect(legacyAmount('2026-07-01', '2026-07-31', cutoff)).toBe(300)
+      expect(legacyAmount('2026-07-04', '2026-07-31', cutoff)).toBe(0)
+      expect(legacyAmount('2026-07-04', '2026-07-31', cutoff,
+        [...orders, { date: '2026-07-21', amount: 9999 }])).toBe(0)
+    }
   })
 
   /** 展开 admin 的两个 helper 插值，再把 admin 插值逐个翻译成 staff 写法（槽位不抹平） */
