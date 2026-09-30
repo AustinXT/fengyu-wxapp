@@ -224,7 +224,7 @@ export default function CustomerDetailPage({
     if (promoterTimer.current) clearTimeout(promoterTimer.current)
     const trimmed = q.trim()
     setPromoterError("")
-    if (trimmed.length < 3) {
+    if (trimmed.length < 2) {
       setPromoterResults([])
       setPromoterLoading(false)
       return
@@ -744,7 +744,7 @@ export default function CustomerDetailPage({
                   {isEditing ? (
                     <div ref={promoterRef} className="relative">
                       <Input
-                        placeholder={canListEmployees ? "输入至少 3 位姓名或手机号" : "无员工查看权限"}
+                        placeholder={canListEmployees ? "输入至少 2 位姓名或手机号" : "无员工查看权限"}
                         value={promoterOpen
                           ? promoterSearch
                           : promoterChanged
@@ -778,8 +778,8 @@ export default function CustomerDetailPage({
                             <li className="px-3 py-2 text-sm text-[#999999]">搜索中…</li>
                           ) : promoterError ? (
                             <li className="px-3 py-2 text-sm text-[#C0322A]">{promoterError}</li>
-                          ) : promoterSearch.trim().length < 3 ? (
-                            <li className="px-3 py-2 text-sm text-[#999999]">请输入至少 3 位关键词</li>
+                          ) : promoterSearch.trim().length < 2 ? (
+                            <li className="px-3 py-2 text-sm text-[#999999]">请输入至少 2 位关键词</li>
                           ) : promoterResults.length === 0 ? (
                             <li className="px-3 py-2 text-sm text-[#999999]">无匹配结果</li>
                           ) : (
