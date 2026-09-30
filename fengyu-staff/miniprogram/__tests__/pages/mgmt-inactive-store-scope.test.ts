@@ -110,6 +110,29 @@ beforeEach(() => {
   setGlobalData({})
 })
 
+describe('hub · 默认关店空态与手选历史（#473）', () => {
+  test('权限内只有关店门店时默认不发 summary，展示关店空态', async () => {
+    const hub = instantiate('hub')
+    hub.data.selectedDate = '2026-09-25'
+    hub.data.scope = { scopeType: 'store', scopeId: 'closed', scopeName: '已关店', closed: true }
+    await hub.loadSummary()
+    expect(mocked).not.toHaveBeenCalled()
+    expect(hub.data.summaryState).toBe('empty')
+    expect(hub.data.summaryEmptyText).toContain('已关店')
+  })
+
+  test('手选已关店门店后仍可查历史日期', async () => {
+    const hub = instantiate('hub')
+    hub.data.selectedDate = '2026-07-01'
+    mocked.mockResolvedValueOnce(summaryResp({ type: 'store', id: 'closed', name: '已关店', inactive: false }))
+    hub.onScopeChange({ detail: { scopeType: 'store', scopeId: 'closed', scopeName: '已关店', closed: true, userPicked: true } })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(mocked).toHaveBeenCalledWith('mgmtDashboard.summary', expect.objectContaining({ scopeId: 'closed', date: '2026-07-01' }))
+    expect(hub.data.summaryState).toBe('content')
+  })
+})
+
 // roleBindings.scopeId 是组织节点 id（生产形如 org-门店-<ts>），与 storeId 不同；店长管辖门店走 managerStoreIds
 const managerOf = (storeNodeId: string) => ({ role: 'manager', isStoreManager: true, scopeType: '门店', scopeId: storeNodeId })
 

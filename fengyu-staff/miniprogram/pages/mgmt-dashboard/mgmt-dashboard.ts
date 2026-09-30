@@ -88,6 +88,8 @@ interface ScopeValue {
   marketId?: string
   /** 门店组织节点已停用（#400）：整段出「已停用」空态，子页经 query 继承 */
   inactive?: boolean
+  /** 只关店而组织节点仍启用：用户可显式查看关店前历史 */
+  closed?: boolean
 }
 
 interface SummaryData {
@@ -209,6 +211,7 @@ Page({
     summaryEmptyText: '',
     // 默认范围落在停用门店时允许 picker 自动换到在营门店；用户显式选过后关掉
     scopeAutoCorrect: true,
+    scopeUserPicked: false,
     // 范围仍是初判：picker 拿到 scopeOptions 后按 admin 同规则纠正一次默认范围（#424），纠正过或用户选过后关。
     // 初始 false、由 initDashboard 与初判同一次 setData 打开：scopeOptions 先于 initDashboard 返回时，
     // 不能把这一次纠正耗在占位的「全部市场」上
@@ -306,8 +309,13 @@ Page({
       scope: defaultScope,
       defaultScope,
       scopeResolveDefault: true,
+      scopeUserPicked: false,
     })
-    this.loadSummary()
+    if (defaultScope.scopeType === 'store' && !defaultScope.scopeId) {
+      this.setData({ summaryState: 'empty', summaryEmptyText: '当前账号没有可用的在营门店', summaryEmptyHint: '请联系管理员检查门店授权' })
+    } else {
+      this.loadSummary()
+    }
   },
 
   computeDefaultScope(): ScopeValue {
@@ -377,6 +385,7 @@ Page({
       scope,
       defaultScope: scope,
       ...(userPicked ? { scopeAutoCorrect: false, scopeResolveDefault: false } : {}),
+      ...(userPicked ? { scopeUserPicked: true } : {}),
     })
     this.loadSummary()
   },
@@ -390,6 +399,17 @@ Page({
     if (!this.data.selectedDate) return
     // 只认最后一次请求：切 scope / 日期后，迟到的旧响应（含失败）一律丢弃
     const seq = ++summarySeq
+    if (this.data.scope.scopeType === 'store' && this.data.scope.closed && !this.data.scopeUserPicked) {
+      this.setData({
+        loading: false,
+        display: null,
+        displayKey: '',
+        summaryState: 'empty',
+        summaryEmptyText: `「${this.data.scope.scopeName || '该门店'}」已关店`,
+        summaryEmptyHint: '当前账号没有其它在营门店可查看',
+      })
+      return
+    }
     // 旧内容只在「同一 scope + 同一日期」的刷新里保留；换了 scope / 日期还挂着旧数字，
     // 请求一失败就成了「B 店（已停用）」配 A 店指标（#400 评审发现）
     const key = `${this.data.scope.scopeType}|${this.data.scope.scopeId || ''}|${this.data.selectedDate}`

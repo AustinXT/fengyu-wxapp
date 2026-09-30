@@ -10,6 +10,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest'
 import { callStaffApi } from '../../utils/cloud'
+import { resolveDefaultMgmtScope } from '../../utils/mgmt-scope'
 
 vi.mock('../../utils/cloud', () => ({
   callStaffApi: vi.fn(),
@@ -140,5 +141,31 @@ describe('scope-picker · 下拉「（已关店）」后缀', () => {
     const rows = wxml.match(/bindtap="onPickStore"\s*>([^<]*)<\/view>/g) || []
     // 「全部门店」行 + 门店行，门店行必须带后缀
     expect(rows.some((r) => r.includes("{{ item.storeName }}{{ item.closed ? '（已关店）' : '' }}"))).toBe(true)
+  })
+})
+
+describe('默认范围跳过已关店门店（#473）', () => {
+  const stores = [
+    { storeId: 'closed', storeName: '已关店', closed: true },
+    { storeId: 'open', storeName: '在营店' },
+  ]
+  test('默认关闭门店改选同市场在营门店', () => {
+    expect(resolveDefaultMgmtScope({ allowAll: false, allowedMarketIds: [], markets: [
+      { id: 'm', name: '市场', stores },
+    ] }, { scopeType: 'store', scopeId: 'closed', scopeName: '已关店' }, ['closed']))
+      .toMatchObject({ scopeType: 'store', scopeId: 'open' })
+  })
+
+  test('只有已关店门店时保留初判，由页面显示空态', () => {
+    const current = { scopeType: 'store' as const, scopeId: 'closed', scopeName: '已关店' }
+    expect(resolveDefaultMgmtScope({ allowAll: false, allowedMarketIds: [], markets: [
+      { id: 'm', name: '市场', stores: stores.slice(0, 1) },
+    ] }, current, ['closed'])).toBeNull()
+  })
+
+  test('用户手选已关店门店，change 携带关店标记', async () => {
+    const picker = await storeLevelPicker(stores)
+    picker.onPickStore({ currentTarget: { dataset: { storeId: 'closed' } } })
+    expect(picker.events.at(-1)).toMatchObject({ name: 'change', detail: { scopeId: 'closed', closed: true, userPicked: true } })
   })
 })

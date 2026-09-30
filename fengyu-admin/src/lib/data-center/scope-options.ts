@@ -102,7 +102,7 @@ export function scopeLabel(scopeOptions: DataCenterScopeOptions, scope: DataCent
   if (scope.type === 'stores') return multiStoreName(scope.ids.map((id) => storeNameIn(scopeOptions, id)))
   for (const market of scopeOptions.markets) {
     const store = market.stores.find((s) => s.storeId === scope.id)
-    if (store) return store.storeName
+    if (store) return storeOptionLabel(store)
   }
   return '未知门店'
 }
