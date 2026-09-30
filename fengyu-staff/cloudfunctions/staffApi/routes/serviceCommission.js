@@ -23,6 +23,10 @@ const { createSalesCategoryRates } = require('../utils/sales-categories')
 const { DEPOSIT_REFUND_REMARK } = require('../utils/consume-filter')
 const { assertEmployeesAssignableToStore } = require('../utils/employee-assignment')
 const { normalizeListFilters, addDateRange } = require('../utils/list-filters')
+const {
+  SERVICE_ORDER_CONDITIONS,
+  serviceCommissionStatusCondition,
+} = require('../utils/allocation-list-conditions')
 
 // 与 allocation.js 同源校验范式：每池 = (serviceItemId, roleType)，池间互不约束
 // 分配比例校验：0~1 之间（精度 0.001，支持自定义小数比例）
@@ -55,14 +59,14 @@ async function pendingList(ctx) {
   }
   const { page, pageSize, offset, keyword, keywordPattern, phoneKeyword, startDate, endDate } = normalizeListFilters(payload)
   const params = [ctx.auth.effectiveStoreId]
-  const conditions = ["so.store_id = $1", "so.status = '已完成'"]
+  const conditions = [...SERVICE_ORDER_CONDITIONS]
 
   // NULL ≡「待分配」：commission_status 无 DB default，建单初值为 NULL，筛选与展示统一 COALESCE，
   // 避免 NULL 单在「待分配」「已分配」两个筛选下都查不到、只在「全部」里露出并渲染成 "null"。
   if (commissionStatus !== '全部') {
     params.push(commissionStatus)
     // ::text 显式转型：枚举列 COALESCE 后与 $n 绑定参数比较，避免 42P18 could not determine data type
-    conditions.push(`COALESCE(so.commission_status::text, '待分配') = $${params.length}`)
+    conditions.push(serviceCommissionStatusCondition(params.length))
   }
 
   if (keyword) {
