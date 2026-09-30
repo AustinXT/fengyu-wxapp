@@ -15,6 +15,11 @@ const { assertEmployeeInScope, isStoreInScope, buildStoreScopeCondition } = requ
 const { shanghaiDateStr } = require('../utils/datetime')
 const { SALES_CATEGORIES, UNCATEGORIZED } = require('../utils/sales-categories')
 const {
+  SALE_PAYMENT_CONDITIONS,
+  SERVICE_ORDER_CONDITIONS,
+  serviceCommissionStatusCondition,
+} = require('../utils/allocation-list-conditions')
+const {
   SERVICE_ORDER_ASSIGNABLE_SKILLS,
   EMPLOYEE_ANCHOR_MARKET_JOIN,
   targetMarketJoin,
@@ -569,13 +574,22 @@ async function todoList(ctx) {
     )
     result.pendingUnbindCount = Number(unbindRows[0].cnt)
 
-    // 待提成分配订单（口径对齐 allocation.pendingList：仅销售单/转换单且非历史订单，避免内部单/寄存单/充值单/历史单致计数虚高）
+    // 待分配角标 = 销售 Tab 可分配回款事件 + 服务 Tab 已完成待分配服务单。
+    // 与两侧默认列表共用条件，COUNT 不受列表分页影响。
     const allocRows = await pg.query(
-      `SELECT COUNT(*) AS cnt FROM sale_orders WHERE store_id = $1 AND status = '已支付' AND allocation_status = '待分配'
-         AND sale_order_type IN ('销售单', '转换单') AND legacy_source IS DISTINCT FROM 'workfine'`,
-      [effectiveStoreId]
+      `SELECT
+         (SELECT COUNT(*)
+            FROM sale_order_payments p
+            JOIN sale_orders o ON o.sale_order_id = p.sale_order_id
+           WHERE ${SALE_PAYMENT_CONDITIONS.join('\n             AND ')}
+             AND p.allocation_status = $2) AS sale_cnt,
+         (SELECT COUNT(*)
+            FROM service_orders so
+           WHERE ${SERVICE_ORDER_CONDITIONS.join('\n             AND ')}
+             AND ${serviceCommissionStatusCondition(3)}) AS service_cnt`,
+      [effectiveStoreId, '待分配', '待分配']
     )
-    result.pendingAllocationCount = Number(allocRows[0].cnt)
+    result.pendingAllocationCount = Number(allocRows[0].sale_cnt) + Number(allocRows[0].service_cnt)
 
     // 待审批退款流水（2026-04-26 sale-order-domain-refactor：从 sale_order_payments 推断）
     const refundRows = await pg.query(

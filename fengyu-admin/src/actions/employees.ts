@@ -271,7 +271,7 @@ export const searchEmployees = withPermission(
     isResigned: false
   }[]> => {
   const trimmed = keyword.trim()
-  if (trimmed.length < 3) return []
+  if (trimmed.length < 2) return []
 
   const pattern = `%${trimmed}%`
   const rows = await db
