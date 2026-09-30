@@ -3634,6 +3634,26 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     })
   })
 
+  it('跨店家居已退或已转换部分只折剩余未结算件数', async () => {
+    const inserted: any[] = []
+    mockConvTx({
+      heldRows: [homeHeldRow({
+        store_id: 'store-999', refunded_quantity: 2, converted_quantity: 1,
+        received: '800', home_converted_amount: '100',
+      })],
+      homeConsumedRows: [{ sale_item_id: 'home-1', home_converted_amount: '100' }],
+      skuRows: homeSkuRows,
+      onInsertItem: (v) => inserted.push(v),
+    })
+
+    const result = await createConversionOrder(homeConvData)
+
+    expect(result.success).toBe(true)
+    const outRow = inserted.find((v) => v.itemDirection === '转出')
+    expect(outRow.quantity).toBe(4)
+    expect(outRow.received).toBe('-400.00')
+  })
+
   it('#125/#154 家居转出数量落 converted_quantity 且带不可超转守卫，不走 remaining_sessions', async () => {
     const { executeSql } = mockConvTx({
       heldRows: [homeHeldRow()],

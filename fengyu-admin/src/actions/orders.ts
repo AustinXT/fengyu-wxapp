@@ -6157,7 +6157,10 @@ export const createConversionOrder = withPermission(
             received: row.received as string,
             unitRealPrice: row.unit_real_price as string,
           })
-          qty = Math.max(0, Number(row.quantity ?? 0) - Number(row.picked_up_quantity ?? 0))
+          qty = Math.max(0, Number(row.quantity ?? 0)
+            - Number(row.picked_up_quantity ?? 0)
+            - Number(row.refunded_quantity ?? 0)
+            - Number(row.converted_quantity ?? 0))
           lineAmount = Math.round(home.amount * 100) / 100
         }
 
