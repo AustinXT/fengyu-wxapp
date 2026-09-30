@@ -341,6 +341,7 @@ export default function PaymentAllocationDetailPageClient({
             getFilteredEmployees={getFilteredEmployees}
             skillTagNames={skillTagNames}
             readOnly={isRefundAllocation || !canSave}
+            isRefundAllocation={isRefundAllocation}
             onAdd={addEntry}
             onUpdate={updateEntry}
             onRemove={removeEntry}
@@ -382,6 +383,7 @@ function ItemAllocationCard({
   getFilteredEmployees,
   skillTagNames,
   readOnly = false,
+  isRefundAllocation = false,
   onAdd,
   onUpdate,
   onRemove,
@@ -391,6 +393,7 @@ function ItemAllocationCard({
   getFilteredEmployees: (skillTag: string) => AllocationEmployeeCandidate[]
   skillTagNames: string[]
   readOnly?: boolean
+  isRefundAllocation?: boolean
   onAdd: (groupId: string) => void
   onUpdate: (groupId: string, entryId: number, field: 'skillTag' | 'employeeId' | 'ratioPercent', value: string) => void
   onRemove: (groupId: string, entryId: number) => void
@@ -424,7 +427,7 @@ function ItemAllocationCard({
           </CardTitle>
           <span className="text-lg font-bold text-[var(--primary)]">¥{allocatable.toLocaleString()}</span>
         </div>
-        <p className="text-xs text-[#999999] mt-1">{readOnly ? '本次退款赤字分配基数' : '本次回款可分配额'} ¥{allocatable.toLocaleString()}</p>
+        <p className="text-xs text-[#999999] mt-1">{isRefundAllocation ? '本次退款赤字分配基数' : '本次回款可分配额'} ¥{allocatable.toLocaleString()}</p>
       </CardHeader>
 
       <CardContent className="space-y-3">
@@ -542,7 +545,7 @@ function ItemAllocationCard({
             )
           })
         ) : (
-          <p className="text-xs text-[#999999] py-2">{readOnly ? '该退款暂无赤字分配' : '暂无分配，点击"添加分配"开始'}</p>
+          <p className="text-xs text-[#999999] py-2">{isRefundAllocation ? '该退款暂无赤字分配' : readOnly ? '暂无分配' : '暂无分配，点击"添加分配"开始'}</p>
         )}
 
         {/* 底部：每个技能标签独立池比例合计 + 添加按钮（P2-14 Q5） */}

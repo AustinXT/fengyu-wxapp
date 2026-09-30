@@ -194,7 +194,7 @@ export const deleteAllocation = withPermission(
   async (session, id: number): Promise<{ success: boolean; message: string }> => {
   const [alloc] = (await db.execute(sql`
     SELECT spir.sale_item_id, spia.is_void, sop.id AS sale_payment_id,
-           sop.paid_at, sop.change_type, so.store_id
+           sop.paid_at, sop.change_type, sop.allocation_status, so.store_id
       FROM sale_payment_item_allocations spia
       JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
       JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
@@ -211,6 +211,9 @@ export const deleteAllocation = withPermission(
   }
   if (alloc.change_type === '退款') {
     return { success: false, message: '退款赤字分配由系统自动生成，不可手动删除' }
+  }
+  if (!['待分配', '已分配'].includes(alloc.allocation_status)) {
+    return { success: false, message: '该回款状态不允许修改分配' }
   }
   if (isAllocationFrozen(alloc.paid_at) && !canAdjustFrozenAllocation(session, alloc.store_id as string)) {
     return { success: false, message: '分配结果已冻结，回款到账超过 3 天不可修改' }

@@ -207,7 +207,7 @@ describe('deleteAllocation — scope 校验', () => {
   it('admin 用户：isAdminScope=true，跳过 DB scope 查询，直接成功', async () => {
     ;(isAdminScope as any).mockReturnValue(true)
     ;(db.execute as any)
-      .mockResolvedValueOnce([{ sale_item_id: 'item-1', is_void: false }])
+      .mockResolvedValueOnce([{ sale_item_id: 'item-1', is_void: false, allocation_status: '已分配' }])
       .mockResolvedValueOnce([{ sale_order_id: 'order-1' }])
     const where = vi.fn().mockResolvedValue({ count: 1 })
     const set = vi.fn().mockReturnValue({ where })
@@ -222,7 +222,7 @@ describe('deleteAllocation — scope 校验', () => {
 
   it('scope 内正常删除 → 成功', async () => {
     ;(db.execute as any)
-      .mockResolvedValueOnce([{ sale_item_id: 'item-1', is_void: false }])
+      .mockResolvedValueOnce([{ sale_item_id: 'item-1', is_void: false, allocation_status: '已分配' }])
       .mockResolvedValueOnce([{ sale_order_id: 'order-1' }])
     let callCount = 0
     ;(db.select as any).mockImplementation(() => {
@@ -409,7 +409,7 @@ describe('销售回款冻结权限 #480', () => {
   })
 
   it('直接删除冻结回款分配也被拒绝', async () => {
-    ;(db.execute as any).mockResolvedValueOnce([{ sale_item_id: 'item-1', is_void: false, paid_at: oldPay.paid_at, store_id: 'store-1' }])
+    ;(db.execute as any).mockResolvedValueOnce([{ sale_item_id: 'item-1', is_void: false, paid_at: oldPay.paid_at, store_id: 'store-1', allocation_status: '已分配' }])
     ;(db.select as any)
       .mockImplementationOnce(makeSelectChain([{ saleOrderId: 'order-1' }]))
       .mockImplementationOnce(makeSelectChain([{ storeId: 'store-1' }]))
@@ -432,12 +432,25 @@ describe('销售回款冻结权限 #480', () => {
     expect(db.update).not.toHaveBeenCalled()
   })
 
+  it('不能直删异常状态回款的分配', async () => {
+    ;(db.execute as any).mockResolvedValueOnce([{
+      sale_item_id: 'item-1', is_void: false, sale_payment_id: 7,
+      paid_at: new Date().toISOString(), change_type: '回款', allocation_status: '已取消', store_id: 'store-1',
+    }])
+    ;(db.select as any)
+      .mockImplementationOnce(makeSelectChain([{ saleOrderId: 'order-1' }]))
+      .mockImplementationOnce(makeSelectChain([{ storeId: 'store-1' }]))
+    const result = await deleteAllocation(9)
+    expect(result.message).toContain('状态不允许')
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
   it('财务不能直删已结算退款关联回款的分配', async () => {
     ;(getSession as any).mockResolvedValue({ ...mockSession, roles: [{ ...mockSession.roles[0], role: 'finance', actions: ['allocation:save'], scopeStoreIds: ['store-1'] }] })
     ;(db.execute as any)
       .mockResolvedValueOnce([{
         sale_item_id: 'item-1', is_void: false, sale_payment_id: 7,
-        paid_at: new Date().toISOString(), change_type: '回款', store_id: 'store-1',
+        paid_at: new Date().toISOString(), change_type: '回款', allocation_status: '已分配', store_id: 'store-1',
       }])
       .mockResolvedValueOnce([{ sale_order_id: 'order-1' }])
     ;(db.select as any)
@@ -456,7 +469,7 @@ describe('销售回款冻结权限 #480', () => {
     })
     ;(isAdminScope as any).mockReturnValue(role === 'admin')
     ;(db.execute as any)
-      .mockResolvedValueOnce([{ sale_item_id: 'item-1', is_void: false, paid_at: oldPay.paid_at, store_id: 'store-1' }])
+      .mockResolvedValueOnce([{ sale_item_id: 'item-1', is_void: false, paid_at: oldPay.paid_at, store_id: 'store-1', allocation_status: '已分配' }])
       .mockResolvedValueOnce([{ sale_order_id: 'order-1' }])
     if (role === 'finance') {
       ;(db.select as any)
