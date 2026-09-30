@@ -5173,7 +5173,7 @@ describe('order.createConversion', () => {
         if (sql.includes('FROM sale_items si') && sql.includes('FOR UPDATE OF si')) {
           return {
             rows: [{
-              sale_item_id: 'item-card-1', sale_order_id: 'order-old', store_id: 'store-001',
+              sale_item_id: 'item-card-1', sale_order_id: 'order-old', store_id: source.storeId || 'store-001',
               item_direction: source.itemDirection || '购买',
               sku_id: 'sku-old', product_name: '旧项目', product_type: '疗程卡',
               session_count: 1, remaining_sessions: 1, quantity: 1, picked_up_quantity: 0,
@@ -6406,38 +6406,25 @@ describe('order.createConversion', () => {
   })
 
   // ===== D2.3 三种拒绝路径 =====
-  test('拒绝：跨店卡（held.store_id !== ctx.auth.storeId）', async () => {
+  test('跨店来源卡可转换；新单归当前店、源行 CAS 使用购买门店', async () => {
     const ctx = createManagerCtx({
       clientUserId: 'cu-001',
-      convertOutSaleItemIds: ['item-other'],
-      convertInItems: [{ skuId: 'sku-x', quantity: 1 }],
+      convertOutSaleItemIds: ['item-card-1'],
+      convertInItems: [{ skuId: 'sku-new', quantity: 1 }],
       paymentMethod: '线下',
     })
-
     pg.query.mockResolvedValueOnce([{
       user_id: 'cu-001', phone: '138', name: 'C', customer_type: '流量客', bound_store_id: 'store-001',
     }])
-    pg.transaction.mockImplementationOnce(async (cb) => {
-      const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }) }
-      return await cb(client)
-    })
-    const txQuery = vi.fn(async (sql) => defaultQueryResult(sql))
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
-      .mockResolvedValueOnce({
-        rows: [{
-          sale_item_id: 'item-other', store_id: 'store-999', item_direction: '购买',
-          sku_id: 'sku-old', product_name: 'X',
-          product_type: '疗程卡', session_count: 1, remaining_sessions: 1,
-          quantity: 1, picked_up_quantity: 0,
-          unit_price: '100', unit_real_price: '100',
-          sales_category: '自销自耗', service_fee: '0',
-          client_user_id: 'cu-001', order_status: '已支付', product_kind: '护理项目',
-        }], rowCount: 1,
-      })
-    pg.transaction.mockImplementationOnce(async (cb) => cb({ query: txQuery }))
+    const calls = mockPositiveDifferenceConversion(null, { storeId: 'store-999' })
 
-    await expect(orderRoutes.createConversion(ctx))
-      .rejects.toThrow(/INVALID_PARAMS.*门店/)
+    await orderRoutes.createConversion(ctx)
+
+    const orderInsert = calls.find(({ sql }) => sql.includes('INSERT INTO sale_orders'))
+    expect(orderInsert.params[4]).toBe('store-001')
+    const sourceUpdate = calls.find(({ sql }) => sql.includes('SET remaining_sessions = remaining_sessions - $4'))
+    expect(sourceUpdate.params[2]).toBe('store-999')
+    expect(ctx.result.status).toBe('待支付')
   })
 
   test('拒绝：疗程卡已耗尽（remaining_sessions=0）', async () => {
@@ -6996,7 +6983,7 @@ describe('order.customerHeldCards', () => {
 
     pg.query.mockResolvedValueOnce([
       {
-        sale_item_id: 'it-liao-1', source_sale_order_id: 'FY-A',
+        sale_item_id: 'it-liao-1', source_sale_order_id: 'FY-A', store_id: 'store-999', source_store_name: '汇东店',
         product_name: '疗程A', product_type: '疗程卡',
         remaining_sessions: 4, remaining_quantity: 1,
         unit_real_price: '300.00', deductible_amount: '1200.00',
@@ -7018,6 +7005,7 @@ describe('order.customerHeldCards', () => {
     // 疗程卡：deductibleAmount = unit_real_price × remaining_sessions = 300 × 4 = 1200
     expect(ctx.result.cards[0].deductibleAmount).toBe('1200.00')
     expect(ctx.result.cards[0].remainingSessions).toBe(4)
+    expect(ctx.result.cards[0]).toMatchObject({ storeId: 'store-999', storeName: '汇东店' })
     expect(ctx.result.cards[0]).toMatchObject({
       unit: '次',
       productKind: '护理项目',
@@ -7030,7 +7018,7 @@ describe('order.customerHeldCards', () => {
     expect(ctx.result.cards[1].remainingSessions).toBe(3)
   })
 
-  test('SQL 守卫：跨店卡不出现（WHERE si.store_id = $2）', async () => {
+  test('SQL 守卫：仅当前店归属顾客可查跨店来源行', async () => {
     const ctx = createManagerCtx({ clientUserId: 'cu-001' })
     pg.query.mockResolvedValueOnce([])
 
@@ -7038,7 +7026,8 @@ describe('order.customerHeldCards', () => {
 
     const sql = pg.query.mock.calls[0][0]
     const params = pg.query.mock.calls[0][1]
-    expect(sql).toMatch(/si\.store_id\s*=\s*\$2/)
+    expect(sql).not.toMatch(/AND si\.store_id\s*=\s*\$2/)
+    expect(sql).toMatch(/cu\.bound_store_id = \$2 OR cu\.is_cross_store_temp = TRUE/)
     expect(params[1]).toBe('store-001')
     expect(ctx.result.cards).toEqual([])
   })

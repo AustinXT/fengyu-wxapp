@@ -4692,13 +4692,13 @@ async function createRepayment(ctx) {
  * 创建转换单（店长专用）
  *
  * 与 admin 侧 createConversionOrder 语义对齐：
- *   - 按 client_user_id + store_id 跨订单聚合候选卡（不再绑定单一原订单）
+ *   - 按 client_user_id 跨订单、跨购买门店聚合候选权益（不再绑定单一原订单）
  *   - 整张卡折抵（疗程卡全部 remaining_sessions；单品已合并入疗程卡）
  *   - 差额>0：total_amount=差额，status='待支付'（线下走 confirmOffline 入账，线上走 payNotify）
  *   - 差额=0：total_amount=0，status=已支付
  *   - 差额<0：total_amount=0，status=已支付，差额充入 prepaid_cards（UPSERT user_id+store_id）+ INSERT card_transactions
  *   - 订单号前缀与 admin 对齐为 FY-XSD-WX-（admin 侧 createConversionOrder 使用同一前缀）
- *   - 跨店守卫：所有候选卡必须 store_id = ctx.auth.effectiveStoreId
+ *   - 顾客归属当前店（或现有临时跨店授权）；来源权益保留原购买门店
  *
  * payload: {
  *   clientUserId: string,              // 必须实名顾客（要挂储值卡）
@@ -4769,8 +4769,8 @@ async function createConversion(ctx) {
   if (!client.bound_store_id) {
     throw new Error('CLIENT_NOT_REGISTERED: 顾客未注册小程序或未绑定门店')
   }
-  // 与 order.create 对齐：普通顾客必须属于当前 scope；临时跨店顾客允许在外店转换。
-  if (!isStoreInScope(ctx.auth, client.bound_store_id) && !client.is_cross_store_temp) {
+  // 顾客归属当前开单门店；保留现有临时跨店授权例外。来源权益的购买门店可不同。
+  if (client.bound_store_id !== storeId && !client.is_cross_store_temp) {
     throw new Error('PERMISSION_DENIED: 该顾客不属于当前门店，无法开单')
   }
 
@@ -4910,16 +4910,12 @@ async function createConversion(ctx) {
 
     const held = heldResult.rows
     if (held.length !== convertOutSaleItemIds.length) {
-      throw new Error('INVALID_PARAMS: 部分卡不属于当前门店或已耗尽')
+      throw new Error('INVALID_PARAMS: 部分折抵项不存在或已耗尽')
     }
 
     // 先完成与预扣无关的归属/状态校验，避免无效请求额外扫描 service_items。
     for (const row of held) {
-      // 归属校验
-      // 家居产品行复用同一分支，文案用中性表述避免「卡」字样误导员工
-      if (row.store_id !== storeId) {
-        throw new Error('INVALID_PARAMS: 部分折抵项不属于当前门店或已耗尽')
-      }
+      // 来源门店可不同；顾客、权益方向和状态仍须锁内逐行复核。
       if (row.client_user_id !== clientUserId) {
         throw new Error('INVALID_PARAMS: 部分折抵项不属于该顾客')
       }
@@ -5054,6 +5050,7 @@ async function createConversion(ctx) {
 
       outItems.push({
         refSaleItemId: row.sale_item_id,
+        sourceStoreId: row.store_id,
         skuId: row.sku_id,
         productName: row.product_name,
         productType,
@@ -5503,7 +5500,7 @@ async function createConversion(ctx) {
            WHERE sale_item_id = $2
              AND store_id = $3
              AND COALESCE(remaining_sessions, 0) >= $4`,
-          [now, d.refSaleItemId, storeId, d.quantity]
+          [now, d.refSaleItemId, d.sourceStoreId, d.quantity]
         )
         if (upd.rowCount === 0) {
           throw new Error('INVALID_PARAMS: 卡状态变化，请重试')
@@ -5521,7 +5518,7 @@ async function createConversion(ctx) {
              AND product_type = '家居产品'
              AND (COALESCE(picked_up_quantity, 0) + COALESCE(refunded_quantity, 0)
                   + COALESCE(converted_quantity, 0) + $4) <= quantity`,
-          [now, d.refSaleItemId, storeId, d.quantity]
+          [now, d.refSaleItemId, d.sourceStoreId, d.quantity]
         )
         if (upd.rowCount === 0) {
           throw new Error('INVALID_PARAMS: 家居产品可提数量变化，请重试')
@@ -5826,7 +5823,7 @@ WHERE sale_items.sale_item_id = ANY($1)`,
 }
 
 /**
- * 查询顾客在当前门店可折抵的卡（转换单备选）
+ * 查询当前门店顾客跨购买门店的可折抵权益（转换单备选）
  *
  * payload: { clientUserId: string }
  * 返回: { cards: [{ saleItemId, sourceSaleOrderId, productName, productType,
@@ -5858,6 +5855,7 @@ async function customerHeldCards(ctx) {
             so.market_name,
             so.legacy_source,
             si.store_id,
+            source_store.store_name AS source_store_name,
             si.sku_id,
             si.item_direction,
             si.ref_sale_item_id,
@@ -5890,6 +5888,8 @@ async function customerHeldCards(ctx) {
             COALESCE(hp.deductible_amount, 0) AS deductible_amount
      FROM sale_items si
      JOIN sale_orders so ON si.sale_order_id = so.sale_order_id
+     JOIN client_wechat_users cu ON cu.user_id = so.client_user_id
+     LEFT JOIN stores source_store ON source_store.store_id = si.store_id
      LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
      LEFT JOIN product_categories pc ON pc.category_id = ps.category_id
      -- 折抵额度（#145/#153 立口径，#182 统一到疗程卡）：四端字面同源。
@@ -5933,7 +5933,8 @@ async function customerHeldCards(ctx) {
        ) hpa
      ) hp ON TRUE
      WHERE so.client_user_id = $1
-       AND si.store_id = $2
+       AND cu.bound_store_id IS NOT NULL
+       AND (cu.bound_store_id = $2 OR cu.is_cross_store_temp = TRUE)
        AND (
          si.item_direction = '购买'
          OR (so.sale_order_type = '转换单' AND si.item_direction = '转入')
@@ -5990,6 +5991,7 @@ async function customerHeldCards(ctx) {
       marketName: r.market_name || '',
       legacySource: r.legacy_source || null,
       storeId: r.store_id || '',
+      storeName: r.source_store_name || '',
       skuId: r.sku_id || null,
       itemDirection: r.item_direction || '',
       refSaleItemId: r.ref_sale_item_id || null,

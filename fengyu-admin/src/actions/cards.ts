@@ -727,10 +727,10 @@ export const getCardTransactions = withPermission(
 // ============================================================================
 
 /**
- * 转换单候选卡 — 顾客在指定门店可折抵的购买行。
+ * 转换单候选卡 — 当前门店顾客在各购买门店可折抵的权益行。
  *
- * 来源口径：sale_items 上 item_direction='购买'，且归属该顾客（通过 sale_orders
- * 反向 JOIN client_user_id）、归属指定 store_id；状态为"已支付/已完成"的订单。
+ * 来源口径：归属该顾客的购买/转换转入行，购买门店不限；顾客必须归属当前开单店
+ * 或有既存临时跨店授权，原单状态和行级资格继续按现有规则过滤。
  *
  * 折抵对象（2026-05-21 单品合并后放开）：
  *   疗程卡 (product_type='疗程卡') AND remaining_sessions > 0
@@ -754,6 +754,7 @@ export interface HeldCardCandidate {
   marketName: string
   legacySource: string | null
   storeId: string
+  storeName: string | null
   skuId: string | null
   itemDirection: string
   refSaleItemId: string | null
@@ -811,6 +812,7 @@ export const getCustomerHeldCards = withPermission(
       marketName: saleOrders.marketName,
       legacySource: saleOrders.legacySource,
       storeId: saleItems.storeId,
+      storeName: stores.storeName,
       skuId: saleItems.skuId,
       itemDirection: saleItems.itemDirection,
       refSaleItemId: saleItems.refSaleItemId,
@@ -843,12 +845,18 @@ export const getCustomerHeldCards = withPermission(
     })
     .from(saleItems)
     .innerJoin(saleOrders, eq(saleItems.saleOrderId, saleOrders.saleOrderId))
+    .leftJoin(stores, eq(saleItems.storeId, stores.storeId))
     .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
     .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
     .where(
       and(
-        eq(saleItems.storeId, storeId),
         eq(saleOrders.clientUserId, clientUserId),
+        sql`EXISTS (
+          SELECT 1 FROM client_wechat_users cu
+          WHERE cu.user_id = ${clientUserId}
+            AND cu.bound_store_id IS NOT NULL
+            AND (cu.bound_store_id = ${storeId} OR cu.is_cross_store_temp = TRUE)
+        )`,
         cardEntitlementDirectionCondition(),
         // 2026-09-14 #125 甲方拍板：订单级「部分支付」也可折抵；与卡包列表共用同一组状态，
         // 疗程卡与家居同时放开，欠款按方案 A 留原单
@@ -937,6 +945,7 @@ export const getCustomerHeldCards = withPermission(
       marketName: r.marketName,
       legacySource: r.legacySource,
       storeId: r.storeId,
+      storeName: r.storeName ?? null,
       skuId: r.skuId ?? null,
       itemDirection: r.itemDirection,
       refSaleItemId: r.refSaleItemId ?? null,
