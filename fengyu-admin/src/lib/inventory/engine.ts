@@ -3105,16 +3105,7 @@ async function loadInventoryDocLineage(
   scoped: string[] | null,
 ): Promise<InventoryDocLineageRow[]> {
   const rows = await db.execute(sql`
-    WITH RECURSIVE visible_docs AS (${visibleInventoryDocsSql(scoped)}),
-    visible_edges AS (
-      SELECT doc_link.from_doc_id, doc_link.to_doc_id, doc_link.relation_type,
-             COALESCE(SUM(doc_link.quantity), 0) AS linked_quantity
-        FROM inventory_doc_links doc_link
-        JOIN visible_docs visible_from ON visible_from.id = doc_link.from_doc_id
-        JOIN visible_docs visible_to ON visible_to.id = doc_link.to_doc_id
-       GROUP BY doc_link.from_doc_id, doc_link.to_doc_id, doc_link.relation_type
-    ),
-    lineage_walk(direction, depth, doc_id, via_doc_id, relation_type, linked_quantity, path) AS (
+    WITH RECURSIVE lineage_walk(direction, depth, doc_id, via_doc_id, relation_type, linked_quantity, path) AS (
       SELECT seed.direction, 0, ${docId}::text, NULL::text, NULL::text, 0::numeric, ARRAY[${docId}::text]
         FROM (VALUES ('上游'::text), ('下游'::text)) seed(direction)
       UNION ALL
@@ -3123,9 +3114,24 @@ async function loadInventoryDocLineage(
              walk.doc_id, edge.relation_type, edge.linked_quantity,
              walk.path || (CASE WHEN walk.direction = '上游' THEN edge.from_doc_id ELSE edge.to_doc_id END)
         FROM lineage_walk walk
-        JOIN visible_edges edge ON
-          (walk.direction = '上游' AND edge.to_doc_id = walk.doc_id)
-          OR (walk.direction = '下游' AND edge.from_doc_id = walk.doc_id)
+        JOIN LATERAL (
+          SELECT local_link.from_doc_id, local_link.to_doc_id, local_link.relation_type,
+                 COALESCE(SUM(local_link.quantity), 0) AS linked_quantity
+            FROM (
+              SELECT upstream.from_doc_id, upstream.to_doc_id, upstream.relation_type, upstream.quantity
+                FROM inventory_doc_links upstream
+               WHERE walk.direction = '上游' AND upstream.to_doc_id = walk.doc_id
+              UNION ALL
+              SELECT downstream.from_doc_id, downstream.to_doc_id, downstream.relation_type, downstream.quantity
+                FROM inventory_doc_links downstream
+               WHERE walk.direction = '下游' AND downstream.from_doc_id = walk.doc_id
+            ) local_link
+            JOIN inventory_docs from_doc ON from_doc.id = local_link.from_doc_id
+            JOIN inventory_docs to_doc ON to_doc.id = local_link.to_doc_id
+           WHERE ${inventoryDocScopeSql(scoped, sql`from_doc.source_org_node_id`, sql`from_doc.target_org_node_id`)}
+             AND ${inventoryDocScopeSql(scoped, sql`to_doc.source_org_node_id`, sql`to_doc.target_org_node_id`)}
+           GROUP BY local_link.from_doc_id, local_link.to_doc_id, local_link.relation_type
+        ) edge ON TRUE
        WHERE (CASE WHEN walk.direction = '上游' THEN edge.from_doc_id ELSE edge.to_doc_id END) <> ALL(walk.path)
     )
     SELECT walk.direction, walk.depth, walk.via_doc_id, walk.relation_type,

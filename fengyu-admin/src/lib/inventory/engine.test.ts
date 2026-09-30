@@ -2252,10 +2252,12 @@ describe('库存单据详情履约进度', () => {
     const lineageSql = renderSql(lineageQuery)
     const fulfillmentSql = renderSql(fulfillmentQuery)
     expect(lineageSql).toContain('inventory_doc_links')
-    expect(sqlContains(lineageQuery, 'visible_doc.source_org_node_id')).toBe(true)
-    expect(sqlContains(lineageQuery, 'visible_doc.target_org_node_id')).toBe(true)
-    expect(lineageSql).toContain('JOIN visible_docs visible_from')
-    expect(lineageSql).toContain('JOIN visible_docs visible_to')
+    expect(sqlContains(lineageQuery, 'from_doc.source_org_node_id')).toBe(true)
+    expect(sqlContains(lineageQuery, 'to_doc.target_org_node_id')).toBe(true)
+    expect(lineageSql).toContain('JOIN LATERAL')
+    expect(lineageSql).toContain('upstream.to_doc_id = walk.doc_id')
+    expect(lineageSql).toContain('downstream.from_doc_id = walk.doc_id')
+    expect(lineageSql).not.toContain('visible_edges')
     expect(fulfillmentSql).toContain('visible_docs')
     expect(sqlContains(fulfillmentQuery, 'visible_doc.source_org_node_id')).toBe(true)
     // #336：发货直连报货行，按血缘原值累计，不再经采购行占比分摊
@@ -2561,9 +2563,8 @@ describe('库存单据详情履约进度', () => {
     expect(detail?.lineage.find((row) => row.docId === 'MBH-260809-0001')?.sourceOrgNodeName).toBe('测试市场')
     expect(mockDb.execute).toHaveBeenCalledTimes(1)
     const lineageQuery = mockDb.execute.mock.calls[0]?.[0]
-    expect(sqlContains(lineageQuery, 'WITH RECURSIVE visible_docs')).toBe(true)
-    expect(sqlContains(lineageQuery, 'JOIN visible_docs visible_from')).toBe(true)
-    expect(sqlContains(lineageQuery, 'JOIN visible_docs visible_to')).toBe(true)
+    expect(sqlContains(lineageQuery, 'WITH RECURSIVE lineage_walk')).toBe(true)
+    expect(sqlContains(lineageQuery, 'JOIN LATERAL')).toBe(true)
     expect(sqlContains(lineageQuery, 'source_location.org_node_id = linked_doc.source_org_node_id')).toBe(true)
   })
 
