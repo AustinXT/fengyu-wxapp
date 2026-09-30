@@ -54,6 +54,7 @@ interface PaymentAllocatables {
   paymentMethod: string
   changeType: string
   allocationStatus: string | null
+  frozen: boolean
   marketName: string | null
   items: PaymentAllocationItem[]
   existingAllocations: PaymentExistingAllocation[]
@@ -322,6 +323,7 @@ export default function PaymentAllocationDetailPageClient({
               <span className="text-[#999999]">分配状态</span>
               <p className="mt-1">
                 <Badge variant="outline" className={statusInfo.className}>{statusInfo.label}</Badge>
+                {payment.frozen && <Badge variant="outline" className="ml-2">已冻结</Badge>}
               </p>
             </div>
           </div>

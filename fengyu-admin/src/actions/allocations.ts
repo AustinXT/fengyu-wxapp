@@ -19,6 +19,7 @@ import { nowTs, beijingBoundaryTs, beijingNextDayBoundaryTs } from '@/lib/db-tim
 import { storeInMarketCondition } from '@/lib/market-store-sql'
 import { getInvalidEmployeeAssignmentId } from '@/lib/employee-assignment-server'
 import { resolvePaging } from '@/lib/paging'
+import { canAdjustFrozenAllocation, isAllocationFrozen } from '@/lib/allocation-freeze'
 
 /**
  * 销售提成率查找（销售提成固化快照用）。
@@ -192,9 +193,11 @@ export const deleteAllocation = withPermission(
   'allocation:save',
   async (session, id: number): Promise<{ success: boolean; message: string }> => {
   const [alloc] = (await db.execute(sql`
-    SELECT spir.sale_item_id, spia.is_void
+    SELECT spir.sale_item_id, spia.is_void, sop.paid_at, so.store_id
       FROM sale_payment_item_allocations spia
       JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+      JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
+      JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
      WHERE spia.id = ${id}
      LIMIT 1
   `)) as any[]
@@ -204,6 +207,9 @@ export const deleteAllocation = withPermission(
 
   if (!(await verifySaleItemScope(alloc.sale_item_id, session))) {
     return { success: false, message: '无权操作该订单的分配' }
+  }
+  if (isAllocationFrozen(alloc.paid_at) && !canAdjustFrozenAllocation(session, alloc.store_id as string)) {
+    return { success: false, message: '分配结果已冻结，回款到账超过 3 天不可修改' }
   }
 
   // 冻结闭环（Bug I）：退款审批中禁止删除营业额分配
@@ -443,6 +449,7 @@ export const getPaymentAllocatables = withPermission(
     paymentMethod: string
     changeType: string
     allocationStatus: string | null
+    frozen: boolean
     marketName: string | null
     items: Array<{
       saleItemId: string
@@ -467,7 +474,7 @@ export const getPaymentAllocatables = withPermission(
   } | null> => {
     const [pay] = (await db.execute(sql`
       SELECT sop.id, sop.sale_order_id, sop.amount, sop.payment_method, sop.change_type,
-             sop.allocation_status, so.store_id, so.market_name, so.sale_order_type, so.legacy_source
+             sop.allocation_status, sop.paid_at, so.store_id, so.market_name, so.sale_order_type, so.legacy_source
       FROM sale_order_payments sop
       JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
       WHERE sop.id = ${salePaymentId} LIMIT 1
@@ -507,6 +514,7 @@ export const getPaymentAllocatables = withPermission(
       paymentMethod: pay.payment_method,
       changeType: pay.change_type,
       allocationStatus: pay.allocation_status ?? null,
+      frozen: isAllocationFrozen(pay.paid_at),
       marketName: pay.market_name ?? null,
       items: items.map((i: any) => ({
         saleItemId: i.sale_item_id,
@@ -548,7 +556,7 @@ export const savePaymentAllocations = withPermission(
     }>,
   ): Promise<{ success: boolean; message: string }> => {
     const [pay] = (await db.execute(sql`
-      SELECT sop.id, sop.sale_order_id, sop.allocation_status, sop.change_type, so.store_id, so.market_name,
+      SELECT sop.id, sop.sale_order_id, sop.allocation_status, sop.change_type, sop.paid_at, so.store_id, so.market_name,
              so.sale_order_type, so.legacy_source
       FROM sale_order_payments sop
       JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
@@ -572,6 +580,9 @@ export const savePaymentAllocations = withPermission(
     }
     if (pay.change_type === '退款') {
       return { success: false, message: '退款赤字分配由系统自动生成，不可手动修改' }
+    }
+    if (isAllocationFrozen(pay.paid_at) && !canAdjustFrozenAllocation(session, pay.store_id as string)) {
+      return { success: false, message: '分配结果已冻结，回款到账超过 3 天不可修改' }
     }
     // 冻结闭环（Bug I）：退款审批中禁止改分配
     if (await hasPendingRefund(db, pay.sale_order_id as string)) {

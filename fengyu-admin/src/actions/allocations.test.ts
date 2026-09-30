@@ -95,6 +95,10 @@ vi.mock('@/lib/operation-log', () => ({
   logOperation: vi.fn(),
 }))
 
+vi.mock('@/lib/payment-allocatable', () => ({
+  refreshOrderAllocationRollup: vi.fn(),
+}))
+
 vi.mock('next/cache', () => ({
   revalidatePath: vi.fn(),
 }))
@@ -131,7 +135,8 @@ const usedOrderLevelColumn = () =>
 import { eq, gte, lt, sql } from 'drizzle-orm'
 import { getSession } from '@/lib/auth'
 import { isAdminScope, isInScope } from '@/lib/permissions'
-import { hasSettledRefund, hasSettledRefundForPayment } from '@/lib/refund-cascade'
+import { hasPendingRefund, hasSettledRefund, hasSettledRefundForPayment } from '@/lib/refund-cascade'
+import { logOperation } from '@/lib/operation-log'
 
 const mockSession = {
   employeeId: 'MGR-001',
@@ -311,6 +316,93 @@ describe('savePaymentAllocations — 退款守卫粒度（回款级，非订单�
     // #2 核心回归：回款级守卫被咨询，订单级守卫绝不参与回款级路径 → 无关回款不被同单退款误锁
     expect(hasSettledRefundForPayment).toHaveBeenCalledWith(db, 7)
     expect(hasSettledRefund).not.toHaveBeenCalled()
+  })
+})
+
+describe('销售回款冻结权限 #480', () => {
+  const oldPay = {
+    id: 7, sale_order_id: 'order-1', allocation_status: '已分配', change_type: '回款',
+    paid_at: new Date(Date.now() - 4 * 86400000).toISOString(),
+    store_id: 'store-1', market_name: null, sale_order_type: '销售单', legacy_source: null,
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    ;(isInScope as any).mockReturnValue(true)
+    ;(isAdminScope as any).mockReturnValue(false)
+  })
+
+  it('店长直调冻结回款，保存与空数组清空均在事务前拒绝', async () => {
+    for (const allocations of [[], [{ saleItemId: 'item-1', employeeId: 'EMP-001', roleType: '美容师', allocationRatio: '1' }]]) {
+      ;(db.execute as any).mockResolvedValueOnce([oldPay])
+      const result = await savePaymentAllocations(7, allocations)
+      expect(result).toMatchObject({ success: false, message: expect.stringContaining('已冻结') })
+    }
+    expect(db.transaction).not.toHaveBeenCalled()
+    expect(logOperation).not.toHaveBeenCalled()
+  })
+
+  it.each(['finance', 'admin'] as const)('%s 在冻结后仍可保存空分配并记录操作', async (role) => {
+    ;(getSession as any).mockResolvedValue({
+      ...mockSession,
+      roles: [{ role, scopeId: 'store-1', scopeType: '门店', actions: ['allocation:save'], scopeStoreIds: ['store-1'], scopeOrgNodeIds: ['store-1'] }],
+    })
+    ;(db.execute as any).mockResolvedValueOnce([oldPay]).mockResolvedValueOnce([])
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const execute = vi.fn().mockResolvedValueOnce([1]).mockResolvedValueOnce([]).mockResolvedValueOnce({ count: 1 })
+      return fn({ execute })
+    })
+    const result = await savePaymentAllocations(7, [])
+    expect(result.success).toBe(true)
+    expect(db.transaction).toHaveBeenCalledOnce()
+    expect(logOperation).toHaveBeenCalledOnce()
+  })
+
+  it('退款态对财务仍是只读', async () => {
+    ;(getSession as any).mockResolvedValue({ ...mockSession, roles: [{ ...mockSession.roles[0], role: 'finance', actions: ['allocation:save'], scopeStoreIds: ['store-1'] }] })
+    ;(db.execute as any).mockResolvedValueOnce([{ ...oldPay, change_type: '退款' }])
+    expect((await savePaymentAllocations(7, [])).message).toContain('退款赤字')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('财务仍受待审批退款守卫限制', async () => {
+    ;(getSession as any).mockResolvedValue({ ...mockSession, roles: [{ ...mockSession.roles[0], role: 'finance', actions: ['allocation:save'], scopeStoreIds: ['store-1'] }] })
+    ;(db.execute as any).mockResolvedValueOnce([oldPay])
+    ;(hasPendingRefund as any).mockResolvedValueOnce(true)
+    const result = await savePaymentAllocations(7, [])
+    expect(result.message).toContain('退款审批中')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('直接删除冻结回款分配也被拒绝', async () => {
+    ;(db.execute as any).mockResolvedValueOnce([{ sale_item_id: 'item-1', is_void: false, paid_at: oldPay.paid_at, store_id: 'store-1' }])
+    ;(db.select as any)
+      .mockImplementationOnce(makeSelectChain([{ saleOrderId: 'order-1' }]))
+      .mockImplementationOnce(makeSelectChain([{ storeId: 'store-1' }]))
+    const result = await deleteAllocation(9)
+    expect(result.message).toContain('已冻结')
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
+  it.each(['finance', 'admin'] as const)('%s 可删除冻结回款的分配并留下日志', async (role) => {
+    ;(getSession as any).mockResolvedValue({
+      ...mockSession,
+      roles: [{ role, scopeId: 'store-1', scopeType: '门店', actions: ['allocation:save'], scopeStoreIds: ['store-1'], scopeOrgNodeIds: ['store-1'] }],
+    })
+    ;(isAdminScope as any).mockReturnValue(role === 'admin')
+    ;(db.execute as any)
+      .mockResolvedValueOnce([{ sale_item_id: 'item-1', is_void: false, paid_at: oldPay.paid_at, store_id: 'store-1' }])
+      .mockResolvedValueOnce([{ sale_order_id: 'order-1' }])
+    if (role === 'finance') {
+      ;(db.select as any)
+        .mockImplementationOnce(makeSelectChain([{ saleOrderId: 'order-1' }]))
+        .mockImplementationOnce(makeSelectChain([{ storeId: 'store-1' }]))
+    }
+    ;(db.update as any).mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }) })
+    const result = await deleteAllocation(9)
+    expect(result.success).toBe(true)
+    expect(logOperation).toHaveBeenCalledOnce()
   })
 })
 

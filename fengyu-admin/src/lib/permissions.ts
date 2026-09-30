@@ -71,7 +71,7 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
   // legacy_order 核对四项（approve/reject/update_amount/update_phone）、product:list、operation_log:list。
   // service:list — 营业额分配页含服务提成部分，finance 只读对账需看全。商户档案 /merchants 完整 CRUD。
   finance: [
-    'allocation:list',
+    'allocation:list', 'allocation:save',
     'card_transaction:list',
     'commission:create', 'commission:list', 'commission:update',
     'coupon:list',

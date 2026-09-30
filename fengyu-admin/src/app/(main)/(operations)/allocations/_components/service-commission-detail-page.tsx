@@ -6,7 +6,7 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Select } from "@/components/ui/select"
 import { Input } from "@/components/ui/input"
-import { StatusBadge } from "@/components/ui/badge"
+import { Badge, StatusBadge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
 import { batchSaveServiceCommissions } from "@/actions/service-commissions"
 import type { ServiceOrder, ServiceCommission, AllocationEmployeeCandidate, CommissionRate, SkillTag } from "@/lib/types"
@@ -196,6 +196,7 @@ export default function ServiceCommissionDetailPageClient({
   commissionRates = [],
   skillTags = [],
   canSave = false,
+  frozen = false,
 }: {
   serviceOrder: ServiceOrder
   serviceItems: ServiceItemDetail[]
@@ -204,6 +205,7 @@ export default function ServiceCommissionDetailPageClient({
   commissionRates?: CommissionRate[]
   skillTags?: SkillTag[]
   canSave?: boolean
+  frozen?: boolean
 }) {
   const allActiveEmployees = useMemo(
     () => sortAllocationEmployeeCandidates(employees.filter((e) => !e.isResigned)),
@@ -323,6 +325,10 @@ export default function ServiceCommissionDetailPageClient({
             <div>
               <span className="text-[#999999]">状态</span>
               <p className="mt-1"><StatusBadge status={serviceOrder.status} /></p>
+            </div>
+            <div>
+              <span className="text-[#999999]">提成分配</span>
+              <p className="mt-1">{frozen ? <Badge variant="outline">已冻结</Badge> : '可分配'}</p>
             </div>
             <div>
               <span className="text-[#999999]">美容师</span>

@@ -393,6 +393,13 @@
       "when": 1790673195829,
       "tag": "0055_inventory_location_identity_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1790758190587,
+      "tag": "0056_allocation_finance_save",
+      "breakpoints": true
     }
   ]
 }
