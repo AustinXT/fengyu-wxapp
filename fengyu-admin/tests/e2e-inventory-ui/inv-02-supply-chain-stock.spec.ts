@@ -57,30 +57,32 @@ test('INV-02：门禁 fail-closed → 开闸 → 供应链备货', async ({ brow
     await dialog.accept('').catch(() => dialog.dismiss().catch(() => null))
   })
 
+  let gateNeedsReopen = false
   try {
     await login(page, INVT_ACCOUNTS.ADM.phone, INVT_PASS)
 
     // ══ A. 门禁关闭态：写入必须被拒 ════════════════════════════════
     console.log('[INV-02] A: 关闸并验证 fail-closed')
     closeCutoverGate()
+    gateNeedsReopen = true
     recordVerdict(verdicts, 'gate: 已置为关闭态', readCutoverStatus() === '待初始化', readCutoverStatus())
 
-    const docsBefore = Number(psql(`SELECT count(*) FROM inventory_docs`))
     const gateToast = await createOverflowDoc(page, inv01.supplySkuName, GATE_PROBE_REMARK)
 
-    const docsAfterBlocked = Number(psql(`SELECT count(*) FROM inventory_docs`))
+    // 共享 dev 库会有其它测试建单；只核对本轮唯一备注的门禁探针。
+    const gateProbeRows = Number(psql(`SELECT count(*) FROM inventory_docs WHERE remark = ${sqlStr(GATE_PROBE_REMARK)}`))
     recordVerdict(
       verdicts,
       'gate: 关闭态下建单未落库（fail-closed 生效）',
-      docsAfterBlocked === docsBefore,
-      `before=${docsBefore} after=${docsAfterBlocked}`,
+      gateProbeRows === 0,
+      `本轮探针匹配单据数=${gateProbeRows}`,
     )
     // 报告只消费本轮实际可见反馈，不再转述历史上的原生 alert 结论。
     const gateVisibleText = gateToast || nativeDialogs.map((d) => d.message).join(' / ')
     const gateError = {
       at: new Date().toISOString(),
       page: '/inventory/docs → 新建库存单据（期初门禁）',
-      blocked: docsAfterBlocked === docsBefore,
+      blocked: gateProbeRows === 0,
       visibleText: gateVisibleText,
     }
     writeCtx('inv02_gate', gateError)
@@ -101,6 +103,7 @@ test('INV-02：门禁 fail-closed → 开闸 → 供应链备货', async ({ brow
     // ══ B. 开闸后同一张单应成功 ═══════════════════════════════════
     console.log('[INV-02] B: 开闸')
     openCutoverGate()
+    gateNeedsReopen = false
     recordVerdict(verdicts, 'gate: 已开闸', readCutoverStatus() === '已初始化', readCutoverStatus())
 
     await page.reload()
@@ -261,6 +264,8 @@ test('INV-02：门禁 fail-closed → 开闸 → 供应链备货', async ({ brow
     })
     console.log(`[INV-02] 原生弹窗累计捕获 ${nativeDialogs.length} 个:`, JSON.stringify(nativeDialogs))
   } finally {
+    // A 段断言或 UI 失败也要恢复 dev 门禁，否则其它验收会被本测试阻塞。
+    if (gateNeedsReopen) openCutoverGate()
     await ctx.close()
     summarize(2, verdicts)
   }
@@ -366,8 +371,8 @@ async function createOverflowDoc(
   await dialog.getByPlaceholder('数量').fill('10')
 
   await dialog.getByRole('button', { name: '提交' }).click()
-  // 成功则弹窗关闭；失败反馈可能走 toast 或原生 dialog。
-  await page.waitForTimeout(3000)
+  // 等待反馈完成后读取；固定睡 3 秒可能在慢响应时把空白误作当前反馈。
+  await page.locator('[data-sonner-toast]').first().waitFor({ state: 'visible', timeout: 10_000 }).catch(() => null)
   const toastText = (await page.locator('[data-sonner-toast]').first().innerText().catch(() => '')).trim()
   await page.keyboard.press('Escape').catch(() => null)
   return toastText

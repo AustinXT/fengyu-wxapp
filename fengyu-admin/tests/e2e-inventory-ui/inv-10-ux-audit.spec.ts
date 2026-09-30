@@ -218,7 +218,7 @@ test('INV-10：交互合理性扫描 → UX-FINDINGS.md', async ({ browser }) =>
     const lotEvidence = `INV-05 判定 lotLoadingOk=${String(inv05?.lotLoadingOk)} / 来源在手量=${inv05?.sourceOnHandQty ?? '(未记)'} / 下拉可用=${String(inv05?.lotEnabled)} / option 数=${inv05?.lotOptionCount ?? '(未记)'}，本轮建出通用单据 ${lotDocs?.length ? lotDocs.join(' / ') : '(无)'}，写于 ${inv05?.at ?? '(缺失)'}`
     if (inv05?.lotLoadingOk == null || inv05.sourceOnHandQty == null) {
       findings.push({
-        rule: '批次下拉状态未覆盖（本轮未跑 INV-05 或判定未执行）',
+        rule: '批次下拉状态未覆盖（缺判定或来源库存）',
         severity: 'P2',
         page: '/inventory/docs → 新建库存单据（来源批次）',
         detail: inv05?.sourceOnHandQty === 0 ? '来源门店当轮没有在手批次，空下拉是预期结果，需备齐库存后重跑 INV-05 才能判断加载故障' : '本轮缺少 INV-05 判定或来源库存证据，不能判断 #129 是否回归',
@@ -425,7 +425,7 @@ test('INV-10：交互合理性扫描 → UX-FINDINGS.md', async ({ browser }) =>
       '',
       `> 目标：${BASE}（dev 环境 fengyu-admin）`,
       `> 生成时间：${now}`,
-      `> 生成方式：\`bun run test:e2e:inventory-ui\` 中的 \`inv-10-ux-audit.spec.ts\` 自动扫描 + 链路测试中的实测发现`,
+      '> 生成方式：`inv-10-ux-audit.spec.ts` 自动扫描；链路证据以本报告对应 ctx 判定为准，未运行的链路列为未覆盖',
       '',
       `**共 ${findings.length} 条：P0 ${counts.P0} · P1 ${counts.P1} · P2 ${counts.P2}**`,
       '',

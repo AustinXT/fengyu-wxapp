@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { checkBusinessErrorProbe, checkForeignKeyInputs } from './ux-audit'
+import { checkBusinessErrorProbe, checkForeignKeyInputs, lotLoadingVerdict } from './ux-audit'
 
 const now = Date.parse('2026-09-30T08:00:00.000Z')
 const page = '/inventory/docs → 新建库存单据（期初门禁）'
@@ -31,5 +31,13 @@ describe('INV-10 审计证据', () => {
     expect(checkBusinessErrorProbe({ at: new Date(now - 7 * 3600_000).toISOString(), page,
       blocked: true, visibleText: 'digest 1956068727' }, now)[0])
       .toMatchObject({ severity: 'P2', rule: '业务错误提示证据过期未复核' })
+  })
+
+  it('未捕获反馈不报脱敏，零库存不报批次加载故障', () => {
+    expect(checkBusinessErrorProbe({ at: new Date(now).toISOString(), page, blocked: true,
+      visibleText: '' }, now)[0]).toMatchObject({ severity: 'P2', rule: '业务错误提示无法判定' })
+    expect(lotLoadingVerdict(0, true, 1)).toBeNull()
+    expect(lotLoadingVerdict(10, false, 1)).toBe(false)
+    expect(lotLoadingVerdict(10, true, 2)).toBe(true)
   })
 })
