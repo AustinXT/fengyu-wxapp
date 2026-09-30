@@ -33,6 +33,13 @@ try {
     productType: '家居产品', quantity: 2, totalAmount: 200, status: '已支付',
     salesCategory: '他销他耗',
   })
+  const localOrderId = `${NS}_XHOME_LOCAL`
+  const local = await createTestSaleOrder({
+    saleOrderId: localOrderId, clientUserId: TEST_CLIENT_USER_ID,
+    storeId: TEST_STORE_ID, skuId: home.skuId, productName: home.specName,
+    productType: '家居产品', quantity: 1, totalAmount: 100, status: '已支付',
+    salesCategory: '他销他耗',
+  })
 
   const candidates = await invokeStaffApi('order.customerHeldCards', {
     _testOpenid: TEST_MANAGER_OPENID, clientUserId: TEST_CLIENT_USER_ID,
@@ -42,14 +49,18 @@ try {
     || Number(card.deductibleAmount) !== 200) {
     throw new Error('原店未提货家居产品未按 ¥200 进入现店转换候选')
   }
+  if (!candidates.data?.cards?.some((item) => item.saleItemId === local.saleItemId
+    && item.storeId === TEST_STORE_ID)) {
+    throw new Error('本店权益未与跨店权益同时进入转换候选')
+  }
 
   const created = await invokeStaffApi('order.createConversion', {
     _testOpenid: TEST_MANAGER_OPENID, clientUserId: TEST_CLIENT_USER_ID,
-    convertOutSaleItemIds: [source.saleItemId],
+    convertOutSaleItemIds: [source.saleItemId, local.saleItemId],
     convertInItems: [{ skuId: target.skuId, quantity: 1 }],
     paymentMethod: '线下', remark: 'e2e-cross-store-home',
   })
-  if (created.code !== 0 || Number(created.data.priceDiff) !== -150) {
+  if (created.code !== 0 || Number(created.data.priceDiff) !== -250) {
     throw new Error(`跨店家居转换失败：${created.message}`)
   }
   const orderId = created.data.saleOrderId
@@ -68,6 +79,13 @@ try {
   if (after[0]?.store_id !== sourceStoreId || Number(after[0]?.converted_quantity) !== 2) {
     throw new Error('原店家居来源行未按两件完成转换')
   }
+  const localAfter = await pgQuery(
+    `SELECT store_id, converted_quantity FROM sale_items WHERE sale_item_id = $1`,
+    [local.saleItemId],
+  )
+  if (localAfter[0]?.store_id !== TEST_STORE_ID || Number(localAfter[0]?.converted_quantity) !== 1) {
+    throw new Error('本店权益与跨店权益混选后未正确扣减')
+  }
 
   await pgQuery(`UPDATE sale_orders SET status = '待支付' WHERE sale_order_id = $1`, [orderId])
   const closed = await invokeStaffApi('order.close', {
@@ -80,6 +98,11 @@ try {
   if (closed.code !== 0 || restored[0]?.store_id !== sourceStoreId
     || Number(restored[0]?.converted_quantity) !== 0) {
     throw new Error(`跨店家居转换关单回滚失败：${closed.message}`)
+  }
+  const localRestored = await pgQuery(
+    `SELECT converted_quantity FROM sale_items WHERE sale_item_id = $1`, [local.saleItemId])
+  if (Number(localRestored[0]?.converted_quantity) !== 0) {
+    throw new Error('混选转换关单后本店权益未恢复')
   }
 
   // 仅付 ¥50、未达单件 ¥100 的权益仍要按已付余额折抵。
@@ -114,7 +137,7 @@ try {
     throw new Error(`不足单件单价的已付余额转换失败：${partialConversion.message}`)
   }
   passed = true
-  console.log('PASS — 跨店未提货家居：候选、折抵、原新单归属、关单回滚、不足单价的已付余额')
+  console.log('PASS — 跨店未提货家居：本店混选、原新单归属、关单回滚、不足单价的已付余额')
 } catch (err) {
   console.error('FAIL —', err)
 } finally {
