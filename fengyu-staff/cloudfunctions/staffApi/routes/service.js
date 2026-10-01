@@ -82,6 +82,9 @@ async function create(ctx) {
     }
   }
 
+  // 每张卡必须属于所选顾客；来源门店可不同，权益仍只能由当前归属门店的顾客使用。
+  const itemOwners = new Set()
+  const unownedItems = []
   // 验证订单行
   for (const item of normalizedItems) {
     if (!item.saleItemId) {
@@ -119,6 +122,8 @@ async function create(ctx) {
     }
 
     const si = saleItemRows[0]
+    if (si.client_user_id) itemOwners.add(si.client_user_id)
+    else unownedItems.push(si.client_phone)
 
     // 订单状态门槛（ticket 2026-05-19 D2=A）：允许 已支付 / 部分支付 两种状态消费
     if (!['已支付', '部分支付'].includes(si.order_status)) {
@@ -169,16 +174,14 @@ async function create(ctx) {
     }
   }
 
-  if (!resolvedClientUserId && normalizedItems.length > 0) {
-    const orderRow = await pg.query(
-      'SELECT o.client_user_id FROM sale_items si INNER JOIN sale_orders o ON si.sale_order_id = o.sale_order_id WHERE si.sale_item_id = $1',
-      [normalizedItems[0].saleItemId]
-    )
-    if (orderRow.length > 0 && orderRow[0].client_user_id) {
-      resolvedClientUserId = orderRow[0].client_user_id
-    }
+  // 首行可能没有顾客 ID；只要其他来源行给出唯一 owner，就以其做绑定店校验。
+  if (!resolvedClientUserId && itemOwners.size === 1) {
+    resolvedClientUserId = itemOwners.values().next().value
   }
 
+  if (itemOwners.size > 1 || (resolvedClientUserId && itemOwners.size > 0 && !itemOwners.has(resolvedClientUserId))) {
+    throw new Error('PERMISSION_DENIED: 所选疗程项目不属于当前顾客')
+  }
   // 校验：同一顾客只能有一个进行中的服务单（含待客户确认，与 uq_so_client_active 索引谓词一致）
   if (resolvedClientUserId) {
     const activeSo = await pg.query(
@@ -195,9 +198,15 @@ async function create(ctx) {
   let serviceOrderType = '售前'
   if (resolvedClientUserId) {
     const cuRows = await pg.query(
-      'SELECT became_member_at, bound_store_id FROM client_wechat_users WHERE user_id = $1',
+      'SELECT became_member_at, bound_store_id, phone FROM client_wechat_users WHERE user_id = $1',
       [resolvedClientUserId]
     )
+    // 历史单没有 client_user_id 时，以订单手机号和已解析顾客的手机号逐行比对；
+    // 无手机号或不一致均不能借外店卡开单。
+    if (unownedItems.length > 0 && (!cuRows[0]?.phone
+      || !unownedItems.every((phone) => phone && phone === cuRows[0].phone))) {
+      throw new Error('PERMISSION_DENIED: 所选疗程项目缺少可核对的顾客归属')
+    }
     // 疗程卡使用限当前绑定门店：开单门店必须 == 顾客绑定门店（卡跟顾客走、只能用在绑定门店）
     if (cuRows[0]?.bound_store_id !== ctx.auth.effectiveStoreId) {
       throw new Error('INVALID_PARAMS: 顾客当前绑定门店非本门店，疗程卡只能在其绑定门店核销/开单')

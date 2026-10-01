@@ -45,6 +45,7 @@ describe('service.create', () => {
       }])
       // 顾客无进行中的服务单
       .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ became_member_at: null, bound_store_id: 'store-001', phone: '13800001111' }])
 
     // 单一 transaction：generateServiceOrderId（advisory lock + SELECT 最大 ID）+ INSERT 服务单 + 服务明细
     pg.transaction.mockImplementationOnce(async (cb) => {
@@ -67,6 +68,122 @@ describe('service.create', () => {
     expect(ctx.result.serviceOrderId).toMatch(/^HLD-WX-\d{6}\d{4}$/)
     expect(ctx.result.status).toBe('待服务')
     expect(pg.transaction).toHaveBeenCalled()
+  })
+
+  test('原店寄存疗程可在顾客当前归属门店开服务单', async () => {
+    const ctx = createManagerCtx({
+      clientUserId: 'client-001',
+      items: [{ saleItemId: 'held-other-store', sessionUsed: 1 }],
+    })
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_item_id: 'held-other-store', session_count: 1, remaining_sessions: 1,
+        paid_sessions: 1, product_type: '疗程卡', order_status: '已支付',
+        store_id: 'source-store', client_user_id: 'client-001', has_pending_refund: false,
+      }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ became_member_at: null, bound_store_id: 'store-001' }])
+    let insertOrderParams
+    pg.transaction.mockImplementationOnce(async (cb) => {
+      const client = { query: vi.fn(async (sql, params) => {
+        if (sql.includes('pg_advisory_xact_lock')) return { rows: [], rowCount: 0 }
+        if (sql.includes('FROM service_orders') && sql.includes('LIKE $1')) return { rows: [], rowCount: 0 }
+        if (sql.includes('INSERT INTO service_orders')) insertOrderParams = params
+        return { rows: [{ unit_real_price: 100 }], rowCount: 1 }
+      }) }
+      return await cb(client)
+    })
+
+    await serviceRoutes.create(ctx)
+    expect(ctx.result.status).toBe('待服务')
+    expect(insertOrderParams[3]).toBe('store-001')
+    expect(insertOrderParams[7]).toBe('client-001')
+  })
+
+  test('拒绝把他人原店卡混入当前顾客服务单', async () => {
+    const ctx = createManagerCtx({
+      clientUserId: 'client-001',
+      items: [{ saleItemId: 'other-customer-card', sessionUsed: 1 }],
+    })
+    pg.query.mockResolvedValueOnce([{
+      sale_item_id: 'other-customer-card', session_count: 1, remaining_sessions: 1,
+      paid_sessions: 1, product_type: '疗程卡', order_status: '已支付',
+      store_id: 'source-store', client_user_id: 'client-002', has_pending_refund: false,
+    }])
+
+    await expect(serviceRoutes.create(ctx)).rejects.toThrow(/PERMISSION_DENIED.*不属于当前顾客/)
+    expect(pg.transaction).not.toHaveBeenCalled()
+  })
+
+  test('拒绝把两名顾客的疗程项目混入同一服务单', async () => {
+    const ctx = createManagerCtx({
+      clientUserId: 'client-001',
+      items: [
+        { saleItemId: 'card-1', sessionUsed: 1 },
+        { saleItemId: 'card-2', sessionUsed: 1 },
+      ],
+    })
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_item_id: 'card-1', session_count: 1, remaining_sessions: 1,
+        paid_sessions: 1, product_type: '疗程卡', order_status: '已支付',
+        store_id: 'source-store', client_user_id: 'client-001',
+      }])
+      .mockResolvedValueOnce([{
+        sale_item_id: 'card-2', session_count: 1, remaining_sessions: 1,
+        paid_sessions: 1, product_type: '疗程卡', order_status: '已支付',
+        store_id: 'store-001', client_user_id: 'client-002',
+      }])
+
+    await expect(serviceRoutes.create(ctx)).rejects.toThrow(/PERMISSION_DENIED.*不属于当前顾客/)
+    expect(pg.transaction).not.toHaveBeenCalled()
+  })
+
+  test('拒绝把未挂顾客的原店历史卡指定给任意现店顾客', async () => {
+    const ctx = createManagerCtx({
+      clientUserId: 'client-001',
+      items: [{ saleItemId: 'legacy-card', sessionUsed: 1 }],
+    })
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_item_id: 'legacy-card', session_count: 1, remaining_sessions: 1,
+        paid_sessions: 1, product_type: '疗程卡', order_status: '已支付',
+        store_id: 'source-store', client_user_id: null, client_phone: null,
+      }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ phone: '13800001111', bound_store_id: 'store-001' }])
+
+    await expect(serviceRoutes.create(ctx)).rejects.toThrow(/PERMISSION_DENIED.*缺少可核对的顾客归属/)
+    expect(pg.transaction).not.toHaveBeenCalled()
+  })
+
+  test('历史原店卡无顾客 ID 但手机号匹配时可在现归属店开单', async () => {
+    const ctx = createManagerCtx({
+      clientUserId: 'client-001',
+      items: [{ saleItemId: 'legacy-card', sessionUsed: 1 }],
+    })
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_item_id: 'legacy-card', session_count: 1, remaining_sessions: 1,
+        paid_sessions: 1, product_type: '疗程卡', order_status: '已支付',
+        store_id: 'source-store', client_user_id: null, client_phone: '13800001111',
+      }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{
+        phone: '13800001111', became_member_at: null, bound_store_id: 'store-001',
+      }])
+    pg.transaction.mockImplementationOnce(async (cb) => {
+      const client = { query: vi.fn(async (sql) => {
+        if (sql.includes('pg_advisory_xact_lock')) return { rows: [], rowCount: 0 }
+        if (sql.includes('FROM service_orders') && sql.includes('LIKE $1')) return { rows: [], rowCount: 0 }
+        return { rows: [{ unit_real_price: 100 }], rowCount: 1 }
+      }) }
+      return await cb(client)
+    })
+
+    await serviceRoutes.create(ctx)
+    expect(ctx.result.status).toBe('待服务')
+    expect(pg.transaction).toHaveBeenCalledOnce()
   })
 
   test('创建服务单时持久化自定义备注并写入备注审计摘要', async () => {
@@ -145,8 +262,7 @@ describe('service.create', () => {
         product_type: '疗程卡', order_status: '已支付', store_id: 'store-001',
         client_user_id: 'cu-001', client_phone: '138',
       }])
-      // 2. resolvedClientUserId 从 order 获取（L130-136）
-      .mockResolvedValueOnce([{ client_user_id: 'cu-001' }])
+      // 2. 单行联表已给出 client_user_id，无需重复查询来源单
       // 3. 无进行中服务单
       .mockResolvedValueOnce([])
       // 4. became_member + bound_store_id（绑定门店校验：== effectiveStoreId）
@@ -2003,7 +2119,7 @@ describe('service.create clientUserId 解析', () => {
       // 顾客无进行中的服务单
       .mockResolvedValueOnce([])
       // became_member + bound_store_id（绑定门店校验：== effectiveStoreId）
-      .mockResolvedValueOnce([{ became_member_at: null, bound_store_id: 'store-001' }])
+      .mockResolvedValueOnce([{ became_member_at: null, bound_store_id: 'store-001', phone: '13800001111' }])
 
     // 单一 transaction：generateServiceOrderId + INSERT 服务单 + 服务明细
     pg.transaction.mockImplementationOnce(async (cb) => {
@@ -2030,7 +2146,7 @@ describe('service.create clientUserId 解析', () => {
     expect(ctx.result.status).toBe('待服务')
   })
 
-  test('从 sale_orders 兜底解析 clientUserId', async () => {
+  test('未传顾客时从来源订单行解析 clientUserId', async () => {
     const ctx = createManagerCtx({
       // 不传 clientUserId 也不传 clientPhone
       items: [{ saleItemId: 'item-001', sessionUsed: 1 }],
@@ -2045,11 +2161,9 @@ describe('service.create clientUserId 解析', () => {
         product_type: '疗程卡',
         order_status: '已支付',
         store_id: 'store-001',
-        client_user_id: null,
+        client_user_id: 'fallback-user',
         client_phone: null,
       }])
-      // 从 sale_orders 兜底获取 client_user_id
-      .mockResolvedValueOnce([{ client_user_id: 'fallback-user' }])
       // 顾客无进行中的服务单
       .mockResolvedValueOnce([])
       // became_member + bound_store_id（绑定门店校验：== effectiveStoreId）
