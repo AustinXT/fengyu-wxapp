@@ -23,6 +23,7 @@ import { exportInventoryLots } from '@/actions/inventory/stocks'
 import { exportInventoryMovements } from '@/actions/inventory/movements'
 import { exportPendingReceipts } from '@/actions/inventory/pending-receipts'
 import { exportMarketReportSummarySources } from '@/actions/inventory/docs'
+import { exportSettlementSegmentDetails } from '@/actions/inventory/settlements'
 import { exportPickupRecords } from '@/actions/pickup-records'
 import { getSalesBoard } from '@/actions/data-center/sales'
 import { getCustomerBoard } from '@/actions/data-center/customer'
@@ -563,6 +564,32 @@ const marketReportSummarySourceColumns = (canViewPrice: boolean) => mapColumns([
   { header: '福利方案', width: 16, key: 'promotionPlanNo' },
 ])
 
+// 货款结算明细（#349）：整段导出（一个会计期间跨多个市场主体），退货行金额为负、原样带出。
+const settlementDetailColumns = (segment: 'market' | 'store') => mapColumns([
+  { header: segment === 'market' ? '市场' : '配货市场', width: 20, key: 'marketName' },
+  { header: segment === 'market' ? '供应链主体' : '门店', width: 20, key: 'partyName' },
+  { header: segment === 'market' ? '报货日期' : '配货日期', width: 14, key: 'effectiveDate' },
+  { header: '单号', width: 26, key: 'docId' },
+  { header: '单据类型', width: 14, key: 'docType' },
+  { header: '商品', width: 28, key: 'skuName' },
+  { header: '规格', width: 16, key: 'specName' },
+  ...(segment === 'store' ? [{ header: '批号', width: 16, key: 'batchNo' }] : []),
+  { header: '数量', width: 10, key: 'quantity', map: (row) => numberOrEmpty(row, 'quantity') },
+  ...(segment === 'market'
+    ? [
+        { header: '市场单价', width: 14, key: 'marketStandardUnitPrice', map: (row: Row) => numberOrEmpty(row, 'marketStandardUnitPrice') },
+        { header: '单价优惠', width: 14, key: 'marketUnitDiscount', map: (row: Row) => numberOrEmpty(row, 'marketUnitDiscount') },
+        { header: '实际单价', width: 14, key: 'marketActualUnitPrice', map: (row: Row) => numberOrEmpty(row, 'marketActualUnitPrice') },
+      ]
+    : [
+        { header: '门店进货价', width: 14, key: 'storeStandardUnitPrice', map: (row: Row) => numberOrEmpty(row, 'storeStandardUnitPrice') },
+        { header: '优惠', width: 12, key: 'storeUnitDiscount', map: (row: Row) => numberOrEmpty(row, 'storeUnitDiscount') },
+        { header: '实际单价', width: 14, key: 'storeActualUnitPrice', map: (row: Row) => numberOrEmpty(row, 'storeActualUnitPrice') },
+      ]),
+  { header: segment === 'market' ? '金额' : '应付', width: 14, key: 'signedAmount', map: (row) => numberOrEmpty(row, 'signedAmount') },
+  ...(segment === 'store' ? [{ header: '赠送', width: 10, key: 'isGift', map: (row: Row) => boolLabel(row, 'isGift') }] : []),
+])
+
 const inventoryMovementColumns = mapColumns([
   { header: '时间', width: 20, key: 'createdAt' },
   { header: '单据类型', width: 16, key: 'docType' },
@@ -968,6 +995,24 @@ export async function createExportContent(
         sheetName: '提货记录',
         columns: pickupRecordColumns,
         rows: pagedRows((options: ExportBatchOptions<number>) => exportPickupRecords(params, options)),
+      }
+    case 'settlement-market-details':
+      return {
+        sheetName: '市场结算明细',
+        columns: settlementDetailColumns('market'),
+        rows: pagedRows((options: ExportBatchOptions<string>) => exportSettlementSegmentDetails(
+          { segment: 'market', startDate: params.start, endDate: params.end, market: params.market },
+          options,
+        )),
+      }
+    case 'settlement-store-details':
+      return {
+        sheetName: '分院结算明细',
+        columns: settlementDetailColumns('store'),
+        rows: pagedRows((options: ExportBatchOptions<string>) => exportSettlementSegmentDetails(
+          { segment: 'store', startDate: params.start, endDate: params.end, market: params.market },
+          options,
+        )),
       }
     case 'market-report-summary-sources': {
       // 价格档从首页批次带回（不从行数据反推：首页恰无价时会误判成"档位不可见"）
