@@ -72,7 +72,7 @@ describe('auth 注入 staffLevel / scopeStoreIds / roleBindings', () => {
     expect(ctx.auth.loginLevel).toBe('store')
   })
 
-  test('市场 hr 无可见门店 → 不开放空的管理层视图', async () => {
+  test('市场 hr 无可见门店且无 dashboard 权限 → 不开放管理层视图', async () => {
     cloud.getWXContext.mockReturnValue({ OPENID: 'openid-market' })
     pg.query
       .mockResolvedValueOnce([{
@@ -100,6 +100,34 @@ describe('auth 注入 staffLevel / scopeStoreIds / roleBindings', () => {
     expect(ctx.auth.scopeStoreIds).toEqual([])
     expect(ctx.auth.loginLevel).toBeNull()
     expect(ctx.auth.effectiveStoreId).toBeNull()
+  })
+
+  test('零门店市场账号有 dashboard 权限 → 默认和显式管理层均可登录', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'openid-market' })
+    pg.query.mockReset().mockImplementation(async (sql) => {
+      if (/FROM\s+staff_wechat_users\s+u/.test(sql)) {
+        return [{ employee_id: 'emp-mk', phone: '13800002222', name: 'MK', position_name: '市场员',
+          store_id: null, is_resigned: false, skills: null, store_name: null, market_name: null, department: null }]
+      }
+      if (/FROM\s+permission_roles\s+pr/.test(sql)) {
+        return [{ role: 'hr', scope_id: 'm1', scope_type: '市场' }]
+      }
+      if (/FROM\s+permission_role_definitions/.test(sql)) {
+        return [{ role_key: 'hr', actions: ['data_center:dashboard'] }]
+      }
+      return []
+    })
+
+    for (const event of [{}, { payload: { _loginLevel: 'management' } }]) {
+      const ctx = { event, context: {}, auth: {}, result: null }
+      await auth(ctx, async () => {})
+      expect(ctx.auth.staffLevel).toBe('market')
+      expect(ctx.auth.scopeStoreIds).toEqual([])
+      expect(ctx.auth.roleBindings).toEqual(expect.arrayContaining([expect.objectContaining({ scopeId: 'm1', scopeType: '市场' })]))
+      expect(ctx.auth.hasDataCenterDashboard).toBe(true)
+      expect(ctx.auth.loginLevel).toBe('management')
+      expect(ctx.auth.effectiveStoreId).toBeNull()
+    }
   })
 
   test('门店 manager → loginLevel=store, effectiveStoreId=scopeStoreIds[0]', async () => {
