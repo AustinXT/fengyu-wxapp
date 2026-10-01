@@ -596,8 +596,8 @@ async function queryTrialFootfall(scopeType, scopeId, period) {
             AND so.client_user_id IS NOT NULL
             AND so.service_date BETWEEN ${startDateExpr(period)} AND ${endDateExpr(period)}
             AND (
-              c.customer_type IN ('体验客', '小美客')
-              OR c.became_member_at::date BETWEEN ${startDateExpr(period)} AND ${endDateExpr(period)}
+              (c.became_member_at IS NULL AND c.customer_type IN ('体验客', '小美客'))
+              OR c.became_member_at::date >= ${startDateExpr(period)}
             )
           UNION
          SELECT c.user_id AS uid

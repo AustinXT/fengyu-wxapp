@@ -182298,7 +182298,7 @@ async function queryTrialFootfall(session4, scope, range) {
   const rows = await db2.execute(import_drizzle_orm71.sql`
     SELECT COUNT(DISTINCT t.uid) AS v
     FROM (
-      -- ① 本期到店 且 期初未达会员（当前仍未达会员 OR 本期内才转化）
+      -- ① 本期到店 且 期初未达会员（之后才转会员者仍属历史到店池）
       SELECT so.client_user_id AS uid
       FROM service_orders so
       JOIN client_wechat_users c ON c.user_id = so.client_user_id
@@ -182307,8 +182307,8 @@ async function queryTrialFootfall(session4, scope, range) {
         AND so.client_user_id IS NOT NULL
         AND so.service_date BETWEEN ${range.start} AND ${range.end}
         AND (
-          c.customer_type IN ('体验客', '小美客')
-          OR c.became_member_at::date BETWEEN ${range.start} AND ${range.end}
+          (c.became_member_at IS NULL AND c.customer_type IN ('体验客', '小美客'))
+          OR c.became_member_at::date >= ${range.start}
         )
       UNION
       -- ② 本期全部新增会员（兜住本期无已完成服务单者，保证分子 ⊆ 分母）
@@ -182602,8 +182602,8 @@ async function queryOpsBreakdown(session4, scope, range, group, threshold) {
           AND so.client_user_id IS NOT NULL
           AND so.service_date BETWEEN ${start} AND ${end}
           AND (
-            c.customer_type IN ('体验客', '小美客')
-            OR c.became_member_at::date BETWEEN ${start} AND ${end}
+            (c.became_member_at IS NULL AND c.customer_type IN ('体验客', '小美客'))
+            OR c.became_member_at::date >= ${start}
           )
         UNION
         SELECT ${groupId} AS group_id, c.user_id AS uid

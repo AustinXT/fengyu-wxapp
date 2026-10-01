@@ -534,7 +534,7 @@ describe('mgmtTraffic.summary 新会员经营 + trialFootfall', () => {
     return pg.query.mock.calls.find((c) => /COUNT\(DISTINCT t\.uid\)/.test(c[0]))
   }
 
-  test('trialFootfall ① 到店活跃池：期初未达会员 = 当前仍未达会员 OR 本期内才转化', async () => {
+  test('trialFootfall ① 到店活跃池：期初未达会员包含区间之后转会员者', async () => {
     setupDefaultMocks()
     const ctx = makeHqCtx({ period: 'month', scopeType: 'all' })
     await summary(ctx)
@@ -549,10 +549,11 @@ describe('mgmtTraffic.summary 新会员经营 + trialFootfall', () => {
     // OR 缺失 = 回到「只升不降的当前快照」，本期已转化者被整体抹掉（#284 的原始缺陷）
     expect(
       trialSql,
-      '① 分支缺 became_member_at OR 分支 —— 本期已转化的人会被重新抹出分母',
+      '① 分支缺历史转会员分支 —— 之后转会员的人会被抹出分母',
     ).toMatch(
-      /c\.customer_type\s+IN\s*\('体验客',\s*'小美客'\)\s*OR\s+c\.became_member_at::date\s+BETWEEN/,
+      /c\.became_member_at\s+IS\s+NULL\s+AND\s+c\.customer_type\s+IN\s*\('体验客',\s*'小美客'\)\s*\)\s*OR\s+c\.became_member_at::date\s*>=/,
     )
+    expect(trialSql.split(/\bUNION\b/)[0]).not.toMatch(/c\.became_member_at::date\s+BETWEEN/)
   })
 
   test('trialFootfall ② 本期全部新增会员 UNION 进分母（保证分子 ⊆ 分母，成交率 ≤ 100%）', async () => {
