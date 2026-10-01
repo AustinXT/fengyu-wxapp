@@ -2,7 +2,7 @@
 
 - 状态：待迁移集成；分支 `feat/issue-365-market-suppliers`；业务检查点初版 `efe6a5191`，最终评审 SHA/PR 见 issue 评论与 PR。
 - 工作树：`.tree/feat/issue-365-market-suppliers`，本地验证/评审证据 `_tmp/issue-365/`。本条不生成正式迁移、不持开发令牌、不改 journal。正式 tag/hash：尚未生成。
-- 依赖：基于 origin/dev `528513d3f` 的 schema；集中集成先交接 #353 既有候选，避免旧 journal 撞号。此变更与标准价无业务依赖，正式编号/when 由集成生成器分配。工作流规则已随 `c97f8c0e7` 进入 dev；业务分支同步最新 dev `541d37848` 后独立送审。
+- 依赖：基于最新 origin/dev `9fec5940e` 的 schema；集中集成先交接 #353 既有候选，避免旧 journal 撞号。此变更与标准价无业务依赖，正式编号/when 由集成生成器分配。工作流规则已随 `c97f8c0e7` 进入 dev；业务分支已同步含 #349 的最新 dev `9fec5940e` 后重新验证/送审。
 - 变更目标：`inventory_suppliers.owner_market_id text NULL REFERENCES org_nodes(id)` 与归属索引；删除全局名称唯一 `uq_inventory_suppliers_name`，建立 `UNIQUE(name) WHERE owner_market_id IS NULL` 和 `UNIQUE(owner_market_id,name) WHERE owner_market_id IS NOT NULL`。schema 权威来源 `db/schema/inventory.ts`。
 - 候选 SQL：[issue-365.sql](issue-365.sql)。仅私有验证，带独立事务与 `SET LOCAL lock_timeout='3s'`，不写 Drizzle journal；集中集成须按 schema 生成正式迁移三件套并比较候选差量。正式 SQL 若改变须重放/复审。
 - 数据兼容：存量全部保留 NULL，含停用档案，UI 标「供应链共有」；不回填/重命名/删除数据。现有名称全局唯一意味着建两条 partial unique 不需去重。市场内启用/停用同样禁止重名，不同市场或市场/共有允许同名。`supplier_id` 外键、历史单据/批次冻结名不动。
