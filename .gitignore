@@ -25,6 +25,7 @@ fengyu-admin/src/generated/
 coverage/
 playwright-report/
 test-results/
+.playwright-mcp/
 .auth/
 .last-test-context.json
 .last-inventory-context.json
@@ -86,3 +87,6 @@ reports/
 # Python generated caches
 __pycache__/
 *.pyc
+
+# 本地待办笔记（不入 git）
+notes/backlog/
