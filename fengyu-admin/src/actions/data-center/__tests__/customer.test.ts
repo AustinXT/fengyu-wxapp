@@ -305,7 +305,7 @@ describe('getCustomerBoard 装配', () => {
   it('#289 新客客单价 KPI = (款项流水 + WorkFine 历史单) ÷ 会员新增，分母不变', async () => {
     const hits = { spe: 0, legacy: 0, count: 0 }
     responder.route = (t) => {
-      if (/became_member_at::date BETWEEN/.test(t) && /FROM sale_order_performance_events spe/.test(t) && !/WITH skel/.test(t)) {
+      if (/became_member_at::date BETWEEN/.test(t) && /FROM sale_reportable_payment_events spe/.test(t) && !/WITH skel/.test(t)) {
         hits.spe++
         return [{ v: 3000.1 }]
       }
@@ -330,7 +330,7 @@ describe('getCustomerBoard 装配', () => {
   it('#289 WorkFine 分支为 0（区间起点 ≥ 2026-08-02）时结果与只读款项流水一致', async () => {
     const hits = { spe: 0, legacy: 0, count: 0 }
     responder.route = (t) => {
-      if (/FROM sale_order_performance_events spe/.test(t) && /became_member_at::date BETWEEN/.test(t) && !/WITH skel/.test(t)) {
+      if (/FROM sale_reportable_payment_events spe/.test(t) && /became_member_at::date BETWEEN/.test(t) && !/WITH skel/.test(t)) {
         hits.spe++
         return [{ v: 2681683.5 }]
       }

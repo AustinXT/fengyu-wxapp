@@ -62,8 +62,8 @@ describe('数据起点业绩轴与销售板门店业绩同口径（字面量守�
     const startSource = read('./data-start-query.ts')
 
     expect(sets(block, 'spe\\.change_type')).toHaveLength(1)
-    expect(sets(startSource, 'p\\.change_type')).toEqual(sets(block, 'spe\\.change_type'))
-    expect(sets(startSource, 'so\\.sale_order_type')).toEqual(sets(block, 'spe\\.sale_order_type'))
+    expect(sets(startSource, 'spe\\.change_type')).toEqual(sets(block, 'spe\\.change_type'))
+    expect(sets(startSource, 'spe\\.sale_order_type')).toEqual(sets(block, 'spe\\.sale_order_type'))
   })
 
   it('已支付状态与 WorkFine 历史单排除两条谓词两边都在', () => {
@@ -72,8 +72,9 @@ describe('数据起点业绩轴与销售板门店业绩同口径（字面量守�
     const startSource = read('./data-start-query.ts')
 
     expect(block).toContain("spe.status = '已支付'")
-    expect(startSource).toContain("p.status = '已支付'")
+    expect(startSource).toContain("spe.status = '已支付'")
     expect(block).toContain("spe.legacy_source IS DISTINCT FROM 'workfine'")
-    expect(startSource).toContain("so.legacy_source IS DISTINCT FROM 'workfine'")
+    expect(startSource).toContain("spe.legacy_source IS DISTINCT FROM 'workfine'")
+    expect(startSource).toContain('spe.performance_amount <> 0')
   })
 })

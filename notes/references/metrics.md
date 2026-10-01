@@ -4,14 +4,25 @@
 > 字段格式：`表名.列名`；筛选条件标准缩写见底部。
 > **术语备注**：以下指标定义中出现的 `product_type='院装产品'` 字面量已于 2026-04-25 在 PG enum 中重命名为 `'家居产品'`，业务口径与代码同步。
 
+> **2026-10-01 #494 拓客业绩口径**：以下成文历史中的 `sale_order_performance_events.amount`、
+> `sale_item_performance_events.amount`、`sale_payment_item_allocations.allocated_amount` 仍是**原始资金/子项/员工分配事实**，
+> 凡指标名为「业绩」或以业绩为金额分子，改读 `sale_reportable_payment_events.performance_amount`、
+> `sale_reportable_item_events.performance_amount`，员工业绩按后者与 receipt 原金额之比缩放既有分配额。
+> `sale_items.product_kind_at_sale='拓客引流卡'` 的款项不计业绩；正负混合款按款项实收封顶，
+> 一笔 5000 元、普通子项 5168 元、拓客子项 −168 元的转换款计 5000 元，子项尾差吸收后逐分勾稽。
+> 无 receipt / receipt 净额为零的款项保留本笔业绩并归未分类；充值单保留原业绩，储值卡抵扣不计组织业绩。
+> 原始实付、退款、储值卡余额和**提成金额**不因此变化。老单的商品品项按迁移时分类回填一次，
+> 新单在下单时冻结；因此迁移会重算历史月份一次，未来商品改类不回溯已售订单。
+> 商品周期的历史残差没有对应款项，保留普通品项原归属日，拓客残差归零；它与现金款项单列对账。
+
 ---
 
 ## 业绩 / 实耗
 
 | 指标 | 公式 | 数据源 | 筛选条件 |
 |------|------|--------|----------|
-| 业绩（门店 / 市场 / 总部） | `SUM(spe.amount)` | `sale_order_performance_events spe` | `spe.status='已支付'` ∩ `spe.change_type IN ('首次支付','回款','退款')` ∩ `spe.sale_order_type IN ('销售单','转换单','充值单')` ∩ `spe.legacy_source IS DISTINCT FROM 'workfine'` ∩ `[spe.performance_date]` |
-| 生美业绩 | `SUM(sipe.amount)` | `sale_item_performance_events sipe` | JOIN sale_items + sale_orders；`sale_order_type IN ('销售单','转换单')` ∩ `is_shengmei=TRUE` ∩ `[sipe.performance_date]`；款项行不筛父单状态，残差行排除父单 `已关闭` |
+| 业绩（门店 / 市场 / 总部） | `SUM(spe.performance_amount)` | `sale_reportable_payment_events spe` | `spe.status='已支付'` ∩ `spe.change_type IN ('首次支付','回款','退款')` ∩ `spe.sale_order_type IN ('销售单','转换单','充值单')` ∩ `spe.legacy_source IS DISTINCT FROM 'workfine'` ∩ `[spe.performance_date]` |
+| 生美业绩 | `SUM(sipe.performance_amount)` | `sale_reportable_item_events sipe` | JOIN sale_items + sale_orders；`sale_order_type IN ('销售单','转换单')` ∩ `is_shengmei=TRUE` ∩ `[sipe.performance_date]`；款项行不筛父单状态，残差行排除父单 `已关闭` |
 | 实耗 | `SUM(unit_real_price * session_used)` | `service_items.unit_real_price` × `service_items.session_used` | JOIN service_orders；`status='已完成'` ∩ `[service_date]` |
 | 生美实耗 | `SUM(unit_real_price * session_used)` | 同上 | 加 `service_items.is_shengmei=TRUE` |
 
@@ -133,14 +144,14 @@
 
 | 指标（员工层） | 公式 | 归属字段 | 时间窗口 | 备注 |
 |------|------|---------|---------|------|
-| 业绩 | `SUM(spia.allocated_amount)` | `sale_payment_item_allocations.employee_id` | `[spe.performance_date_period]` | JOIN receipt + `sale_order_performance_events`；`is_void=FALSE` ∩ `sale_order_type IN ('销售单','转换单')` ∩ `spe.status='已支付'` |
+| 业绩 | `SUM(ROUND(spia.allocated_amount × sipe.performance_amount / NULLIF(spir.amount,0),2))` | `sale_payment_item_allocations.employee_id` | `[spe.performance_date_period]` | JOIN receipt + `sale_reportable_item_events`；`is_void=FALSE` ∩ `sale_order_type IN ('销售单','转换单')` ∩ `spe.status='已支付'`；零分母贡献 0 |
 | 实耗 | `SUM(service_items.unit_real_price * service_items.session_used * service_commissions.allocation_ratio)` | `service_commissions.employee_id` | `[service_date_period]` | `sc.is_void=FALSE` ∩ `service_orders.status='已完成'`；2026-09-03 归属变更见下 |
 | 客流 | `COUNT(DISTINCT service_orders.client_user_id)` | `service_commissions.employee_id` | `[service_date_period]` | 员工内去重，跨员工不去重；`sc.is_void=FALSE` ∩ `status='已完成'` ∩ `client_user_id IS NOT NULL` |
 | 项目数 | `SUM(session_used)`（先按 `(sc.employee_id, service_item_id)` DISTINCT） | `service_commissions.employee_id` | `[service_date_period]` | `sc.is_void=FALSE` ∩ `sales_category IN ('自销自耗','他销自耗')` ∩ `status='已完成'`；计数指标**不乘** `allocation_ratio` |
 | 新会员 | `COUNT(*)` | `client_wechat_users.bound_employee_id` | `[became_member_at_period]` | `became_member_at IS NOT NULL`；`bound_employee_id IS NULL` 的新会员不归属任何员工（与"无归属新会员"差额由监控关注） |
 | 收入 | 销售提成 + 服务提成 | 销售=`sale_payment_item_allocations.employee_id`；服务=`service_commissions.employee_id` | 销售按 `[spe.performance_date_period]`；服务按 `[service_date_period]` | `is_void=FALSE`；销售使用 `commission_amount`；服务使用 `service_commissions.commission_amount` |
 
-> **业绩 vs 收入区别**：业绩仅含销售部分（`sale_allocations`）；收入 = 销售 + 服务提成（`service_commissions`）。两者销售部分公式相同；收入因加服务提成而 ≥ 业绩。
+> **业绩 vs 收入区别**：业绩是剔除拓客的员工销售营业额份额；收入 = 原有销售提成 + 服务提成（`service_commissions`），提成金额不随本次报表业绩排除而变化，因此两者不可直接按比例比较。
 >
 > **2026-09-03 员工归属口径变更（实耗 / 客流 / 项目数）**：归属字段从 `service_items.employee_id`
 > 改为 `service_commissions.employee_id`（`is_void=FALSE`），实耗额外乘 `allocation_ratio`。

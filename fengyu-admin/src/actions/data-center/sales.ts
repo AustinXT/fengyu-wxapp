@@ -73,8 +73,8 @@ export const getSalesBoard = withPermission(
     const runStoreRevenue = async (range: ResolvedRange) =>
       scalar(
         await db.execute(sql`
-          SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
-          FROM sale_order_performance_events spe
+          SELECT COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
+          FROM sale_reportable_payment_events spe
           WHERE ${scopeFilterSql(session, scope, 'spe.store_id')}
             AND spe.status = '已支付'
             AND spe.change_type IN ('首次支付', '回款', '退款')
@@ -88,8 +88,8 @@ export const getSalesBoard = withPermission(
     const runShengmeiRevenue = async (range: ResolvedRange) =>
       scalar(
         await db.execute(sql`
-          SELECT COALESCE(SUM(sipe.amount::numeric), 0) AS v
-          FROM sale_item_performance_events sipe
+          SELECT COALESCE(SUM(sipe.performance_amount::numeric), 0) AS v
+          FROM sale_reportable_item_events sipe
           JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id
           JOIN sale_orders so ON so.sale_order_id = sipe.sale_order_id
           WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
@@ -139,8 +139,8 @@ export const getSalesBoard = withPermission(
     const runNewCustomerRevenue = async (range: ResolvedRange) =>
       scalar(
         await db.execute(sql`
-          SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
-          FROM sale_order_performance_events spe
+          SELECT COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
+          FROM sale_reportable_payment_events spe
           JOIN sale_orders so ON so.sale_order_id = spe.sale_order_id
           JOIN client_wechat_users c ON c.user_id = so.client_user_id
           WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
@@ -160,8 +160,8 @@ export const getSalesBoard = withPermission(
     const runTrafficCustomerRevenue = async (range: ResolvedRange) =>
       scalar(
         await db.execute(sql`
-          SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
-          FROM sale_order_performance_events spe
+          SELECT COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
+          FROM sale_reportable_payment_events spe
           JOIN sale_orders so ON so.sale_order_id = spe.sale_order_id
           JOIN client_wechat_users c ON c.user_id = so.client_user_id
           WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
@@ -308,8 +308,8 @@ export const getSalesBoard = withPermission(
       db.execute(technicianDirectByMarketSql(session, scope, cur.end)),
       // 业绩（付款流水现金流）
       db.execute(sql`
-        SELECT spe.store_id, COALESCE(SUM(spe.amount::numeric), 0) AS v
-        FROM sale_order_performance_events spe
+        SELECT spe.store_id, COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
+        FROM sale_reportable_payment_events spe
         WHERE ${scopeFilterSql(session, scope, 'spe.store_id')}
           AND spe.status = '已支付'
           AND spe.change_type IN ('首次支付', '回款', '退款')
@@ -320,8 +320,8 @@ export const getSalesBoard = withPermission(
       `),
       // 生美业绩（行级）
       db.execute(sql`
-        SELECT so.store_id, COALESCE(SUM(sipe.amount::numeric), 0) AS v
-        FROM sale_item_performance_events sipe
+        SELECT so.store_id, COALESCE(SUM(sipe.performance_amount::numeric), 0) AS v
+        FROM sale_reportable_item_events sipe
         JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id
         JOIN sale_orders so ON so.sale_order_id = sipe.sale_order_id
         WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
@@ -333,8 +333,8 @@ export const getSalesBoard = withPermission(
       `),
       // 新增会员业绩（付款流水 + 客型）
       db.execute(sql`
-        SELECT so.store_id, COALESCE(SUM(spe.amount::numeric), 0) AS v
-        FROM sale_order_performance_events spe
+        SELECT so.store_id, COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
+        FROM sale_reportable_payment_events spe
         JOIN sale_orders so ON so.sale_order_id = spe.sale_order_id
         JOIN client_wechat_users c ON c.user_id = so.client_user_id
         WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
@@ -349,8 +349,8 @@ export const getSalesBoard = withPermission(
       `),
       // 流量客业绩（付款流水 + 客型）
       db.execute(sql`
-        SELECT so.store_id, COALESCE(SUM(spe.amount::numeric), 0) AS v
-        FROM sale_order_performance_events spe
+        SELECT so.store_id, COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
+        FROM sale_reportable_payment_events spe
         JOIN sale_orders so ON so.sale_order_id = spe.sale_order_id
         JOIN client_wechat_users c ON c.user_id = so.client_user_id
         WHERE ${scopeFilterSql(session, scope, 'so.store_id')}

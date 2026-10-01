@@ -300,10 +300,10 @@ const PROBES: Probe[] = [
     minLines: 3,
   },
   {
-    label: '日常数据一览表 · 子项拆分缩放（#369）',
+    label: '日常数据一览表 · 可计子项与未分类残差（#494）',
     file: 'src/lib/data-center/daily-overview-sql.ts',
-    pattern: /^SUM\(rc\.amount \* pay\.amount \/ rc\.denominator\)::text AS amount$/,
-    minLines: 1,
+    pattern: /^(FROM sale_reportable_item_events r|SUM\(rc\.amount\)::text AS amount|SUM\(pay\.amount - COALESCE\(rt\.amount, 0\)\)::text AS amount)$/,
+    minLines: 3,
   },
   {
     label: '日常数据一览表 · 业绩 / 充值 / 服务的单据类型与状态口径（#369）',
@@ -365,7 +365,7 @@ const PROBES: Probe[] = [
     file: 'src/actions/data-center/product.ts',
     // 按「谓词/列的起始部分」抓整行、不限取值：把 <> 0 改回 > 0 的行照样被提取，去产物里逐字比对即红
     pattern:
-      /^(?!.*\$\{)(HAVING SUM\(sipe\.amount.*|OR SUM\(sipe\.amount::numeric\) FILTER .*|AND purchase_received .*|WHERE pa\.day_received .*|ON pa\.client_user_id = x\.client_user_id AND pa\.grp = x\.grp.*|COUNT\(DISTINCT pa\.client_user_id\).*|new_revenue_store AS \(|LEFT JOIN new_revenue_store .*|COALESCE\(nr?\.revenue, 0\) AS new_revenue,)$/,
+      /^(?!.*\$\{)(HAVING SUM\(sipe\.performance_amount.*|OR SUM\(sipe\.performance_amount::numeric\) FILTER .*|AND purchase_received .*|WHERE pa\.day_received .*|ON pa\.client_user_id = x\.client_user_id AND pa\.grp = x\.grp.*|COUNT\(DISTINCT pa\.client_user_id\).*|new_revenue_store AS \(|LEFT JOIN new_revenue_store .*|COALESCE\(nr?\.revenue, 0\) AS new_revenue,)$/,
     minLines: 16,
     uniqueLines: 11,
     exactCountsInModule: true,

@@ -69,9 +69,9 @@ export async function loadCustomerFrequencySource(
     visit_store_events AS (${visitDayStoresSql({ axis: 'service_or_payment', scope: inCust, range })}),
     amount_days AS (
       SELECT so.client_user_id, spe.performance_date AS day,
-             SUM(spe.amount::numeric) AS amount,
+             SUM(spe.performance_amount::numeric) AS amount,
              array_agg(DISTINCT st.store_name) AS stores
-      FROM sale_order_performance_events spe
+      FROM sale_reportable_payment_events spe
       JOIN sale_orders so ON so.sale_order_id = spe.sale_order_id
       LEFT JOIN stores st ON st.store_id = spe.store_id
       WHERE spe.status = '已支付'

@@ -438,7 +438,7 @@ describe('mgmtProduct.cycleStats SQL 形态', () => {
     expect(sql).toMatch(/so\.sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*,\s*'寄存单'\s*\)/)
     expect(sql).toMatch(/FILTER\s*\(\s*WHERE\s+so\.sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*\)\s*\)/)
     expect(sql).toMatch(/so\.status\s+NOT\s+IN\s*\(\s*'已关闭'\s*,\s*'已作废'\s*,\s*'未审核'\s*,\s*'待审批'\s*,\s*'支付失败'\s*\)/)
-    expect(sql).toMatch(/FROM\s+sale_item_performance_events\s+sipe/)
+    expect(sql).toMatch(/FROM\s+sale_reportable_item_events\s+sipe/)
     expect(sql).toMatch(/sipe\.performance_date\s*<=\s*\$2/)
   })
 
@@ -529,7 +529,7 @@ describe('mgmtProduct.cycleStats SQL 形态', () => {
     const flat = getCycleSql().replace(/--[^\n]*/g, ' ').replace(/\s+/g, ' ')
     expect(flat.match(/\bHAVING\b/g)).toHaveLength(1)
     expect(/\bHAVING ([\s\S]*?) \), qualifying_days AS /.exec(flat)?.[1]).toBe(
-      "SUM(sipe.amount::numeric) <> 0 OR SUM(sipe.amount::numeric) FILTER (WHERE so.sale_order_type IN ('销售单','转换单')) <> 0",
+      "SUM(sipe.performance_amount::numeric) <> 0 OR SUM(sipe.performance_amount::numeric) FILTER (WHERE so.sale_order_type IN ('销售单','转换单')) <> 0",
     )
   })
 

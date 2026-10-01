@@ -318,13 +318,15 @@ async function todayCommission(ctx) {
   // 今日分成金额 + 订单数
   const commissionRows = await pg.query(`
     SELECT
-      COALESCE(SUM(spia.allocated_amount::numeric), 0) AS today_amount,
+      COALESCE(SUM(ROUND(spia.allocated_amount::numeric *
+        COALESCE(sipe.performance_amount::numeric / NULLIF(spir.amount::numeric, 0), 0), 2)), 0) AS today_amount,
       COUNT(DISTINCT si.sale_order_id) AS order_count
     FROM sale_payment_item_allocations spia
     JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+    JOIN sale_reportable_item_events sipe ON sipe.receipt_id = spir.id
     JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
     JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
-    JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id
+    JOIN sale_reportable_payment_events spe ON spe.sale_payment_id = spir.sale_payment_id
     WHERE spia.employee_id = $1
       AND spia.is_void = false
       AND ${performanceEventWindow('spe', 2, 3)}
@@ -345,13 +347,15 @@ async function todayCommission(ctx) {
   // 本月分成金额 + 订单数（个人口径）
   const thisMonthCommRows = await pg.query(`
     SELECT
-      COALESCE(SUM(spia.allocated_amount::numeric), 0) AS amount,
+      COALESCE(SUM(ROUND(spia.allocated_amount::numeric *
+        COALESCE(sipe.performance_amount::numeric / NULLIF(spir.amount::numeric, 0), 0), 2)), 0) AS amount,
       COUNT(DISTINCT si.sale_order_id) AS order_count
     FROM sale_payment_item_allocations spia
     JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+    JOIN sale_reportable_item_events sipe ON sipe.receipt_id = spir.id
     JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
     JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
-    JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id
+    JOIN sale_reportable_payment_events spe ON spe.sale_payment_id = spir.sale_payment_id
     WHERE spia.employee_id = $1
       AND spia.is_void = false
       AND ${performanceEventWindow('spe', 2, 3)}
@@ -373,13 +377,15 @@ async function todayCommission(ctx) {
   // 上月分成金额 + 订单数
   const lastMonthCommRows = await pg.query(`
     SELECT
-      COALESCE(SUM(spia.allocated_amount::numeric), 0) AS amount,
+      COALESCE(SUM(ROUND(spia.allocated_amount::numeric *
+        COALESCE(sipe.performance_amount::numeric / NULLIF(spir.amount::numeric, 0), 0), 2)), 0) AS amount,
       COUNT(DISTINCT si.sale_order_id) AS order_count
     FROM sale_payment_item_allocations spia
     JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+    JOIN sale_reportable_item_events sipe ON sipe.receipt_id = spir.id
     JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
     JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
-    JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id
+    JOIN sale_reportable_payment_events spe ON spe.sale_payment_id = spir.sale_payment_id
     WHERE spia.employee_id = $1
       AND spia.is_void = false
       AND ${performanceEventWindow('spe', 2, 3)}
@@ -413,8 +419,8 @@ async function todayCommission(ctx) {
   if (isManager && eff) {
     const sc = buildStoreScopeCondition(ctx.auth, 'spe.store_id', 1)
     const storeRows = await pg.query(`
-      SELECT COALESCE(SUM(spe.amount::numeric), 0) AS store_revenue
-      FROM sale_order_performance_events spe
+      SELECT COALESCE(SUM(spe.performance_amount::numeric), 0) AS store_revenue
+      FROM sale_reportable_payment_events spe
       WHERE ${sc.sql}
         AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
         AND spe.status = '已支付'
@@ -458,8 +464,8 @@ async function monthlyCalendar(ctx) {
   const dailyRows = await pg.query(`
     SELECT
       spe.performance_date AS date,
-      SUM(spe.amount::numeric) AS amount
-    FROM sale_order_performance_events spe
+      SUM(spe.performance_amount::numeric) AS amount
+    FROM sale_reportable_payment_events spe
     WHERE ${sc.sql}
       AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
       AND spe.status = '已支付'
@@ -474,9 +480,9 @@ async function monthlyCalendar(ctx) {
   // 月度整店汇总
   const totalRows = await pg.query(`
     SELECT
-      COALESCE(SUM(spe.amount::numeric), 0) AS total_amount,
+      COALESCE(SUM(spe.performance_amount::numeric), 0) AS total_amount,
       COUNT(DISTINCT spe.sale_order_id) AS total_order_count
-    FROM sale_order_performance_events spe
+    FROM sale_reportable_payment_events spe
     WHERE ${sc.sql}
       AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
       AND spe.status = '已支付'
@@ -719,7 +725,8 @@ async function performanceDetail(ctx) {
 
   const allocRows = await pg.query(`
     SELECT
-      spia.allocated_amount AS alloc_amount,
+      ROUND(spia.allocated_amount::numeric *
+        COALESCE(sipe.performance_amount::numeric / NULLIF(spir.amount::numeric, 0), 0), 2) AS alloc_amount,
       COALESCE(spia.commission_amount, 0) AS commission_amount,
       spia.commission_rate,
       spia.allocation_ratio,
@@ -739,10 +746,11 @@ async function performanceDetail(ctx) {
       o.store_id
     FROM sale_payment_item_allocations spia
     JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+    JOIN sale_reportable_item_events sipe ON sipe.receipt_id = spir.id
     JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
     JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
     LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
-    JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id
+    JOIN sale_reportable_payment_events spe ON spe.sale_payment_id = spir.sale_payment_id
     WHERE spia.employee_id = $1
       AND spia.is_void = false
       AND ${performanceEventWindow('spe', 2, 3)}

@@ -67,8 +67,8 @@ export interface OperatingMasterResult extends OperatingMasterTable {
 /** 当月 / 年度业绩：与 sales.ts 门店明细「业绩（付款流水现金流）」同谓词，仅区间不同 */
 function revenueByStoreSql(session: AuthSession, scope: DataCenterScope, range: ResolvedRange): SQL {
   return sql`
-        SELECT spe.store_id, COALESCE(SUM(spe.amount::numeric), 0) AS v
-        FROM sale_order_performance_events spe
+        SELECT spe.store_id, COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
+        FROM sale_reportable_payment_events spe
         WHERE ${scopeFilterSql(session, scope, 'spe.store_id')}
           AND spe.status = '已支付'
           AND spe.change_type IN ('首次支付', '回款', '退款')
@@ -97,9 +97,9 @@ function managedByStoreSql(
                COUNT(*) FILTER (WHERE t.month_amount >= ${threshold}) AS month_v
         FROM (
           SELECT spe.store_id, so.client_user_id,
-                 SUM(spe.amount::numeric) AS year_amount,
-                 SUM(spe.amount::numeric) FILTER (WHERE spe.performance_date >= ${month.start}) AS month_amount
-          FROM sale_order_performance_events spe
+                 SUM(spe.performance_amount::numeric) AS year_amount,
+                 SUM(spe.performance_amount::numeric) FILTER (WHERE spe.performance_date >= ${month.start}) AS month_amount
+          FROM sale_reportable_payment_events spe
           JOIN sale_orders so ON so.sale_order_id = spe.sale_order_id
           WHERE ${scopeFilterSql(session, scope, 'spe.store_id')}
             AND spe.status = '已支付'

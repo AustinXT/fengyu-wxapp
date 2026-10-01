@@ -327,8 +327,8 @@ async function queryOperatedMembers(
   const rows = await db.execute(sql`
     WITH member_spend AS (
       SELECT o.client_user_id,
-             SUM(spe.amount::numeric) AS spend
-      FROM sale_order_performance_events spe
+             SUM(spe.performance_amount::numeric) AS spend
+      FROM sale_reportable_payment_events spe
       JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
       JOIN client_wechat_users c ON c.user_id = o.client_user_id
       WHERE ${sc}
@@ -356,8 +356,8 @@ async function queryMemberAvgTicket(
   const rows = await db.execute(sql`
     WITH member_spend AS (
       SELECT o.client_user_id,
-             SUM(spe.amount::numeric) AS spend
-      FROM sale_order_performance_events spe
+             SUM(spe.performance_amount::numeric) AS spend
+      FROM sale_reportable_payment_events spe
       JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
       JOIN client_wechat_users c ON c.user_id = o.client_user_id
       WHERE ${sc}
@@ -416,8 +416,8 @@ async function queryNewMemberSpend(
 ): Promise<number> {
   const sc = scopeFilterSql(session, scope, 'c.bound_store_id')
   const rows = await db.execute(sql`
-    SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
-    FROM sale_order_performance_events spe
+    SELECT COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
+    FROM sale_reportable_payment_events spe
     JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
     JOIN client_wechat_users c ON c.user_id = o.client_user_id
     WHERE ${sc}
@@ -782,8 +782,8 @@ async function queryOpsBreakdown(
     -- 会员消费先按当前市场/门店 + 顾客合并：spend = SUM(已入账款项流水) @ 业绩归属日期（#138）
     member_spend AS (
       SELECT ${groupId} AS group_id, o.client_user_id,
-             SUM(spe.amount::numeric) AS spend
-      FROM sale_order_performance_events spe
+             SUM(spe.performance_amount::numeric) AS spend
+      FROM sale_reportable_payment_events spe
       JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
       JOIN skel sk ON sk.store_id = o.store_id
       JOIN client_wechat_users c ON c.user_id = o.client_user_id
@@ -828,8 +828,8 @@ async function queryOpsBreakdown(
     -- ⚠ 本段注释在 SQL 模板字面量内部，禁止出现反引号（会直接截断模板）。
     newmem_spend AS (
       SELECT ${groupId} AS group_id,
-             COALESCE(SUM(spe.amount::numeric), 0) AS new_spend
-      FROM sale_order_performance_events spe
+             COALESCE(SUM(spe.performance_amount::numeric), 0) AS new_spend
+      FROM sale_reportable_payment_events spe
       JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
       JOIN client_wechat_users c ON c.user_id = o.client_user_id
       JOIN skel sk ON sk.store_id = c.bound_store_id

@@ -109,7 +109,7 @@ export const getDashboardStats = withPermission('dashboard:view', async (session
               AND spe.status = '已支付'
               AND spe.change_type IN ('首次支付', '回款', '退款')
               AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
-            THEN spe.amount::numeric
+            THEN spe.performance_amount::numeric
           END), 0) AS today_revenue,
           COALESCE(SUM(CASE
             WHEN spe.performance_date = (SELECT today FROM bounds)
@@ -131,7 +131,7 @@ export const getDashboardStats = withPermission('dashboard:view', async (session
               AND spe.status = '已支付'
               AND spe.change_type IN ('首次支付', '回款', '退款')
               AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
-            THEN spe.amount::numeric
+            THEN spe.performance_amount::numeric
           END), 0) AS yesterday_revenue,
           COALESCE(SUM(CASE
             WHEN spe.performance_date = (SELECT yesterday FROM bounds)
@@ -148,7 +148,7 @@ export const getDashboardStats = withPermission('dashboard:view', async (session
               AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
             THEN spe.amount::numeric
           END), 0) AS total_paid_amount
-        FROM sale_order_performance_events spe
+        FROM sale_reportable_payment_events spe
         WHERE spe.store_id IN (${sql.join(scopeIds.map(id => sql`${id}`), sql`, `)})
           -- 历史订单（WorkFine 核对补登）不计入经营营收（仅供会员体系重算）
           -- WorkFine 历史单业务排除；展示口径见 @/lib/workfine-legacy

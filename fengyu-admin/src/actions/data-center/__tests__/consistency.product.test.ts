@@ -13,7 +13,7 @@
  *      first_entry / period_agg / xinzeng / fugou / tiyan
  *   4. 进入/复购达标日分别使用 day_received / purchase_received，并共用 threshold
  *   5. cycle 进入基线纳入寄存单；复购达标与区间业绩只统计销售单/转换单
- *   6. 业绩 = SUM(sale_item_performance_events.amount)（禁 paid_amount）
+ *   6. 业绩 = SUM(sale_reportable_item_events.amount)（禁 paid_amount）
  *   7. 一级分组键 product_kind（admin 额外 category_name 二级，为 admin 独有扩展）
  *   8. 区间业绩为净额（#288）：负数冲销日不整组丢弃；体验判定与人数归店只认正数购买日
  *
@@ -702,11 +702,11 @@ describe('品项板块两端口径一致性守护', () => {
 
   describe('达标日 = day_received >= threshold（getMemberThreshold）', () => {
     it('admin daily_agg 用支付事件金额 + day_received >= threshold', () => {
-      expect(adminCode).toMatch(/SUM\(sipe\.amount::numeric\)\s+AS\s+day_received/i)
+      expect(adminCode).toMatch(/SUM\(sipe\.performance_amount::numeric\)\s+AS\s+day_received/i)
       expect(adminCode).toMatch(/day_received\s*>=\s*\$\{threshold\}/)
     })
     it('staff daily_agg 用支付事件金额 + day_received >= $3(threshold)', () => {
-      expect(staffCode).toMatch(/SUM\(sipe\.amount::numeric\)\s+AS\s+day_received/i)
+      expect(staffCode).toMatch(/SUM\(sipe\.performance_amount::numeric\)\s+AS\s+day_received/i)
       expect(staffCode).toMatch(/day_received\s*>=\s*\$3/)
     })
     it('两端经 getMemberThreshold 注入阈值', () => {
@@ -723,9 +723,9 @@ describe('品项板块两端口径一致性守护', () => {
       expect(staffCode).toMatch(/MIN\(purchase_date\)\s+AS\s+entry_date/i)
     })
     it('两端 daily_agg 全历史下界（performance_date <= 区间末）', () => {
-      expect(adminCode).toMatch(/FROM\s+sale_item_performance_events\s+sipe/)
+      expect(adminCode).toMatch(/FROM\s+sale_reportable_item_events\s+sipe/)
       expect(adminCode).toMatch(/sipe\.performance_date\s*<=\s*\$\{range\.end\}/)
-      expect(staffCode).toMatch(/FROM\s+sale_item_performance_events\s+sipe/)
+      expect(staffCode).toMatch(/FROM\s+sale_reportable_item_events\s+sipe/)
       expect(staffCode).toMatch(/sipe\.performance_date\s*<=\s*\$2/)
     })
   })
@@ -824,7 +824,7 @@ describe('品项板块两端口径一致性守护', () => {
           having,
           `${label}：HAVING 变了 —— 「> 0」会吞掉负数冲销日，只判 day_received 会吞掉寄存单抵平日`,
         ).toBe(
-          `SUM(sipe.amount::numeric) <> 0 OR SUM(sipe.amount::numeric) FILTER (WHERE so.sale_order_type IN (${sep})) <> 0`,
+          `SUM(sipe.performance_amount::numeric) <> 0 OR SUM(sipe.performance_amount::numeric) FILTER (WHERE so.sale_order_type IN (${sep})) <> 0`,
         )
       }
     })

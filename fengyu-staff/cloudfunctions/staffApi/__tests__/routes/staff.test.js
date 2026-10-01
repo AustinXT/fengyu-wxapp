@@ -399,7 +399,7 @@ describe('staff.performanceDetail', () => {
     await staffRoutes.performanceDetail(ctx)
 
     const allocSql = pg.query.mock.calls[0][0]
-    expect(allocSql).toContain('JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id')
+    expect(allocSql).toContain('JOIN sale_reportable_payment_events spe ON spe.sale_payment_id = spir.sale_payment_id')
     expect(allocSql).toContain("spe.status = '已支付'")
     expect(allocSql).toContain('spe.performance_date >= ($2::timestamptz')
     expect(allocSql).toContain('spe.performance_date < ($3::timestamptz')
@@ -712,7 +712,7 @@ describe('staff.performanceDetail', () => {
     // mock 直接喂 alloc_amount 别名，守不住列名回归 —— 必须对 SQL 文本断言。
     // total_amount 是旧表 sale_allocations 的列，取错会让「业绩(我的分配)」虚高 1/ratio 倍
     const allocSql = pg.query.mock.calls[0][0]
-    expect(allocSql).toContain('spia.allocated_amount AS alloc_amount')
+    expect(allocSql).toMatch(/ROUND\(spia\.allocated_amount::numeric \*\s*COALESCE\(sipe\.performance_amount::numeric \/ NULLIF\(spir\.amount::numeric, 0\), 0\), 2\) AS alloc_amount/)
     expect(allocSql).not.toContain('total_amount')
   })
 

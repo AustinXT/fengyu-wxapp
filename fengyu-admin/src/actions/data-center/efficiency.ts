@@ -173,8 +173,8 @@ export const getEfficiencyBoard = withPermission(
      * 缺 `充值单` / `change_type` / `legacy_source` 任一条都会与门店榜产生差额。
      */
     const qRevenueTotal = db.execute(sql`
-      SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
-      FROM sale_order_performance_events spe
+      SELECT COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
+      FROM sale_reportable_payment_events spe
       WHERE ${scopeFilterSql(session, scope, 'spe.store_id')}
         AND spe.change_type IN ('首次支付', '回款', '退款')
         AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
@@ -310,8 +310,8 @@ export const getEfficiencyBoard = withPermission(
      * 再把 `so.store_id` 原样投影出来（`pg_get_viewdef` 可查），不是"实测出来零不一致"的经验结论。
      */
     const qRevenueByStore = db.execute(sql`
-      SELECT spe.store_id, COALESCE(SUM(spe.amount::numeric), 0) AS v
-      FROM sale_order_performance_events spe
+      SELECT spe.store_id, COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
+      FROM sale_reportable_payment_events spe
       WHERE ${scopeFilterSql(session, scope, 'spe.store_id')}
         AND spe.change_type IN ('首次支付', '回款', '退款')
         AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
@@ -410,11 +410,11 @@ export const getEfficiencyBoard = withPermission(
 
     const qStoreRankRevenue = db.execute(sql`
       SELECT s.store_id, s.store_name, o.name AS market_name,
-        COALESCE(SUM(spe.amount::numeric), 0) AS value
+        COALESCE(SUM(spe.performance_amount::numeric), 0) AS value
       FROM stores s
       JOIN org_nodes o_store ON s.org_node_id = o_store.id
       JOIN org_nodes o ON o_store.parent_id = o.id
-      LEFT JOIN sale_order_performance_events spe
+      LEFT JOIN sale_reportable_payment_events spe
         ON spe.store_id = s.store_id
         AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
         AND spe.legacy_source IS DISTINCT FROM 'workfine'
@@ -576,12 +576,15 @@ export const getEfficiencyBoard = withPermission(
     const qStaffRankRevenue = db.execute(sql`
       ${producerCte},
       revenue_by_emp AS (
-        SELECT spia.employee_id, COALESCE(SUM(spia.allocated_amount::numeric), 0) AS v
+        SELECT spia.employee_id,
+          COALESCE(SUM(ROUND(spia.allocated_amount::numeric *
+            COALESCE(sipe.performance_amount::numeric / NULLIF(spir.amount::numeric, 0), 0), 2)), 0) AS v
         FROM sale_payment_item_allocations spia
         JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+        JOIN sale_reportable_item_events sipe ON sipe.receipt_id = spir.id
         JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
         JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-        JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id
+        JOIN sale_reportable_payment_events spe ON spe.sale_payment_id = spir.sale_payment_id
         WHERE spia.is_void = FALSE
           AND so.sale_order_type IN ('销售单', '转换单')
           AND ${performanceEventDateBetween('spe', cur.start, cur.end)}
@@ -720,16 +723,17 @@ export const getEfficiencyBoard = withPermission(
       ${producerCte},
       revenue_by_emp_cat AS (
         SELECT spia.employee_id,
-          COALESCE(SUM(spia.allocated_amount::numeric), 0) AS total,
-          COALESCE(SUM(spia.allocated_amount::numeric) FILTER (WHERE si.sales_category = '自销自耗'), 0) AS sale_zxzh,
-          COALESCE(SUM(spia.allocated_amount::numeric) FILTER (WHERE si.sales_category = '他销自耗'), 0) AS sale_txzh,
-          COALESCE(SUM(spia.allocated_amount::numeric) FILTER (WHERE si.sales_category = '他销他耗'), 0) AS sale_txth,
-          COALESCE(SUM(spia.allocated_amount::numeric) FILTER (WHERE si.sales_category = '生态合作'), 0) AS sale_eco
+          COALESCE(SUM(ROUND(spia.allocated_amount::numeric * COALESCE(sipe.performance_amount::numeric / NULLIF(spir.amount::numeric, 0), 0), 2)), 0) AS total,
+          COALESCE(SUM(ROUND(spia.allocated_amount::numeric * COALESCE(sipe.performance_amount::numeric / NULLIF(spir.amount::numeric, 0), 0), 2)) FILTER (WHERE si.sales_category = '自销自耗'), 0) AS sale_zxzh,
+          COALESCE(SUM(ROUND(spia.allocated_amount::numeric * COALESCE(sipe.performance_amount::numeric / NULLIF(spir.amount::numeric, 0), 0), 2)) FILTER (WHERE si.sales_category = '他销自耗'), 0) AS sale_txzh,
+          COALESCE(SUM(ROUND(spia.allocated_amount::numeric * COALESCE(sipe.performance_amount::numeric / NULLIF(spir.amount::numeric, 0), 0), 2)) FILTER (WHERE si.sales_category = '他销他耗'), 0) AS sale_txth,
+          COALESCE(SUM(ROUND(spia.allocated_amount::numeric * COALESCE(sipe.performance_amount::numeric / NULLIF(spir.amount::numeric, 0), 0), 2)) FILTER (WHERE si.sales_category = '生态合作'), 0) AS sale_eco
         FROM sale_payment_item_allocations spia
         JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+        JOIN sale_reportable_item_events sipe ON sipe.receipt_id = spir.id
         JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
         JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-        JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id
+        JOIN sale_reportable_payment_events spe ON spe.sale_payment_id = spir.sale_payment_id
         WHERE spia.is_void = FALSE
           AND so.sale_order_type IN ('销售单', '转换单')
           AND ${performanceEventDateBetween('spe', cur.start, cur.end)}
