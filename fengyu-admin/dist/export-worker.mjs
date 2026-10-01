@@ -85710,6 +85710,7 @@ var init_permissions = __esm(() => {
     ],
     finance: [
       "allocation:list",
+      "allocation:save",
       "card_transaction:list",
       "commission:create",
       "commission:list",
@@ -182030,6 +182031,7 @@ function workfineLegacyOrderSql(range) {
       AND o.sale_order_type IN ('销售单', '转换单')
       AND o.legacy_source = 'workfine'
       AND o.performance_attribution_date BETWEEN ${range.start} AND ${range.end}
+      AND o.performance_attribution_date <= DATE '2026-07-03'
   `;
 }
 
