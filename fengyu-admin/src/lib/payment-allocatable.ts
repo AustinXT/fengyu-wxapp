@@ -74,18 +74,18 @@ export async function capturePaymentAllocatables(
   }
 
   const purchaseRows = await tx.execute(sql`
-    SELECT sale_item_id, sale_amount::numeric AS sale_amount, pending_received::numeric AS pending_received,
-           waived_amount::numeric AS waived_amount, sales_category
-      FROM sale_items
-     WHERE sale_order_id = ${saleOrderId}
-       AND item_direction = '购买'
-     ORDER BY sale_item_id
+    SELECT si.sale_item_id, si.sale_amount::numeric AS sale_amount, si.pending_received::numeric AS pending_received,
+           (EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = si.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭') AND (CASE WHEN si.product_type = '疗程卡' THEN COALESCE(si.remaining_sessions, 0) = 0 ELSE (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)) >= si.quantity END)) AS converted_out, si.sales_category
+      FROM sale_items si
+     WHERE si.sale_order_id = ${saleOrderId}
+       AND si.item_direction = '购买'
+     ORDER BY si.sale_item_id
   `)
   const items = purchaseRows as unknown as Array<{
     sale_item_id: string
     sale_amount: string | number
     pending_received: string | number
-    waived_amount: string | number
+    converted_out: boolean
     sales_category: string | null
   }>
 
@@ -105,13 +105,13 @@ export async function capturePaymentAllocatables(
                FROM sale_items in_item
                WHERE in_item.sale_order_id = ${saleOrderId} AND in_item.item_direction = '转入'
                  AND in_item.sale_amount::numeric > 0
-                 AND NOT EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = in_item.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭')
+                 AND NOT (EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = in_item.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭') AND (CASE WHEN in_item.product_type = '疗程卡' THEN COALESCE(in_item.remaining_sessions, 0) = 0 ELSE (COALESCE(in_item.picked_up_quantity, 0) + COALESCE(in_item.refunded_quantity, 0) + COALESCE(in_item.converted_quantity, 0)) >= in_item.quantity END))
              ), 0)::numeric AS in_total,
              COALESCE((
                SELECT SUM(in_item.received::numeric)
                FROM sale_items in_item
                WHERE in_item.sale_order_id = ${saleOrderId} AND in_item.item_direction = '转入'
-                 AND EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = in_item.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭')
+                 AND (EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = in_item.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭') AND (CASE WHEN in_item.product_type = '疗程卡' THEN COALESCE(in_item.remaining_sessions, 0) = 0 ELSE (COALESCE(in_item.picked_up_quantity, 0) + COALESCE(in_item.refunded_quantity, 0) + COALESCE(in_item.converted_quantity, 0)) >= in_item.quantity END))
              ), 0)::numeric AS waived_in_received
       FROM sale_orders so
       WHERE so.sale_order_id = ${saleOrderId}
@@ -137,7 +137,7 @@ export async function capturePaymentAllocatables(
         AND si.sale_order_id = ${saleOrderId}
         AND si.item_direction = '转入'
         AND si.sale_amount::numeric > 0
-        AND NOT EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = si.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭')
+        AND NOT (EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = si.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭') AND (CASE WHEN si.product_type = '疗程卡' THEN COALESCE(si.remaining_sessions, 0) = 0 ELSE (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)) >= si.quantity END))
     ),
     allocated AS (
       SELECT sale_item_id,
@@ -209,12 +209,12 @@ export async function capturePaymentAllocatables(
       const prior = priorMap.get(i.sale_item_id) || 0
       const pending = Number(i.pending_received)
       const saleAmt = Number(i.sale_amount)
-      // #182：折抵退出的行（waived_amount > 0）债务已归零、剩余权益已注销，不得再吸收新款项。
+      // #182：折抵退出的行（未关闭转出引用且权益耗尽）债务已归零、剩余权益已注销，不得再吸收新款项。
       // 它的 pending_received 被钉成「毛已付」作为 paid-sessions STEP 1 的预留依据，
       // 若照常算 pendCap = pending − prior，在无历史 receipt 的老单上（prior = 0）会得到
       // 一整笔产能，把本该落在真正欠款行上的回款分到已结清行 —— 钱记错归属，欠款行
       // 少拿 receipt、paid_sessions 解锁不足。
-      if (Number(i.waived_amount) > 0) {
+      if (i.converted_out === true) {
         return { saleItemId: i.sale_item_id, pendCap: 0, saleCap: 0 }
       }
       return {
@@ -258,9 +258,10 @@ export async function capturePaymentAllocatables(
         .map((i) => ({ saleItemId: i.sale_item_id, amount: (acc.get(i.sale_item_id) || 0) / 100 }))
         .filter((d) => d.amount > 0)
     } else {
-      // 两段产能都为 0 的兜底（订单已结清却又来了一笔款）。#182：优先落在**未被折抵**的行上 ——
+      // 两段产能都为 0 的兜底（订单已结清却又来了一笔款）。#182：只落在**未退出**的行上 ——
       // 折抵行的剩余权益已注销，把钱记到它头上既错归属又毫无意义。
-      const fallback = items.find((i) => !(Number(i.waived_amount) > 0)) || items[0]
+      const fallback = items.find((i) => i.converted_out !== true)
+      if (!fallback) return []
       perItem = [{ saleItemId: fallback.sale_item_id, amount: evt }]
     }
   }

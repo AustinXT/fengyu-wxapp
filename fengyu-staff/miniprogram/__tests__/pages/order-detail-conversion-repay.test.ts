@@ -369,3 +369,18 @@ describe('员工端业绩归属日期修改', () => {
     expect(page.data.attributionSubmitting).toBe(false)
   })
 })
+
+
+test('#182 纯余数转出quantity=0在详情中不被默认值改成1', async () => {
+  vi.mocked(callStaffApi).mockResolvedValueOnce({
+    order: {sale_order_id:'FY-REMAINDER',sale_order_type:'转换单',status:'待支付',
+      total_amount:'3192',received:'0',refunded_amount:'0'},
+    items:[{sale_item_id:'out',product_type:'疗程卡',product_name:'余数',item_direction:'转出',
+      quantity:0,session_count:0,remaining_sessions:0,paid_sessions:0,
+      sale_amount:'-214',received:'-214',unit_real_price:'398'}], payments:[],cardBalance:0,
+  } as never)
+  const page = createPage()
+  await page.loadDetail('FY-REMAINDER')
+  expect(page.data.order.items[0].quantity).toBe(0)
+  expect(page.data.order.displayItems[0].quantity).toBe(0)
+})

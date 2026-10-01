@@ -36,6 +36,7 @@ describe('computeOverpayRemainder 多收余数（overpay）', () => {
     remaining_sessions: 1,
     paid_sessions: 1,
     unit_real_price: 398,
+    converted_amount: '0', converted_quantity: 0,
     ...overrides,
   })
 
@@ -67,6 +68,7 @@ describe('computeOverpayRemainder 多收余数（overpay）', () => {
     const items = [{
       product_type: '疗程卡', session_count: 10, remaining_sessions: 7,
       paid_sessions: 10, unit_real_price: 100,
+      converted_amount: 0, converted_quantity: 0,
     }]
     // consumedValue = (10-7)×100 = 300；maxSessionRefundable = unused(7)×100 = 700
     // netReceived 1000 - 300 - 700 = 0
@@ -79,6 +81,7 @@ describe('computeOverpayRemainder 多收余数（overpay）', () => {
     const items = [{
       product_type: '疗程卡', session_count: 10, remaining_sessions: 7,
       paid_sessions: 10, unit_real_price: 100,
+      converted_amount: 0, converted_quantity: 0,
     }]
     // consumed=300、unused=7×100=700 → 余数 = 1050 - 300 - 700 = 50
     expect(computeOverpayRemainder(order, items)).toBe(50)
@@ -120,6 +123,7 @@ describe('computeOverpayRemainder 多收余数（overpay）', () => {
     const partialItem = {
       product_type: '疗程卡', session_count: 1, remaining_sessions: 1,
       paid_sessions: 0, unit_real_price: 398,
+      converted_amount: 0, converted_quantity: 0,
     }
     expect(calculateUnusedQuantity(partialItem)).toBe(0)
     // 7 满次项 + 1 部分支付项：maxSessionRefundable 仍 = 7×398（部分项贡献 0）
@@ -142,6 +146,9 @@ describe('buildRefundDetails 行级多收余数', () => {
     quantity: 1,
     unit_real_price: 100,
     picked_up_quantity: null,
+    // #182：疗程卡的已转走金额必须显式给出（缺省即 fail-closed 抛错）
+    converted_amount: '0',
+    converted_quantity: 0,
     sales_category: null,
     service_fee: 0,
     sale_amount: 100,
@@ -376,6 +383,55 @@ describe('computeItemOverpayRemainders — 家居余数按实际已转走金额�
       sale_item_id: 'si-3', product_type: '疗程卡', quantity: 1,
       session_count: 10, remaining_sessions: 7, paid_sessions: 10,
       unit_real_price: '100', received: '1050', picked_up_quantity: 0,
+      // #182：疗程卡的已转走金额必须**显式**给出（哪怕是 0）。缺省会抛
+      // REFUND_SOURCE_MISSING_CONVERTED_AMOUNT —— 静默按 0 会让已折抵的卡重新算出 overpay，
+      // 等于折一次再退一次。
+      converted_amount: '0', converted_quantity: 0,
     })).toBe(50)
+  })
+
+  test('疗程卡缺 converted_amount 必须抛错（不得静默按 0）', () => {
+    expect(() => overpayOf({
+      sale_item_id: 'si-3b', product_type: '疗程卡', quantity: 1,
+      session_count: 10, remaining_sessions: 7, paid_sessions: 10,
+      unit_real_price: '100', received: '1050', picked_up_quantity: 0,
+    })).toThrow(/REFUND_SOURCE_MISSING_CONVERTED_AMOUNT/)
+  })
+
+  test('家居只给一半聚合（picked_quantity 有、converted_amount 无）必须抛错', () => {
+    expect(() => overpayOf({
+      sale_item_id: 'si-3c', product_type: '家居产品', quantity: 10,
+      unit_real_price: '100', received: '450', picked_up_quantity: 0,
+      refunded_quantity: 0, converted_quantity: 0,
+      picked_quantity: 0,
+    })).toThrow(/REFUND_SOURCE_MISSING_CONVERTED_AMOUNT/)
+  })
+})
+
+
+describe('#182 订单回退与聚合缺失保护', () => {
+  const source = {
+    sale_item_id: 'remainder', product_type: '疗程卡', quantity: 1,
+    session_count: 7, remaining_sessions: 0, paid_sessions: 7,
+    unit_real_price: 398, converted_quantity: 0, converted_amount: 214,
+  }
+  test('overpay已折走：行级与无行级received回退均不能再退214', () => {
+    expect(computeOverpayRemainder({ received: 3000 }, [source])).toBe(0)
+    expect(computeOverpayRemainder({ received: 3000 }, [{ ...source, received: 3000 }])).toBe(0)
+  })
+  test('历史部分折抵按已折次数去重，订单回退仍保留真实overpay', () => {
+    const partial = { ...source, session_count: 10, remaining_sessions: 0, paid_sessions: 10,
+      unit_real_price: 100, converted_quantity: 10, converted_amount: 1000 }
+    expect(computeOverpayRemainder({ received: 1200 }, [partial])).toBe(200)
+  })
+  test('订单回退缺转换金额聚合也fail-closed', () => {
+    expect(() => computeOverpayRemainder({ received: 3000 }, [{ ...source, converted_amount: null }]))
+      .toThrow(/REFUND_SOURCE_MISSING_CONVERTED_AMOUNT/)
+  })
+  test('家居仅有转换金额而缺提货聚合时fail-closed', () => {
+    expect(() => computeOverpayRemainder({ received: 100 }, [{ ...source,
+      product_type: '家居产品', received: 100, picked_up_quantity: 0, refunded_quantity: 0,
+      converted_quantity: 0, converted_amount: 50, picked_quantity: null }]))
+      .toThrow(/REFUND_SOURCE_MISSING_CONVERTED_AMOUNT/)
   })
 })

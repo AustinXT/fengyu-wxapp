@@ -2513,10 +2513,10 @@ async function rollbackPendingConversionOnClose(client, saleOrderId, now) {
            AND item_direction = '转出'
            AND ref_sale_item_id IS NOT NULL
          GROUP BY ref_sale_item_id
-        HAVING SUM(waived_amount::numeric) > 0
+        -- 包含 Δ_row=0 的付清/overpay 行，也必须还原 pending_received 快照
       ),
       locked_source AS (
-        SELECT src.sale_item_id, src.sale_order_id, waived.waived, waived.orig_pending
+        SELECT src.sale_item_id, src.sale_order_id, src.sale_amount::numeric AS source_sale_amount, waived.waived, waived.orig_pending
           FROM sale_items src
           JOIN waived ON waived.ref_sale_item_id = src.sale_item_id
          -- 与上面两段回滚、以及 createConversion 折抵同一把升序锁序
@@ -2551,6 +2551,7 @@ async function rollbackPendingConversionOnClose(client, saleOrderId, now) {
       SELECT w.ref_sale_item_id AS sale_item_id,
              locked_source.sale_order_id,
              w.waived,
+             (locked_source.source_sale_amount + w.waived > 0) AS has_positive_source,
              (locked_source.sale_item_id IS NOT NULL) AS source_found,
              (r.sale_item_id IS NOT NULL) AS restored_ok
         FROM waived w
@@ -2635,7 +2636,7 @@ async function rollbackPendingConversionOnClose(client, saleOrderId, now) {
   // （行级豁免额全部来自已退款、本无真实欠款）时上面会 continue，但源行 sale_amount 已被
   // CTE **无条件**还原 —— 不重算就会留下偏高的 paid_sessions（付清后退款 40% 的 10 次卡会
   // 停在 10，正确值 6），把已退款的权益重新放出来。
-  for (const refOrderId of [...new Set(restoredWaive.rows.map((r) => r.sale_order_id))].sort()) {
+  for (const refOrderId of [...new Set(restoredWaive.rows.filter((r) => r.has_positive_source === true).map((r) => r.sale_order_id))].sort()) {
     const recalcRes = await client.query(
       `UPDATE sale_items
 SET paid_sessions = CASE
@@ -2652,15 +2653,12 @@ WHERE sale_items.sale_item_id IN (
    WHERE out_item.sale_order_id = $1
      AND out_item.item_direction = '转出'
      AND out_item.ref_sale_item_id IS NOT NULL
-     -- 必须与正向 6b 的作用域一致（只含真正被豁免过的行）。少了这条会把同单其它被折抵行
-     -- 一起重算——例如已全退、被 STEP 2.5 压成 paid_sessions=0 的 0 元赠品卡会命中
-     -- sale_amount <= 0 兜底重回满次数，而 paid_sessions 是「已退款卡从卡包消失」的唯一机制。
-     AND out_item.waived_amount::numeric > 0
 )
-  AND sale_items.sale_order_id = $2`,
+  AND sale_items.sale_order_id = $2
+  AND sale_items.sale_amount > 0`,
       [saleOrderId, refOrderId],
     )
-    // 影响行数必为 >= 1：作用域来自「本单 waived_amount > 0 的转出行」，其源行刚被上面的 CTE
+    // 影响行数必为 >= 1：作用域来自「本单转出行引用的正金额源行」，其源行刚被上面的 CTE
     // 还原过、source_found / restored_ok 都已校验。为 0 只可能是 op 子查询取不到原单
     // （孤儿数据）—— 此时源行金额已还原、paid_sessions 没还原，而下面还会把归因凭据清零，
     // 必须显式抛出。订单级还原量为 0 的那条路径也走这里，不会被上面的 continue 绕过。
@@ -4562,7 +4560,7 @@ async function createRepayment(ctx) {
              -- targeted（通常 0），而它的 remaining_sessions 已注销为 0 →
              -- (session_count − 0) > paid_sessions 永久违反 D3，原单从此回款/退款/回调全失败。
              -- 触发条件很普通：同一原单里另一行发起定向回款即可。
-               WHEN si.waived_amount::numeric > 0 THEN si.pending_received
+               WHEN (EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = si.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭') AND (CASE WHEN si.product_type = '疗程卡' THEN COALESCE(si.remaining_sessions, 0) = 0 ELSE (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)) >= si.quantity END)) THEN si.pending_received
                ELSE COALESCE(rp.delta, 0)
              END,
              updated_at = NOW()
@@ -5080,6 +5078,7 @@ async function createConversion(ctx) {
         // 原行 pending_received 快照：关单回滚必须还原，否则历史行（原本 pending=0）的
         // 分摊权重被永久改写，行级实收与 0040 视图 residual 随之漂移。
         // 同样只能记在转出行上才归因得到本单。
+        waiveEligible,
         refPendingReceived: Math.round(Number(row.pending_received ?? 0) * 100) / 100,
       })
     }
@@ -5537,14 +5536,14 @@ async function createConversion(ctx) {
       // 两个下调额与守卫在转出行构建时已算好（见 waiveAmount / orderWaiveAmount）：
       // waive = 行级（压到净实收，保 paid_sessions 满付 → D3）；订单级见下方 waiveByOrder。
       const waive = d.waiveAmount
-      if (!(waive > 0)) continue
+      if (!d.waiveEligible) continue
 
       const updItem = await tx.query(
         `UPDATE sale_items
             SET sale_amount = sale_amount - $3,
                 waived_amount = waived_amount + $3,
                 -- 把「逐行实付草稿」钉到该行**毛已付**（净实收 + 该行已退款额）。这是 D3 的
-                -- 承重墙：STEP 1 Branch B 见 waived_amount > 0 就按本列**固定预留**该行的
+                -- 承重墙：STEP 1 Branch B 见未关闭转出引用且权益耗尽 就按本列**固定预留**该行的
                 -- received（不再丢进比例池），预留额同时从 untargeted 扣除 → 该行 received
                 -- 恒等于毛已付、同单其它行分到的钱不变；再由 STEP 1.5 扣掉该行退款额得到净额，
                 -- 恰好等于下调后的 sale_amount → paid_sessions 满付。

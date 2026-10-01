@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, test, expect } from 'vitest'
 import {
   buildRefundDetails,
   capRefundAmounts,
@@ -77,6 +77,9 @@ describe('buildRefundDetails', () => {
       product_type: '疗程卡',
       refunded_quantity: 0,
       converted_quantity: 0,
+      // #182：疗程卡的已转走金额必须显式给出（缺省即 fail-closed 抛
+      // REFUND_SOURCE_MISSING_CONVERTED_AMOUNT）—— 静默按 0 会让已折抵的卡重新算出 overpay。
+      converted_amount: '0',
       session_count: 10,
       remaining_sessions: 10,
       paid_sessions: 10,
@@ -297,6 +300,7 @@ describe('computeOverpayRemainder 多收余数（overpay，ticket FY-XSD-WX-2607
       sale_item_id: 'SI',
       sku_id: null,
       product_name: '面部三重维养',
+      converted_amount: '0',
       product_type: '疗程卡',
       refunded_quantity: 0,
       converted_quantity: 0,
@@ -345,5 +349,33 @@ describe('computeOverpayRemainder 多收余数（overpay，ticket FY-XSD-WX-2607
 
   it('空品项 → 余数 = 全部净已收', () => {
     expect(computeOverpayRemainder({ received: 214, refundedAmount: 0 }, [])).toBe(214)
+  })
+})
+
+
+describe('#182 订单回退与聚合缺失保护', () => {
+  const source: any = {
+    sale_item_id: 'remainder', product_type: '疗程卡', quantity: 1,
+    session_count: 7, remaining_sessions: 0, paid_sessions: 7,
+    unit_real_price: 398, converted_quantity: 0, converted_amount: 214,
+  }
+  test('overpay已折走：行级与无行级received回退均不能再退214', () => {
+    expect(computeOverpayRemainder({ received: 3000 }, [source])).toBe(0)
+    expect(computeOverpayRemainder({ received: 3000 }, [{ ...source, received: 3000 }])).toBe(0)
+  })
+  test('历史部分折抵按已折次数去重，订单回退仍保留真实overpay', () => {
+    const partial = { ...source, session_count: 10, remaining_sessions: 0, paid_sessions: 10,
+      unit_real_price: 100, converted_quantity: 10, converted_amount: 1000 }
+    expect(computeOverpayRemainder({ received: 1200 }, [partial])).toBe(200)
+  })
+  test('订单回退缺转换金额聚合也fail-closed', () => {
+    expect(() => computeOverpayRemainder({ received: 3000 }, [{ ...source, converted_amount: null }]))
+      .toThrow(/REFUND_SOURCE_MISSING_CONVERTED_AMOUNT/)
+  })
+  test('家居仅有转换金额而缺提货聚合时fail-closed', () => {
+    expect(() => computeOverpayRemainder({ received: 100 }, [{ ...source,
+      product_type: '家居产品', received: 100, picked_up_quantity: 0, refunded_quantity: 0,
+      converted_quantity: 0, converted_amount: 50, picked_quantity: null }]))
+      .toThrow(/REFUND_SOURCE_MISSING_CONVERTED_AMOUNT/)
   })
 })

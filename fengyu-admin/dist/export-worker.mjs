@@ -163385,7 +163385,7 @@ async function recalcPaidSessionsForOrder(tx, saleOrderId) {
       caps AS (
         SELECT si.sale_item_id,
                COALESCE(tg.targeted, 0)::numeric AS targeted,
-               -- #182 折抵退出的行（waived_amount > 0）：它的**毛已付**已经钉在 pending_received
+               -- #182 折抵退出的行（未关闭转出引用且权益耗尽）：它的**毛已付**已经钉在 pending_received
              -- 上（折抵时写入 = 净实收 + 该行已退款额），改为**固定预留**、等同于一笔定向支付，
              -- 不再参与按比例的两段瀑布，预留额同时从 untargeted 扣除（见 agg）。
              -- 两个都不能省：① 仍丢回比例池 → untargeted < Σpend_cap 时该行只拿到比例份额、
@@ -163393,17 +163393,17 @@ async function recalcPaidSessionsForOrder(tx, saleOrderId) {
              --   paid_sessions 立刻踩 D3，该单此后任何整单 recalc 全抛 UNDERFLOW；
              -- ② 事后再单行抬回下限 → Σ行级 received 会超过订单级实收（凭空多出行级实收，
              --   污染 0040 视图 residual），且同单其它行被少分。预留是唯一同时守住两者的写法。
-             CASE WHEN si.waived_amount::numeric > 0
+             CASE WHEN (EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = si.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭') AND (CASE WHEN si.product_type = '疗程卡' THEN COALESCE(si.remaining_sessions, 0) = 0 ELSE (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)) >= si.quantity END))
                   THEN GREATEST(0, si.pending_received::numeric - COALESCE(tg.targeted, 0)::numeric)
                   ELSE 0 END AS reserved,
-             CASE WHEN si.waived_amount::numeric > 0 THEN 0
+             CASE WHEN (EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = si.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭') AND (CASE WHEN si.product_type = '疗程卡' THEN COALESCE(si.remaining_sessions, 0) = 0 ELSE (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)) >= si.quantity END)) THEN 0
                   ELSE GREATEST(0, si.pending_received::numeric - COALESCE(tg.targeted, 0)::numeric)
              END AS pend_cap,
              -- ⚠ 第二段产能不得改成 (sale_amount + waived_amount)：折抵行已结清，**不应**再参与
              -- 第二段 untargeted 分配（否则会吸走本该给同单欠款行的回款：两行各原价 ¥100 各实收
              -- ¥50，A 折抵后再回款 ¥50，若 A 仍有产能会分成 A=¥75/B=¥75，而正确结果是
              -- A=¥50/B=¥100，还可能让 B 少解锁权益甚至踩 D3）。折抵行这里直接取 0。
-             CASE WHEN si.waived_amount::numeric > 0 THEN 0
+             CASE WHEN (EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = si.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭') AND (CASE WHEN si.product_type = '疗程卡' THEN COALESCE(si.remaining_sessions, 0) = 0 ELSE (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)) >= si.quantity END)) THEN 0
                   ELSE GREATEST(0, si.sale_amount::numeric - GREATEST(si.pending_received::numeric, COALESCE(tg.targeted, 0)::numeric))
              END AS sale_cap
         FROM sale_items si
@@ -163478,14 +163478,14 @@ async function recalcPaidSessionsForOrder(tx, saleOrderId) {
                FROM sale_items in_item
                WHERE in_item.sale_order_id = ${saleOrderId} AND in_item.item_direction = '转入'
                  AND in_item.sale_amount::numeric > 0
-                 AND NOT EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = in_item.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭')
+                 AND NOT (EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = in_item.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭') AND (CASE WHEN in_item.product_type = '疗程卡' THEN COALESCE(in_item.remaining_sessions, 0) = 0 ELSE (COALESCE(in_item.picked_up_quantity, 0) + COALESCE(in_item.refunded_quantity, 0) + COALESCE(in_item.converted_quantity, 0)) >= in_item.quantity END))
              ), 0)::numeric AS in_total,
              -- 已退出转入行占掉的实收，要从本轮可分配的 target 里扣除
              COALESCE((
                SELECT SUM(in_item.received::numeric)
                FROM sale_items in_item
                WHERE in_item.sale_order_id = ${saleOrderId} AND in_item.item_direction = '转入'
-                 AND EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = in_item.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭')
+                 AND (EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = in_item.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭') AND (CASE WHEN in_item.product_type = '疗程卡' THEN COALESCE(in_item.remaining_sessions, 0) = 0 ELSE (COALESCE(in_item.picked_up_quantity, 0) + COALESCE(in_item.refunded_quantity, 0) + COALESCE(in_item.converted_quantity, 0)) >= in_item.quantity END))
              ), 0)::numeric AS waived_in_received
       FROM sale_orders so
       WHERE so.sale_order_id = ${saleOrderId}
@@ -163507,7 +163507,7 @@ async function recalcPaidSessionsForOrder(tx, saleOrderId) {
         AND si.sale_order_id = ${saleOrderId}
         AND si.item_direction = '转入'
         AND si.sale_amount::numeric > 0
-        AND NOT EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = si.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭')
+        AND NOT (EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = si.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭') AND (CASE WHEN si.product_type = '疗程卡' THEN COALESCE(si.remaining_sessions, 0) = 0 ELSE (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)) >= si.quantity END))
     ),
     allocated AS (
       -- 按**累计比例的相邻边界差**分摊（与 STEP 1.75 同一手法）。
@@ -163692,12 +163692,12 @@ async function capturePaymentAllocatables(tx, args) {
     return [];
   }
   const purchaseRows = await tx.execute(import_drizzle_orm25.sql`
-    SELECT sale_item_id, sale_amount::numeric AS sale_amount, pending_received::numeric AS pending_received,
-           waived_amount::numeric AS waived_amount, sales_category
-      FROM sale_items
-     WHERE sale_order_id = ${saleOrderId}
-       AND item_direction = '购买'
-     ORDER BY sale_item_id
+    SELECT si.sale_item_id, si.sale_amount::numeric AS sale_amount, si.pending_received::numeric AS pending_received,
+           (EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = si.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭') AND (CASE WHEN si.product_type = '疗程卡' THEN COALESCE(si.remaining_sessions, 0) = 0 ELSE (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)) >= si.quantity END)) AS converted_out, si.sales_category
+      FROM sale_items si
+     WHERE si.sale_order_id = ${saleOrderId}
+       AND si.item_direction = '购买'
+     ORDER BY si.sale_item_id
   `);
   const items = purchaseRows;
   if (items.length === 0) {
@@ -163715,13 +163715,13 @@ async function capturePaymentAllocatables(tx, args) {
                FROM sale_items in_item
                WHERE in_item.sale_order_id = ${saleOrderId} AND in_item.item_direction = '转入'
                  AND in_item.sale_amount::numeric > 0
-                 AND NOT EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = in_item.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭')
+                 AND NOT (EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = in_item.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭') AND (CASE WHEN in_item.product_type = '疗程卡' THEN COALESCE(in_item.remaining_sessions, 0) = 0 ELSE (COALESCE(in_item.picked_up_quantity, 0) + COALESCE(in_item.refunded_quantity, 0) + COALESCE(in_item.converted_quantity, 0)) >= in_item.quantity END))
              ), 0)::numeric AS in_total,
              COALESCE((
                SELECT SUM(in_item.received::numeric)
                FROM sale_items in_item
                WHERE in_item.sale_order_id = ${saleOrderId} AND in_item.item_direction = '转入'
-                 AND EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = in_item.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭')
+                 AND (EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = in_item.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭') AND (CASE WHEN in_item.product_type = '疗程卡' THEN COALESCE(in_item.remaining_sessions, 0) = 0 ELSE (COALESCE(in_item.picked_up_quantity, 0) + COALESCE(in_item.refunded_quantity, 0) + COALESCE(in_item.converted_quantity, 0)) >= in_item.quantity END))
              ), 0)::numeric AS waived_in_received
       FROM sale_orders so
       WHERE so.sale_order_id = ${saleOrderId}
@@ -163747,7 +163747,7 @@ async function capturePaymentAllocatables(tx, args) {
         AND si.sale_order_id = ${saleOrderId}
         AND si.item_direction = '转入'
         AND si.sale_amount::numeric > 0
-        AND NOT EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = si.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭')
+        AND NOT (EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = si.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭') AND (CASE WHEN si.product_type = '疗程卡' THEN COALESCE(si.remaining_sessions, 0) = 0 ELSE (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)) >= si.quantity END))
     ),
     allocated AS (
       SELECT sale_item_id,
@@ -163812,7 +163812,7 @@ async function capturePaymentAllocatables(tx, args) {
       const prior = priorMap.get(i.sale_item_id) || 0;
       const pending = Number(i.pending_received);
       const saleAmt = Number(i.sale_amount);
-      if (Number(i.waived_amount) > 0) {
+      if (i.converted_out === true) {
         return { saleItemId: i.sale_item_id, pendCap: 0, saleCap: 0 };
       }
       return {
@@ -163854,7 +163854,9 @@ async function capturePaymentAllocatables(tx, args) {
       }
       perItem = items.map((i) => ({ saleItemId: i.sale_item_id, amount: (acc.get(i.sale_item_id) || 0) / 100 })).filter((d) => d.amount > 0);
     } else {
-      const fallback = items.find((i) => !(Number(i.waived_amount) > 0)) || items[0];
+      const fallback = items.find((i) => i.converted_out !== true);
+      if (!fallback)
+        return [];
       perItem = [{ saleItemId: fallback.sale_item_id, amount: evt }];
     }
   }
@@ -164225,6 +164227,8 @@ function positiveQuantity(row) {
   return quantity != null && quantity > 0 ? quantity : 1;
 }
 function displayQuantity(row) {
+  if (finiteNumber(row.__quantity) === 0)
+    return 0;
   const sessions = finiteNumber(row.sessionCount);
   if (sessions != null)
     return sessions;
@@ -164402,7 +164406,7 @@ function aggregateOrderExportRows(sourceRows) {
     const totalQuantity = bucket.reduce((sum, row) => sum + (displayQuantity(row) ?? 0), 0);
     result.sessionCount = bucket.every((row) => displayQuantity(row) == null) ? null : totalQuantity;
     result.paidUnusedSessions = sumNullableNumbers(bucket, "paidUnusedSessions");
-    result.__quantity = bucket.reduce((sum, row) => sum + positiveQuantity(row), 0);
+    result.__quantity = bucket.reduce((sum, row) => sum + (finiteNumber(row.__quantity) ?? 1), 0);
     result.__remainingSessions = sumNullableNumbers(bucket, "__remainingSessions");
     result.__paidSessions = sumNullableNumbers(bucket, "__paidSessions");
     for (const key of ["totalAmount", "prepaidCardAmount", "cashAmount", "received", "refundedAmount"]) {
@@ -164450,7 +164454,7 @@ function aggregateAllocationOutput(receipts, allocationRows) {
   result.received = money(receipts.reduce((sum, receipt) => sum + receipt.amountCents, 0));
   result.prepaidCardAmount = money(receipts.reduce((sum, receipt) => sum + receipt.prepaidCents, 0));
   result.refundedAmount = money(receipts.reduce((sum, receipt) => sum + receipt.refundCents, 0));
-  result.__quantity = sourceRows.reduce((sum, row) => sum + positiveQuantity(row), 0);
+  result.__quantity = sourceRows.reduce((sum, row) => sum + (finiteNumber(row.__quantity) ?? 1), 0);
   result.__remainingSessions = sumNullableNumbers(sourceRows, "__remainingSessions");
   result.__paidSessions = sumNullableNumbers(sourceRows, "__paidSessions");
   const saleAmount = finiteNumber(result.saleAmount);
@@ -165077,10 +165081,10 @@ async function rollbackPendingConversionOnClose(tx, saleOrderId) {
          AND item_direction = '转出'
          AND ref_sale_item_id IS NOT NULL
        GROUP BY ref_sale_item_id
-      HAVING SUM(waived_amount::numeric) > 0
+      -- 包含 Δ_row=0 的付清/overpay 行，也必须还原 pending_received 快照
     ),
     locked_source AS (
-      SELECT src.sale_item_id, src.sale_order_id, waived.waived, waived.orig_pending
+      SELECT src.sale_item_id, src.sale_order_id, src.sale_amount::numeric AS source_sale_amount, waived.waived, waived.orig_pending
         FROM sale_items src
         JOIN waived ON waived.ref_sale_item_id = src.sale_item_id
        ORDER BY src.sale_item_id
@@ -165113,6 +165117,7 @@ async function rollbackPendingConversionOnClose(tx, saleOrderId) {
     SELECT w.ref_sale_item_id AS sale_item_id,
            locked_source.sale_order_id,
            w.waived,
+           (locked_source.source_sale_amount + w.waived > 0) AS has_positive_source,
            (locked_source.sale_item_id IS NOT NULL) AS source_found,
            (r.sale_item_id IS NOT NULL) AS restored_ok
       FROM waived w
@@ -165192,7 +165197,7 @@ async function rollbackPendingConversionOnClose(tx, saleOrderId) {
       throw new ApiError("CONFLICT", "ORDER_GONE: 原订单状态已变更或有在途支付，无法还原折抵豁免的欠款");
     }
   }
-  for (const refOrderId of [...new Set(restoredWaive.map((r) => r.sale_order_id))].sort()) {
+  for (const refOrderId of [...new Set(restoredWaive.filter((r) => r.has_positive_source === true).map((r) => r.sale_order_id))].sort()) {
     const recalcRes = await tx.execute(import_drizzle_orm33.sql`
       UPDATE sale_items
          SET paid_sessions = CASE
@@ -165209,12 +165214,9 @@ async function rollbackPendingConversionOnClose(tx, saleOrderId) {
           WHERE out_item.sale_order_id = ${saleOrderId}
             AND out_item.item_direction = '转出'
             AND out_item.ref_sale_item_id IS NOT NULL
-            -- 必须与正向作用域一致（只含真正被豁免过的行）。少了这条会把同单其它被折抵行
-            -- 一起重算——已全退、被 STEP 2.5 压成 paid_sessions=0 的 0 元赠品卡会命中
-            -- sale_amount <= 0 兜底重回满次数，而 paid_sessions 是「已退款卡消失」的唯一机制。
-            AND out_item.waived_amount::numeric > 0
        )
          AND sale_items.sale_order_id = ${refOrderId}
+         AND sale_items.sale_amount > 0
     `);
     if (rowsAffected(recalcRes) === 0) {
       throw new ApiError("CONFLICT", "ORDER_GONE: 原订单已不存在，无法还原折抵行的已支付次数");
@@ -168483,6 +168485,7 @@ var createConversionOrder = withPermission("sale_order:create", async (session4,
           waiveAmount,
           orderWaiveAmount,
           pinnedPendingReceived: Math.round((refReceived + refRefunded) * 100) / 100,
+          waiveEligible,
           refPendingReceived: Math.round(Number(row.pending_received ?? 0) * 100) / 100
         });
       }
@@ -168791,7 +168794,7 @@ var createConversionOrder = withPermission("sale_order:create", async (session4,
       const waiveByOrder = new Map;
       for (const out of outItems) {
         const waive = out.waiveAmount;
-        if (!(waive > 0))
+        if (!out.waiveEligible)
           continue;
         const updItem = await tx.update(saleItems).set({
           saleAmount: import_drizzle_orm33.sql`${saleItems.saleAmount} - ${waive}`,
@@ -169819,7 +169822,7 @@ var recordPayment = withPermission("sale_order:record_payment", async (session4,
                 -- targeted（通常 0），而它的 remaining_sessions 已注销为 0 →
                 -- (session_count − 0) > paid_sessions 永久违反 D3，原单从此回款/退款/回调全失败。
                 -- 触发条件很普通：同一原单里另一行发起定向回款即可。
-                WHEN si.waived_amount::numeric > 0 THEN si.pending_received
+                WHEN (EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = si.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭') AND (CASE WHEN si.product_type = '疗程卡' THEN COALESCE(si.remaining_sessions, 0) = 0 ELSE (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)) >= si.quantity END)) THEN si.pending_received
                 ELSE COALESCE(rp.delta, 0)
               END,
               updated_at = NOW()
@@ -170258,6 +170261,11 @@ function computeItemOverpayRemainders(origItems) {
       continue;
     }
     const unitRealPrice = Number(it.unit_real_price) || 0;
+    const hasPicked = it.picked_quantity != null;
+    const hasConvAmt = it.converted_amount != null;
+    if (it.product_type === "疗程卡" && !hasConvAmt || it.product_type !== "疗程卡" && hasPicked !== hasConvAmt) {
+      throw new Error("INVALID_STATE: REFUND_SOURCE_MISSING_CONVERTED_AMOUNT: 缺少已提货/已转换金额聚合，取数处需补齐");
+    }
     const convertedAmount = Number(it.converted_amount ?? 0) || 0;
     const convertedQuantity = Math.max(0, Number(it.converted_quantity ?? 0) || 0);
     const hasConsumedDetail = it.picked_quantity != null || it.converted_amount != null;
@@ -170282,8 +170290,16 @@ function computeOverpayRemainder(order, origItems) {
     if (it.product_type === "疗程卡") {
       const sc = Number(it.session_count) || 0;
       const rem = Number(it.remaining_sessions) || 0;
-      consumedValue += Math.max(0, sc - rem) * urp;
+      if (it.converted_amount == null) {
+        throw new Error("INVALID_STATE: REFUND_SOURCE_MISSING_CONVERTED_AMOUNT: 疗程卡缺少已转换金额聚合");
+      }
+      const convQty = Math.max(0, Number(it.converted_quantity) || 0);
+      const convAmt = Number(it.converted_amount) || 0;
+      consumedValue += Math.max(0, sc - rem - convQty) * urp + convAmt;
     } else {
+      if (it.picked_quantity != null !== (it.converted_amount != null)) {
+        throw new Error("INVALID_STATE: REFUND_SOURCE_MISSING_CONVERTED_AMOUNT: 家居金额聚合必须同时提供");
+      }
       consumedValue += (Number(it.picked_up_quantity) || 0) * urp + (it.converted_amount != null ? Number(it.converted_amount) || 0 : (Number(it.converted_quantity) || 0) * urp);
     }
     maxSessionRefundable += calculateUnusedQuantity(it) * urp;
@@ -175307,7 +175323,7 @@ function computeCardRemainingRemainder(item) {
     received: item.received,
     picked_up_quantity: 0,
     picked_quantity: null,
-    converted_amount: item.convertedAmount ?? null,
+    converted_amount: item.convertedAmount,
     converted_quantity: item.convertedQuantity ?? 0,
     sales_category: null,
     service_fee: null

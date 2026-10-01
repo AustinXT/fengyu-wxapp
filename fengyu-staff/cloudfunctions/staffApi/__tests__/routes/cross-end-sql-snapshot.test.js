@@ -1336,7 +1336,7 @@ describe('转换单转入 received 重算 SQL 四端一致性守护', () => {
     // #182：排除判据是「存在未关闭的转出行引用本行」，**不是** waived_amount > 0——
     // 全额结清的转入行再被折抵时 Δ=0、不写 waived_amount，却同样已注销权益，
     // 而本 SQL 是整额覆盖式重分摊，漏排除就会在 target 收缩时把它的 received 改小 → 踩 D3。
-    expect(sqls.staff).toContain("AND NOT EXISTS (SELECT 1 FROM sale_items conv_out")
+    expect(sqls.staff).toContain("AND NOT (EXISTS (SELECT 1 FROM sale_items conv_out")
     expect(sqls.staff).toContain("conv_out.ref_sale_item_id = si.sale_item_id")
     expect(sqls.staff).not.toContain("AND in_item.waived_amount::numeric = 0")
   })
@@ -1536,12 +1536,12 @@ describe("STEP 1 received 分摊 SQL 四端字节同义守护", () => {
       expect(allocSqls.payNotify).toMatch(pattern)
       expect(allocSqls.adminTs).toMatch(pattern)
     })
-    // #182：折抵退出的行（waived_amount > 0）必须走**固定预留**——按 pending_received（毛已付）
+    // #182：折抵退出的行（未关闭转出引用且权益耗尽）必须走**固定预留**——按 pending_received（毛已付）
     // 预留、同时从 untargeted 扣除，且 pend_cap / sale_cap 归 0 不参与比例瀑布。
     // 三种错误写法都踩过（详见 backend.pr.spec.md）：钉净实收 → STEP 1.5 二次扣退款；
     // 丢回比例池 → untargeted < Σpend_cap 时被摊薄；事后单行抬下限 → Σ行级 > 订单级实收。
     test("四端折抵退出行按 pending_received 固定预留（reserved）", () => {
-      const reserved = /CASE WHEN si\.waived_amount::numeric > 0\s*THEN GREATEST\(0,\s*si\.pending_received::numeric\s*-\s*COALESCE\(tg\.targeted,\s*0\)::numeric\)\s*ELSE 0 END AS reserved/i
+      const reserved = /CASE WHEN \(EXISTS \([\s\S]*?AND \(CASE WHEN si\.product_type[\s\S]*?END\)\)\s*THEN GREATEST\(0,\s*si\.pending_received::numeric\s*-\s*COALESCE\(tg\.targeted,\s*0\)::numeric\)\s*ELSE 0 END AS reserved/i
       for (const sql of [allocSqls.staff, allocSqls.client, allocSqls.payNotify, allocSqls.adminTs]) {
         expect(sql).toMatch(reserved)
         // 预留额从 untargeted 扣除（否则同单其它行会被多分、Σ行级 > 订单级实收）
@@ -1550,8 +1550,8 @@ describe("STEP 1 received 分摊 SQL 四端字节同义守护", () => {
         expect(sql).toMatch(/THEN caps\.targeted \+ caps\.reserved/i)
         expect(sql).toMatch(/ELSE caps\.targeted \+ caps\.reserved END/i)
         // 折抵行不得参与比例瀑布
-        expect(sql).toMatch(/CASE WHEN si\.waived_amount::numeric > 0 THEN 0\s*ELSE GREATEST\(0,\s*si\.pending_received[\s\S]*?END AS pend_cap/i)
-        expect(sql).toMatch(/CASE WHEN si\.waived_amount::numeric > 0 THEN 0\s*ELSE GREATEST\(0,\s*si\.sale_amount[\s\S]*?END AS sale_cap/i)
+        expect(sql).toMatch(/CASE WHEN \(EXISTS \([\s\S]*?AND \(CASE WHEN si\.product_type[\s\S]*?END\)\) THEN 0\s*ELSE GREATEST\(0,\s*si\.pending_received[\s\S]*?END AS pend_cap/i)
+        expect(sql).toMatch(/CASE WHEN \(EXISTS \([\s\S]*?AND \(CASE WHEN si\.product_type[\s\S]*?END\)\) THEN 0\s*ELSE GREATEST\(0,\s*si\.sale_amount[\s\S]*?END AS sale_cap/i)
       }
     })
     // ⚠ 不得改成 (sale_amount + waived_amount)：放大上限会让退出行吸走本该给同单欠款行的回款
@@ -2378,12 +2378,12 @@ describe('cross-end-sql-snapshot 反模式守护（防镜像 bug 字面锁定失
     }
   })
 
-  // #182：折抵退出的行（waived_amount > 0）债务已归零、权益已注销，不得再吸收新款项。
+  // #182：折抵退出的行（未关闭转出引用且权益耗尽）债务已归零、权益已注销，不得再吸收新款项。
   // 它的 pending_received 被钉成「毛已付」作为 paid-sessions STEP 1 的预留依据，
   // 若照常算 pendCap = pending − prior，无历史 receipt 的老单（prior = 0）会凭空得到
   // 一整笔产能，把本该落在真正欠款行的回款分给已结清行。四端 JS/TS 派生逻辑同步守护
   // （本段不是 SQL 字面量，只能按特征文本比对）。
-  test('四端款项分摊必须把折抵退出行的产能归零（且取数带 waived_amount）', () => {
+  test('四端款项分摊必须把折抵退出行的产能归零（且取数带合取 converted_out）', () => {
     const ENDS = [
       ['staff', FILES.staffPaymentAllocatableJs],
       ['client', FILES.clientPaymentAllocatableJs],
@@ -2392,13 +2392,13 @@ describe('cross-end-sql-snapshot 反模式守护（防镜像 bug 字面锁定失
     ]
     for (const [end, file] of ENDS) {
       const text = readFile(file)
-      expect(text, `${end} 购买行取数缺 waived_amount，无法判断是否已折抵`)
-        .toContain('waived_amount::numeric AS waived_amount')
+      expect(text, `${end} 购买行取数缺 converted_out，无法判断是否已折抵`)
+        .toContain('AS converted_out')
       expect(text, `${end} 缺「折抵行产能归零」分支`)
-        .toMatch(/if \(Number\(i\.waived_amount\) > 0\) \{[\s\S]{0,120}pendCap: 0, saleCap: 0/)
+        .toMatch(/if \(i\.converted_out === true\) \{[\s\S]{0,120}pendCap: 0, saleCap: 0/)
       // 两段产能均为 0 的兜底不得把钱落到折抵行上
       expect(text, `${end} 兜底仍写死 items[0]，可能落到折抵行`)
-        .toMatch(/items\.find\(\(i\) => !\(Number\(i\.waived_amount\) > 0\)\) \|\| items\[0\]/)
+        .toMatch(/items\.find\(\(i\) => i\.converted_out !== true\)/)
     }
   })
 
@@ -3981,4 +3981,48 @@ describe('#341 提货冻结出库金额：两端副本一致', () => {
     const next = src.indexOf('\nasync function ', start + functionName.length)
     return src.slice(start, next === -1 ? src.length : next)
   }
+})
+
+// #182 D2：防止某一站点退回单判据；转入排除必须对合取整体取反。
+describe('#182 已退出判据所有站点同源', () => {
+  function exited(alias) {
+    return `(EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = ${alias}.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭') AND (CASE WHEN ${alias}.product_type = '疗程卡' THEN COALESCE(${alias}.remaining_sessions, 0) = 0 ELSE (COALESCE(${alias}.picked_up_quantity, 0) + COALESCE(${alias}.refunded_quantity, 0) + COALESCE(${alias}.converted_quantity, 0)) >= ${alias}.quantity END))`
+  }
+  const count = (source, fragment) => source.split(fragment).length - 1
+  test('四端paid-sessions：BranchB三处+STEP1.6三处完整合取', () => {
+    const files = ['../../utils/paid-sessions.js',
+      '../../../../../fengyu-client/cloudfunctions/clientApi/utils/paid-sessions.js',
+      '../../../../../fengyu-client/cloudfunctions/payNotify/paid-sessions.js',
+      '../../../../../fengyu-admin/src/lib/paid-sessions.ts']
+    for (const file of files) {
+      const source = readFile(path.resolve(__dirname,file))
+      // admin保留可直接执行的Drizzle镜像，STEP1.6字面量与内联各一份。
+      const mirrors = file.endsWith('.ts') ? 2 : 1
+      expect(count(source, `CASE WHEN ${exited('si')}`)).toBe(3)
+      expect(count(source, `AND NOT ${exited('in_item')}`)).toBe(mirrors)
+      expect(count(source, `AND ${exited('in_item')}`)).toBe(mirrors)
+      expect(count(source, `AND NOT ${exited('si')}`)).toBe(mirrors)
+      expect(source).not.toContain('CASE WHEN si.waived_amount::numeric > 0')
+    }
+  })
+  test('四端款项捕获：销售单converted_out与#300三处都使用合取', () => {
+    for (const file of [FILES.staffPaymentAllocatableJs,FILES.clientPaymentAllocatableJs,FILES.payNotifyPaymentAllocatableJs,FILES.adminPaymentAllocatableTs]) {
+      const source = readFile(file)
+      expect(source).toContain(`${exited('si')} AS converted_out`)
+      expect(count(source, `AND NOT ${exited('in_item')}`)).toBe(1)
+      expect(count(source, `AND ${exited('in_item')}`)).toBe(1)
+      expect(count(source, `AND NOT ${exited('si')}`)).toBe(1)
+      expect(source).toContain('if (!fallback) return []')
+    }
+  })
+  test('两端定向回款保护与Δ0钉住、关单正金额源行一致', () => {
+    for (const file of [FILES.staffOrderJs,FILES.adminOrdersTs]) {
+      const source = readFile(file)
+      expect(source).toContain(`WHEN ${exited('si')} THEN si.pending_received`)
+      expect(source).toMatch(/if \(!(?:out|d)\.waiveEligible\) continue/)
+      expect(source).not.toContain('HAVING SUM(waived_amount::numeric) > 0')
+      expect(source).toContain('has_positive_source === true')
+      expect(source).toContain('AND sale_items.sale_amount > 0')
+    }
+  })
 })

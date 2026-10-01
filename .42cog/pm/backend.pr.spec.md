@@ -301,8 +301,8 @@
 **折抵后原单该行「欠款归零」（#182）**：折抵 = 整行退出，原单不该再为已经不存在的权益挂欠款。
 
 ```
-仅当 sale_order_type <> '寄存单' AND sale_amount > 0 AND received > 0 AND Δ_row > 0：
-  行级 Δ_row   = sale_amount − received（received 是行级**净**实收；Δ_row > 0 即 received < sale_amount）
+仅当 sale_order_type <> '寄存单' AND sale_amount > 0 AND received > 0（waiveEligible）：
+  行级 Δ_row   = max(0, sale_amount − received)（received 是行级**净**实收；付清/overpay 为 0）
   订单级 Δ_ord = Δ_row − 该行已退款额 = 真实欠款
   原行：sale_amount -= Δ_row；waived_amount += Δ_row（留底，供关单回滚）；
         pending_received = received + 该行已退款额（= **毛已付**，见下方 ⚠）
@@ -338,8 +338,17 @@
 > `0040` 视图的 residual 凭空产出营业额事件。绕开 STEP 0 就必须自己写 `payable_amount`，
 > 否则撞 cron 的 I5 资金不变量告警。
 
+> ⚠️ **已折抵退出 = EXISTS(未关闭转出行引用本行) AND 权益已耗尽**。
+> 疗程卡须 `remaining_sessions = 0`，家居须 `picked_up + refunded + converted >= quantity`。
+> 仅看 `waived_amount > 0` 会漏掉付清/overpay 的 Δ_row=0 行；仅看 EXISTS 会误伤历史部分折抵行。
+> 四端 Branch B 的 reserved/pend_cap/sale_cap、STEP 1.6 与 #300 receipt 差额分摊必须同源；
+> 排除时对合取**整体取反**。两端定向回款不得覆盖退出行的 pending_received。
+> 转换时 `waiveEligible` 覆盖 Δ_row=0 行并钉毛已付；关单还原所有源行 pending 快照，
+> paid_sessions 重算仅限本单引用的正金额源行，避免已全退赠品复活。
+> 历史部分折抵行若后来耗尽全部权益，也会命中退出判据；此时影响回款归属，已无权益可解锁。
+>
 > ⚠️ **已折抵退出的行在 STEP 1 Branch B 里走「固定预留」，不参与比例瀑布**。折抵时把
-> `pending_received` 钉到该行**毛已付**（净实收 + 该行已退款额）；Branch B 见 `waived_amount > 0`
+> `pending_received` 钉到该行**毛已付**（净实收 + 该行已退款额）；Branch B 见上述合取成立
 > 就按这一列固定预留该行的 `received`（`pend_cap = sale_cap = 0`），预留额**同时从 `untargeted`
 > 扣除**，之后由 STEP 1.5 扣该行退款额得到净额 = 下调后的 `sale_amount` → `paid_sessions` 满付。
 > 三种错误写法都踩过：
@@ -355,7 +364,7 @@
 >    而历史付款没有对应 receipt，折抵行会只拿到新 receipt 的份额、低于新应付 → 违反 D3，
 >    该单此后任何 recalc 都抛 CONFLICT（单子永久不可操作，不是数据损坏）。订单级覆盖判据
 >    （`Σ正向 receipt >= order.received`）挡住了常见路径。**运维禁令：不得为含折抵行
->    （`waived_amount > 0`）的订单补写/回填 `sale_payment_item_receipts`**——那会把它推过覆盖阈值。
+>    （上述退出合取成立）的订单补写/回填 `sale_payment_item_receipts`**——那会把它推过覆盖阈值。
 >    彻底根治要行级 receipt 保真。
 > 2. Branch B 两段瀑布对非预留行是**逐行 `ROUND(…, 2)`**、没有尾差吸收，`Σ行级 received`
 >    可能比订单级实收多几分钱（订单实收 ¥0.02、四行等权 → 每行 ¥0.01、Σ=¥0.04）。
