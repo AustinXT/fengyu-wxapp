@@ -153,6 +153,20 @@ describe('hub · 默认关店空态与手选历史（#473）', () => {
     expect(picker.events.at(-1)?.name).toBe('defaultresolved')
   })
 
+  test('范围请求先于页面初始化失败时保留错误态及重试入口', async () => {
+    const hub = instantiate('hub')
+    const picker = instantiate('picker')
+    mocked.mockRejectedValueOnce(new Error('network'))
+    await picker.loadOptions()
+    expect(picker.events.at(-1)?.name).toBe('optionsfailed')
+    hub.onScopeOptionsFailed()
+    expect(hub.data.scopeOptionsFailedBeforeInit).toBe(true)
+    hub.initDashboard()
+    expect(hub.data.scopeResolveDefault).toBe(true)
+    expect(hub.data.summaryState).toBe('error')
+    expect(mocked).not.toHaveBeenCalledWith('mgmtDashboard.summary', expect.anything())
+  })
+
   test('范围首次加载失败后点击重试重新拉取范围选项', async () => {
     const hub = instantiate('hub')
     hub.data.scopeResolveDefault = true

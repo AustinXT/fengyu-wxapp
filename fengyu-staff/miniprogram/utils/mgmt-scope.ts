@@ -92,8 +92,9 @@ export function resolveDefaultMgmtScope(
     // 页面初判门店属于未关店候选时保留；已关店默认范围改选未关店门店。
     // 停用由 #400 按 inactiveStores / autoCorrect 处理。
     if (current?.scopeType === 'store') {
-      if (current.inactive) return current
       const currentStore = markets.flatMap((m) => m.stores).find((s) => s.storeId === current.scopeId)
+      // 旧缓存可能仍标停用，而最新选项已确认该店启用但已关店；此时须先避开关店。
+      if (current.inactive && currentStore?.closed !== true) return current
       if (!current.closed && currentStore?.closed !== true) return current
     }
     const managerIds = new Set(managerStoreIds || [])

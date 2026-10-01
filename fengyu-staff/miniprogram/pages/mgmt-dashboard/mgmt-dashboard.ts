@@ -216,6 +216,7 @@ Page({
     // 初始 false、由 initDashboard 与初判同一次 setData 打开：scopeOptions 先于 initDashboard 返回时，
     // 不能把这一次纠正耗在占位的「全部市场」上
     scopeResolveDefault: false,
+    scopeOptionsFailedBeforeInit: false,
     summaryEmptyHint: '',
 
     // 门店排行榜
@@ -311,7 +312,9 @@ Page({
       scopeResolveDefault: true,
       scopeUserPicked: false,
     })
-    if (defaultScope.scopeType === 'store' && !defaultScope.scopeId) {
+    if (this.data.scopeOptionsFailedBeforeInit) {
+      this.setData({ loading: false, display: null, displayKey: '', summaryState: 'error' })
+    } else if (defaultScope.scopeType === 'store' && !defaultScope.scopeId) {
       this.setData({ summaryState: 'empty', summaryEmptyText: '当前账号没有可用的在营门店', summaryEmptyHint: '请联系管理员检查门店授权' })
     } else {
       // 先等 scopeOptions 确认关店状态和默认替代门店，避免冷启动请求旧门店并闪现 0。
@@ -393,12 +396,15 @@ Page({
 
   /** picker 已按 scopeOptions 纠正过默认范围（#424）：之后重建的 picker 不再纠正 */
   onScopeDefaultResolved() {
-    this.setData({ scopeResolveDefault: false })
+    this.setData({ scopeResolveDefault: false, scopeOptionsFailedBeforeInit: false })
     this.loadSummary()
   },
 
   onScopeOptionsFailed() {
-    if (!this.data.scopeResolveDefault) return
+    if (!this.data.scopeResolveDefault) {
+      if (!this.data.selectedDate) this.setData({ scopeOptionsFailedBeforeInit: true })
+      return
+    }
     ++summarySeq
     this.setData({ loading: false, display: null, displayKey: '', summaryState: 'error' })
   },
