@@ -384,3 +384,20 @@ jobs:
       - name: Run staff output note guards (#299)
         working-directory: fengyu-admin
         run: npx vitest run 'src/app/(main)/(analytics)/data-center/_components/efficiency/efficiency-board.test.tsx'
+
+      # 汇总单来源明细 + 货款结算下钻与退货冲减（#349）：投影单源（单据类型表、端点方向、
+      # 审批日归期、市场退货按市场价）、汇总与下钻同源、价格列按段取、来源明细 keyset。
+      # 不进 CI 的话，把院退货端点交换写反、把门店价随市场段返回、让汇总与下钻各写一套 SQL、
+      # 或漏映射加权标准单价，GitHub 检查照样全绿 —— 后三种本地跑也未必发现。
+      # 注：lib/__tests__/pagination-tiebreak.test.ts 未登记，它当前有一条与本单无关的既有红
+      #（actions/lakala-onboarding.ts 未进 PINNED），登记进来会让 CI 无故变红。
+      - name: Run inventory settlement detail guards (#349)
+        working-directory: fengyu-admin
+        run: |
+          npx vitest run \
+            src/lib/inventory/settlements.test.ts \
+            src/lib/inventory/settlement-details.test.ts \
+            src/lib/inventory/market-report-summary-detail.test.ts \
+            src/lib/export-job-types.test.ts \
+            'src/app/(main)/(inventory)/inventory/_components/inventory-settlements-page.test.tsx' \
+            'src/app/(main)/(inventory)/inventory/docs/[id]/page.test.tsx'
