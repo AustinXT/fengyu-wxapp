@@ -180109,6 +180109,9 @@ async function summarizeSettlementDocs(params) {
   }));
 }
 var listInventorySettlements = withPermission("inventory:list", async (session4, filters = {}) => {
+  if (typeof filters !== "object" || filters === null || Array.isArray(filters)) {
+    throw new ApiError("INVALID_PARAMS", "查询条件格式不正确");
+  }
   const { startDate, endDate } = normalizeSettlementPeriod(filters);
   const market = typeof filters.market === "string" ? filters.market.trim() || undefined : undefined;
   const priceVisibility = inventoryPriceVisibility(session4);
@@ -180877,9 +180880,13 @@ async function listSettlementDetailsForSession(session4, input) {
   const filters = normalizeSettlementDetailFilters(input);
   const projection = projectionFor(session4, filters);
   if (projection === null)
-    return { rows: [], truncated: false };
+    return { rows: [], truncated: false, limit: DETAIL_PAGE_LIMIT };
   const rows = await queryRows3(settlementDetailSelectSql(projection, filters.segment, filters.marketNode, filters.partyNode, DETAIL_PAGE_LIMIT + 1));
-  return { rows: rows.slice(0, DETAIL_PAGE_LIMIT), truncated: rows.length > DETAIL_PAGE_LIMIT };
+  return {
+    rows: rows.slice(0, DETAIL_PAGE_LIMIT),
+    truncated: rows.length > DETAIL_PAGE_LIMIT,
+    limit: DETAIL_PAGE_LIMIT
+  };
 }
 async function exportSettlementSegmentDetailsForSession(session4, input, options) {
   const filters = normalizeSettlementSegmentFilters(input);
@@ -188675,7 +188682,7 @@ var settlementDetailColumns = (segment) => mapColumns([
   { header: segment === "market" ? "供应链主体" : "门店", width: 20, key: "partyName" },
   { header: segment === "market" ? "报货日期" : "配货日期", width: 14, key: "effectiveDate" },
   { header: "单号", width: 26, key: "docId" },
-  { header: "单据类型", width: 14, key: "docType" },
+  { header: "类型", width: 14, key: "docType" },
   { header: "商品", width: 28, key: "skuName" },
   { header: "规格", width: 16, key: "specName" },
   ...segment === "store" ? [{ header: "批号", width: 16, key: "batchNo" }] : [],
