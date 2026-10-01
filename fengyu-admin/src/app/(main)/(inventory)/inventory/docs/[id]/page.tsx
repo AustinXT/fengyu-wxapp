@@ -2,7 +2,7 @@ import Link from 'next/link'
 import { ReturnContextLink } from '@/components/return-context'
 import { notFound } from 'next/navigation'
 import { ArrowLeft } from 'lucide-react'
-import { getInventoryCoreDocById } from '@/actions/inventory/docs'
+import { getInventoryCoreDocById, listMarketReportSummarySources } from '@/actions/inventory/docs'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import { fmtDateTime } from '@/lib/datetime'
@@ -12,7 +12,9 @@ import { canOpenOrderDetail } from '@/lib/order-detail-access'
 import { isStocktakeDocType, stocktakeDiff, stocktakeSummary } from '@/lib/inventory/stocktake'
 import { resolveInventoryDocReturn } from '@/lib/inventory/operation-return'
 import { inventoryDocStatusLabel } from '@/lib/inventory/doc-status-label'
+import { inventoryPriceVisibility } from '@/lib/inventory/access'
 import { InventoryDocReturnLink } from './inventory-doc-return-link'
+import { MarketReportSummarySources } from './market-report-summary-sources'
 
 export const dynamic = 'force-dynamic'
 
@@ -59,6 +61,19 @@ export default async function Page({
   const canLinkOrder = canOpenOrderDetail(session.permissions.actions)
   const doc = await getInventoryCoreDocById(id)
   if (!doc) notFound()
+
+  /*
+   * #349 汇总单来源明细：只在汇总单上取，其它单据类型不产生这次查询。
+   * 市场筛选走 URL（`?market=`），与返回入口的 from/level/op 并存 —— 组件内构造链接时会保留它们。
+   */
+  const sourceMarketFilter = typeof query?.market === 'string' && query.market.trim()
+    ? query.market.trim()
+    : undefined
+  const summarySources = doc.docType === '市场报货汇总'
+    ? await listMarketReportSummarySources({ docId: doc.id })
+    : null
+  // 价格档只在汇总单分支求值（&& 短路）：其它单据类型不因为这个 Card 多碰一次会话数据。
+  const canViewSourcePrice = summarySources !== null && inventoryPriceVisibility(session) !== 'none'
 
   const showPrice = doc.totalAmount !== undefined && doc.docType !== '品项公司发货'
   // 市场报货四列价格来自服务端快照，门店参考价按主体市场价格档遮蔽。
@@ -307,6 +322,16 @@ export default async function Page({
           </div>
         </CardContent>
       </Card>
+
+      {summarySources && (
+        <MarketReportSummarySources
+          rows={summarySources.rows}
+          query={query ?? {}}
+          marketFilter={sourceMarketFilter}
+          canViewPrice={canViewSourcePrice}
+          truncated={summarySources.truncated}
+        />
+      )}
 
       <div className="overflow-x-auto rounded-md border border-[var(--border)] bg-white">
         <table className={`w-full ${

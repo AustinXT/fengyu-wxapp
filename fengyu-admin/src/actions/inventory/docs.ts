@@ -18,6 +18,7 @@ import { INVENTORY_CORE_RECEIVE_ACTIONS } from '@/lib/inventory/business-level'
 import { resolveOperationDocQuery } from '@/lib/inventory/operation-doc-types'
 import type { InventoryOperationDocFilter } from '@/lib/inventory/operation-doc-types'
 import type { InventoryDocCandidateFilters } from '@/lib/inventory/doc-candidates'
+import { listMarketReportSummarySourcesForSession } from '@/lib/inventory/market-report-summary-detail'
 import { ApiError } from '@/lib/api-error'
 import { withAnyPermission, withPermission } from '@/lib/with-permission'
 
@@ -160,6 +161,17 @@ export const getInventoryCoreDocById = withPermission(
 export const getInventoryCoreDocsByIds = withPermission(
   'inventory:list',
   async (_session, ids: string[]) => getInventoryCoreDocsByIdsImpl(ids),
+)
+
+/**
+ * 汇总单「来源明细」（#349）：构成该汇总单的原始报货行，按 市场 → 来源报货单 → 商品 展示。
+ * 与导出（export-worker/registry.ts）共用 `marketReportSummarySourceWhereSql` 同一份条件，
+ * 差异只在分页方式：页面一次取全部（小计/合计要对全量行成立），导出走 keyset。
+ */
+export const listMarketReportSummarySources = withPermission(
+  'inventory:list',
+  async (session, input: { docId?: string; market?: string }) =>
+    listMarketReportSummarySourcesForSession(session, input ?? {}),
 )
 
 export const createInventoryCoreDoc = withAnyPermission(
