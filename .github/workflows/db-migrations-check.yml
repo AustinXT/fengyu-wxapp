@@ -10,6 +10,7 @@ on:
     paths:
       - 'db/schema/**'
       - 'db/migrations/**'
+      - 'db/scripts/__tests__/store-surplus-migration.pg.test.js'
       - 'db/drizzle.config.ts'
       - 'db/package.json'
       - 'db/package-lock.json'
