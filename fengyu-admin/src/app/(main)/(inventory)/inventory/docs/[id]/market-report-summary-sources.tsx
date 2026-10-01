@@ -187,7 +187,7 @@ export function MarketReportSummarySources({
 
         {truncated && (
           <p className="mb-3 rounded-md bg-[#FFF8F7] px-3 py-2 text-xs text-[#D4820A]">
-            来源行数超过展示上限，仅显示前 2000 行；完整明细请用导出查看。
+            来源行数超过展示上限，仅显示前 {limit} 行；完整明细请用导出查看。
           </p>
         )}
 

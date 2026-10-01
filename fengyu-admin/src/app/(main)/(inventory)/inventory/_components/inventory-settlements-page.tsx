@@ -106,8 +106,9 @@ function SettlementSection({
   } | null>(null)
   const [loadingKey, setLoadingKey] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  // 快速连点两行时，先发的请求可能后返回并覆盖后发的结果 —— 只认最后一次请求
-  const latestRequestKey = useRef<string | null>(null)
+  /* 竞态防护用单调递增的序号，不能用行键：同一行在筛选变化后可以先后发两次请求，
+   * 行键相同 → 旧筛选的响应会以同键通过校验。任何新操作都令序号前进，旧请求全部失效。 */
+  const requestSeq = useRef(0)
 
   /*
    * 筛选变化后丢弃展开的明细：detail 的状态键只有行端点，不含期间/市场 ——
@@ -116,8 +117,8 @@ function SettlementSection({
   useEffect(() => {
     setDetail(null)
     setError(null)
-    // 同时失效在途请求：否则它在筛变后才返回，会把上一个筛选的明细重新贴回来
-    latestRequestKey.current = null
+    // 令序号前进：筛变后在途的旧响应全部失效，不再贴回上一个筛选的明细
+    requestSeq.current += 1
   }, [startDate, endDate, market])
 
   async function toggleDetail(row: InventorySettlementRow) {
@@ -128,7 +129,7 @@ function SettlementSection({
     }
     setLoadingKey(key)
     setError(null)
-    latestRequestKey.current = key
+    const requestId = ++requestSeq.current
     try {
       const result = await listSettlementDetails({
         segment,
@@ -138,8 +139,8 @@ function SettlementSection({
         marketNode: row.sourceOrgNodeId ?? '',
         partyNode: row.targetOrgNodeId ?? '',
       })
-      // 已被后续请求取代就丢弃这次响应（否则面板显示 A 的明细、按钮状态却指向 B）
-      if (latestRequestKey.current !== key) return
+      // 已被任何后续操作（点别的行 / 重开本行 / 改筛选）取代就丢弃这次响应
+      if (requestSeq.current !== requestId) return
       setDetail({
         key,
         label: `${row.sourceOrgNodeName ?? row.sourceOrgNodeId ?? '—'} → ${row.targetOrgNodeName ?? row.targetOrgNodeId ?? '—'}`,
@@ -149,10 +150,10 @@ function SettlementSection({
         totals: result.totals,
       })
     } catch (err) {
-      if (latestRequestKey.current !== key) return
+      if (requestSeq.current !== requestId) return
       setError(actionErrorMessage(err, '加载明细失败'))
     } finally {
-      if (latestRequestKey.current === key) setLoadingKey(null)
+      if (requestSeq.current === requestId) setLoadingKey(null)
     }
   }
 
