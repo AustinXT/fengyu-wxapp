@@ -4,7 +4,7 @@ description: 用 Codex 整理并批量推进 open issues，先核验已完成、
 metadata:
   title: 整理积压与批量开发
   author: nvoyager
-  version: 3.0.0
+  version: 3.1.0
   license: MIT
 ---
 
@@ -13,7 +13,7 @@ metadata:
 用 `$issue-sweep bug`、`$issue-sweep #230 #231` 或自然语言调用。
 每项交付完整走相邻 `issue-dev/SKILL.md`，批量不减质量闸门。
 `BASE` 在进 worktree 前只取一次；台账留 `$BASE/_tmp/issue-sweep/run-YYYYMMDD-HHmm.md`。
-状态变化立即写盘：pending → in-progress → ready/draft/待拍板/skipped。
+状态变化立即写盘：pending → in-progress → ready/draft/待迁移集成/待拍板/skipped。
 记录 issue 集合、主编号、HEAD、worktree、PR、评审状态和下一步；先恢复未完成台账，不重做 ready 项。
 
 ## 1. 整理队列后才开发
@@ -49,7 +49,8 @@ gh pr list --state all --base dev --limit 1000 --json number,title,state,body,he
 逐项走 issue-dev：隔离 worktree → 调研/澄清 → 实现 → 三层验证 → Codex 四维自审 →
 GLM-5.3[1M]/OpenCode + DeepSeek/Claude Code → PR base dev → 归档/回收。
 所有独立项基于最新 `origin/dev`，不堆叠未合并分支；依赖未合并先跳过依赖方。
-同文件的不同 PR 标建议合并顺序；共享 PG migration、L2 数据命名空间、devtools 串行使用。
+同文件的不同 PR 标建议合并顺序；迁移按 `db/rollout/README.md` 独立开发、集中集成，L2 数据命名空间、devtools 串行使用。
+需 DB 变更的条目登记迁移请求并继续代码验证/评审；未完成正式迁移的标「待迁移集成」并保留 worktree，可开 draft，不阻塞后续独立项发车。不得在业务开发期持迁移锁。
 
 交付组在 checkpoint 记全部编号，所有对应验收进入 review 输入；PR 用 `Refs #A, #B`。
 默认分支可能是 main：合入 dev 不保证 `Closes` 自动关单，不能把“已有 PR”记成“issue 已关”。

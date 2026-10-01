@@ -39,6 +39,12 @@ envId 实际值（核对 cloudbaserc.json / `tcb fn detail`）：
   （前者不在任何密钥账号下、后者到期），dev 库改由同 env 内的影子函数 `*Dev` 承载。
   线上若仍出现 `cloud1-*`，说明配置没跟上，按现状核对而非照抄。
 
+## 数据库执行台账
+
+- 读 `db/rollout/$ENV.md`，核对待发布 SHA 的迁移与必要脚本已完成集成、私有库验证和评审。
+- 根据目标库 journal 的 when/hash 核实全部 pending；历史未核对、漂移或必要专项脚本未完成时停止依赖代码上线。
+- 执行结果、SHA、tag/hash、校验与脱敏证据只写当前环境；不要由 dev 成功推断 prod 成功。
+
 ## 冒烟（按 ENV 选 ssh host）
 
 ```bash

@@ -52,16 +52,16 @@ npm run db:check:attribution   # 款项归属日期迁移前体检（只读，�
 
 ## Schema 变更工作流（2026-04 baseline reset 之后强制）
 
-标准流程：
+标准流程（2026-10-01 更新，详见 [集成与环境台账](rollout/README.md)）：
 
-1. 改 `schema/*.ts`（22 个模块之一。`schema/*.ts` 是 schema 的唯一权威来源）
-2. `npm run db:generate` — drizzle-kit 产出 `migrations/00NN_<name>.sql` + 对应 `meta/00NN_snapshot.json` + 更新 `meta/_journal.json`
-3. **本地验证**：起一个临时 docker PG，用 `DATABASE_URL=postgresql://postgres:...@localhost:54399/test npx drizzle-kit migrate` 在空库上跑一次，确认新 migration 能从零 apply 起整个 schema
-4. **提交 PR**：必须同时包含 `schema/*.ts` + `migrations/00NN_*.sql` + `migrations/meta/` 三者的改动，缺一不可
-5. **部署**：PR merge 后，**dev / prod 两个业务库都要迁**（都在使用，不是生产 + 冷备）：
-   - dev：从 `envs/dev.env` 的 `PG_CONNECTION_STRING` 显式迁 **101.34.242.103:5433/fengyu_wxapp**；不得使用容器网桥地址 `172.18.0.1`
-   - prod：从 `envs/prod.env` 的 `ADMIN_DATABASE_URL` 显式迁 **118.178.196.26:5433/fengyu_wxapp**
-   - 详见下文「dev / prod 两套业务库」小节；完整发版优先使用 `/release-all <env>` 的目标断言与迁移门禁
+1. issue 在独立 worktree 改 `schema/*.ts` 与业务代码，登记 `rollout/requests/issue-N.md`；候选 SQL 用私有库验证，继续代码测试与评审，不正式生成迁移、不占长驻令牌。
+2. 集中集成会话基于最新 `origin/dev` 串行处理请求。短锁仅覆盖 `db:generate`、私有库重放与本地提交；纯 SQL 数据/权限变更用 `npm run db:generate -- --custom --name <slug>`。不手改编号/when；既有未合并迁移先交接，不从旧 journal 并行生成。
+3. 验证空库及相关存量数据，提交实际 schema（若有）+ SQL + snapshot/journal，完成完整交付的验证与独立双谱系评审。等待集成的业务 PR 只能 draft，保留 worktree；迁移与业务代码可分 PR，但明确互相依赖及合并/上线顺序，不自动 merge。
+4. 集成时补齐 `rollout/dev.md` / `prod.md` 中本次 tag/hash、额外脚本、前置/后置校验与代码依赖；同一迁移文件跨环境复用，执行状态各自独立。
+5. 部署授权后按待发布代码与目标库 journal 核验实际 pending，先迁库和完成必要脚本/校验，再上线依赖代码：
+   - dev：从 `envs/dev.env` 的 `PG_CONNECTION_STRING` 显式迁 **101.34.242.103:5433/fengyu_wxapp**；不得使用容器网桥地址 `172.18.0.1`。
+   - prod：从 `envs/prod.env` 的 `ADMIN_DATABASE_URL` 显式迁 **118.178.196.26:5433/fengyu_wxapp**。
+   - 保留下文目标断言；完整发版优先使用 `/release-all <env>`。逐环境记录执行时间、SHA、tag/hash、校验与脱敏证据，不能假定另一环境已成功。
 
 ### ⚠️ 迁移 0039–0041 的编号在 2026-09-16 的 main→dev 合并里重排过
 

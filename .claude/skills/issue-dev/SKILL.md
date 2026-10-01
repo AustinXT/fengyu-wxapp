@@ -12,7 +12,7 @@ metadata:
   title: 单条 issue 开发流水线
   description_zh: 开隔离 worktree → 分流 → 实现 → 三层验证 → 双闸门评审 → PR base dev → 回收
   author: nvoyager
-  version: 3.0.0
+  version: 3.1.0
   license: MIT
 ---
 
@@ -148,8 +148,10 @@ echo "$WT" > "$BASE/_tmp/issue-<N>/WORKTREE"
 
 worktree 专属守卫（共享资源，隔离不到位的两处）：
 
-- **db migration**：所有 worktree 共享同一个 PG，同一时间只能有一个执行 `db:migrate`。worktree 内写 migration 文件没问题，**执行前先确认没有其它 worktree 在跑迁移**；新增 migration 前查两线 journal 尾部防撞号——`.tree/` 并行会放大撞号风险（已撞过两次）
+- **DB 变更独立开发、集中集成**：遵守仓库 `db/rollout/README.md`。issue worktree 只提交 schema/业务改动与 `db/rollout/requests/issue-N.md` 的迁移请求，不运行正式 `db:generate`、不抢长驻令牌；候选 SQL 与验证只用私有库。继续独立测试和评审，状态记「待迁移集成」，不阻塞后续 issue 发车。集中集成会话基于最新 dev 串行生成正式迁移，在生成/私有库验证/本地提交期间持短锁，结束即释放；未合并迁移仍是下一条生成的依赖，不能从旧 journal 撞号。业务库迁移只能在已授权部署中执行，dev/prod 分别登记执行状态。
 - **L2 e2e / 小程序 devtools**：`e2e-cloudfn` 各 worktree 共用 `TE2L2_` 命名空间，并发跑会互相污染；同 appid 的 devtools 不能同时开两处。单 worktree 串行跑无碍，多条并行时必须错开
+
+需迁移的 issue：先完成可独立验证的代码检查点和迁移请求。正式迁移尚未集成、私有库重放或完整双谱系评审未完成时，只能交付 draft，保留 worktree；不能把代码单测通过记作整体验收通过。迁移 PR 与业务 PR 互相引用、约束先迁库后发依赖代码；不自动 merge。
 
 ## 6. 三层验证（规则 · 判据 · 实效）
 
