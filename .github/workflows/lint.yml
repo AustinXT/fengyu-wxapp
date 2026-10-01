@@ -400,4 +400,5 @@ jobs:
             src/lib/inventory/market-report-summary-detail.test.ts \
             src/lib/export-job-types.test.ts \
             'src/app/(main)/(inventory)/inventory/_components/inventory-settlements-page.test.tsx' \
+            'src/app/(main)/(inventory)/inventory/_components/inventory-operations-page.test.tsx' \
             'src/app/(main)/(inventory)/inventory/docs/[id]/page.test.tsx'

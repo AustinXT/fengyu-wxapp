@@ -17,7 +17,6 @@ import { canOpenOrderDetail } from '@/lib/order-detail-access'
 import { isStocktakeDocType, stocktakeDiff, stocktakeSummary } from '@/lib/inventory/stocktake'
 import { resolveInventoryDocReturn } from '@/lib/inventory/operation-return'
 import { inventoryDocStatusLabel } from '@/lib/inventory/doc-status-label'
-import { inventoryPriceVisibility } from '@/lib/inventory/access'
 import { InventoryDocReturnLink } from './inventory-doc-return-link'
 import { MarketReportSummarySources } from './market-report-summary-sources'
 
@@ -82,8 +81,9 @@ export default async function Page({
         listMarketReportSummarySourceMarkets({ docId: doc.id }),
       ]).then(([sources, markets]) => ({ sources, markets }))
     : null
-  // 价格档只在汇总单分支求值（&& 短路）：其它单据类型不因为这个 Card 多碰一次会话数据。
-  const canViewSourcePrice = summarySourceData !== null && inventoryPriceVisibility(session) !== 'none'
+  // 价格档由**取数层按行级判据**下发（见 listMarketReportSummarySourcesForSession 的注释）：
+  // 会话级 visibility 与行级剥离在"档位绑定集合为空"时会分叉，页面会渲染出整列「—」的表头。
+  const canViewSourcePrice = summarySourceData?.sources.priceVisible ?? false
 
   const showPrice = doc.totalAmount !== undefined && doc.docType !== '品项公司发货'
   // 市场报货四列价格来自服务端快照，门店参考价按主体市场价格档遮蔽。

@@ -561,6 +561,7 @@ describe('#349 汇总单来源明细', () => {
     mockGetSources.mockResolvedValue({
       rows: [sourceRow(), sourceRow({ id: '2', sourceDocId: 'MTH-20260920-0002', quantity: 2, amount: 2000 })],
       truncated: false,
+      priceVisible: true,
     })
     await renderPage(docFixture({ docType: '市场报货汇总', items: [itemFixture({})] } as Partial<InventoryDocDetail>))
 
@@ -572,7 +573,7 @@ describe('#349 汇总单来源明细', () => {
   })
 
   it('新表渲染在明细表之前，itemTable() 仍取到明细表', async () => {
-    mockGetSources.mockResolvedValue({ rows: [sourceRow()], truncated: false })
+    mockGetSources.mockResolvedValue({ rows: [sourceRow()], truncated: false, priceVisible: true })
     await renderPage(docFixture({
       docType: '市场报货汇总',
       items: [itemFixture({ skuId: 'SKU-MAIN', skuName: '汇总商品' })],
@@ -586,6 +587,8 @@ describe('#349 汇总单来源明细', () => {
     mockGetSources.mockResolvedValue({
       rows: [sourceRow({ marketStandardUnitPrice: null, marketUnitDiscount: null, marketActualUnitPrice: null, amount: null })],
       truncated: false,
+      // 行级判据：档位不覆盖任何市场时服务端只下发 priceVisible=false
+      priceVisible: false,
     })
     await renderPage(docFixture({ docType: '市场报货汇总', items: [itemFixture({})] } as Partial<InventoryDocDetail>))
     for (const name of ['市场单价', '单价优惠', '实际单价', '金额']) {

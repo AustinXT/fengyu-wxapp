@@ -182,19 +182,36 @@ async function queryRows(query: SQL, priceScopedMarketIds: string[] | null): Pro
   return (await db.execute(query) as unknown as RawRow[]).map((row) => mapRow(row, priceScopedMarketIds))
 }
 
+function requireObject(input: unknown): void {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+    throw new ApiError('INVALID_PARAMS', '查询条件格式不正确')
+  }
+}
+
 /** 详情页用：一次取全部来源行，超出上限时由调用方按 truncated 提示导出查看。 */
 export async function listMarketReportSummarySourcesForSession(
   session: AuthSession,
   input: MarketReportSummarySourceFilters & { docId?: unknown },
-): Promise<{ rows: MarketReportSummarySourceRow[]; truncated: boolean }> {
+): Promise<{ rows: MarketReportSummarySourceRow[]; truncated: boolean; priceVisible: boolean }> {
+  requireObject(input)
   const docId = requireDocId(input.docId)
   const filters = normalizeMarketReportSummarySourceFilters(input)
   const where = marketReportSummarySourceWhereSql(docId, filters, inventoryScopedOrgNodeIds(session))
+  const priceScope = marketReportSummaryPriceScope(session)
   const rows = await queryRows(
     marketReportSummarySourceSelectSql(where, MAX_PAGE_ROWS + 1),
-    marketReportSummaryPriceScope(session),
+    priceScope,
   )
-  return { rows: rows.slice(0, MAX_PAGE_ROWS), truncated: rows.length > MAX_PAGE_ROWS }
+  return {
+    rows: rows.slice(0, MAX_PAGE_ROWS),
+    truncated: rows.length > MAX_PAGE_ROWS,
+    /*
+     * 页面裁列用的**行级**判据（不是会话级 `visibility !== 'none'`）：
+     * 市场档但档位绑定集合为空、或该单据来源行全在绑定之外时，行级会把价格全剥成 null ——
+     * 若页面还按会话级渲染表头，就会出现「有表头、整列 —」，且与同会话导出的列不一致。
+     */
+    priceVisible: priceScope === null || priceScope.length > 0,
+  }
 }
 
 /**
@@ -207,6 +224,7 @@ export async function listMarketReportSummarySourceMarkets(
   session: AuthSession,
   input: { docId?: unknown },
 ): Promise<Array<{ id: string; name: string }>> {
+  requireObject(input)
   const docId = requireDocId(input.docId)
   const where = marketReportSummarySourceWhereSql(docId, {}, inventoryScopedOrgNodeIds(session))
   const rows = await db.execute(sql`
@@ -230,6 +248,7 @@ export async function exportMarketReportSummarySourcesForSession(
   input: MarketReportSummarySourceFilters & { docId?: unknown },
   options?: ExportBatchOptions<string>,
 ): Promise<ExportBatchResult<MarketReportSummarySourceRow, string> & { canViewPrice: boolean }> {
+  requireObject(input)
   const docId = requireDocId(input.docId)
   const filters = normalizeMarketReportSummarySourceFilters(input)
   const cursor = options?.cursor

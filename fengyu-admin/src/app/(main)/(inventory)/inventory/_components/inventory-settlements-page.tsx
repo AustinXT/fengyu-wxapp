@@ -49,6 +49,9 @@ function detailColumnsFor(segment: SettlementDetailSegment): Column<SettlementDe
         </span>
       ),
     },
+    // 导出侧有「单据类型」与「退货」两列，这里补上「类型」；退货行页面用单号旁的 Badge 表达，
+    // 与导出的「退货」列语义一致（形式不同，已在此登记）。
+    { key: 'docType', header: '类型', cell: (row) => row.docType },
     { key: 'skuName', header: '商品', cell: (row) => row.skuName },
     { key: 'specName', header: '规格', cell: (row) => row.specName ?? '—' },
     ...(segment === 'store'

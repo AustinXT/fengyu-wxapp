@@ -29,9 +29,10 @@ import type {
 
 /**
  * 页面一次取该行的全部明细：行内展开没有分页控件，合计必须对"全部行"有意义。
- * 上限只是防御性兜底，超出时由 truncated 提示导出。
+ * 上限只是防御性兜底（与来源明细的 MAX_PAGE_ROWS 取同一量级），超出时由 truncated 提示导出；
+ * 超过上限时合计退化为「可见行合计」，验收口径的完整对账走导出。
  */
-const DETAIL_PAGE_LIMIT = 500
+const DETAIL_PAGE_LIMIT = 2000
 
 function requiredText(value: unknown, label: string): string {
   if (typeof value !== 'string' || !value.trim()) {

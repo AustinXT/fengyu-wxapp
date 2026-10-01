@@ -139,10 +139,10 @@ describe('#349 结算下钻明细：与汇总同源', () => {
     expect(result.truncated).toBe(false)
   })
 
-  it('超过展示上限时截断', async () => {
-    execute.mockResolvedValue(Array.from({ length: 501 }, (_, index) => rawDetail({ id: String(index + 1) })))
+  it('超过展示上限时截断（上限 2000，与来源明细同量级）', async () => {
+    execute.mockResolvedValue(Array.from({ length: 2001 }, (_, index) => rawDetail({ id: String(index + 1) })))
     const result = await listSettlementDetailsForSession(MARKET_PRICE_SESSION as never, baseFilters)
-    expect(result.rows).toHaveLength(500)
+    expect(result.rows).toHaveLength(2000)
     expect(result.truncated).toBe(true)
   })
 })
