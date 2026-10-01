@@ -55,7 +55,7 @@
 
 .profile-stats-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--gap-grid); }
 .profile-stats-row + .profile-stats-row { margin-top: var(--gap-grid); }
-.stat-item { min-width: 0; padding: var(--spacing-tight); border-radius: var(--radius-lg); background: var(--color-bg-page); text-align: left; }
+.stat-item { min-width: 0; padding: var(--spacing-tight); border-radius: var(--radius-lg); background: var(--color-bg-card); text-align: left; }
 .stat-label { display: block; font-size: 24rpx; color: var(--color-text-secondary); margin-bottom: 8rpx; }
 .stat-value { display: block; font-size: 30rpx; font-weight: 700; color: var(--color-text-primary); white-space: normal; word-break: break-all; line-height: 1.4; font-variant-numeric: tabular-nums; }
 .stat-divider { display: none; }
@@ -577,3 +577,8 @@
 .purchase-order-no, .gift-order-no, .refund-order-no, .tc-order { word-break: break-all; min-width: 0; }
 .purchase-item-name, .gift-item-name, .refund-item-name { min-width: 0; word-break: break-all; }
 .purchase-footer, .gift-card-header, .refund-card-header, .refund-card-footer { flex-wrap: wrap; gap: 8rpx; }
+
+.purchase-card:nth-child(even) .status-tag--error,
+.refund-card:nth-child(even) .status-tag--error,
+.home-product-card:nth-child(even) .status-tag--error,
+.treatment-card:nth-child(even) .session-bar { box-shadow: 0 0 0 2rpx var(--color-bg-card); }

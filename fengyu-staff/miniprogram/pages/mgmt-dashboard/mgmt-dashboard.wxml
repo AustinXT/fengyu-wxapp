@@ -138,9 +138,6 @@
               <view class="dash-card-row"><text class="lbl">日均：</text><text class="val">{{ display.perEmployee.shengmeiCons.day }}</text></view>
               <view class="dash-card-row"><text class="lbl">月均：</text><text class="val">{{ display.perEmployee.shengmeiCons.month }}</text></view>
             </view>
-          </view>
-
-          <view class="mgmt-dash-grid-small">
             <view class="dash-card dash-card--small">
               <view class="dash-card-title">人均客流</view>
               <view class="dash-card-row"><text class="lbl">日均：</text><text class="val">{{ display.perEmployee.footfall.day }}</text></view>
