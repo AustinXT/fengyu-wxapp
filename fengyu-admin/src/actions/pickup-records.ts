@@ -397,7 +397,7 @@ function pickupRecordConditions(session: AuthSession, filters: PickupRecordFilte
   }
   if (filters.dateTo) {
     // 半开区间 [from, nextDay(to))：`<= 23:59:59` 会漏掉结束日最后一秒（timestamptz 存到微秒），
-    // 出库金额是提成数据源，一条都不能漏（#341）。
+    // 出库金额用于出库台账 / 预存款转收入口径，一条都不能漏（#341）。
     conditions.push(lt(pickupRecords.createdAt, beijingNextDayBoundaryTs(filters.dateTo)))
   }
 
@@ -1482,7 +1482,7 @@ export const deletePickupRecord = withPermission(
         storeId: rec.storeId,
         clientUserId: rec.clientUserId,
         confirmedBy: rec.confirmedBy,
-        // #341：冻结金额是店长提成的数据来源，删除后只剩审计日志可追溯
+        // #341：冻结金额是出库台账 / 预存款转收入口径的数据来源，删除后只剩审计日志可追溯
         pickupUnitPrice: rec.pickupUnitPrice,
         pickupAmount: rec.pickupAmount,
       },

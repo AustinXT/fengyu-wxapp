@@ -9,6 +9,7 @@ export interface PickupAmountSnapshot {
 
 /**
  * #341：提货时冻结的出库金额 = 本次提货数 × 顾客实际单价（sale_items.unit_real_price）。
+ * 用于出库台账 / 预存款转收入口径。
  *
  * - 口径（用户拍板）：部分支付也按 unit_real_price；寄存单 / 0 元赠品 / 转换转入一律同式，
  *   0 元行即记 0；套装只在销售明细级记一次（这里），不按库存组件拆。
