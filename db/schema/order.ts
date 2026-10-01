@@ -1006,7 +1006,8 @@ export const saleItemPerformanceEvents = pgView(
 
 /**
  * 子项可计业绩：现金款按最终可计金额拆分，储值卡抵扣保留普通品项价值；
- * 最后一条普通子项吸收分币尾差，零分母款项留给未分类兜底。
+ * 子项分配额不超过原普通 receipt 净额；最后一条普通子项吸收分币尾差，
+ * 未分摊的款项留给未分类兜底，避免与历史 residual 重复计算。
  * 无款项的历史残差沿原归属日期保留普通品项，拓客残差归零。
  */
 export const saleReportableItemEvents = pgView(
@@ -1058,18 +1059,28 @@ export const saleReportableItemEvents = pgView(
            END AS payment_performance_amount
     FROM receipt_base rb
   ),
+  receipt_bounded AS (
+    SELECT rb.*,
+           CASE WHEN rb.payment_performance_amount > 0 AND rb.eligible_total > 0
+                  THEN LEAST(rb.payment_performance_amount, rb.eligible_total)
+                WHEN rb.payment_performance_amount < 0 AND rb.eligible_total < 0
+                  THEN GREATEST(rb.payment_performance_amount, rb.eligible_total)
+                ELSE 0::numeric
+           END AS allocatable_amount
+    FROM receipt_scaled rb
+  ),
   receipt_rounded AS (
     SELECT rb.*,
            CASE WHEN rb.product_kind_at_sale = '拓客引流卡' OR rb.eligible_total = 0
                 THEN 0::numeric
-                ELSE ROUND(rb.payment_performance_amount * rb.amount / rb.eligible_total, 2)
+                ELSE ROUND(rb.allocatable_amount * rb.amount / rb.eligible_total, 2)
            END AS rounded_amount
-    FROM receipt_scaled rb
+    FROM receipt_bounded rb
   ),
   receipt_final AS (
     SELECT rr.receipt_id,
            CASE WHEN rr.eligible_total <> 0 AND rr.receipt_id = rr.last_eligible_receipt_id
-                THEN rr.payment_performance_amount
+                THEN rr.allocatable_amount
                    - SUM(rr.rounded_amount) OVER (PARTITION BY rr.sale_payment_id)
                    + rr.rounded_amount
                 ELSE rr.rounded_amount

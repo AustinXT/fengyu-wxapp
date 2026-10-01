@@ -111,6 +111,32 @@ if (!url) {
     assert.equal(result.items[0].performance_amount, '4300.00')
   })
 
+  test('receipt 缺口与历史残差并存时不把同一金额算两次', async () => {
+    await order('T494_SO_RES', 1000)
+    await item('T494_IT_RES', 'T494_SO_RES', 'T494_SK_N', 1000)
+    const id = await payment('T494_SO_RES', 1000)
+    await receipt(id, 'T494_SO_RES', 'T494_IT_RES', 900)
+    const { rows } = await db.query(`SELECT is_legacy_residual, amount::text, performance_amount::text
+      FROM sale_reportable_item_events WHERE sale_order_id='T494_SO_RES'
+      ORDER BY is_legacy_residual`)
+    assert.deepEqual(rows.map(r => [r.is_legacy_residual, r.amount, r.performance_amount]), [
+      [false, '900.00', '900.00'], [true, '100.00', '100.00'],
+    ])
+    assert.equal((await amounts(id)).p.performance_amount, '1000.00')
+
+    await order('T494_SO_RES_NEG', -1000)
+    await item('T494_IT_RES_NEG', 'T494_SO_RES_NEG', 'T494_SK_N', -1000)
+    const refund = await payment('T494_SO_RES_NEG', -1000, '退款')
+    await receipt(refund, 'T494_SO_RES_NEG', 'T494_IT_RES_NEG', -900)
+    const { rows: negativeRows } = await db.query(`SELECT is_legacy_residual, performance_amount::text
+      FROM sale_reportable_item_events WHERE sale_order_id='T494_SO_RES_NEG'
+      ORDER BY is_legacy_residual`)
+    assert.deepEqual(negativeRows.map(r => [r.is_legacy_residual, r.performance_amount]), [
+      [false, '-900.00'], [true, '-100.00'],
+    ])
+    assert.equal((await amounts(refund)).p.performance_amount, '-1000.00')
+  })
+
   test('储值卡抵扣只进普通子项，不进组织现金业绩；拓客卡抵扣仍为零', async () => {
     await order('T494_SO_CARD', 120)
     await item('T494_IT_CARD_N', 'T494_SO_CARD', 'T494_SK_N', 120)
@@ -185,6 +211,7 @@ if (!url) {
     const first = await payment('T494_SO_F', 68)
     await receipt(first, 'T494_SO_F', 'T494_IT_F', 68)
     await db.query("UPDATE product_categories SET product_kind='王牌' WHERE category_id='T494_T'")
+    await db.query("UPDATE sale_items SET sku_id=sku_id WHERE sale_item_id='T494_IT_F'")
     assert.equal((await amounts(first)).p.performance_amount, '0.00')
     assert.equal((await amounts(first)).items[0].product_kind_at_sale, '拓客引流卡')
     const refund = await payment('T494_SO_F', -68, '退款', '2026-10-02')

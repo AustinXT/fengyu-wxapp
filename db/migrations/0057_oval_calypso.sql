@@ -7,6 +7,10 @@ JOIN product_categories pc ON pc.category_id = sk.category_id
 WHERE si.sku_id = sk.sku_id;--> statement-breakpoint
 CREATE OR REPLACE FUNCTION snapshot_sale_item_product_kind() RETURNS trigger AS $$
 BEGIN
+  IF TG_OP = 'UPDATE' AND NEW.sku_id IS NOT DISTINCT FROM OLD.sku_id THEN
+    NEW.product_kind_at_sale := OLD.product_kind_at_sale;
+    RETURN NEW;
+  END IF;
   SELECT pc.product_kind INTO NEW.product_kind_at_sale
   FROM product_skus sk
   JOIN product_categories pc ON pc.category_id = sk.category_id
@@ -87,18 +91,28 @@ CREATE VIEW "public"."sale_reportable_item_events" AS (
            END AS payment_performance_amount
     FROM receipt_base rb
   ),
+  receipt_bounded AS (
+    SELECT rb.*,
+           CASE WHEN rb.payment_performance_amount > 0 AND rb.eligible_total > 0
+                  THEN LEAST(rb.payment_performance_amount, rb.eligible_total)
+                WHEN rb.payment_performance_amount < 0 AND rb.eligible_total < 0
+                  THEN GREATEST(rb.payment_performance_amount, rb.eligible_total)
+                ELSE 0::numeric
+           END AS allocatable_amount
+    FROM receipt_scaled rb
+  ),
   receipt_rounded AS (
     SELECT rb.*,
            CASE WHEN rb.product_kind_at_sale = '拓客引流卡' OR rb.eligible_total = 0
                 THEN 0::numeric
-                ELSE ROUND(rb.payment_performance_amount * rb.amount / rb.eligible_total, 2)
+                ELSE ROUND(rb.allocatable_amount * rb.amount / rb.eligible_total, 2)
            END AS rounded_amount
-    FROM receipt_scaled rb
+    FROM receipt_bounded rb
   ),
   receipt_final AS (
     SELECT rr.receipt_id,
            CASE WHEN rr.eligible_total <> 0 AND rr.receipt_id = rr.last_eligible_receipt_id
-                THEN rr.payment_performance_amount
+                THEN rr.allocatable_amount
                    - SUM(rr.rounded_amount) OVER (PARTITION BY rr.sale_payment_id)
                    + rr.rounded_amount
                 ELSE rr.rounded_amount
