@@ -1482,7 +1482,7 @@ export const deletePickupRecord = withPermission(
         storeId: rec.storeId,
         clientUserId: rec.clientUserId,
         confirmedBy: rec.confirmedBy,
-        // #341：冻结金额是店长提成的数据来源，删除后只剩审计日志可追溯
+        // #341：冻结金额是出库台账 / 预存款转收入口径的数据来源，删除后只剩审计日志可追溯
         pickupUnitPrice: rec.pickupUnitPrice,
         pickupAmount: rec.pickupAmount,
       },

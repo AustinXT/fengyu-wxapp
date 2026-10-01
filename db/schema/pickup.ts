@@ -43,7 +43,7 @@ export const pickupRecords = pgTable(
      */
     pickupUnitPrice: numeric('pickup_unit_price', { precision: 12, scale: 2 }),
     /**
-     * 出库金额 = 本次提货数 × 冻结单价（#341，店长产品出库提成的数据来源）。
+     * 出库金额 = 本次提货数 × 冻结单价（#341，出库台账 / 预存款转收入口径的数据来源）。
      * 销售单位级、套装只记一次；与 GCK 明细的成本金额（inventory_doc_items.amount）分开存。
      * 寄存单 / 0 元赠品 / 转换转入同样按 unit_real_price 计（0 元行即 0）。
      */
