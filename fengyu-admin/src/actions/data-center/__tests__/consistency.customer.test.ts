@@ -755,8 +755,8 @@ describe('客量板块两端口径一致性守护', () => {
       ['外层对 UNION 结果去重', /COUNT\(DISTINCT\s+t\.uid\)/],
       ['① 到店活跃池取已完成服务单', /FROM\s+service_orders\s+so[\s\S]*?so\.status\s*=\s*'已完成'/],
       [
-        '① 期初未达会员 = 当前仍未达会员 OR 本期内才转化（缺 OR 即回到只升不降的快照口径）',
-        /c\.customer_type\s+IN\s*\(\s*'体验客'\s*,\s*'小美客'\s*\)\s*OR\s+c\.became_member_at::date\s+BETWEEN/,
+        '① 期初未达会员 = 从未转会员的体验/小美 OR 区间开始后转会员（含区间之后）',
+        /c\.became_member_at\s+IS\s+NULL\s+AND\s+c\.customer_type\s+IN\s*\(\s*'体验客'\s*,\s*'小美客'\s*\)\s*\)\s*OR\s+c\.became_member_at::date\s*>=/,
       ],
       [
         '② 本期全部新增会员 UNION 进分母（缺它则分子 ⊄ 分母，单店成交率仍可能 > 100%）',
@@ -772,13 +772,22 @@ describe('客量板块两端口径一致性守护', () => {
       expect(staffTrial).toMatch(re)
     })
 
+    it('① 历史到店池不受区间上界限制，之后才转会员者不丢失', () => {
+      for (const [side, sqlText] of [['admin', adminTrial], ['staff', staffTrial]] as const) {
+        const firstBranch = sqlText.split(/\bUNION\b/)[0]
+        expect(firstBranch, `${side} ① 分支不应限定转会员时间上界`).not.toMatch(/c\.became_member_at::date\s+BETWEEN/)
+        expect(firstBranch, `${side} ① 分支不应出现其它转会员时间上界`).not.toMatch(/c\.became_member_at::date\s*(?:<=|<)/)
+      }
+      expect(adminTrial.split(/\bUNION\b/)[0]).toMatch(/c\.became_member_at::date\s*>=\s*\$\{range\.start\}/)
+      expect(staffTrial.split(/\bUNION\b/)[0]).toMatch(/c\.became_member_at::date\s*>=\s*\$\{startDateExpr\(period\)\}/)
+    })
+
     /**
      * 切出 `UNION` 之后的 ② 分支单独断言（codex round-1 P2）。
      *
-     * ⚠ 为什么整体断言不够：`became_member_at::date BETWEEN` 这个字面量**① 分支里也有**
-     * （① 的 OR 右半边就是它）。于是「把 ② 的 `AND c.became_member_at::date BETWEEN ... `
-     * 整行删掉」——分母会纳入**全部历史会员**（回溯到 2022-08）、成交率被直接扭曲——
-     * 而上面 `DENOM_INVARIANTS` 的 BETWEEN 断言被 ① 顶上，守护照样全绿。
+     * ⚠ 为什么整体断言不够：① 与 ② 都使用 `became_member_at`，整体关键词匹配
+     * 无法证明 ② 仍限定本期新增会员。「把 ② 的日期条件删掉」会让分母纳入
+     * 全部历史会员，成交率被直接扭曲。
      *
      * 按 `UNION` 切分后 ① 的内容不在切片里，字面量无法互相顶替。
      */
@@ -1382,21 +1391,22 @@ describe('客量板块两端口径一致性守护', () => {
       // 边界取到下一个 CTE，避免非贪婪在 COUNT(...) 的右括号上提前收口
       const trafficCust = /traffic_cust\s+AS\s*\(([\s\S]*?)visits_agg\s+AS\s*\(/.exec(adminSql)?.[1]
       expect(trafficCust, 'traffic_cust CTE 未能定位（被删除/改名，或 visits_agg 不再紧随其后）').toBeTruthy()
-      // ① 到店活跃池：期初未达会员 = 当前仍未达会员 OR 本期内才转化
+      // ① 到店活跃池：期初未达会员 = 从未转会员的体验/小美 OR 区间开始后转会员
       expect(trafficCust).toMatch(/JOIN\s+skel\s+sk\s+ON\s+sk\.store_id\s*=\s*so\.store_id/)
       expect(
         trafficCust,
-        '① 分支缺 became_member_at OR 分支 —— 本期已转化的人会被重新抹出明细分母',
+        '① 分支缺历史转会员分支 —— 区间之后转会员的人会被抹出明细分母',
       ).toMatch(
-        /c\.customer_type\s+IN\s*\(\s*'体验客'\s*,\s*'小美客'\s*\)\s*OR\s+c\.became_member_at::date\s+BETWEEN/,
+        /c\.became_member_at\s+IS\s+NULL\s+AND\s+c\.customer_type\s+IN\s*\(\s*'体验客'\s*,\s*'小美客'\s*\)\s*\)\s*OR\s+c\.became_member_at::date\s*>=\s*\$\{start\}/,
       )
+      expect(trafficCust!.split(/\bUNION\b/)[0], '① 不得重新限定会员转化日期上界')
+        .not.toMatch(/c\.became_member_at::date\s*(?:<=|<|BETWEEN)/)
       // ② 本期全部新增会员，归店方式必须与 newmem 的 JOIN 逐字一致
       expect(trafficCust, '② 分支（本期全部新增会员）缺失或未按 bound_store_id 归店').toMatch(
         /UNION[\s\S]*?FROM\s+client_wechat_users\s+c\s+JOIN\s+skel\s+sk\s+ON\s+sk\.store_id\s*=\s*c\.bound_store_id/,
       )
       // ⚠ 下面三条必须在**切出 UNION 之后的 ② 分支**上断言，不能对整个 CTE 断言：
-      // `became_member_at::date BETWEEN` 在 ① 的 OR 右半边也有，对整块 toMatch 时
-      // 删掉 ② 的日期限定（分母纳入全部历史会员）照样全绿。
+      // 整块匹配可能由其它会员时间谓词顶上，删掉 ② 的日期限定会纳入全部历史会员。
       expect(trafficCust!.match(/\bUNION\b/g) ?? [], '明细分母不是恰好一个 UNION（切片前提已破）').toHaveLength(1)
       const branch2 = trafficCust!.split(/\bUNION\b/)[1] ?? ''
       expect(branch2, '明细分母的 UNION ② 分支切不出来').toBeTruthy()
