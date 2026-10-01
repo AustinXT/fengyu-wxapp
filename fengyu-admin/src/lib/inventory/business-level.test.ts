@@ -110,10 +110,12 @@ describe('inventoryLevelOperateDeniedMessage', () => {
 })
 
 describe('GENERIC_DOC_BUSINESS_LEVEL 覆盖度', () => {
-  it('全部 10 种通用单据都有归属业务层级', () => {
+  it('全部 9 种通用单据都有归属业务层级（#350 移出院顾客产品出库）', () => {
     // engine.ts 层级闸里 `if (!docLevel) throw` 那条分支是死代码，靠这条钉住它一直死着；
     // 将来往 INVENTORY_GENERIC_DOC_TYPES 加类型忘了配层级，这里先红。
-    expect(INVENTORY_GENERIC_DOC_TYPES).toHaveLength(10)
+    expect(INVENTORY_GENERIC_DOC_TYPES).toHaveLength(9)
+    // 院顾客产品出库只能由提货服务产生，不该再有通用建单层级
+    expect(genericDocBusinessLevel('院顾客产品出库')).toBeNull()
     for (const docType of INVENTORY_GENERIC_DOC_TYPES) {
       const level = genericDocBusinessLevel(docType)
       expect(level, docType).not.toBeNull()
@@ -133,18 +135,19 @@ describe('inventoryCreatableGenericDocTypes', () => {
     (docType) => genericDocBusinessLevel(docType) === 'store',
   )
 
-  it('仅门店 operate → 只有门店 5 种', () => {
-    expect(STORE_DOC_TYPES).toHaveLength(5)
+  it('仅门店 operate → 只有门店 4 种', () => {
+    expect(STORE_DOC_TYPES).toHaveLength(4)
+    expect(STORE_DOC_TYPES).not.toContain('院顾客产品出库')
     expect(inventoryCreatableGenericDocTypes(holding(STORE))).toEqual(STORE_DOC_TYPES)
     expect(inventoryCreatableGenericDocTypes(holding(STORE))).not.toContain('内部领用')
     expect(inventoryCreatableGenericDocTypes(holding(STORE))).not.toContain('市场产品报损')
   })
 
-  it('仅市场 operate → 市场 4 种 + 门店 5 种，不含内部领用（市场替门店建单）', () => {
+  it('仅市场 operate → 市场 4 种 + 门店 4 种，不含内部领用（市场替门店建单）', () => {
     // ⚠️ 市场层级是 4 种不是 5 种（分院调货出库归门店）；数量写死在这里，改层级表立刻红
     expect(MARKET_DOC_TYPES).toHaveLength(4)
     const creatable = inventoryCreatableGenericDocTypes(holding(MARKET))
-    expect(creatable).toHaveLength(9)
+    expect(creatable).toHaveLength(8)
     expect(creatable).not.toContain('内部领用')
     // 保持 INVENTORY_GENERIC_DOC_TYPES 的原序，而不是「市场段 + 门店段」的分组序
     expect(creatable).toEqual(INVENTORY_GENERIC_DOC_TYPES.filter((docType) => docType !== '内部领用'))
@@ -153,7 +156,7 @@ describe('inventoryCreatableGenericDocTypes', () => {
     }
   })
 
-  it('仅供应链 operate → 只有供应链那 1 种，不堆 9 条死路', () => {
+  it('仅供应链 operate → 只有供应链那 1 种，不堆 8 条死路', () => {
     /*
      * 曾经返回全部 10 种：总部账号在下拉里能选「市场产品报损」「院产品报损」等 9 种，
      * 但 access.ts 的 inventoryScopedOrgNodeIds 对总部绑定不展开后代 —— 主体下拉里

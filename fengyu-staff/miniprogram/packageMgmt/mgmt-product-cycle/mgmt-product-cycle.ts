@@ -3,6 +3,7 @@
 // 持卡人数为截面快照，不随 period 变化（仅 onLoad 时拉一次）
 import { isManagementMode } from '../../utils/role'
 import { callStaffApi } from '../../utils/cloud'
+import { isInactiveScopeQuery } from '../../utils/mgmt-scope'
 import { formatAmount, formatCount, formatPercent } from '../../utils/number'
 
 type Period = 'month' | 'lastMonth' | 'year' | 'custom'
@@ -94,6 +95,8 @@ Page({
     scopeType: 'all' as ScopeType,
     scopeId: null as string | null,
     scopeName: '' as string,
+    // 门店组织节点已停用（#400）：本页接口不滤停用门店、照常出数，只在范围标签上标注
+    scopeInactive: false,
 
     cardLoading: false,
     cardError: false,
@@ -108,7 +111,7 @@ Page({
     display: null as CycleDisplay | null,
   },
 
-  onLoad(query: { scopeType?: string; scopeId?: string; scopeName?: string }) {
+  onLoad(query: { scopeType?: string; scopeId?: string; scopeName?: string; scopeInactive?: string }) {
     if (!isManagementMode()) {
       wx.reLaunch({ url: '/pages/workbench/workbench' })
       return
@@ -116,7 +119,7 @@ Page({
     const scopeType = (query?.scopeType as ScopeType) || 'all'
     const scopeId = query?.scopeId ? query.scopeId : null
     const scopeName = query?.scopeName ? decodeURIComponent(query.scopeName) : ''
-    this.setData({ scopeType, scopeId, scopeName })
+    this.setData({ scopeType, scopeId, scopeName, scopeInactive: isInactiveScopeQuery(query) })
     // 并行触发持卡人数 + 周期数据
     this.loadCardHolders()
     this.loadCycleStats()

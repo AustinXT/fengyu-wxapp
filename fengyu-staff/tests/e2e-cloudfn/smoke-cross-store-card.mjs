@@ -67,6 +67,14 @@ async function main() {
   const saleItemId = items[0].sale_item_id
   rec(`  fixture: order=${orderId} item=${saleItemId} 卡售出门店=${items[0].store_id} 绑定门店=B(${TEST_STORE_ID})`)
 
+  const localOrder = await createTestSaleOrder({
+    saleOrderId: `${NS}_XSTORE_LOCAL`, clientUserId: TEST_CLIENT_USER_ID,
+    storeId: TEST_STORE_ID, productName: `${NS}_本店疗程卡`, productType: '疗程卡',
+    quantity: 1, sessionCount: 3, totalAmount: 300,
+    status: '已支付', salesCategory: '他销自耗',
+  })
+  await pgQuery(`UPDATE sale_items SET paid_sessions = session_count WHERE sale_item_id = $1`, [localOrder.saleItemId])
+
   const errors = []
 
   // ── 1) 展示跟顾客走：paidOrders 跨店列出旧店 A 卡 ──
@@ -88,7 +96,9 @@ async function main() {
   const created = await invokeStaffApi('service.create', {
     _testOpenid: TEST_MANAGER_OPENID,
     clientUserId: TEST_CLIENT_USER_ID,
-    items: [{ saleItemId, sessionUsed: 1, employeeId: TEST_MANAGER_EMP_ID, serviceDuration: 60 }],
+    items: [saleItemId, localOrder.saleItemId].map((id) => ({
+      saleItemId: id, sessionUsed: 1, employeeId: TEST_MANAGER_EMP_ID, serviceDuration: 60,
+    })),
   })
   let serviceOrderId = null
   if (created.code !== 0) {
@@ -112,7 +122,56 @@ async function main() {
       } else {
         rec('  ✓ confirm 跨店扣次成功（旧店 A 卡 5→4）')
       }
+      const localAfter = await pgQuery(
+        `SELECT remaining_sessions FROM sale_items WHERE sale_item_id = $1`, [localOrder.saleItemId])
+      if (Number(localAfter[0]?.remaining_sessions) !== 2) {
+        errors.push(`混选核销后本店卡剩余应=2，实际=${localAfter[0]?.remaining_sessions}`)
+      }
     }
+  }
+
+  // 旧店寄存单是历史剩余次数快照，不经收款；当前绑定店仍应可选、可开单并扣次。
+  const depositOrderId = `${NS}_XSTORE_DEPOSIT`
+  const deposit = await createTestSaleOrder({
+    saleOrderId: depositOrderId, clientUserId: TEST_CLIENT_USER_ID,
+    storeId: OLD_STORE_ID, saleOrderType: '寄存单',
+    productName: `${NS}_旧店寄存疗程`, productType: '疗程卡',
+    quantity: 1, sessionCount: 5, totalAmount: 0, status: '已支付',
+    salesCategory: '他销自耗',
+  })
+  await pgQuery(
+    `UPDATE sale_items SET unit_price = 100, unit_real_price = 100,
+       sale_amount = 500, paid_sessions = 5 WHERE sale_item_id = $1`,
+    [deposit.saleItemId],
+  )
+  const depositPaid = await invokeStaffApi('customer.paidOrders', {
+    _testOpenid: TEST_MANAGER_OPENID, clientUserId: TEST_CLIENT_USER_ID,
+  })
+  const depositVisible = depositPaid.code === 0 && depositPaid.data.some((order) =>
+    order.saleOrderId === depositOrderId && order.items.some((item) => item.saleItemId === deposit.saleItemId))
+  if (!depositVisible) errors.push('原店寄存项目未出现在现店服务单的数据源中')
+  else rec('  ✓ 原店寄存项目进入现店服务单的数据源')
+
+  const depositCreated = await invokeStaffApi('service.create', {
+    _testOpenid: TEST_MANAGER_OPENID,
+    clientUserId: TEST_CLIENT_USER_ID,
+    items: [{ saleItemId: deposit.saleItemId, sessionUsed: 1, employeeId: TEST_MANAGER_EMP_ID, serviceDuration: 60 }],
+  })
+  if (depositCreated.code !== 0) {
+    errors.push(`原店寄存项目在现店开单应成功，实际 code=${depositCreated.code} ${depositCreated.message}`)
+  } else {
+    const depositServiceOrderId = depositCreated.data.serviceOrderId
+    await invokeStaffApi('service.start', { _testOpenid: TEST_MANAGER_OPENID, serviceOrderId: depositServiceOrderId })
+    await invokeStaffApi('service.complete', { _testOpenid: TEST_MANAGER_OPENID, serviceOrderId: depositServiceOrderId })
+    const depositConfirmed = await invokeStaffApi('service.confirm', {
+      _testOpenid: TEST_MANAGER_OPENID, serviceOrderId: depositServiceOrderId,
+    })
+    const afterDeposit = await pgQuery(
+      `SELECT remaining_sessions, store_id FROM sale_items WHERE sale_item_id = $1`, [deposit.saleItemId])
+    if (depositConfirmed.code !== 0 || Number(afterDeposit[0]?.remaining_sessions) !== 4
+      || afterDeposit[0]?.store_id !== OLD_STORE_ID) {
+      errors.push(`原店寄存项目核销应扣 1 次且保留原门店，实际 code=${depositConfirmed.code}`)
+    } else rec('  ✓ 原店寄存项目在现店开单并核销成功，原卡门店不变')
   }
 
   // ── 4) 负向：把顾客绑定门店改到旧店 A，则在 B 开单被拒（使用限当前绑定门店）──

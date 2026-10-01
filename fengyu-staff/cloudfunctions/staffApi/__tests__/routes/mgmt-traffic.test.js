@@ -14,6 +14,18 @@ const pg = globalThis.__mocks__.pg
 const { createCtx, createManagerCtx } = require('../helpers')
 const { summary } = require('../../routes/mgmt-traffic')
 
+/**
+ * #401：scope 构造器叠加了在营口径 helper（utils/store-status.js activeStoreCondition）。
+ * 把那段固定子查询替换成 `<ACTIVE>` 占位，再断言其余形态 —— 既不让它误伤「单店不得出现
+ * store_id IN (」这类断言，又能钉住「启用门店过滤确实叠上了」。
+ */
+const ACTIVE_STORE_RE =
+  /\S+ IN \(\s*SELECT active_store\.store_id\s+FROM stores active_store\s+JOIN org_nodes active_node ON active_store\.org_node_id = active_node\.id\s+WHERE active_node\.type = '门店'\s+AND active_node\.is_active = TRUE\s*\)/g
+function withoutActive(sql) {
+  return sql.replace(ACTIVE_STORE_RE, '<ACTIVE>')
+}
+
+
 // ---- ctx 构造 ----
 function makeHqCtx(payload = {}) {
   return createCtx({
@@ -108,6 +120,18 @@ function setupDefaultMocks({
     return [{ v: 7 }]
   })
 }
+
+/**
+ * #439 的**单一例外**：新会员消费虽然 JOIN 了 sale_orders，却刻意按 `c.bound_store_id` 归店
+ * —— 它是「新会员客单价」的分子，必须与分母 queryNewMemberCount 同源，否则
+ * 「顾客绑定 A 店、在 B 店消费」时人进 A 的分母、钱进 B 的分子（admin 侧同型，两端同步整改）。
+ *
+ * 下面按这个签名把它从「sale/service 类按订单店过滤」那组里**摘出来单独断言**，
+ * 而不是把那组的正则放宽成 `(store_id|bound_store_id)` —— 放宽等于让整组断言失去区分力。
+ */
+const isNewMemberSpendSql = (s) =>
+  (/COALESCE\(SUM\(spe\.amount::numeric\), 0\) AS v/.test(s) || /legacy_source\s*=\s*'workfine'/.test(s)) &&
+  /c\.became_member_at::date BETWEEN/.test(s)
 
 describe('mgmtTraffic.summary 入参/权限校验', () => {
   test('缺 period 抛 INVALID_PARAMS', async () => {
@@ -276,7 +300,7 @@ describe('mgmtTraffic.summary 会员状态 + 客活 SQL 形态', () => {
     expect(ctx.result.status.dormantDeep).toBe(200)
   })
 
-  test('客活 SQL 含 visit_count CTE + n=1 / n>=2', async () => {
+  test('客活 SQL 按到店天数（service_date 去重）+ days=1 / days>=2（#298）', async () => {
     setupDefaultMocks()
     const ctx = makeHqCtx({ period: 'month', scopeType: 'all' })
     await summary(ctx)
@@ -285,17 +309,35 @@ describe('mgmtTraffic.summary 会员状态 + 客活 SQL 形态', () => {
     const onceSql = sqlList.find(
       (s) =>
         /WITH visit_count AS/.test(s) &&
-        /vc\.n\s*=\s*1/.test(s),
+        /vc\.days\s*=\s*1/.test(s),
     )
     expect(onceSql).toBeDefined()
+    expect(onceSql).toMatch(/COUNT\(DISTINCT so\.service_date\) AS days/)
     expect(onceSql).toMatch(/c\.customer_status IN \('保有会员-稳定',\s*'保有会员-有效'\)/)
 
     const twiceSql = sqlList.find(
       (s) =>
         /WITH visit_count AS/.test(s) &&
-        /vc\.n\s*>=\s*2/.test(s),
+        /vc\.days\s*>=\s*2/.test(s),
     )
     expect(twiceSql).toBeDefined()
+    expect(twiceSql).toMatch(/COUNT\(DISTINCT so\.service_date\) AS days/)
+    // 服务单行数口径已废弃，禁止回退
+    for (const s of [onceSql, twiceSql]) expect(s).not.toMatch(/COUNT\(\*\) AS n\b/)
+  })
+
+  test('#298 activeOnce / activeTwice 结果不对调（days=1 → activeOnce）', async () => {
+    setupDefaultMocks()
+    const base = pg.query.getMockImplementation()
+    pg.query.mockImplementation(async (sql, params) => {
+      if (/WITH visit_count AS/.test(sql) && /vc\.days = 1\b/.test(sql)) return [{ v: 11 }]
+      if (/WITH visit_count AS/.test(sql) && /vc\.days >= 2\b/.test(sql)) return [{ v: 22 }]
+      return base(sql, params)
+    })
+    const ctx = makeHqCtx({ period: 'month', scopeType: 'all' })
+    await summary(ctx)
+    expect(ctx.result.status.activeOnce).toBe(11)
+    expect(ctx.result.status.activeTwice).toBe(22)
   })
 
   test('本月激活 3 项含 anchor=startDate-1 展开 + visits_90d_prev=0', async () => {
@@ -353,12 +395,49 @@ describe('mgmtTraffic.summary 会员被经营 6 桶 SQL 形态', () => {
     expect(opsSql).not.toMatch(/received::numeric\s*-\s*COALESCE/)
     expect(opsSql).not.toMatch(/o\.paid_at::date\s+BETWEEN/)
     expect(opsSql).not.toMatch(/o\.status\s*=\s*'已支付'/)
-    expect(opsSql).toMatch(/FILTER \(WHERE spend\s*<\s*1990\)/)
-    expect(opsSql).toMatch(/FILTER \(WHERE spend\s*>=\s*1990\s+AND\s+spend\s*<\s*10000\)/)
+    // #292：最低档下界 = 会员门槛，走参数占位（不再写死 1990）；占位号 = 最后一个参数
+    const opsCall = pg.query.mock.calls.find((c) => c[0] === opsSql)
+    const th = `\\$${opsCall[1].length}`
+    expect(opsCall[1][opsCall[1].length - 1]).toBe(1980) // setup.js 全局 mock 的默认门槛
+    expect(opsSql).not.toMatch(/(?<!\d)1990(?!\d)/)
+    expect(opsSql).toMatch(new RegExp(`FILTER \\(WHERE spend\\s*<\\s*${th}\\)`))
+    expect(opsSql).toMatch(new RegExp(`FILTER \\(WHERE spend\\s*>=\\s*${th}\\s+AND\\s+spend\\s*<\\s*10000\\)`))
     expect(opsSql).toMatch(/FILTER \(WHERE spend\s*>=\s*10000\s+AND\s+spend\s*<\s*30000\)/)
     expect(opsSql).toMatch(/FILTER \(WHERE spend\s*>=\s*30000\s+AND\s+spend\s*<\s*60000\)/)
     expect(opsSql).toMatch(/FILTER \(WHERE spend\s*>=\s*60000\s+AND\s+spend\s*<\s*100000\)/)
     expect(opsSql).toMatch(/FILTER \(WHERE spend\s*>=\s*100000\)/)
+  })
+
+  test('#292 会员门槛读 system_configs：改配置值后分桶下界同步变化', async () => {
+    setupDefaultMocks()
+    globalThis.__mocks__.config.getMemberThreshold.mockResolvedValue(2990)
+    const ctx = makeHqCtx({ period: 'month', scopeType: 'all' })
+    await summary(ctx)
+    const call = pg.query.mock.calls.find((c) => /WITH member_spend AS/.test(c[0]) && /bucket1_count/.test(c[0]))
+    expect(call).toBeDefined()
+    const params = call[1]
+    expect(params[params.length - 1]).toBe(2990)
+    const th = `$${params.length}`
+    expect(call[0]).toContain(`FILTER (WHERE spend < ${th}) AS bucket1_count`)
+    expect(call[0]).toContain(`FILTER (WHERE spend >= ${th} AND spend < 10000) AS bucket2_count`)
+  })
+
+  test('#292 门槛占位号随 scope 参数个数对齐（market scope 下为 $2）', async () => {
+    for (const ctx of [makeMarketCtx({ period: 'month', scopeType: 'market', scopeId: 'mkt-A' })]) {
+      setupDefaultMocks()
+      globalThis.__mocks__.config.getMemberThreshold.mockResolvedValue(2990)
+      await summary(ctx)
+      const call = pg.query.mock.calls.find((c) => /WITH member_spend AS/.test(c[0]) && /bucket1_count/.test(c[0]))
+      expect(call).toBeDefined()
+      const params = call[1]
+      expect(params.length).toBeGreaterThanOrEqual(2) // scope 至少 1 个参数 + 门槛
+      expect(params[params.length - 1]).toBe(2990)
+      const th = `$${params.length}`
+      expect(call[0]).toContain(`FILTER (WHERE spend < ${th}) AS bucket1_count`)
+      // SQL 里出现的最大占位号恰好等于参数个数（无错位、无悬空）
+      const maxPh = Math.max(...[...call[0].matchAll(/\$(\d+)/g)].map((m) => Number(m[1])))
+      expect(maxPh).toBe(params.length)
+    }
   })
 
   test('返回 6 桶 + avgTicket（防除零）', async () => {
@@ -526,7 +605,34 @@ describe('mgmtTraffic.summary 新会员经营 + trialFootfall', () => {
     const ctx = makeHqCtx({ period: 'month', scopeType: 'all' })
     await summary(ctx)
 
-    expect(ctx.result.newMembers).toEqual({ count: 7, spend: 7, trialFootfall: 7 })
+    // spend = 款项流水分支 7 + WorkFine 历史单分支 7（#289，默认 mock 标量一律 7）
+    expect(ctx.result.newMembers).toEqual({ count: 7, spend: 14, trialFootfall: 7 })
+  })
+
+  /**
+   * #289：新会员消费 = 款项流水 + WorkFine 历史单（订单级实收），分母（count）不变。
+   * 两条分支取不同金额，任一条没参与相加 / 被当成 count 都会算错；先断言各自恰好命中一次防空跑。
+   */
+  test('#289 newMembers.spend = 款项流水分支 + WorkFine 历史单分支（两分位），count 不受影响', async () => {
+    setupDefaultMocks()
+    const base = pg.query.getMockImplementation()
+    const hits = { spe: 0, legacy: 0 }
+    pg.query.mockImplementation(async (sql, params) => {
+      if (/FROM sale_order_performance_events spe/.test(sql) && /became_member_at::date BETWEEN/.test(sql)) {
+        hits.spe++
+        return [{ v: '3000.105' }]
+      }
+      if (/o\.legacy_source = 'workfine'/.test(sql) && /FROM sale_orders o/.test(sql)) {
+        hits.legacy++
+        return [{ v: '2249.9' }]
+      }
+      return base(sql, params)
+    })
+    const ctx = makeHqCtx({ period: 'year', scopeType: 'all' })
+    await summary(ctx)
+
+    expect(hits).toEqual({ spe: 1, legacy: 1 })
+    expect(ctx.result.newMembers).toEqual({ count: 7, spend: 5250.01, trialFootfall: 7 })
   })
 })
 
@@ -544,7 +650,7 @@ describe('mgmtTraffic.summary scope 三档 SQL 拼接', () => {
     )
     expect(metricSqls.length).toBeGreaterThan(0)
     for (const s of metricSqls) {
-      expect(s).toMatch(/WHERE\s+TRUE/)
+      expect(withoutActive(s)).toMatch(/WHERE\s+\(TRUE\)\s+AND\s+<ACTIVE>/)
       expect(s).not.toMatch(/store_id\s*=\s*\$/)
       expect(s).not.toMatch(/bound_store_id\s*=\s*\$/)
     }
@@ -558,10 +664,23 @@ describe('mgmtTraffic.summary scope 三档 SQL 拼接', () => {
     const sqlList = pg.query.mock.calls.map((c) => c[0])
 
     // service_orders / sale_orders（不含 client_wechat_users 表的纯 client SQL）类
+    const newMemberSpendSqls = sqlList.filter(isNewMemberSpendSql)
+    // spe 分支 + #289 的 WorkFine 历史单分支各 1 条，scope 都随 #439 用 bound_store_id
+    expect(newMemberSpendSqls, '新会员消费查询应恰好 2 条（spe + legacy，#439 例外的定位前提）').toHaveLength(2)
+    for (const s of newMemberSpendSqls) {
+      // ⚠ 必须在**剥掉 active 段之后**再比：`activeStoreCondition('c.bound_store_id')` 展开本身就是
+      // `c.bound_store_id IN ( SELECT active_store.store_id …`，直接对原文 match 的话
+      // 不论 scope 段用哪个 producer 都绿（pr-ready boundary P2-3）。
+      expect(withoutActive(s)).toMatch(/c\.bound_store_id\s+IN\s*\(/)
+      expect(withoutActive(s)).not.toMatch(/(so|o)\.store_id\s+IN\s*\(/)
+      expectRecursiveDescendantScope(s)
+    }
+
     const saleServiceSqls = sqlList.filter(
       (s) =>
         (/(FROM|JOIN)\s+sale_orders/.test(s) || /(FROM|JOIN)\s+service_orders/.test(s)) &&
-        !/SELECT store_name FROM stores\b/.test(s),
+        !/SELECT store_name FROM stores\b/.test(s) &&
+        !isNewMemberSpendSql(s),
     )
     expect(saleServiceSqls.length).toBeGreaterThan(0)
     for (const s of saleServiceSqls) {
@@ -590,14 +709,26 @@ describe('mgmtTraffic.summary scope 三档 SQL 拼接', () => {
 
     const sqlList = pg.query.mock.calls.map((c) => c[0])
 
+    const newMemberSpendSqls = sqlList.filter(isNewMemberSpendSql)
+    // spe 分支 + #289 的 WorkFine 历史单分支各 1 条，scope 都随 #439 用 bound_store_id
+    expect(newMemberSpendSqls, '新会员消费查询应恰好 2 条（spe + legacy，#439 例外的定位前提）').toHaveLength(2)
+    for (const s of newMemberSpendSqls) {
+      expect(withoutActive(s)).toMatch(/c\.bound_store_id\s*=\s*\$\d/)
+      expect(withoutActive(s)).not.toMatch(/(so|o)\.store_id\s*=\s*\$\d/)
+    }
+
     const saleServiceSqls = sqlList.filter(
       (s) =>
         (/(FROM|JOIN)\s+sale_orders/.test(s) || /(FROM|JOIN)\s+service_orders/.test(s)) &&
-        !/SELECT store_name FROM stores\b/.test(s),
+        !/SELECT store_name FROM stores\b/.test(s) &&
+        !isNewMemberSpendSql(s),
     )
+    // fail-closed：filter 将来被放宽/收窄而把这组排空时，for 会一次都不跑 ⇒ 整组守护静默通过
+    expect(saleServiceSqls.length, 'sale/service 类查询不应为空').toBeGreaterThan(0)
     for (const s of saleServiceSqls) {
       expect(s).toMatch(/(so|o)\.store_id\s*=\s*\$\d/)
-      expect(s).not.toMatch(/store_id\s+IN\s*\(/)
+      expect(withoutActive(s)).not.toMatch(/store_id\s+IN\s*\(/)
+      expect(withoutActive(s)).toMatch(/<ACTIVE>/)
     }
 
     const pureClientSqls = sqlList.filter(
@@ -606,8 +737,9 @@ describe('mgmtTraffic.summary scope 三档 SQL 拼接', () => {
         !/FROM\s+(sale_orders|service_orders)/.test(s) &&
         !/JOIN\s+(sale_orders|service_orders)/.test(s),
     )
+    expect(pureClientSqls.length, '纯 client 类查询不应为空').toBeGreaterThan(0)
     for (const s of pureClientSqls) {
-      expect(s).toMatch(/c\.bound_store_id\s*=\s*\$\d/)
+      expect(withoutActive(s)).toMatch(/c\.bound_store_id\s*=\s*\$\d/)
     }
   })
 })

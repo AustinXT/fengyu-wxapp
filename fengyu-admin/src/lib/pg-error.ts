@@ -44,3 +44,13 @@ export function pgErrorDetail(err: unknown): string | undefined {
     return typeof d === 'string' && d.length > 0 ? d : undefined
   })
 }
+
+/**
+ * 取 PL/pgSQL `RAISE EXCEPTION` 的原文（SQLSTATE `P0001`），沿 cause 链找 —— 外层 DrizzleQueryError 的
+ * message 是 `Failed query: ...`，不是触发器给的原文。P0001 含字母，不匹配上面的纯数字 PG_CODE_RE，所以单独判。
+ */
+export function pgRaiseMessage(err: unknown): string | undefined {
+  return walkCause(err, (e) => (
+    e.code === 'P0001' && typeof e.message === 'string' ? e.message : undefined
+  ))
+}

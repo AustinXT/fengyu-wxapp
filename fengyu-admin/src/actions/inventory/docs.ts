@@ -5,12 +5,19 @@ import {
   confirmInventoryCoreReceive as confirmInventoryCoreReceiveImpl,
   createInventoryCoreDoc as createInventoryCoreDocImpl,
   getInventoryCoreDocById as getInventoryCoreDocByIdImpl,
+  getInventoryCoreDocsByIds as getInventoryCoreDocsByIdsImpl,
   listInventoryCoreDocs as listInventoryCoreDocsImpl,
+  listInventoryOperationInboxTotals as listInventoryOperationInboxTotalsImpl,
+  listInventoryDocCandidateIds as listInventoryDocCandidateIdsImpl,
+  listInventoryDocCandidates as listInventoryDocCandidatesImpl,
+  listStoreUnallocatedRequestSkus as listStoreUnallocatedRequestSkusImpl,
   rejectInventoryCoreDoc as rejectInventoryCoreDocImpl,
 } from '@/lib/inventory/engine'
-import type { CreateInventoryDocInput, InventoryCoreDocStatus, InventoryDocType, InventoryLocationType } from '@/lib/inventory/types'
+import type { CreateInventoryDocInput, InventoryCoreDocStatus, InventoryDocProcessProgress, InventoryDocType, InventoryLocationType } from '@/lib/inventory/types'
+import { INVENTORY_CORE_RECEIVE_ACTIONS } from '@/lib/inventory/business-level'
 import { resolveOperationDocQuery } from '@/lib/inventory/operation-doc-types'
 import type { InventoryOperationDocFilter } from '@/lib/inventory/operation-doc-types'
+import type { InventoryDocCandidateFilters } from '@/lib/inventory/doc-candidates'
 import { ApiError } from '@/lib/api-error'
 import { withAnyPermission, withPermission } from '@/lib/with-permission'
 
@@ -23,6 +30,7 @@ export const listInventoryCoreDocs = withPermission(
       locationType?: InventoryLocationType
       docType?: InventoryDocType
       status?: InventoryCoreDocStatus
+      processProgress?: InventoryDocProcessProgress
       startDate?: string
       endDate?: string
       keyword?: string
@@ -32,6 +40,11 @@ export const listInventoryCoreDocs = withPermission(
   ) => listInventoryCoreDocsImpl(filters),
 )
 
+export const listInventoryOperationInboxTotals = withPermission(
+  'inventory:list',
+  async () => listInventoryOperationInboxTotalsImpl(),
+)
+
 /**
  * 办理台业务工作区「单据」Tab 的数据源（#190 单段 → #192 两段）。
  *
@@ -39,20 +52,20 @@ export const listInventoryCoreDocs = withPermission(
  * 不让客户端直接指定 docType，省得日后有人从这个入口拼出一份绕过办理台语义的查询。
  * 可见范围完全沿用 `listInventoryCoreDocs` 的 scope 过滤，不另起一套口径。
  *
- * 返回两段：`produced`（本业务产出的单）与 `inbox`（本业务要处理的上游待办单，
- * 没有待办语义的业务恒为 `null`）。两段**各自分页**（`page` / `inboxPage`），
+ * 返回两段：`produced`（本业务产出的单）与 `inbox`（本业务要处理的上游待办单；
+ * 市场报货的 inbox 是本业务自己未提交的草稿，#348；没有待办语义的业务恒为 `null`）。两段**各自分页**（`page` / `inboxPage`），
  * 共用同一个 `pageSize`，并各自回传 engine 夹过白名单后的实际页长 ——
  * 前端必须按各自返回的 `pageSize` 算总页数，别共用一个 state。
  *
  * ⚠️ 有 inbox 的业务每次加载是 **2 次** engine 调用（各带一次 COUNT +
  * syncInventoryLocations + getSession，因为 `listInventoryCoreDocs` 自身是
- * withPermission 包装的）。没有 inbox 的 17 个业务仍只查 1 次 —— 别图省事无条件查两次。
+ * withPermission 包装的）。没有 inbox 的业务仍只查 1 次 —— 别图省事无条件查两次。
  */
 export const listInventoryOperationDocs = withPermission(
   'inventory:list',
   async (
     _session,
-    input: { operationId: string; page?: number; inboxPage?: number; pageSize?: number },
+    input: { operationId: string; page?: number; inboxPage?: number; pageSize?: number; startDate?: string; endDate?: string; processProgress?: InventoryDocProcessProgress },
   ) => {
     /*
      * `resolveOperationDocQuery` 内部先过白名单再查表，**不能**退回成
@@ -78,6 +91,9 @@ export const listInventoryOperationDocs = withPermission(
       pendingItemScope: filter.pendingItemScope,
       page,
       pageSize: input.pageSize,
+      startDate: input.startDate,
+      endDate: input.endDate,
+      processProgress: input.processProgress,
     })
     const produced = await listInventoryCoreDocsImpl(toFilters(query.produced, input.page))
     const inbox = query.inbox
@@ -87,9 +103,63 @@ export const listInventoryOperationDocs = withPermission(
   },
 )
 
+/**
+ * 办理台来源单 / 待处理单候选（#338）：按用途服务端检索 + 分页，取代页面预加载的最近 100 张。
+ * 用途 → 单据类型 / 状态 / 方向 / 剩余量口径在服务端白名单解析，客户端不能直接指定 docType。
+ * 显式逐字段转发（不 spread），与 listInventoryOperationDocs 同理。
+ */
+export const listInventoryDocCandidates = withPermission(
+  'inventory:list',
+  async (_session, raw: InventoryDocCandidateFilters) => {
+    const input = raw ?? ({} as InventoryDocCandidateFilters)
+    return listInventoryDocCandidatesImpl({
+      purpose: input.purpose,
+      keyword: input.keyword,
+      startDate: input.startDate,
+      endDate: input.endDate,
+      targetOrgNodeId: input.targetOrgNodeId,
+      sourceOrgNodeId: input.sourceOrgNodeId,
+      includeExhausted: input.includeExhausted,
+      page: input.page,
+      pageSize: input.pageSize,
+    })
+  },
+)
+
+/** 一键带出：检索条件下全部仍有剩余量的候选单号（上限见 INVENTORY_DOC_CANDIDATE_BULK_LIMIT）。 */
+export const listInventoryDocCandidateIds = withPermission(
+  'inventory:list',
+  async (_session, raw: Omit<InventoryDocCandidateFilters, 'includeExhausted' | 'page' | 'pageSize'>) => {
+    const input = raw ?? ({} as typeof raw)
+    return listInventoryDocCandidateIdsImpl({
+      purpose: input.purpose,
+      keyword: input.keyword,
+      startDate: input.startDate,
+      endDate: input.endDate,
+      targetOrgNodeId: input.targetOrgNodeId,
+      sourceOrgNodeId: input.sourceOrgNodeId,
+    })
+  },
+)
+
+/** 分院配货自选行的「建议引用报货单」提示（#337）：该门店仍有未配报货的 SKU。纯提示，不参与写入判定。 */
+export const listStoreUnallocatedRequestSkus = withPermission(
+  'inventory:list',
+  async (_session, raw: { storeOrgNodeId: string; marketId: string }) => listStoreUnallocatedRequestSkusImpl({
+    storeOrgNodeId: raw?.storeOrgNodeId,
+    marketId: raw?.marketId,
+  }),
+)
+
 export const getInventoryCoreDocById = withPermission(
   'inventory:list',
   async (_session, id: string) => getInventoryCoreDocByIdImpl(id),
+)
+
+/** 批量取单据详情（#338 采购表单装载带出的来源单），一次请求代替逐张串行调用。 */
+export const getInventoryCoreDocsByIds = withPermission(
+  'inventory:list',
+  async (_session, ids: string[]) => getInventoryCoreDocsByIdsImpl(ids),
 )
 
 export const createInventoryCoreDoc = withAnyPermission(
@@ -110,7 +180,8 @@ export const rejectInventoryCoreDoc = withAnyPermission(
 )
 
 export const confirmInventoryCoreReceive = withAnyPermission(
-  ['inventory:market_operate', 'inventory:store_operate'],
+  // 与 engine 内层闸、单据中心收货按钮的行级判据同一单源（#340）
+  [...INVENTORY_CORE_RECEIVE_ACTIONS],
   async (_session, outboundDocId: string, remark?: string | null) =>
     confirmInventoryCoreReceiveImpl(outboundDocId, remark),
 )

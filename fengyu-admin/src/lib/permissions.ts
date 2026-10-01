@@ -50,7 +50,7 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'coupon:list',
     'customer:create', 'customer:list', 'customer:update',
     'dashboard:view',
-    'data_center:dashboard',
+    'data_center:customer_detail', 'data_center:dashboard', 'data_center:staff_commission',
     'employee:create', 'employee:list', 'employee:update',
     'legacy_order:approve', 'legacy_order:list', 'legacy_order:pull', 'legacy_order:reject', 'legacy_order:update_amount', 'legacy_order:update_phone',
     'merchant:list',
@@ -69,15 +69,15 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
   // 财务：提成矩阵维护、历史订单核对与商户档案维护；物理删除仅系统管理员可授予。
   // 相对历史默认的扩权：commission:* 全 CRUD（提成矩阵）、coupon:list、
   // legacy_order 核对四项（approve/reject/update_amount/update_phone）、product:list、operation_log:list。
-  // service:list — 营业额分配页含服务提成部分，finance 只读对账需看全。商户档案 /merchants 完整 CRUD。
+  // service:list — 营业额分配页含服务提成部分，finance 调整分配需查看服务单。商户档案 /merchants 完整 CRUD。
   finance: [
-    'allocation:list',
+    'allocation:list', 'allocation:save',
     'card_transaction:list',
     'commission:create', 'commission:list', 'commission:update',
     'coupon:list',
     'customer:list',
     'dashboard:view',
-    'data_center:dashboard',
+    'data_center:customer_detail', 'data_center:dashboard', 'data_center:staff_commission',
     'employee:list',
     'legacy_order:approve', 'legacy_order:list', 'legacy_order:pull', 'legacy_order:reject', 'legacy_order:update_amount', 'legacy_order:update_phone',
     'merchant:create', 'merchant:list', 'merchant:update',
@@ -306,11 +306,27 @@ export async function expandScopeDeptNodeIds(roles: AuthSession['roles']): Promi
  * - 市场角色 → scopeId 直接计入
  * - 门店角色 → 通过 org_nodes.parent_id 反查所属市场计入
  *
- * 用于 admin /commission /products /coupons 三处 `getMarkets()` 下拉列表 scope 过滤。
+ * 用于 admin /commission /products /coupons /merchants 的市场下拉 scope 过滤，以及数据中心
+ * validateScope 的市场校验（门店级账号可选所属市场；锚定员工另按直接授权收窄，见 scope-sql orgAnchorScopeSql）。
  */
 export async function expandVisibleMarketIds(
   session: AuthSession,
 ): Promise<string[] | null> {
+  return (await expandMarketVisibility(session))?.visible ?? null
+}
+
+/**
+ * 市场可见性的两层结果（总部角色返回 null = 全开）：
+ * - `granted`：角色范围本身覆盖的市场节点（市场角色 / 挂在市场上的角色，如 hr@品项公司）
+ * - `visible`：granted ∪ 门店级角色的祖先市场（门店级账号的下拉要能回显所属市场）
+ *
+ * 两者的区别只在「祖先市场」：门店店长能看到所属市场的名字，但并未被授权整个市场。
+ * 数据中心据此决定无门店市场能否作为默认范围 / 计入可切换范围（#399）——
+ * 否则唯一门店被停用的店长会被默认带到整个市场，看到该市场锚定员工的数据。
+ */
+export async function expandMarketVisibility(
+  session: AuthSession,
+): Promise<{ visible: string[]; granted: string[] } | null> {
   // 任一总部角色即视为全开
   if (session.roles.some(r => r.scopeType === '总部')) {
     return null
@@ -322,9 +338,8 @@ export async function expandVisibleMarketIds(
   const scopeIds = session.permissions.scopeOrgNodeIds
     ?? collectDescendantNodeIds(nodes, session.roles.map((role) => role.scopeId))
   const scopeSet = new Set(scopeIds)
-  const marketIds = new Set(
-    nodes.filter((node) => node.type === '市场' && scopeSet.has(node.id)).map((node) => node.id),
-  )
+  const granted = nodes.filter((node) => node.type === '市场' && scopeSet.has(node.id)).map((node) => node.id)
+  const marketIds = new Set(granted)
 
   // 门店级绑定仍需要显示其所属市场；查找不限层级，防止未来树加中间节点后失效。
   for (const role of session.roles) {
@@ -332,7 +347,7 @@ export async function expandVisibleMarketIds(
     if (marketId) marketIds.add(marketId)
   }
 
-  return Array.from(marketIds)
+  return { visible: Array.from(marketIds), granted }
 }
 
 /**

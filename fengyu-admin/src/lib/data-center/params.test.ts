@@ -8,7 +8,13 @@ import {
   singleValueQuery,
   parseScope,
   parseTimeRange,
+  toTimeRangeInput,
   parseBoardParams,
+  parseStoreIdList,
+  scopeFromStoreIds,
+  scopeToParams,
+  collapseQuery,
+  MAX_SCOPE_STORES,
 } from './params'
 
 describe('parseBoard', () => {
@@ -106,6 +112,54 @@ describe('parseTimeRange', () => {
     })
     expect(parseTimeRange({ preset: 'custom', start: '2026-01-01' })).toEqual({ preset: 'month' }) // 缺 end
   })
+
+  it('#308：位数对但日历不对 / 年份越界 → 回退 month', () => {
+    for (const bad of ['2026-02-30', '2026-13-01', '2026-00-01', '2026-01-32', '0001-01-01', '0000-01-01', '1899-12-31', '2101-01-01']) {
+      expect(parseTimeRange({ preset: 'custom', start: bad, end: '2026-12-31' }), `start=${bad}`).toEqual({ preset: 'month' })
+      expect(parseTimeRange({ preset: 'custom', start: '1900-01-01', end: bad }), `end=${bad}`).toEqual({ preset: 'month' })
+    }
+  })
+
+  it('#308：年份上下界与日期选择器一致（1900–2100）', () => {
+    expect(parseTimeRange({ preset: 'custom', start: '1900-01-01', end: '2100-12-31' })).toEqual({
+      preset: 'custom',
+      start: '1900-01-01',
+      end: '2100-12-31',
+    })
+  })
+
+})
+
+describe('toTimeRangeInput（#308 服务端复检）', () => {
+  it('预设白名单原样重建；custom 须合法且不倒挂；多余字段丢弃', () => {
+    for (const p of ['today', 'week', 'month', 'year'] as const) {
+      expect(toTimeRangeInput({ preset: p, start: 'x', extra: 1 })).toEqual({ preset: p })
+    }
+    expect(toTimeRangeInput({ preset: 'custom', start: '2026-01-01', end: '2026-01-01', extra: 1 })).toEqual({
+      preset: 'custom',
+      start: '2026-01-01',
+      end: '2026-01-01',
+    })
+  })
+
+  it('非法形状一律拒绝', () => {
+    const bad: unknown[] = [
+      undefined,
+      null,
+      'month',
+      {},
+      { preset: 'decade' },
+      { preset: 'toString' }, // 原型链上的属性名不算预设
+      { preset: '__proto__' },
+      { preset: 'custom' },
+      { preset: 'custom', start: '2026-01-01' },
+      { preset: 'custom', start: '2026-02-30', end: '2026-03-01' },
+      { preset: 'custom', start: '0001-01-01', end: '0001-01-02' },
+      { preset: 'custom', start: '2026-02-01', end: '2026-01-01' },
+      { preset: 'custom', start: 20260101, end: 20260131 },
+    ]
+    for (const tr of bad) expect(toTimeRangeInput(tr), JSON.stringify(tr)).toBeNull()
+  })
 })
 
 describe('parseBoardParams', () => {
@@ -126,5 +180,54 @@ describe('parseBoardParams', () => {
     expect(parseBoardParams({ scope: 'authorized', preset: 'month' }).scope).toEqual({
       type: 'authorized',
     })
+  })
+})
+
+describe('多店范围编码（#376）', () => {
+  it('scope=stores + 逗号串 → 去重升序的 stores', () => {
+    expect(parseScope({ scope: 'stores', scopeId: 'S3,S1,S3' })).toEqual({ type: 'stores', ids: ['S1', 'S3'] })
+  })
+
+  it('只有 1 家 → 编成 store', () => {
+    expect(parseScope({ scope: 'stores', scopeId: 'S1' })).toEqual({ type: 'store', id: 'S1' })
+    expect(parseScope({ scope: 'stores', scopeId: 'S1,S1' })).toEqual({ type: 'store', id: 'S1' })
+  })
+
+  it('非法串（空段 / 非法字符 / 缺 scopeId / 超上限）→ 回落 all', () => {
+    expect(parseScope({ scope: 'stores', scopeId: 'S1,,S2' })).toEqual({ type: 'all' })
+    expect(parseScope({ scope: 'stores', scopeId: 'S1,S2;drop' })).toEqual({ type: 'all' })
+    expect(parseScope({ scope: 'stores', scopeId: 'S1, S2' })).toEqual({ type: 'all' })
+    expect(parseScope({ scope: 'stores' })).toEqual({ type: 'all' })
+    const tooMany = Array.from({ length: MAX_SCOPE_STORES + 1 }, (_, i) => `S${i}`).join(',')
+    expect(parseScope({ scope: 'stores', scopeId: tooMany })).toEqual({ type: 'all' })
+  })
+
+  it('恰好上限可解析', () => {
+    const max = Array.from({ length: MAX_SCOPE_STORES }, (_, i) => `S${i}`).join(',')
+    expect(parseStoreIdList(max)).toHaveLength(MAX_SCOPE_STORES)
+  })
+
+  it('scopeToParams 是 parseScope 的逆（五种形态往返）', () => {
+    const scopes = [
+      { type: 'all' as const },
+      { type: 'authorized' as const },
+      { type: 'market' as const, id: 'M1' },
+      { type: 'store' as const, id: 'S1' },
+      { type: 'stores' as const, ids: ['S1', 'S2'] },
+    ]
+    for (const scope of scopes) expect(parseScope(scopeToParams(scope))).toEqual(scope)
+    expect(scopeToParams({ type: 'stores', ids: ['S2', 'S1'] })).toEqual({ scope: 'stores', scopeId: 'S1,S2' })
+  })
+
+  it('单 key 编码不触发 hasRepeatedQueryKey，collapseQuery 原样保留逗号串', () => {
+    const query = { scope: 'stores', scopeId: 'S1,S2' }
+    expect(hasRepeatedQueryKey(query)).toBe(false)
+    expect(collapseQuery(query).get('scopeId')).toBe('S1,S2')
+  })
+
+  it('scopeFromStoreIds：空集 null / 1 家 store / 多家 stores', () => {
+    expect(scopeFromStoreIds([])).toBeNull()
+    expect(scopeFromStoreIds(['S1'])).toEqual({ type: 'store', id: 'S1' })
+    expect(scopeFromStoreIds(['S2', 'S1'])).toEqual({ type: 'stores', ids: ['S1', 'S2'] })
   })
 })

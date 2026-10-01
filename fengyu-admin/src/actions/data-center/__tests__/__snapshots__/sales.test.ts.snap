@@ -1,0 +1,136 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`getSalesBoard — year 对比去重 (#311) > 按值相同的历史区间复用查询，8 个 KPI 共减少 8 次 SQL，输出与旧实现快照一致 1`] = `
+{
+  "byMarket": [],
+  "byStore": [],
+  "kpis": {
+    "consumePerStore": {
+      "unit": "amount",
+      "value": 160,
+    },
+    "employeeCount": {
+      "mom": {
+        "kind": "pct",
+        "value": 1,
+      },
+      "unit": "count",
+      "value": 12,
+      "yoy": {
+        "kind": "pct",
+        "value": 1,
+      },
+    },
+    "newCustomerRevenue": {
+      "mom": {
+        "kind": "pct",
+        "value": 1,
+      },
+      "unit": "amount",
+      "value": 300,
+      "yoy": {
+        "kind": "pct",
+        "value": 1,
+      },
+    },
+    "revenuePerStore": {
+      "unit": "amount",
+      "value": 200,
+    },
+    "shengmeiConsume": {
+      "mom": {
+        "kind": "pct",
+        "value": 1,
+      },
+      "unit": "amount",
+      "value": 150,
+      "yoy": {
+        "kind": "pct",
+        "value": 1,
+      },
+    },
+    "shengmeiRevenue": {
+      "mom": {
+        "kind": "pct",
+        "value": 1,
+      },
+      "unit": "amount",
+      "value": 200,
+      "yoy": {
+        "kind": "pct",
+        "value": 1,
+      },
+    },
+    "shengmeiRevenuePerStore": {
+      "unit": "amount",
+      "value": 40,
+    },
+    "storeConsume": {
+      "mom": {
+        "kind": "pct",
+        "value": 1,
+      },
+      "unit": "amount",
+      "value": 800,
+      "yoy": {
+        "kind": "pct",
+        "value": 1,
+      },
+    },
+    "storeCount": {
+      "mom": {
+        "kind": "pct",
+        "value": 1,
+      },
+      "unit": "count",
+      "value": 5,
+      "yoy": {
+        "kind": "pct",
+        "value": 1,
+      },
+    },
+    "storeRevenue": {
+      "mom": {
+        "kind": "pct",
+        "value": 1,
+      },
+      "unit": "amount",
+      "value": 1000,
+      "yoy": {
+        "kind": "pct",
+        "value": 1,
+      },
+    },
+    "trafficCustomerRevenue": {
+      "mom": {
+        "kind": "pct",
+        "value": 1,
+      },
+      "unit": "amount",
+      "value": 500,
+      "yoy": {
+        "kind": "pct",
+        "value": 1,
+      },
+    },
+  },
+  "scope": {
+    "id": null,
+    "name": "全部",
+    "type": "all",
+  },
+  "timeRange": {
+    "end": "2026-09-29",
+    "lastYear": {
+      "end": "2025-09-29",
+      "start": "2025-01-01",
+    },
+    "presetLabel": "今年",
+    "previous": {
+      "end": "2025-09-29",
+      "start": "2025-01-01",
+    },
+    "start": "2026-01-01",
+  },
+}
+`;

@@ -1,8 +1,8 @@
 /**
  * INV-03：三级正向主链（P0 主干）
  *
- * 门店报货 → 市场汇总 → 市场报货 → 采购订单 → 品项公司发货（含赠送）
- *   → 市场采购入库 → 分院配货 → 分院收货入库 → 货款结算
+ * 门店报货 → 市场汇总 → 市场报货 → 市场报货汇总 → 采购订单（市场行）→ 供应链采购入库（#335）
+ *   → 品项公司发货（含赠送）→ 市场采购入库 → 分院配货 → 分院收货入库 → 货款结算
  *
  * 断言绑定说明.md 章节：
  *   §1.3  门店报货单不体现价格
@@ -14,10 +14,15 @@
  *   §10.2 明细金额由 DB 触发器统一计算，赠品金额为 0
  *
  * 数量设计（刻意让各环节数量不同，才能验出履约口径）：
- *   门店报货 20 → 市场实际采购 30（≠汇总，验 §3.2 手填）→ 采购订单 30
- *   → 发货 30 + 赠送 5（验 §5.2）→ 市场入库 35 → 分院配货 20 + 赠送 2 → 门店收货 22
+ *   门店报货 20 → 市场实际采购 30（≠汇总，验 §3.2 手填）→ 采购订单 30 → 供应链采购入库 30
+ *   → 发货 25 + 赠送 5（引用市场报货单，#336；从刚入库的批次发出；总量 30 > 门店报货 20，验 §5.2）→ 市场入库 30
+ *   → 分院配货 20 + 赠送 2 → 门店收货 22
  *
- * 前置：INV-02 已开闸且总部有 100 件库存。
+ * #335 起采购订单的市场行也经供应链采购入库进总部库存，本 spec 不再用
+ * 「品项公司报货需求补货」给总部预备批次，发货直接从本采购单入库的批次出。
+ * 分批入库、超量/已关闭单入库被拒的正反向由 smoke-inventory-chain 覆盖。
+ *
+ * 前置：INV-02 已开闸。
  */
 
 import { test, expect, type Locator, type Page } from '@playwright/test'
@@ -26,6 +31,7 @@ import {
   login, psql, readCtx, recordVerdict, sqlStr, summarize, writeCtx, type Verdict,
 } from './_helpers/env'
 import { isGateOpen, openCutoverGate } from './_helpers/cutover'
+import { pickCandidateDoc, pickSku } from './_helpers/ui'
 
 test.setTimeout(600_000)
 
@@ -44,9 +50,9 @@ const R = {
 const QTY = {
   storeRequest: 20,
   marketPurchase: 30,
-  shipNormal: 30,
+  shipNormal: 25,
   shipGift: 5,
-  marketReceive: 35,
+  marketReceive: 30,
   allocNormal: 20,
   allocGift: 2,
   storeReceive: 22,
@@ -73,20 +79,12 @@ test('INV-03：三级正向主链 —— 报货→采购→发货→入库→配
   try {
     await login(page, INVT_ACCOUNTS.ADM.phone, INVT_PASS)
 
-    // ══ 0. 前置：确保总部有一个足量的单批次 ═══════════════════════
-    // 每跑一轮都会消耗总部库存，且发货只能从**单个批次**出。不做这步，
-    // 第二次运行就会撞上「没有可用量 >= 35 的批次」（库存被拆成多个小批次）。
-    // 走 INV-02 同款三步补一张新批次，让本 spec 可独立重复执行。
-    const needQty = QTY.shipNormal + QTY.shipGift
-    const hqBatch = await ensureHqBatch(page, inv01.supplySkuName, needQty)
-    recordVerdict(verdicts, `前置: 总部具备可用量 >= ${needQty} 的批次`, Boolean(hqBatch), hqBatch)
-
     // ══ 1. 门店报货（§1.3 不体现价格）══════════════════════════════
     console.log('[INV-03] 1/8 门店报货')
     await openOperation(page, 'store', '门店报货')
     await selectByLabel(page, '报货门店', { contains: TOPO.STORE_A_NAME })
     await selectByLabel(page, '所属市场', { contains: TOPO.MARKET_NAME })
-    await selectContaining(skuSelect(page), inv01.supplySkuName)
+    await pickSku(skuSelect(page), inv01.supplySkuName)
     await fillByLabel(page, '数量', String(QTY.storeRequest))
     await fillByLabel(page, '备注', R.storeReq)
 
@@ -204,7 +202,7 @@ test('INV-03：三级正向主链 —— 报货→采购→发货→入库→配
     recordVerdict(verdicts, 'doc: 市场报货汇总单落库', Boolean(summaryId), summaryId)
 
     await openOperation(page, 'supply-chain', '采购订单')
-    await checkSourceDoc(page, summaryId)
+    await pickCandidateDoc(page, '来源报货单', summaryId)
     await page.waitForTimeout(2000)
     await selectByLabel(page, '供应链库存主体', { label: '品牌总部' })
     await fillByLabel(page, '采购数量', String(QTY.marketPurchase))
@@ -213,14 +211,19 @@ test('INV-03：三级正向主链 —— 报货→采购→发货→入库→配
 
     const poId = docIdByRemark('采购订单', R.po)
     recordVerdict(verdicts, 'doc: 采购订单落库', Boolean(poId), poId)
-    // #194 之后只剩 `采购订单` 一种 doc_type，市场行与供应链行靠明细的 market_id 分流。
-    // 纯市场行的单不需要收货，沿用「建单即已完成」；含供应链行的才是「待收货」
-    // （0043 已把 0009 触发器的待收货白名单从 `供应链采购订单` 换成 `采购订单`）。
+    // #335：市场行也经供应链采购入库，纯市场行的单同样从「待收货」开始。
     recordVerdict(
       verdicts,
-      'doc: 采购订单建单即完成（属 NO_MOVEMENT 类型）',
-      psql(`SELECT status FROM inventory_docs WHERE id = ${sqlStr(poId)}`) === '已完成',
+      'doc: 纯市场行的采购订单建单为待收货（#335）',
+      psql(`SELECT status FROM inventory_docs WHERE id = ${sqlStr(poId)}`) === '待收货',
       psql(`SELECT status FROM inventory_docs WHERE id = ${sqlStr(poId)}`),
+    )
+    recordVerdict(
+      verdicts,
+      'doc: 采购订单金额 = 采购数量 × 供应链采购价（#335）',
+      psql(`SELECT COUNT(*) FROM inventory_doc_items WHERE doc_id = ${sqlStr(poId)} AND NOT is_gift
+              AND amount IS DISTINCT FROM ROUND(quantity * supply_chain_unit_cost, 2)`) === '0',
+      'mismatch=0',
     )
     recordVerdict(
       verdicts,
@@ -235,13 +238,51 @@ test('INV-03：三级正向主链 —— 报货→采购→发货→入库→配
       'link 存在',
     )
 
+    // ══ 3b. 供应链采购入库（#335：市场行生成总部批次）══════════════
+    console.log('[INV-03] 3b/8 供应链采购入库（市场行）')
+    const hqBatch = `${NS}-MKT${STAMP}`
+    await openOperation(page, 'supply-chain', '供应链采购入库')
+    await pickCandidateDoc(page, '采购订单', poId)
+    await page.waitForTimeout(2000)
+    await fillByLabel(page, '实收数量', String(QTY.marketPurchase))
+    await fillByLabel(page, '批号', hqBatch)
+    await fillByLabel(page, '备注', `${R.po}-grk`)
+    await submitForm(page, '登记供应链采购入库', /供应链采购入库单已创建/)
+    recordVerdict(
+      verdicts,
+      'doc: 市场行全部入库后采购订单转「已完成」（#335）',
+      psql(`SELECT status FROM inventory_docs WHERE id = ${sqlStr(poId)}`) === '已完成',
+      psql(`SELECT status FROM inventory_docs WHERE id = ${sqlStr(poId)}`),
+    )
+    recordVerdict(
+      verdicts,
+      `stock: 市场行入库生成总部批次 ${QTY.marketPurchase}（#335）`,
+      lotQty(TOPO.HQ, inv01.supplySkuId, hqBatch) === QTY.marketPurchase,
+      String(lotQty(TOPO.HQ, inv01.supplySkuId, hqBatch)),
+    )
+    recordVerdict(
+      verdicts,
+      'link: 入库明细可追溯到采购行及其市场来源（#335）',
+      psql(`SELECT COUNT(*) FROM inventory_doc_links l
+              JOIN inventory_doc_items po_item ON po_item.id = l.from_item_id
+             WHERE l.from_doc_id = ${sqlStr(poId)}
+               AND l.relation_type = '采购订单供应链采购入库'
+               AND po_item.market_id IS NOT NULL`) !== '0',
+      'link 存在',
+    )
+
     // ══ 4. 品项公司发货（§5.2 赠送 / §5.3 无金额）═════════════════
+    // #336：发货直接引用市场报货单（不再选采购订单）：先定收货市场与发货总部，再勾报货单，
+    // 每条报货明细默认一行正常发货（= 未发量），逐行选总部批次；赠送另加一行、单独选批次。
     console.log('[INV-03] 4/8 品项公司发货')
     const hqBefore = lotQty(TOPO.HQ, inv01.supplySkuId, hqBatch)
     await openOperation(page, 'supply-chain', '品项公司发货')
-    await selectByLabel(page, '采购订单', { contains: poId })
-    await page.waitForTimeout(2000)
+    await selectByLabel(page, '收货市场', { contains: TOPO.MARKET_NAME })
     await selectByLabel(page, '发货总部', { label: '品牌总部' })
+    await pickCandidateDoc(page, '市场报货单', marketReqId)
+    const shipProgress = page.getByRole('status', { name: '未发进度' })
+    await expect(shipProgress).toContainText(`还有 ${QTY.marketPurchase} 件未发`, { timeout: 20_000 })
+    recordVerdict(verdicts, `#336 发货表单顶部显示「还有 ${QTY.marketPurchase} 件未发」`, true, await shipProgress.innerText())
 
     // §5.3：发货单业务页面不展示单价和货款
     const shipPriceFields = await page
@@ -257,6 +298,11 @@ test('INV-03：三级正向主链 —— 报货→采购→发货→入库→配
 
     await selectLotContaining(page, '发货批次', hqBatch)
     await fillByLabel(page, '正常发货', String(QTY.shipNormal))
+    await page.getByRole('button', { name: new RegExp(`^加赠送 ${escapeRe(inv01.supplySkuName)} `) }).click()
+    // 赠送行是第二个「发货批次」：与正常行同一个总部批次出库，市场收货后落成独立的赠送批次
+    const giftLot = labelled(page, '发货批次').nth(1).locator('select')
+    await expect(giftLot).toBeEnabled({ timeout: 20_000 })
+    await selectContaining(giftLot, hqBatch)
     await fillByLabel(page, '赠送数量', String(QTY.shipGift))
     await fillByLabel(page, '物流公司', 'INVT-物流')
     await fillByLabel(page, '备注', R.shipment)
@@ -272,7 +318,7 @@ test('INV-03：三级正向主链 —— 报货→采购→发货→入库→配
     recordVerdict(verdicts, 'doc: 发货单状态 = 待收货', shipStatus === '待收货', shipStatus)
     recordVerdict(
       verdicts,
-      `§5.2 发货量(${QTY.shipNormal}+赠送${QTY.shipGift}) 可大于采购量(${QTY.marketPurchase})`,
+      `§5.2 发货量(${QTY.shipNormal}+赠送${QTY.shipGift}) 可大于报货量(${QTY.storeRequest})`,
       Number(shipQty) === QTY.shipNormal + QTY.shipGift,
       shipQty,
     )
@@ -281,6 +327,22 @@ test('INV-03：三级正向主链 —— 报货→采购→发货→入库→配
         WHERE doc_id = ${sqlStr(shipId)} AND is_gift = true`,
     )
     recordVerdict(verdicts, '§10.2 赠品金额恒为 0', Number(giftAmount) === 0, giftAmount)
+    recordVerdict(
+      verdicts,
+      `link: 市场报货 → 品项公司发货 直连血缘（正常 ${QTY.shipNormal} / 赠送 ${QTY.shipGift}，#336）`,
+      psql(`SELECT string_agg(relation_type || '=' || quantity::int, ',' ORDER BY relation_type)
+              FROM inventory_doc_links
+             WHERE from_doc_id = ${sqlStr(marketReqId)} AND to_doc_id = ${sqlStr(shipId)}`)
+        === `市场报货发货=${QTY.shipNormal},市场报货赠送发货=${QTY.shipGift}`,
+      'link 存在',
+    )
+    // 验收：发货单详情能跳到原始报货单
+    await page.goto(`${BASE}/inventory/docs/${encodeURIComponent(shipId)}`)
+    // 正常 / 赠送两类血缘各一行，都链到同一张报货单：按关系类型定位，别让 strict mode 撞两行
+    const reportLink = page.getByRole('row').filter({ hasText: '市场报货发货' }).first().getByRole('link', { name: marketReqId })
+    await expect(reportLink).toBeVisible({ timeout: 20_000 })
+    await expect(page.getByRole('row').filter({ hasText: '市场报货赠送发货' }).getByRole('link', { name: marketReqId })).toBeVisible()
+    recordVerdict(verdicts, '#336 发货单详情血缘带出原始市场报货单并可跳转', true, marketReqId)
 
     // 发货即扣发货方库存（RECEIVE_REQUIRED 类型：source 出库）
     const hqAfter = lotQty(TOPO.HQ, inv01.supplySkuId, hqBatch)
@@ -294,17 +356,17 @@ test('INV-03：三级正向主链 —— 报货→采购→发货→入库→配
     // ══ 5. 市场采购入库（§6.1 须先有发货单）═══════════════════════
     console.log('[INV-03] 5/8 市场采购入库')
     await openOperation(page, 'market', '市场采购入库')
-    await selectByLabel(page, '品项公司发货单', { contains: shipId })
+    await pickCandidateDoc(page, '品项公司发货单', shipId)
     await page.waitForTimeout(2000)
-    const marketReceiveRows = await fillReceiptRows(page)
+    const marketReceiveRows = await checkReceiptRowsReadonly(page)
     recordVerdict(
       verdicts,
-      'ui: 市场采购入库的「本次实收」输入可定位并填入',
+      'ui: 市场采购入库的「本次实收」只读且等于待收（#358 整单收货）',
       marketReceiveRows > 0,
-      `已填行数=${marketReceiveRows}`,
+      `行数=${marketReceiveRows}`,
     )
     await fillByLabel(page, '备注', R.marketReceipt)
-    await submitForm(page, '登记本次实收', /市场采购入库已创建/)
+    await submitForm(page, '确认整单收货', /市场采购入库已创建/)
 
     const mrkReceiptId = docIdByRemark('市场采购入库', R.marketReceipt)
     recordVerdict(verdicts, 'doc: 市场采购入库落库', Boolean(mrkReceiptId), mrkReceiptId)
@@ -325,7 +387,7 @@ test('INV-03：三级正向主链 —— 报货→采购→发货→入库→配
     // ══ 6. 分院配货（§7.3 金额四件套）═════════════════════════════
     console.log('[INV-03] 6/8 分院配货')
     await openOperation(page, 'market', '分院配货')
-    await selectByLabel(page, '门店报货单', { contains: storeReqId })
+    await pickCandidateDoc(page, '门店报货单', storeReqId)
     await page.waitForTimeout(2000)
     await selectByLabel(page, '配货市场', { contains: TOPO.MARKET_NAME })
     await page.waitForTimeout(1500)
@@ -337,8 +399,9 @@ test('INV-03：三级正向主链 —— 报货→采购→发货→入库→配
       .count()
     recordVerdict(verdicts, '§7.3 配货表单含「门店单价优惠」', hasDiscountField > 0, String(hasDiscountField))
 
-    const insufficientLots = await countInsufficientLots(page, '市场批次', QTY.allocNormal + QTY.allocGift)
-    await selectLotWithQty(page, '市场批次', QTY.allocNormal + QTY.allocGift)
+    // #359 起赠送数量单独选赠送批次：正常批次只需覆盖正常配货量
+    const insufficientLots = await countInsufficientLots(page, '市场批次', QTY.allocNormal)
+    await selectLotWithQty(page, '市场批次', QTY.allocNormal)
     recordVerdict(
       verdicts,
       'UX-LOT-01: 批次下拉未过滤/未警示可用量不足的批次（选错要到提交才报错）',
@@ -347,6 +410,8 @@ test('INV-03：三级正向主链 —— 报货→采购→发货→入库→配
     )
     await fillByLabel(page, '正常配货', String(QTY.allocNormal))
     await fillByLabel(page, '赠送数量', String(QTY.allocGift))
+    // 赠送批次默认只列赠送批次：市场收品项公司发货时入库的赠送批（shipGift=5）
+    await selectLotWithQty(page, '赠送批次', QTY.allocGift)
     await fillByLabel(page, '备注', R.allocation)
     await submitForm(page, '创建分院配货单', /分院配货单已创建/)
 
@@ -381,17 +446,17 @@ test('INV-03：三级正向主链 —— 报货→采购→发货→入库→配
     console.log('[INV-03] 7/8 分院收货入库')
     const storeBefore = lotQtyAll(TOPO.STORE_A_ORG, inv01.supplySkuId)
     await openOperation(page, 'store', '分院收货入库')
-    await selectByLabel(page, '分院配货单', { contains: allocId })
+    await pickCandidateDoc(page, '分院配货单', allocId)
     await page.waitForTimeout(2000)
-    const storeReceiveRows = await fillReceiptRows(page)
+    const storeReceiveRows = await checkReceiptRowsReadonly(page)
     recordVerdict(
       verdicts,
-      'ui: 分院收货入库的「本次实收」输入可定位并填入',
+      'ui: 分院收货入库的「本次实收」只读且等于待收（#358 整单收货）',
       storeReceiveRows > 0,
-      `已填行数=${storeReceiveRows}`,
+      `行数=${storeReceiveRows}`,
     )
     await fillByLabel(page, '备注', R.storeReceipt)
-    await submitForm(page, '登记本次实收', /分院收货入库已创建/)
+    await submitForm(page, '确认整单收货', /分院收货入库已创建/)
 
     const storeReceiptId = docIdByRemark('院入库', R.storeReceipt)
     recordVerdict(verdicts, 'doc: 院入库单落库', Boolean(storeReceiptId), storeReceiptId)
@@ -486,34 +551,28 @@ function escapeRe(s: string): string {
 }
 
 /**
- * 收货进度表：逐行把「待收」数量抄进「本次实收」，返回实际填了几行。
- * 市场采购入库与分院收货入库共用同一份源码（ShipmentReceiptForm），故共用本函数。
- *
- * ⚠️ 不能再用 `input[inputmode=decimal]` 定位 —— #135 已把这些输入换成 `type="number"`，
- * 页面上根本没有 inputmode 属性，`count()` 恒为 0：循环一次都不执行，整步**静默空转**，
- * 只是靠表单预填的待收量碰巧提交成功（回归时同样不会报警）。
- * type=number 的 ARIA role 是 **spinbutton**（不是 textbox），行内控件没有 <label>，
- * 可访问名由 aria-label 给出（`本次实收 <商品名> 第N行`，#194）。
- *
- * 这里按**行**取控件而不是按可访问名匹配：同一 SKU 的赠品行与正常行连商品名带 skuId
- * 都相同，只有行序号能区分；按行定位与「待收」列天然同源，不会错位。
- * 返回值交调用方记 verdict —— 行数为 0 必须响亮失败，别再退回静默空转。
+ * 收货进度表（市场采购入库与分院收货入库共用 ShipmentReceiptForm）。
+ * #358 起「本次实收」是只读框（aria-label `本次实收 <商品名> 第N行`，#194），按行取控件与「待收」列同源；
+ * 返回值交调用方记 verdict —— 行数为 0 或任一行可编辑 / 不等于待收都必须响亮失败。
  */
-async function fillReceiptRows(page: Page): Promise<number> {
-  const rows = page.locator('form tbody tr')
+async function checkReceiptRowsReadonly(page: Page): Promise<number> {
+  // 只取表头含「本次实收」的进度表：form 内还有候选单选择表，不能按 `form tbody tr` 一把抓；
+  // 进度表里每一行都必须恰有一个「本次实收」框，缺框即回归，响亮失败（不跳过）
+  const table = page.locator('form table').filter({ has: page.getByRole('columnheader', { name: '本次实收', exact: true }) })
+  const rows = table.locator('tbody tr')
   await rows.first().waitFor({ state: 'visible', timeout: 20_000 }).catch(() => null)
   const total = await rows.count()
-  let filled = 0
+  let matched = 0
   for (let i = 0; i < total; i += 1) {
     const row = rows.nth(i)
-    // 每行只有一个数值输入（本次实收）；明细备注是普通 text → textbox，不会被误取
-    const input = row.getByRole('spinbutton').first()
-    if (await input.count() === 0) continue
+    const input = row.getByLabel(/^本次实收 /)
+    if (await input.count() !== 1) return -1
     const outstanding = (await row.locator('td').nth(3).innerText()).trim()   // td[3] = 待收
-    await input.fill(outstanding)
-    filled += 1
+    const readonly = (await input.first().getAttribute('readonly')) !== null
+    if (!readonly || Number(await input.first().inputValue()) !== Number(outstanding)) return -1
+    matched += 1
   }
-  return filled
+  return matched
 }
 
 /** 打开某层办理台的某张操作卡片 */
@@ -559,19 +618,9 @@ async function selectByLabel(page: Page, labelText: string, option: { label: str
   else await sel.selectOption({ label: option.label })
 }
 
-/**
- * 勾选合并后采购表单里的来源报货单（#194）。
- * 来源从单选 Select 改成了多选 checkbox 清单，勾完组件会重新拉明细。
- */
-async function checkSourceDoc(page: Page, docId: string) {
-  const row = page.locator('label').filter({ hasText: docId }).first()
-  await row.waitFor({ state: 'visible', timeout: 20_000 })
-  await row.locator('input[type="checkbox"]').check()
-}
-
 /** 明细行里的 SkuPicker（占位文案「选择库存商品」） */
 function skuSelect(page: Page) {
-  return page.locator('select').filter({ hasText: '选择库存商品' }).first()
+  return page.getByRole('combobox', { name: '选择库存商品', exact: true }).first()
 }
 
 /**
@@ -633,58 +682,4 @@ async function selectLotContaining(page: Page, labelText: string, batchNo: strin
   const sel = labelled(page, labelText).locator('select').first()
   await expect(sel).toBeEnabled({ timeout: 20_000 })
   await selectContaining(sel, batchNo)
-}
-
-/**
- * 确保总部存在一个可用量 >= needQty 的**单一**批次，返回其批号。
- *
- * 已有满足条件的批次就直接复用；否则走「品项公司报货需求 → 采购订单
- * → 供应链采购入库」补一张新批次。发货只能从单个批次出，所以这里要的是
- * 「单批次足量」而不是「总量足量」。
- */
-async function ensureHqBatch(
-  page: Page,
-  skuName: string,
-  needQty: number,
-): Promise<string> {
-  const existing = psql(
-    `SELECT l.batch_no FROM inventory_stock_lots l
-       JOIN inventory_locations loc ON loc.location_id = l.location_id
-       JOIN inventory_skus s ON s.sku_id = l.sku_id
-      WHERE loc.org_node_id = ${sqlStr(TOPO.HQ)} AND s.product_name = ${sqlStr(skuName)}
-        AND l.quantity_on_hand >= ${needQty} AND l.batch_no IS NOT NULL
-      ORDER BY l.quantity_on_hand DESC LIMIT 1`,
-  )
-  if (existing) return existing
-
-  const tag = `${NS}-补货-${Date.now().toString().slice(-8)}`
-  const batchNo = `${NS}-HQ${Date.now().toString().slice(-8)}`
-  const replenishQty = String(Math.max(needQty * 3, 100))
-
-  await openOperation(page, 'supply-chain', '品项公司报货需求')
-  await selectByLabel(page, '供应链库存主体', { label: '品牌总部' })
-  await selectContaining(skuSelect(page), skuName)
-  await fillByLabel(page, '数量', replenishQty)
-  await fillByLabel(page, '备注', `${tag}-req`)
-  await submitForm(page, '创建品项公司报货需求', /品项公司报货需求已创建/)
-  const reqId = docIdByRemark('品项公司报货需求', `${tag}-req`)
-
-  // #194：两张采购卡片已合并为「采购订单」，来源改多选，供应商由商品档案带出不再手选。
-  await openOperation(page, 'supply-chain', '采购订单')
-  await checkSourceDoc(page, reqId)
-  await page.waitForTimeout(2000)
-  await selectByLabel(page, '供应链库存主体', { label: '品牌总部' })
-  await fillByLabel(page, '采购数量', replenishQty)
-  await fillByLabel(page, '备注', `${tag}-po`)
-  await submitForm(page, '创建采购订单', /采购订单已创建/)
-  const poId = docIdByRemark('采购订单', `${tag}-po`)
-
-  await openOperation(page, 'supply-chain', '供应链采购入库')
-  await selectByLabel(page, '采购订单', { contains: poId })
-  await page.waitForTimeout(2000)
-  await fillByLabel(page, '实收数量', replenishQty)
-  await fillByLabel(page, '批号', batchNo)
-  await fillByLabel(page, '备注', `${tag}-grk`)
-  await submitForm(page, '登记供应链采购入库', /供应链采购入库单已创建/)
-  return batchNo
 }

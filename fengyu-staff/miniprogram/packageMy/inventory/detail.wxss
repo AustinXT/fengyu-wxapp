@@ -120,6 +120,46 @@
   font-family: 'Courier New', monospace;
 }
 
+.stocktake-row {
+  display: flex;
+  margin: 8rpx 0;
+  padding: 12rpx 0;
+  border-top: 1rpx solid #F0F0F0;
+  border-bottom: 1rpx solid #F0F0F0;
+}
+
+.stocktake-cell {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4rpx;
+}
+
+.stocktake-label {
+  font-size: 22rpx;
+  color: #999;
+}
+
+.stocktake-value {
+  font-size: 28rpx;
+  font-weight: 500;
+  color: #333;
+}
+
+.diff-surplus {
+  color: #3D8A5A;
+}
+
+.diff-shortage {
+  /* 与 admin 盘点详情同色：盘亏走错误态红，不用品牌主色 */
+  color: #D94040;
+}
+
+.diff-unknown {
+  color: #999999;
+}
+
 .item-extra {
   display: flex;
   gap: 16rpx;
@@ -144,4 +184,24 @@
   color: #FFFFFF;
   font-size: 28rpx;
   line-height: 80rpx;
+}
+
+/* 门店报货草稿（#348） */
+.draft-actions {
+  display: flex;
+  gap: 16rpx;
+}
+
+.draft-delete-button {
+  flex: 1;
+  border: 1rpx solid #D94040;
+  border-radius: 6rpx;
+  background: #FFFFFF;
+  color: #D94040;
+  font-size: 28rpx;
+  line-height: 78rpx;
+}
+
+.draft-edit-button {
+  flex: 2;
 }

@@ -37,8 +37,9 @@ import {
 } from './_helpers/env'
 import { isGateOpen, openCutoverGate } from './_helpers/cutover'
 import {
-  createGenericDoc, docIdByRemark, docMovementCount, docStatus, lotQtyAll, rowAction, selectContaining,
+  createGenericDoc, docIdByRemark, docMovementCount, docStatus, lotQtyAll, pickSku, rowAction, selectContaining,
 } from './_helpers/ui'
+import { lotLoadingVerdict } from './_helpers/ux-audit'
 
 // 恢复真实链路后跑完五段要好几分钟（两次建单 + 两次收货 + 两次必失败的提交），
 // 对齐 inv-03 的 600s；原来的 400s 是「只复现缺陷」时代的余量。
@@ -116,6 +117,10 @@ const ctxState: {
   at: string
   /** 单据中心批次下拉是否解禁并出现真实批次（#129 的核心症状） */
   lotLoadingOk: boolean | null
+  /** 来源门店当轮是否确有可选批次；无库存时不能把空下拉定性为加载故障。 */
+  sourceOnHandQty: number | null
+  lotEnabled: boolean | null
+  lotOptionCount: number | null
   /** 换 SKU / 换出库主体后批次列表是否跟随刷新且不卡死（#129 验收标准第 3 条） */
   lotRefreshOk: boolean | null
   /** 本轮**经通用建单弹窗**真正建出来的单据号（收货自动派生的 DTI/MTI 不计入，见下面四个专列字段） */
@@ -127,6 +132,9 @@ const ctxState: {
 } = {
   at: new Date().toISOString(),
   lotLoadingOk: null,
+  sourceOnHandQty: null,
+  lotEnabled: null,
+  lotOptionCount: null,
   lotRefreshOk: null,
   genericDocsCreated: [],
   dtoId: '',
@@ -180,7 +188,7 @@ test('INV-05：调货链路 —— 分院调货收货闭环 / §10.3 归属 / �
     await login(page, INVT_ACCOUNTS.ADM.phone, INVT_PASS)
 
     // ══ 前置：三个主体的在手量 ═══════════════════════════════════════
-    // 一轮全套跑完门店 A 的供应链品会被消耗 3（本段调货）+ 2（inv-06 报损）+ 2（inv-07 顾客出库），
+    // 一轮全套跑完门店 A 的供应链品会被消耗 3（本段调货）+ 2（inv-06 报损）（#350 起 inv-07 不再建顾客出库），
     // inv-03 的配货量一旦调小，这三支就会一起撞「没有可用量 >= N 的批次」。先打出来。
     const storeADigest = onHandDigest(TOPO.STORE_A_ORG, inv01.supplySkuId)
     const marketDigest = onHandDigest(TOPO.MARKET, inv01.supplySkuId)
@@ -206,13 +214,14 @@ test('INV-05：调货链路 —— 分院调货收货闭环 / §10.3 归属 / �
     await expect(dialog.getByText('新建库存单据')).toBeVisible({ timeout: 15_000 })
 
     const selects = dialog.locator('select')
-    // 弹窗内 select 的固定顺序：0=单据类型 1=出库主体 2=入库主体 3=来源批次 4=SKU
-    // （分院调货出库属 SOURCE_LOT_DOC_TYPES，明细行多一个批次下拉）
+    const skuBox = dialog.getByRole('combobox', { name: '明细 1 库存 SKU', exact: true })
+    // 弹窗内原生 select 的固定顺序：0=单据类型 1=出库主体 2=入库主体 3=来源批次
+    // （分院调货出库属 SOURCE_LOT_DOC_TYPES，明细行多一个批次下拉）；SKU 是可检索 combobox（#339）
     await selects.nth(0).selectOption('分院调货出库')
     await selectContaining(selects.nth(1), `门店 · ${TOPO.STORE_A_NAME}`)
     await selectContaining(selects.nth(2), `门店 · ${TOPO.STORE_B_NAME}`)
     await page.waitForTimeout(500)
-    await selectContaining(selects.nth(4), inv01.supplySkuName)
+    await pickSku(skuBox, inv01.supplySkuName)
 
     const lotSel = selects.nth(3)
     const t0 = Date.now()
@@ -238,7 +247,11 @@ test('INV-05：调货链路 —— 分院调货收货闭环 / §10.3 归属 / �
       lotOptionCount > 1,
       `option数=${lotOptionCount}（1 = 只有占位项）｜建单页 POST 200 次数=${docPostResponses}`,
     )
-    ctxState.lotLoadingOk = lotEnabled && lotOptionCount > 1
+    const sourceOnHandQty = lotQtyAll(TOPO.STORE_A_ORG, inv01.supplySkuId)
+    ctxState.sourceOnHandQty = sourceOnHandQty
+    ctxState.lotEnabled = lotEnabled
+    ctxState.lotOptionCount = lotOptionCount
+    ctxState.lotLoadingOk = lotLoadingVerdict(sourceOnHandQty, lotEnabled, lotOptionCount)
     flushCtx()
 
     /*
@@ -257,13 +270,13 @@ test('INV-05：调货链路 —— 分院调货收货闭环 / §10.3 归属 / �
       {
         label: '切 SKU → 自采品（门店 A 无此批次）',
         want: '只剩占位项',
-        act: async () => { await selectContaining(selects.nth(4), inv01.selfSkuName) },
+        act: async () => { await pickSku(skuBox, inv01.selfSkuName) },
         ok: (n: number) => n === 1,
       },
       {
         label: '切回 SKU → 供应链品',
         want: '重新出现批次',
-        act: async () => { await selectContaining(selects.nth(4), inv01.supplySkuName) },
+        act: async () => { await pickSku(skuBox, inv01.supplySkuName) },
         ok: (n: number) => n > 1,
       },
       {

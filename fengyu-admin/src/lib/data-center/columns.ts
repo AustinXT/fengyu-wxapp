@@ -2,8 +2,9 @@
  * 数据中心明细表与导出列的唯一配置来源。
  *
  * 本文件不依赖 Server Action 或 Node API，页面和异步导出 worker 都可以安全引用。
+ * 只配置旧 4 板块的视图；经营明细报表（report-*）的列定义在各自页面的 lib 模块里。
  */
-import type { DataCenterExportView } from '@/lib/export-job-types'
+import type { DataCenterBoardExportView } from '@/lib/export-job-types'
 import { SALES_CATEGORIES, SALES_CATEGORY_COLUMN_KEYS } from '@/lib/sales-categories'
 import type { MetricUnit } from './types'
 
@@ -62,9 +63,12 @@ const customerRegistrationMetricColumns = [
   { key: 'registered', label: '会员注册', unit: 'count' },
   { key: 'retained', label: '保有会员', unit: 'count' },
   { key: 'visitOnce', label: '回店1次', unit: 'count' },
-  { key: 'visitOnceRate', label: '1次达成率', unit: 'percent' },
+  // #414：分母是「会员注册」不是紧邻的「保有会员」——用户 2026-09-25 拍板改的就是这个分母，
+  // 不在表头标出来，读表人会默认除以语义更近的「保有会员」（那正是改之前的口径）。
+  // 括注写法照 dormant 的 `沉睡(截面·仅会员客)` 先例。
+  { key: 'visitOnceRate', label: '1次达成率(÷会员注册)', unit: 'percent' },
   { key: 'visitTwice', label: '回店2次', unit: 'count' },
-  { key: 'visitTwiceRate', label: '2次达成率', unit: 'percent' },
+  { key: 'visitTwiceRate', label: '2次达成率(÷会员注册)', unit: 'percent' },
   // #294：三档状态人数读 cron 每日重算的 customer_status 截面，**不随导出所选区间变化**；
   // 紧邻的「激活 X」三列才是区间统计。导出件脱离页面上下文，表头不标会被当同时态对比。
   // 沉睡额外带 `customer_type='会员客'`（customer.ts:181 标量侧 / :545 明细侧，
@@ -79,6 +83,8 @@ const customerRegistrationMetricColumns = [
 ] as const satisfies readonly DataCenterMetricColumn[]
 
 const customerOperationMetricColumns = [
+  // #292：分桶下界已改读会员门槛（system_configs.new_member_threshold），标签按 2026-09-25 拍板保持写死 1990；
+  // 调整门槛后需人工同步这里、customer-board.tsx 经营人数 hint 与 staff 小程序 TIER_LABELS
   { key: 'bucketD', label: '<1990', unit: 'count' },
   { key: 'bucketC', label: '≥1990', unit: 'count' },
   { key: 'bucketB', label: '≥1万', unit: 'count' },
@@ -232,21 +238,21 @@ export const DATA_CENTER_VIEW_CONFIG = {
       { key: 'income', label: '收入', unit: 'amount' },
     ],
   },
-} as const satisfies Record<DataCenterExportView, DataCenterViewConfig>
+} as const satisfies Record<DataCenterBoardExportView, DataCenterViewConfig>
 
 export type DataCenterBreakdownView = {
-  [View in DataCenterExportView]: (typeof DATA_CENTER_VIEW_CONFIG)[View]['kind'] extends 'breakdown'
+  [View in DataCenterBoardExportView]: (typeof DATA_CENTER_VIEW_CONFIG)[View]['kind'] extends 'breakdown'
     ? View
     : never
-}[DataCenterExportView]
+}[DataCenterBoardExportView]
 
 export type DataCenterRankingView = {
-  [View in DataCenterExportView]: (typeof DATA_CENTER_VIEW_CONFIG)[View]['kind'] extends 'ranking'
+  [View in DataCenterBoardExportView]: (typeof DATA_CENTER_VIEW_CONFIG)[View]['kind'] extends 'ranking'
     ? View
     : never
-}[DataCenterExportView]
+}[DataCenterBoardExportView]
 
-export function getDataCenterBreakdownConfig(view: DataCenterExportView): DataCenterBreakdownConfig {
+export function getDataCenterBreakdownConfig(view: DataCenterBoardExportView): DataCenterBreakdownConfig {
   const config = DATA_CENTER_VIEW_CONFIG[view]
   if (config.kind !== 'breakdown') {
     throw new Error(`INVALID_PARAMS: ${view} 不是明细导出视图`)
@@ -254,7 +260,7 @@ export function getDataCenterBreakdownConfig(view: DataCenterExportView): DataCe
   return config
 }
 
-export function getDataCenterRankingConfig(view: DataCenterExportView): DataCenterRankingConfig {
+export function getDataCenterRankingConfig(view: DataCenterBoardExportView): DataCenterRankingConfig {
   const config = DATA_CENTER_VIEW_CONFIG[view]
   if (config.kind !== 'ranking') {
     throw new Error(`INVALID_PARAMS: ${view} 不是排名导出视图`)

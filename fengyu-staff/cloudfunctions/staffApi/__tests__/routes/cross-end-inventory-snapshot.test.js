@@ -17,6 +17,12 @@
  *      NO_MOVEMENT / RECEIVE_REQUIRED / APPROVAL / RECEIVE_INBOUND_TYPE
  *      必须逐项一致（含数量断言，防止两端同时丢项仍比对相等）。
  *
+ *   2b. 顾客出库只走提货（#350）— admin `INVENTORY_GENERIC_DOC_TYPES`（types.ts）与
+ *      staff `STAFF_CREATE_DOC_TYPES` 都不得含「院顾客产品出库」，取舍两端一致。
+ *
+ *   7. 建单明细数量规则（#351）— 盘点类型允许实盘 0、留空一律拒；admin engine 与 staff
+ *      的 `isValidDocItemQuantity` 函数体逐字一致，DB trigger 的盘点类型清单与集合一致。
+ *
  *   3. staff 端安全护栏 —
  *      a. 所有 throw new Error 的一级前缀 ⊆ 9 项错误码白名单
  *      b. assertNoStaffMoneyFields 金额字段禁提交保护必须存在
@@ -33,7 +39,57 @@ const FILES = {
   // 建批次的第三份副本：upsertLot 与 engine 的 ensureLotFromSku 同功能不同名。
   adminBusinessTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/inventory/business.ts'),
   dbSchemaInventoryTs: path.resolve(__dirname, '../../../../../db/schema/inventory.ts'),
+  // #350：通用建单白名单是 `as const` 数组字面量，住在 types.ts
+  adminTypesTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/inventory/types.ts'),
+  // #351：非盘点类型「数量 > 0」的 DB 兜底 trigger 住在迁移里
+  dbMigrationsDir: path.resolve(__dirname, '../../../../../db/migrations'),
 }
+
+describe('退货预留消费两端守护（#260）', () => {
+  const staff = () => readFile(FILES.staffInventoryJs).split('async function approveStoreReturnForRestock(')[1].split('\nasync function ')[0]
+  const admin = () => readFile(FILES.adminBusinessTs).split('export async function approveReturnForRestock(')[1].split('\nexport async function ')[0]
+  const flat = (sql) => sql.replace(/\s+/g, ' ').trim()
+  function query(body, start) {
+    const begin = body.indexOf(start)
+    expect(begin).toBeGreaterThan(-1)
+    return body.slice(begin, body.indexOf(String.fromCharCode(96), begin))
+  }
+
+  test('活跃预留 SELECT 完整字面一致，确定性锁住全部匹配行', () => {
+    const expected = "SELECT id, quantity, fulfilled_quantity, released_quantity FROM inventory_stock_reservations WHERE request_doc_id = :doc AND request_item_id = :item AND lot_id = :lot AND status = '已预留' ORDER BY id FOR UPDATE"
+    const staffSql = query(staff(), 'SELECT id, quantity, fulfilled_quantity, released_quantity')
+      .replace('$1', ':doc').replace('$2', ':item').replace('$3', ':lot')
+    const adminSql = query(admin(), 'SELECT id, quantity, fulfilled_quantity, released_quantity')
+      .replace('${returnDocId}', ':doc').replace('${item.id}', ':item').replace('${item.lotId}', ':lot')
+    expect(flat(staffSql)).toBe(expected)
+    expect(flat(adminSql)).toBe(expected)
+  })
+
+  test('履约累加、按唯一主键消费，released 原值保留', () => {
+    const expected = "UPDATE inventory_stock_reservations SET fulfilled_quantity = fulfilled_quantity + :quantity, status = '已完成', updated_at = NOW() WHERE id = :id AND status = '已预留'"
+    const staffSql = query(staff(), 'UPDATE inventory_stock_reservations')
+      .replace('$1', ':id').replace('$2', ':quantity')
+    const adminSql = query(admin(), 'UPDATE inventory_stock_reservations')
+      .replace('${numeric(item.quantity)}', ':quantity').replace('${Number(reservation.id)}', ':id')
+    expect(flat(staffSql)).toBe(expected)
+    expect(flat(adminSql)).toBe(expected + ' RETURNING id')
+    expect(staff()).toContain('reservationUpdated.rowCount !== 1')
+    expect(admin()).toContain('reservationUpdated.length !== 1')
+  })
+
+  test('零/多条及数量差异两端同判据、同错误消息', () => {
+    const messages = ['退货库存预留不唯一，请核对后重试', '退货库存预留已失效，请刷新后重试', '退货数量与库存预留剩余量不一致', '退货库存预留已被其他操作处理']
+    for (const message of messages) {
+      expect(staff()).toContain("new Error('CONFLICT: " + message + "')")
+      expect(admin()).toContain("new ApiError('CONFLICT', '" + message + "')")
+    }
+    expect(staff()).toContain('reservationRes.rows.length > 1')
+    expect(admin()).toContain('reservations.length > 1')
+    const equality = 'Math.round(quantity * 100) !== Math.round(reservedAvailable * 100)'
+    expect(staff()).toContain(equality)
+    expect(admin().replace('Math.round(item.quantity * 100)', 'Math.round(quantity * 100)')).toContain(equality)
+  })
+})
 
 function readFile(p) {
   return fs.readFileSync(p, 'utf8')
@@ -52,6 +108,15 @@ function extractSetItems(src, varName) {
   const re = new RegExp(`const ${varName}[^=]*=\\s*new Set[^\\[]*\\[([\\s\\S]*?)\\]`)
   const m = src.match(re)
   if (!m) throw new Error(`未找到 ${varName} 集合定义`)
+  return [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]).sort()
+}
+
+/** 截取 `export const <name> = [ ... ] as const` 数组字面量成员（去引号、排序）。 */
+function extractConstArrayItems(src, varName) {
+  // 名字后加 \b：防止同名前缀常量（如 `${varName}_LEGACY`）被先匹配到
+  const re = new RegExp(`const ${varName}\\b[^=]*=\\s*\\[([\\s\\S]*?)\\]\\s*as const`)
+  const m = src.match(re)
+  if (!m) throw new Error(`未找到 ${varName} 数组定义`)
   return [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]).sort()
 }
 
@@ -162,6 +227,20 @@ describe('PR #113 进销存单据组织端点跨端守护（staff / admin / sche
       expect(staffItems.length, `staff ${name} 项数漂移`).toBe(size)
       expect(adminItems.length, `admin ${name} 项数漂移`).toBe(size)
       expect(staffItems).toEqual(adminItems)
+    })
+
+    test('#350 顾客出库只走提货：两端通用建单白名单都不含「院顾客产品出库」', () => {
+      const adminGeneric = extractConstArrayItems(readFile(FILES.adminTypesTs), 'INVENTORY_GENERIC_DOC_TYPES')
+      const staffCreate = extractSetItems(staffSrc, 'STAFF_CREATE_DOC_TYPES')
+      // 解析器本身没失效（空数组会让下面的 not.toContain 恒真）
+      expect(adminGeneric.length, 'admin INVENTORY_GENERIC_DOC_TYPES 项数漂移').toBe(9)
+      expect(staffCreate.length, 'staff STAFF_CREATE_DOC_TYPES 项数漂移').toBe(6)
+      expect(adminGeneric, 'admin 通用建单又放出了院顾客产品出库').not.toContain('院顾客产品出库')
+      expect(staffCreate, 'staff 建单又放出了院顾客产品出库').not.toContain('院顾客产品出库')
+      // 两端对门店层可直接建的通用类型取舍一致：staff 可建 ∩ admin 通用 应恰为这 4 种门店动作
+      expect(staffCreate.filter((t) => adminGeneric.includes(t))).toEqual(
+        ['分院调货出库', '院顾客退货', '院产品报损', '分院库存盘点'].sort(),
+      )
     })
 
     test('盘点账面数两端都写（staff 侧曾漏写导致 stock_snapshot 恒 NULL，#131）', () => {
@@ -282,6 +361,37 @@ describe('PR #113 进销存单据组织端点跨端守护（staff / admin / sche
     test('两端短路判定均为保守语义（仅显式 false 才跳过）', () => {
       expect(staffSrc).toMatch(/drifted === false\) return/)
       expect(adminSrc).toMatch(/drifted === false\) return/)
+    })
+  })
+
+  describe('#270 三份同步身份守卫', () => {
+    const files = () => [staffSrc, adminSrc, readFile(FILES.adminBusinessTs)]
+    const probe = /SELECT EXISTS \([\s\S]*?LIMIT 1\) AS collided_id/
+    test('探测 SQL 三份字面一致（含停用主体与撞值）', () => {
+      const literals = files().map((src) => src.match(probe)?.[0])
+      expect(literals.every(Boolean)).toBe(true)
+      expect(literals[0]).toBe(literals[1])
+      expect(literals[1]).toBe(literals[2])
+    })
+    test('两条完整 UPSERT 在三份同步实现中逐字一致', () => {
+      const pairs = files().map((src) => {
+        const start = src.indexOf('function sync')
+        const body = src.slice(start, src.indexOf('\n}', start))
+        return [...body.matchAll(/INSERT INTO inventory_locations[\s\S]*?updated_at = NOW\(\)/g)].map((m) => m[0])
+      })
+      expect(pairs[0]).toHaveLength(2)
+      expect(pairs[0]).toEqual(pairs[1])
+      expect(pairs[1]).toEqual(pairs[2])
+    })
+    test('撞值闸在漂移短路和 UPSERT 之前', () => {
+      for (const src of files()) {
+        const start = src.indexOf('function sync')
+        const body = src.slice(start, src.indexOf('\n}', start))
+        expect(body.indexOf('if (collidedId != null)')).toBeGreaterThan(0)
+        expect(body.indexOf('if (collidedId != null)')).toBeLessThan(body.indexOf('=== false) return'))
+        expect(body).toContain('store_id = NULL')
+        expect(body).toContain('loc.store_id IS NOT NULL')
+      }
     })
   })
 
@@ -445,6 +555,127 @@ describe('PR #113 进销存单据组织端点跨端守护（staff / admin / sche
     })
   })
 
+  /**
+   * §7 建单明细数量规则（#351）。
+   *
+   * 盘点单的数量是实盘数：0（账上有货、货架上没有）必须能录，留空不能被 `Number()` 悄悄变成 0。
+   * 三层同一条规则：admin engine / staffApi 的 `isValidDocItemQuantity`，以及 DB trigger
+   * `inventory_assert_doc_item_quantity`（CHECK 放宽为 >= 0 后，非盘点类型靠它兜底）。
+   *
+   * 守法：**整段函数体逐字相等 + 钉全文快照 + 在函数体上真跑一张真值表**，而不是逐条找
+   * 「有没有写 n > 0」—— 逐条找的守护总能被等价改写绕过，也会被无害重排误红。
+   */
+  describe('§7 建单明细数量规则两端一致（#351）', () => {
+    /** 取 `function <name>(...)` 的函数体（首个 `{` 到行首 `}`），要求全文恰好一处定义。 */
+    function extractFunctionBody(src, name) {
+      const hits = src.split(`function ${name}(`).length - 1
+      if (hits !== 1) throw new Error(`「function ${name}(」应恰好 1 处，实际 ${hits} 处`)
+      const at = src.indexOf(`function ${name}(`)
+      const open = src.indexOf(') {', at) + 2
+      const typedOpen = src.indexOf('): boolean {', at)
+      const start = typedOpen > -1 && typedOpen < open ? typedOpen + '): boolean '.length : open
+      const end = src.indexOf('\n}', start)
+      return src.slice(start + 1, end).trim()
+    }
+    const flat = (text) => text.replace(/\s+/g, ' ').trim()
+
+    const EXPECTED_BODY = [
+      "if (typeof quantity !== 'number' && typeof quantity !== 'string') return false",
+      "if (typeof quantity === 'string' && quantity.trim() === '') return false",
+      'const n = Number(quantity)',
+      'if (!Number.isFinite(n) || n > 9999999999.99 || Number(n.toFixed(2)) !== n) return false',
+      'return n > 0 || (n === 0 && STOCKTAKE_DOC_TYPES.has(docType))',
+    ].join(' ')
+
+    test('两端 isValidDocItemQuantity 函数体逐字一致，且等于钉住的快照', () => {
+      const staffBody = flat(extractFunctionBody(staffSrc, 'isValidDocItemQuantity'))
+      const adminBody = flat(extractFunctionBody(adminSrc, 'isValidDocItemQuantity'))
+      expect(staffBody).toBe(adminBody)
+      // 改规则就该是有意的：改了来更新这里，并同步 DB trigger 与另一端
+      expect(staffBody).toBe(EXPECTED_BODY)
+    })
+
+    test('函数体真值表：盘点允许 0、留空/负数/非数字一律拒，非盘点仍须 > 0', () => {
+      const STOCKTAKE_DOC_TYPES = new Set(extractSetItems(staffSrc, 'STOCKTAKE_DOC_TYPES'))
+      // eslint-disable-next-line no-new-func
+      const run = new Function('STOCKTAKE_DOC_TYPES', 'docType', 'quantity', extractFunctionBody(staffSrc, 'isValidDocItemQuantity'))
+      const check = (docType, quantity) => run(STOCKTAKE_DOC_TYPES, docType, quantity)
+      for (const docType of ['市场库存盘点', '分院库存盘点']) {
+        expect(check(docType, 0), `${docType} 实盘 0`).toBe(true)
+        expect(check(docType, '0'), `${docType} 实盘 '0'`).toBe(true)
+        expect(check(docType, 3.5), `${docType} 实盘 3.5`).toBe(true)
+        expect(check(docType, 1.1), `${docType} 实盘 1.1（toFixed 判两位小数不能被浮点误伤）`).toBe(true)
+        expect(check(docType, 0.29), `${docType} 实盘 0.29`).toBe(true)
+        expect(check(docType, 9999999999.99), `${docType} numeric(12,2) 上限`).toBe(true)
+        // false / [0] 经 Number() 都是 0；0.004 落 numeric(12,2) 会被舍成 0.00 —— 都会凭空变成「实盘 0」
+        for (const bad of [null, undefined, '', '  ', -1, Number.NaN, 'abc', Infinity, false, true, [0], ['0'], {}, 0.004, 0.005, 10000000000]) {
+          expect(check(docType, bad), `${docType} 实盘 ${String(bad)}`).toBe(false)
+        }
+      }
+      for (const docType of ['院产品报损', '门店报货', '市场产品盘溢', '院顾客退货']) {
+        expect(check(docType, 0), `${docType} 数量 0`).toBe(false)
+        expect(check(docType, 1), `${docType} 数量 1`).toBe(true)
+        expect(check(docType, ''), `${docType} 数量空`).toBe(false)
+        expect(check(docType, 0.004), `${docType} 数量 0.004（落库即 0）`).toBe(false)
+      }
+    })
+
+    test('两端建单路径都走这条规则（旧的只认 > 0 的校验不再用于建单明细）', () => {
+      // 调用次数钉死为 2（事务外汇总 + 事务内逐行）：新增建单入口或抽 helper 时这里会红，
+      // 那是提醒来人确认新入口也走本规则，然后同步改这里的计数，不是误红。
+      expect(adminSrc).not.toContain('assertPositiveQuantity')
+      expect(adminSrc.split('assertDocItemQuantity(input.docType, item.quantity)').length - 1).toBe(2)
+      expect(staffSrc.split('assertDocItemQty(docType, item.quantity)').length - 1).toBe(2)
+    })
+
+    /**
+     * DB 层的闭集判据（#351 评审）：不逐条禁止「DROP / ALTER / schema 限定重定义 / DISABLE …」
+     * 这些写法（开放集合，永远枚举不完），而是钉两件事：
+     *   1. 全部迁移里**提到**这三个标识符之一的文件恰好是 {0007, 0053}（大小写、引号、schema 前缀
+     *      都不影响子串命中）—— 之后任何迁移碰它们，不论怎么写，都先在这里红，逼来人回来改守护；
+     *   2. 0053 去注释后整段等值 —— 条件、盘点清单、NaN 拦截、报错码、触发列任一处改动都红。
+     */
+    test('DB：触及数量守卫的迁移恰为 {0007, 0053}，且 0053 整段钉死', () => {
+      expect(schemaSrc).toContain("check('chk_inventory_doc_items_qty', sql`${table.quantity} >= 0`)")
+      const IDENTS = /inventory_assert_doc_item_quantity|trg_inventory_doc_items_assert_quantity|chk_inventory_doc_items_qty/i
+      const migrations = fs.readdirSync(FILES.dbMigrationsDir).filter((name) => name.endsWith('.sql')).sort()
+      expect(migrations.length, '迁移目录读取失败').toBeGreaterThan(50)
+      const touching = migrations.filter((name) => IDENTS.test(readFile(path.join(FILES.dbMigrationsDir, name))))
+      expect(touching, '有新迁移触及 #351 的数量守卫：确认口径后更新本守护与 pg 套件').toEqual([
+        '0007_moaning_salo.sql',
+        '0053_stocktake_zero_quantity.sql',
+      ])
+      const code = flat(readFile(path.join(FILES.dbMigrationsDir, '0053_stocktake_zero_quantity.sql')).replace(/--(?!> statement-breakpoint)[^\n]*/g, ''))
+      expect(code).toBe(flat(`
+        SET LOCAL lock_timeout = '3s';--> statement-breakpoint
+        ALTER TABLE "inventory_doc_items" DROP CONSTRAINT "chk_inventory_doc_items_qty";--> statement-breakpoint
+        ALTER TABLE "inventory_doc_items" ADD CONSTRAINT "chk_inventory_doc_items_qty" CHECK ("inventory_doc_items"."quantity" >= 0);--> statement-breakpoint
+        CREATE OR REPLACE FUNCTION inventory_assert_doc_item_quantity()
+        RETURNS trigger LANGUAGE plpgsql AS $$
+        DECLARE item_doc_type text;
+        BEGIN
+          IF NEW.quantity IS NULL THEN RETURN NEW; END IF;
+          IF NEW.quantity = 'NaN'::numeric THEN
+            RAISE EXCEPTION 'inventory_doc_items.quantity must be a finite number (doc %)', NEW.doc_id
+              USING ERRCODE = 'check_violation', CONSTRAINT = 'chk_inventory_doc_items_qty';
+          END IF;
+          IF NEW.quantity > 0 THEN RETURN NEW; END IF;
+          SELECT doc_type INTO item_doc_type FROM inventory_docs WHERE id = NEW.doc_id;
+          IF NOT FOUND THEN RETURN NEW; END IF;
+          IF item_doc_type IN ('市场库存盘点', '分院库存盘点') THEN RETURN NEW; END IF;
+          RAISE EXCEPTION 'inventory_doc_items.quantity must be > 0 for doc_type % (doc %)', item_doc_type, NEW.doc_id
+            USING ERRCODE = 'check_violation', CONSTRAINT = 'chk_inventory_doc_items_qty';
+        END; $$;--> statement-breakpoint
+        CREATE TRIGGER trg_inventory_doc_items_assert_quantity
+        BEFORE INSERT OR UPDATE OF doc_id, quantity
+        ON inventory_doc_items
+        FOR EACH ROW EXECUTE FUNCTION inventory_assert_doc_item_quantity();`))
+      // trigger 里的盘点清单与两端集合一致（上面快照已钉死，这里给出可读的失败原因）
+      const triggerTypes = [...code.match(/item_doc_type IN \(([^)]*)\)/)[1].matchAll(/'([^']+)'/g)].map((x) => x[1]).sort()
+      expect(triggerTypes).toEqual(extractSetItems(staffSrc, 'STOCKTAKE_DOC_TYPES'))
+    })
+  })
+
   describe('Snapshot 守护（提交后任一项漂移立即可见）', () => {
     test('单据类型集合与端点口径文本快照', () => {
       expect({
@@ -455,5 +686,234 @@ describe('PR #113 进销存单据组织端点跨端守护（staff / admin / sche
         thrownPrefixes: [...new Set(extractThrownPrefixes(staffSrc))].sort(),
       }).toMatchSnapshot()
     })
+  })
+})
+
+/**
+ * SKU 归属口径（#352 后续）：staff 两个候选接口 + 建单闸 与 admin availableToMarketId / 建单闸同谓词
+ * ——「供应链 SKU，或归属本店所属市场」。#339→#352 期间 staff 候选曾写成 `owner_market_id IS NULL OR …`
+ * 与 admin 漂移（非供应链 + 归属 NULL 的 SKU 在 staff 能选、admin 选不到、下游汇总拒），这里钉住两端。
+ */
+describe('SKU 归属谓词 staff ↔ admin 同口径', () => {
+  const staffSrc = readFile(FILES.staffInventoryJs)
+  const adminEngine = readFile(FILES.adminEngineTs)
+
+  function functionBody(src, name) {
+    const m = src.match(new RegExp(`async function ${name}\\([\\s\\S]*?\\n\\}`))
+    if (!m) throw new Error(`未找到 ${name}`)
+    return m[0]
+  }
+
+  test.each(['reportableSkuOptions', 'stocktakeSkuOptions'])('staff %s 主查询与 count 都用「供应链 OR 归属本店市场」', (name) => {
+    const body = functionBody(staffSrc, name)
+    const hits = body.match(/\(sku\.source_type = '供应链' OR sku\.owner_market_id = \$\d\)/g) || []
+    // reportable 的主查询与 count 各一份条件列表；stocktake 共用一份
+    expect(hits.length).toBe(name === 'reportableSkuOptions' ? 2 : 1)
+    expect(body).not.toMatch(/owner_market_id IS NULL/)
+  })
+
+  test('staff 建单闸：非供应链必须归属本店所属市场', () => {
+    const body = functionBody(staffSrc, 'assertSkuAvailableAtLocation')
+    expect(body).toMatch(/if \(sourceType === '供应链'\) return/)
+    expect(body).toMatch(/if \(!marketId \|\| sku\.owner_market_id !== marketId\)/)
+  })
+
+  test('admin availableToMarketId 过滤同谓词', () => {
+    const block = adminEngine.match(/if \(availableToMarketId\) \{[\s\S]*?\n  \}/)
+    expect(block, '未找到 admin availableToMarketId 过滤块').toBeTruthy()
+    expect(block[0].replace(/\s+/g, ' ')).toContain(
+      "conditions.push(or( eq(inventorySkus.sourceType, '供应链'), eq(inventorySkus.ownerMarketId, availableToMarketId), )!)",
+    )
+  })
+
+  test('staff 门店报货建单同时要求 is_reportable（与 admin loadSku(reportable) 同口径）', () => {
+    expect(staffSrc).toMatch(/reportableOnly: docType === '门店报货'/)
+    expect(functionBody(staffSrc, 'inventorySkuSnapshot')).toMatch(/reportableOnly \? ' AND is_reportable = true' : ''/)
+  })
+
+  // 对端（admin）的两道建单闸 + 门店报货可报货闸：任一端放宽，这里都会红
+  const adminBusiness = readFile(FILES.adminBusinessTs)
+  function tsFunctionBody(src, name) {
+    const m = src.match(new RegExp(`(?:export )?(?:async )?function ${name}\\([\\s\\S]*?\\n\\}`))
+    if (!m) throw new Error(`未找到 admin ${name}`)
+    return m[0]
+  }
+
+  test('admin 建单闸 engine.assertSkuAvailableAtLocation：供应链放行，否则须归属主体所属市场', () => {
+    const body = tsFunctionBody(adminEngine, 'assertSkuAvailableAtLocation')
+    expect(body).toContain("if (sku.sourceType === '供应链') return")
+    expect(body).toContain('if (!marketId || sku.ownerMarketId !== marketId)')
+  })
+
+  test('admin 业务闸 business.assertSkuAvailableToMarket 同谓词', () => {
+    const body = tsFunctionBody(adminBusiness, 'assertSkuAvailableToMarket')
+    expect(body).toContain("if (sku.sourceType === '供应链') return")
+    expect(body).toContain('if (marketId && sku.ownerMarketId === marketId) return')
+  })
+
+  test('admin 门店报货：loadSku(reportable=true) 真的拼 is_reportable，且报货调用点带归属闸', () => {
+    expect(tsFunctionBody(adminBusiness, 'loadSku')).toContain('${reportable ? sql`AND is_reportable = true` : sql``}')
+    const report = tsFunctionBody(adminBusiness, 'createStoreReplenishmentRequest')
+    expect(report).toContain('const sku = await loadSku(tx, skuId, true)')
+    expect(report).toContain('assertSkuAvailableToMarket(sku, marketId)')
+  })
+})
+
+/**
+ * 门店报货草稿锁（#348）：admin lockStoreReplenishmentDraft（+ assertDraftUnchanged）与 staff lockStoreRequestDraft
+ * 两份独立副本，报错集合（前缀 + 文案）按出现顺序整段等值；血缘 / 预留判据同 SQL 意图。任一端改文案、调顺序、漏一条都红。
+ */
+describe('门店报货草稿锁 staff ↔ admin 同口径（#348）', () => {
+  const staffSrc = readFile(FILES.staffInventoryJs)
+  const adminBusiness = readFile(FILES.adminBusinessTs)
+  function body(src, name) {
+    const m = src.match(new RegExp(`(?:export )?(?:async )?function ${name}\\([\\s\\S]*?\\n\\}`))
+    if (!m) throw new Error(`未找到 ${name}`)
+    return m[0]
+  }
+  // admin 的文案可能写成三元（按状态分两条）：取前缀后到右括号之间的字面量，跳过 `=== '…'` 比较里的那个
+  const adminMessages = (src) => [...src.matchAll(/new ApiError\(\s*'([A-Z_]+)',([\s\S]*?)\)/g)]
+    .flatMap((m) => [...m[2].matchAll(/(=== )?'([^']+)'/g)].filter((q) => !q[1]).map((q) => `${m[1]}: ${q[2]}`))
+  const staffMessages = (src) => [...src.matchAll(/'([A-Z_]+): ([^']+)'/g)].map((m) => `${m[1]}: ${m[2]}`)
+
+  test('报错集合整段等值（类型 → 状态 → 门店 → 市场 → 版本 → 关联）', () => {
+    const admin = adminMessages(body(adminBusiness, 'lockStoreReplenishmentDraft'))
+    const adminVersion = adminMessages(body(adminBusiness, 'assertDraftUnchanged'))
+    // admin 把版本校验拆在 assertDraftUnchanged，按调用位置插回「市场」之后
+    const marketIndex = admin.findIndex((message) => message.includes('门店已更换所属市场'))
+    const adminOrdered = [...admin.slice(0, marketIndex + 1), ...adminVersion, ...admin.slice(marketIndex + 1)]
+    expect(staffMessages(body(staffSrc, 'lockStoreRequestDraft'))).toEqual(adminOrdered)
+    expect(adminOrdered).toEqual([
+      'NOT_FOUND: 门店报货草稿不存在',
+      'INVALID_STATE: 该门店报货草稿已删除',
+      'INVALID_STATE: 门店报货已提交，不能再修改或删除',
+      'INVALID_PARAMS: 草稿的报货门店不能修改',
+      'INVALID_STATE: 门店已更换所属市场，请删除该草稿后重新报货',
+      'INVALID_PARAMS: 缺少草稿版本，请重新打开草稿后再保存',
+      'INVALID_PARAMS: 草稿版本格式不正确',
+      'CONFLICT: 草稿已被他人修改，请重新打开后再保存',
+      'INVALID_STATE: 该草稿已有上下游关联，不能按草稿修改或删除，请联系管理员处理',
+    ])
+  })
+
+  test('关联判据两端都查血缘（from/to）与预留', () => {
+    for (const src of [body(adminBusiness, 'lockStoreReplenishmentDraft'), body(staffSrc, 'lockStoreRequestDraft')]) {
+      const flat = src.replace(/\s+/g, ' ')
+      expect(flat).toMatch(/FROM inventory_doc_links WHERE from_doc_id = \S+ OR to_doc_id = \S+/)
+      expect(flat).toMatch(/FROM inventory_stock_reservations WHERE request_doc_id = /)
+    }
+  })
+
+  test('门店报货同一 SKU 合并：两端同文案', () => {
+    expect(body(adminBusiness, 'createStoreReplenishmentRequest')).toContain("'同一 SKU 请合并为一条报货明细'")
+    expect(body(staffSrc, 'createDoc')).toContain("'INVALID_PARAMS: 同一 SKU 请合并为一条报货明细'")
+  })
+})
+
+/**
+ * §8 收货已收口径与建批次 SQL（#358）。
+ *
+ * ① 「发货收货」血缘的三个写入方（admin receivePhysicalShipment / admin 通用收货
+ *    confirmInventoryCoreReceive / staff confirmReceive）都必须回写来源明细 fulfilled_quantity；
+ *    staff 收货量 = 发货量 − fulfilled（admin 由 getShipmentReceiptProgress / 整单闸同口径）。
+ * ② fulfilled 只由服务端收货路径写：两端通用建单不得把客户端 fulfilledQuantity 落库
+ *    （否则调接口就能改收货量、让库存凭空消失）。
+ * ③ 建批次 INSERT 的三份副本列与 VALUES 逐位对齐：staff 曾 `$11,0,$12` 错位 1.5 个月，
+ *    is_gift 吃到 0、quantity_on_hand 吃到布尔，真 PG 42804，小程序收货从未成功；mock 单测看不出。
+ */
+describe('§8 收货已收口径与建批次 SQL 两端守护（#358）', () => {
+  const staffJs = fs.readFileSync(FILES.staffInventoryJs, 'utf8')
+  const adminEngine = fs.readFileSync(FILES.adminEngineTs, 'utf8')
+  const adminBusiness = fs.readFileSync(FILES.adminBusinessTs, 'utf8')
+
+  function sliceBetween(src, start, endMarker) {
+    const from = src.indexOf(start)
+    if (from < 0) throw new Error(`未找到 ${start}`)
+    const to = src.indexOf(endMarker, from + start.length)
+    return src.slice(from, to < 0 ? undefined : to)
+  }
+  const FULFILLED_INCREMENT = /SET fulfilled_quantity = COALESCE\(fulfilled_quantity, 0\) \+/
+
+  test('① 三个「发货收货」写入方都回写来源 fulfilled_quantity', () => {
+    const writers = {
+      'staff confirmReceive': sliceBetween(staffJs, 'async function confirmReceive(', '\nasync function '),
+      'admin receivePhysicalShipment': sliceBetween(adminBusiness, 'async function receivePhysicalShipment(', '\nexport async function '),
+      'admin confirmInventoryCoreReceive': sliceBetween(adminEngine, 'export const confirmInventoryCoreReceive', '\nexport '),
+    }
+    for (const [name, body] of Object.entries(writers)) {
+      expect(body, `${name} 必须写「发货收货」血缘`).toContain('发货收货')
+      expect(body, `${name} 必须回写来源 fulfilled_quantity`).toMatch(FULFILLED_INCREMENT)
+    }
+    // 闭集：全仓写「发货收货」血缘的只有这三处（新增写入方须登记到上表）。
+    // ⚠️ 计数只认三种既有拼写（drizzle `relationType: '发货收货'` / pg 参数数组 / VALUES 字面量）；
+    // 换其它写法新增第四个写入方时这里不会变红 —— 新增 inventory_doc_links 写入点必须人工登记。
+    const count = (src) => (src.match(/relationType: '发货收货'|'发货收货',\$3|VALUES \(\$1,\$2,'发货收货'/g) || []).length
+    expect(count(staffJs) + count(adminEngine) + count(adminBusiness)).toBe(3)
+    expect(writers['staff confirmReceive']).toContain('Number(item.quantity) - Number(item.fulfilled_quantity || 0)')
+  })
+
+  test('② 两端通用建单不落客户端 fulfilledQuantity', () => {
+    const staffCreate = sliceBetween(staffJs, 'async function createDoc(', '\nasync function ')
+    expect(staffCreate).not.toMatch(/item\.fulfilledQuantity/)
+    const adminCreate = sliceBetween(adminEngine, 'export const createInventoryCoreDoc', '\nexport ')
+    expect(adminCreate).not.toMatch(/serverItem\.fulfilledQuantity|item\.fulfilledQuantity/)
+    expect(adminCreate).toContain('fulfilledQuantity: null,')
+  })
+
+  /** 按顶层逗号切分（跳过 () {} 与模板插值内部的逗号） */
+  function splitTopLevel(text) {
+    const parts = []
+    let depth = 0
+    let current = ''
+    for (const ch of text) {
+      if ('({['.includes(ch)) depth += 1
+      if (')}]'.includes(ch)) depth -= 1
+      if (ch === ',' && depth === 0) {
+        parts.push(current.trim())
+        current = ''
+      } else {
+        current += ch
+      }
+    }
+    if (current.trim()) parts.push(current.trim())
+    return parts
+  }
+  /** 取 `INSERT INTO inventory_stock_lots (列) VALUES (值)` 的列表与值表（平衡括号截取） */
+  function lotInserts(src) {
+    const result = []
+    let from = 0
+    for (;;) {
+      const at = src.indexOf('INSERT INTO inventory_stock_lots (', from)
+      if (at < 0) return result
+      const colsStart = at + 'INSERT INTO inventory_stock_lots ('.length
+      const colsEnd = src.indexOf(')', colsStart)
+      const valuesAt = src.indexOf('VALUES (', colsEnd)
+      let depth = 1
+      let i = valuesAt + 'VALUES ('.length
+      const valuesStart = i
+      for (; depth > 0; i += 1) {
+        if (src[i] === '(') depth += 1
+        if (src[i] === ')') depth -= 1
+      }
+      result.push({
+        columns: splitTopLevel(src.slice(colsStart, colsEnd)),
+        values: splitTopLevel(src.slice(valuesStart, i - 1)),
+      })
+      from = i
+    }
+  }
+
+  test.each([
+    ['staff routes/inventory.js', () => staffJs],
+    ['admin engine.ts', () => adminEngine],
+    ['admin business.ts', () => adminBusiness],
+  ])('③ %s 建批次 INSERT 列与值逐位对齐，quantity_on_hand 恒 0', (_name, source) => {
+    const inserts = lotInserts(source())
+    expect(inserts.length).toBeGreaterThan(0)
+    for (const { columns, values } of inserts) {
+      expect(values).toHaveLength(columns.length)
+      expect(values[columns.indexOf('quantity_on_hand')]).toBe('0')
+      expect(values[columns.indexOf('is_gift')]).not.toBe('0')
+    }
   })
 })

@@ -553,9 +553,10 @@ export const inventoryDocItems = pgTable(
      */
     supplierId: text('supplier_id').references(() => inventorySuppliers.supplierId),
     /**
-     * 行级市场归属。NULL = 品项公司自用行（走供应链采购入库），非 NULL = 市场行（走品项公司发货）。
+     * 行级市场归属。NULL = 品项公司自用行，非 NULL = 来自市场报货汇总的市场行。
      *
-     * 采购订单收敛成单一 doc_type 后，下游链路分流不再看单据类型而是看本列（#194）。
+     * 采购订单的所有行都走供应链采购入库、按供应链采购价计金额（#335），本列只是来源追溯标记，
+     * 不再决定下游链路（#194 时曾按它分流）。
      */
     marketId: text('market_id').references(() => orgNodes.id),
     productSeries: text('product_series'),
@@ -619,7 +620,12 @@ export const inventoryDocItems = pgTable(
     index('idx_inventory_doc_items_market').on(table.marketId),
     index('idx_inventory_doc_items_promotion').on(table.promotionPlanId),
     uniqueIndex('uq_inventory_doc_items_id_doc').on(table.id, table.docId),
-    check('chk_inventory_doc_items_qty', sql`${table.quantity} > 0`),
+    /**
+     * #351：盘点单的数量是实盘数，0（账上有货、货架上没有）必须能录，所以 CHECK 只拦负数。
+     * 「非盘点类型仍须 > 0」按 doc_id 查 doc_type 才能判断，CHECK 做不到，交给 trigger
+     * `inventory_assert_doc_item_quantity`（见迁移）兜底；admin engine / staffApi 两端同规则。
+     */
+    check('chk_inventory_doc_items_qty', sql`${table.quantity} >= 0`),
     check(
       'chk_inventory_doc_items_promotion_rule_type',
       sql`${table.promotionRuleTypeSnapshot} IS NULL OR ${table.promotionRuleTypeSnapshot} IN ('单品阶梯','组合')`,
@@ -694,7 +700,7 @@ export const inventoryDocLinks = pgTable(
       'chk_inventory_doc_links_relation_type',
       sql`${table.relationType} IN (
         '门店报货汇总','市场报货汇总','市场报货采购订单','报货汇总采购订单','品项公司报货采购订单',
-        '采购订单发货','采购订单赠送发货','发货收货','采购订单供应链采购入库',
+        '采购订单发货','采购订单赠送发货','市场报货发货','市场报货赠送发货','发货收货','采购订单供应链采购入库',
         '门店报货配货','门店报货赠送配货','退货回库','库存转换','历史关联'
       )`,
     ),

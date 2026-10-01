@@ -25,6 +25,11 @@
  *   - service_items: 在 sale_items 回填后，可通过 sale_items 反查 + product_skus fallback 联查回填
  *
  * 幂等：只 UPDATE NULL 列，不覆盖已写入值。
+ *
+ * ⚠ #378 起 service_items.is_shengmei 口径改为「SKU 当前值优先、sale_items 兜底」，
+ *   本脚本 STEP 2 的 is_shengmei 仍是 sale_items 优先的旧口径。回填生美标记请改用
+ *   db/scripts/backfill-378-service-items-shengmei.js；若仍要跑本脚本（补 sales_category），
+ *   之后须再跑一次 backfill-378 收敛。
  */
 
 const { Pool } = require('pg')

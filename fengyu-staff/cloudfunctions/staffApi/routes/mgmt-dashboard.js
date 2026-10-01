@@ -3,7 +3,8 @@
  *
  * mgmtDashboard.scopeOptions — 市场/门店二级筛选器数据源
  *   - 总部 scope：返回所有市场及其下属门店
- *   - 其他账号：仅返回账号全部 scope 覆盖的门店及可完整选择的市场
+ *   - 其他账号：仅返回账号全部 scope 覆盖的门店及可完整选择的市场；
+ *     直接授权的无门店市场（如品项公司）也返回，stores 为空（#424）
  *   - 不缓存，确保组织节点启停后范围下拉立即刷新
  *
  * mgmtDashboard.summary — 数据中心首页 8 卡片汇总
@@ -23,6 +24,7 @@
  */
 
 const pg = require('../db/pg')
+const { loadClosedStoreIds } = require('../utils/store-closed-label')
 const { requireManagementLevel } = require('../middleware/auth')
 const {
   validateManagementScope,
@@ -30,6 +32,14 @@ const {
   hasHeadquartersScope,
 } = require('../utils/scope')
 const { excludeDepositRefundSql } = require('../utils/consume-filter')
+// 在营口径单源（#401）：只看门店组织节点 is_active，不看门店关店标记。
+// #400 的停用判定片段（STORE_NODE_JOIN / STORE_IS_ACTIVE）也并入同一个 helper，不再另立文件。
+const {
+  activeStoreCondition,
+  activeStoreNodeCondition,
+  STORE_NODE_JOIN,
+  STORE_IS_ACTIVE,
+} = require('../utils/store-status')
 
 /**
  * 取 selectedDate 所属月份的月末日期（YYYY-MM-DD）。
@@ -73,9 +83,8 @@ async function loadAllMarkets() {
     LEFT JOIN market_descendants d ON d.market_id = m.id
     LEFT JOIN org_nodes o_store
       ON o_store.id = d.node_id
-     AND o_store.type = '门店'
-     AND o_store.is_active = TRUE
-    LEFT JOIN stores s ON s.org_node_id = o_store.id AND s.is_closed = false
+     AND ${activeStoreNodeCondition('o_store')}
+    LEFT JOIN stores s ON s.org_node_id = o_store.id
     WHERE m.type = '市场'
     ORDER BY m.name ASC, s.store_name ASC
   `)
@@ -109,8 +118,12 @@ async function loadAllMarkets() {
  *     staffLevel,
  *     allowAll: boolean,
  *     allowedMarketIds: string[],
- *     markets: [{ id, name, stores: [{ storeId, storeName }] }, ...]
+ *     markets: [{ id, name, stores: [{ storeId, storeName, closed? }] }, ...],   // closed: 只关店、节点仍启用（#422）
+ *     inactiveStores: [{ storeId, storeName }, ...] | null   // null = 查询失败、未知
  *   }
+ *
+ * inactiveStores：权限内门店组织节点已停用的门店（#400）。不进下拉，供 scope-picker 识别
+ * 落到停用门店的默认范围：有在营门店可选就纠正过去，没有就保留并标「已停用」。
  */
 async function scopeOptions(ctx) {
   await requireManagementLevel()(ctx, async () => {})
@@ -130,30 +143,62 @@ async function scopeOptions(ctx) {
         ...market,
         stores: (market.stores || []).filter((store) => allowedStores.has(store.storeId)),
       }))
-      .filter((market) => market.stores.length > 0)
+      // 直接授权（scopeOrgNodeIds 含）的市场即使没有在营门店也保留（#424，对齐 admin #399）：
+      // 如只授权到品项公司的账号，须能以「市场」范围进入、picker 能回填市场名。
+      // 门店级账号不会因此多出市场：其所属市场不在 scopeOrgNodeIds 里。
+      .filter((market) => market.stores.length > 0 || allowedNodes.has(market.id))
+
+  // 停用门店只用于纠正默认范围，查失败不能拖垮整个范围下拉（空态仍由 summary.scope.inactive 兜住）。
+  // 失败回 null（未知）而不是 []：[] 会被前端读成「确认没有停用门店」而撤掉已知的停用标记。
+  const inactiveStores = await loadInactiveStores(allowAll, scopeStoreIds || []).catch((err) => {
+    console.error('[mgmtDashboard.scopeOptions] loadInactiveStores failed:', err)
+    return null
+  })
+
+  // 只关店、节点仍启用的门店留在下拉里（有关店前的历史数据），打 closed 标给前端显示「（已关店）」、
+  // 选市场时默认门店跳过它（#422）。纯展示：查失败就不打标，不拖垮范围下拉
+  const closedIds = await loadClosedStoreIds(pg, visible.flatMap((market) => market.stores.map((store) => store.storeId)))
+    .catch((err) => {
+      console.error('[mgmtDashboard.scopeOptions] loadClosedStoreIds failed:', err)
+      return new Set()
+    })
+  const markets = closedIds.size === 0
+    ? visible
+    : visible.map((market) => ({
+      ...market,
+      stores: market.stores.map((store) => (closedIds.has(store.storeId) ? { ...store, closed: true } : store)),
+    }))
 
   ctx.result = {
     staffLevel,
     allowAll,
     allowedMarketIds,
-    markets: visible,
+    markets,
+    inactiveStores,
   }
+}
+
+/**
+ * 权限内门店组织节点已停用的门店（口径见 utils/store-status.js：只看 org_nodes.is_active）。
+ * 总部看全部门店；其他账号仅看 scopeStoreIds（expandScopeStoreIds 不看启停，停用门店仍在其中）。
+ */
+async function loadInactiveStores(allowAll, scopeStoreIds) {
+  if (!allowAll && scopeStoreIds.length === 0) return []
+  const rows = await pg.query(
+    `SELECT s.store_id, s.store_name
+       FROM stores s
+       ${STORE_NODE_JOIN}
+      WHERE NOT ${STORE_IS_ACTIVE}
+        AND ($1::boolean OR s.store_id = ANY($2::text[]))
+      ORDER BY s.store_name ASC`,
+    [allowAll, scopeStoreIds],
+  )
+  return rows.map((r) => ({ storeId: r.store_id, storeName: r.store_name || '' }))
 }
 
 // =====================================================================
 // summary —— 8 卡片汇总
 // =====================================================================
-
-/** 当前启用的门店组织节点对应的 store_id 集合（按当前状态作用于全部历史区间）。 */
-function activeStoreCondition(column) {
-  return `${column} IN (
-    SELECT active_store.store_id
-    FROM stores active_store
-    JOIN org_nodes active_node ON active_store.org_node_id = active_node.id
-    WHERE active_node.type = '门店'
-      AND active_node.is_active = TRUE
-  )`
-}
 
 /**
  * 在既有权限/UI scope 外叠加经营门店启用条件；不改共享 scope 工具，避免影响其他路由。
@@ -232,7 +277,7 @@ async function queryShengmeiRevenue(scopeType, scopeId, date, mode) {
        JOIN sale_orders so ON so.sale_order_id = sipe.sale_order_id
       WHERE ${sc.sql}
         AND so.sale_order_type IN ('销售单', '转换单')
-        AND so.status = '已支付'
+        AND (NOT sipe.is_legacy_residual OR so.status <> '已关闭')
         AND si.is_shengmei = TRUE
         AND ${timeWindow('sipe.performance_date', mode, 1, true)}`,
     [date, ...sc.params],
@@ -431,38 +476,46 @@ async function queryRetainedMemberCount(scopeType, scopeId, date) {
 }
 
 /**
- * 员工数（截面快照，2026-04-25 T3 起按 selectedDate 历史化）
- *
- * 口径：「$date 那天为止已入职且未离职」 =
- *   COUNT(s.hired_at::date <= $date AND (s.resigned_at IS NULL OR s.resigned_at::date > $date))
- *
- * 不再用 s.is_resigned = FALSE（那是当前快照，无法反映历史日期）。
- * 改为用 s.hired_at + s.resigned_at 时间戳，任意 $date 都可还原"那一天的在职员工数"。
- *
- * 字段维护：admin 员工管理表单写入；当前 hired_at 由 created_at::date 兜底（WorkFine 无入职日期源），
- * resigned_at 由 updated_at::date 兜底。后续由管理后台维护。
- */
-/**
  * 无门店产能技师（直挂市场/部门组织节点）的可见性片段 —— 与 admin
  * `lib/data-center/scope-sql.ts` 的 `orgAnchorScopeSql` **逐条对齐**（#320）。
  *
- *   - `store`  → 无门店的人不归属任何单店，一律不出现（故 集团技师数 ≠ Σ门店技师数，有意）
+ *   - `all`    → 恒真（`validateManagementScope` 已要求 `all` 必须持总部 scope，
+ *                见 `__tests__/utils/scope.test.js` 里「非总部选 all 必抛 PERMISSION_DENIED」）
  *   - `market` → 锚定市场等于所选市场才出现
- *   - `all`    → 恒真。`validateManagementScope` 已要求 `all` 必须持总部 scope，
- *                等价于 admin 侧的 `isAdminScope(session) → TRUE` 分支
+ *   - `store` 及**任何未知取值** → FALSE
+ *
+ * ⚠️ **`all` 这一支与 admin 并不等价，是一条已登记的跨端分叉（#334）**：admin 的
+ * `orgAnchorScopeSql` 只对**超管**恒真（`isAdminScope` 判的是超管位，不是「持总部 scope」），
+ * 非超管走 `EXISTS(锚定市场下存在本账号可见的启用门店)` —— 对「没有门店的市场」永远判不出可见。
+ * 生产实测：品项公司（type=市场、直属门店 0）下有 1 名在职产能技师，而落在总部节点上的
+ * 非超管绑定有 14 个 → 这 14 个账号 admin 看 165、staff 看 166。别在本文件单边抹平，见 #334。
+ *
+ * ⚠️ `all` 必须**按名字显式命中**、未知取值一律 fail-closed，不能写成
+ * 「先排掉 store/market，兜底 return TRUE」——那样未知 scopeType 会让门店分支近乎空集
+ * （`buildManagementStoreScope` 把未知当 market、按一个不存在的根展开）而锚分支恒真，
+ * 分母静默膨胀成「全部直挂技师」。`validateManagementScope` 虽已拒掉未知取值，
+ * 但那是另一个函数的责任，这里不借它的势。
  *
  * @param {number} startIdx 本片段自己的 $n 起始下标（不与门店分支共用参数）
  */
 function buildTechnicianOrgAnchorScope(scopeType, scopeId, startIdx) {
-  if (scopeType === 'store') return { sql: 'FALSE', params: [] }
+  if (scopeType === 'all') return { sql: 'TRUE', params: [] }
   if (scopeType === 'market') {
     return { sql: `tb.anchor_market_id = $${startIdx}`, params: [scopeId] }
   }
-  return { sql: 'TRUE', params: [] }
+  return { sql: 'FALSE', params: [] }
 }
 
 /**
  * 产能技师在职数（人均派生指标的**分母**）。
+ *
+ * ## 在职判定（2026-04-25 T3 起按 selectedDate 历史化）
+ *
+ * 「$date 那天为止已入职且未离职」 =
+ *   `sw.hired_at::date <= $date AND (sw.resigned_at IS NULL OR sw.resigned_at::date > $date)`。
+ * 不再用 `is_resigned = FALSE`（那是当前快照，无法反映历史日期）。
+ * 字段维护：admin 员工管理表单写入；当前 `hired_at` 由 `created_at::date` 兜底
+ * （WorkFine 无入职日期源），`resigned_at` 由 `updated_at::date` 兜底。
  *
  * ## 为什么不能只按 `staff_wechat_users.store_id` 过滤（#320）
  *
@@ -485,8 +538,27 @@ function buildTechnicianOrgAnchorScope(scopeType, scopeId, startIdx) {
  * 2. 回收后仍为 NULL 的（直挂市场/部门）用 `anchor_market_id` 锚到市场，
  *    交给 `buildTechnicianOrgAnchorScope` 判可见性
  *
+ * ## 两个容易被当成缺陷的点（已核实，别再"修"）
+ *
+ * - **回收 join 不会扇出重复计数**：`stores.org_node_id` 上有唯一索引
+ *   `stores_org_node_id_unique`，`staff_wechat_users.employee_id` 是主键
+ *   （`staff_wechat_users_pkey`，生产实测 0 重复行），两头都不可能一对多 ——
+ *   所以 `LEFT JOIN stores ds` 至多匹配一行，`COUNT(*)` 不需要 DISTINCT
+ *   （2026-09-24 生产实测该 CTE 166 行 / 166 个不同 `employee_id`）。
+ *   admin `technicianCountSql` 同样是 `COUNT(*)`，两端一致。
+ * - **锚定只向上找一级父节点**：`CASE` 只看 `o`（自身）与 `op`（父）。若将来出现
+ *   「部门挂在部门下、再挂到市场」，那人的 `anchor_market_id` 会是 NULL ——
+ *   `all` 口径仍计入（`store_id IS NULL AND TRUE`），market 口径不计入（`NULL = $n` 为假）
+ *   → Σ市场 ≠ 集团。生产实测该前提**当前不成立**：`type='部门'` 挂在 `type='部门'` 下的节点
+ *   0 个，无门店技师中 `anchor_market_id IS NULL` 的 0 人（2026-09-24）。
+ *   与 admin 逐字一致，所以**不单边改**；组织侧若引入部门嵌套，两端须同步改成递归找最近市场祖先。
+ * - **门店分支叠了启用门店过滤、市场锚分支没有**：这与 admin 一致（admin 的
+ *   `scopeFilterSql` 内含 `activeStoreCondition`，`orgAnchorScopeSql` 的 market 分支只比锚定市场）。
+ *   代价是「门店全停的市场 + 直挂技师」会分母含人、分子近零 → 人均偏低。属已知取舍：
+ *   直挂者不属于任何门店，没有可供判断启停的门店。改它必须两端同步改。
+ *
  * ⚠️ 两端是**独立副本**（禁止跨端共享代码目录，见根 CLAUDE.md），一致性由
- * `__tests__/routes/mgmt-dashboard-technician-parity.test.js` 的字面量断言守护。改一端必同步另一端。
+ * `__tests__/routes/cross-end-technician-denominator.test.js` 的字面量断言守护。改一端必同步另一端。
  */
 async function queryEmployeeCount(scopeType, scopeId, date) {
   // $1 = date；门店分支 scope 从 $2 起；市场锚分支接在其后
@@ -544,20 +616,52 @@ async function queryStoreCount(scopeType, scopeId, date) {
   return Number(rows[0]?.cnt || 0)
 }
 
-async function resolveScopeName(scopeType, scopeId) {
-  if (scopeType === 'all') return '全部市场'
+/**
+ * scope 展示名 + 是否落在已停用门店（#400）。
+ * 门店 scope 的组织节点已停用时，取数 SQL 会滤掉它的全部数据（满屏 0），前端据 inactive
+ * 出「已停用」空态，与「在营门店本期无业绩（照常显示 0）」区分开。市场 / 全部恒为 false。
+ */
+async function resolveScope(scopeType, scopeId) {
+  if (scopeType === 'all') return { name: '全部市场', inactive: false }
   if (scopeType === 'market') {
     const rows = await pg.query(
       "SELECT name FROM org_nodes WHERE id = $1 AND type = '市场'",
       [scopeId],
     )
-    return rows[0]?.name || ''
+    return { name: rows[0]?.name || '', inactive: false }
   }
   const rows = await pg.query(
-    'SELECT store_name FROM stores WHERE store_id = $1',
+    `SELECT s.store_name, ${STORE_IS_ACTIVE} AS is_active
+       FROM stores s
+       ${STORE_NODE_JOIN}
+      WHERE s.store_id = $1`,
     [scopeId],
   )
-  return rows[0]?.store_name || ''
+  if (rows.length === 0) return { name: '', inactive: false }
+  return { name: rows[0].store_name || '', inactive: rows[0].is_active !== true }
+}
+
+/**
+ * 落在停用门店时，账号还有没有别的门店可切（#400 空态第二行文案用）。
+ * 与范围下拉 loadAllMarkets 同口径：只看门店节点在营（#401 起下拉不再排除只关店的门店）；
+ * 总部看全部，其余限 scopeStoreIds。
+ */
+async function hasActiveAlternative(auth, scopeId) {
+  const allowAll = hasHeadquartersScope(auth.roleBindings)
+  const scopeStoreIds = auth.scopeStoreIds || []
+  if (!allowAll && scopeStoreIds.length === 0) return false
+  const rows = await pg.query(
+    `SELECT EXISTS (
+       SELECT 1
+         FROM stores s
+         ${STORE_NODE_JOIN}
+        WHERE ${STORE_IS_ACTIVE}
+          AND s.store_id <> $1
+          AND ($2::boolean OR s.store_id = ANY($3::text[]))
+     ) AS has_alternative`,
+    [scopeId, allowAll, scopeStoreIds],
+  )
+  return rows[0]?.has_alternative === true
 }
 
 /**
@@ -599,7 +703,7 @@ async function summary(ctx) {
     memberCount, retainedMemberCount,
     employeeCountDay, storeCountDay,
     employeeCountMonth, storeCountMonth,
-    scopeName,
+    resolvedScope,
   ] = await Promise.all([
     queryStoreRevenue(scopeType, scopeId, date, 'day'),
     queryStoreRevenue(scopeType, scopeId, date, 'month'),
@@ -627,17 +731,33 @@ async function summary(ctx) {
     queryStoreCount(scopeType, scopeId, date),         // 当日（selectedDate 当日在营的门店数）
     queryEmployeeCount(scopeType, scopeId, monthEnd),  // 月末（用于月度派生指标分母）
     queryStoreCount(scopeType, scopeId, monthEnd),     // 月末（月度业绩对应的整月在营门店数）
-    resolveScopeName(scopeType, scopeId),
+    resolveScope(scopeType, scopeId),
   ])
   const elapsed = Date.now() - t0
+  // 只影响空态第二行文案：查失败回 null（未知，前端不出第二行），不能拖垮整个 summary
+  const scopeHasAlternative = resolvedScope.inactive
+    ? await hasActiveAlternative(ctx.auth, scopeId).catch((err) => {
+      console.error('[mgmtDashboard.summary] hasActiveAlternative failed:', err)
+      return null
+    })
+    : true
 
   const round2 = (v) => Math.round(Number(v) * 100) / 100
-  // monthlyAvgPerStore：分母用月末口径，与"月度业绩 = 整月在营"语义对齐
-  const avg = (m) => (storeCountMonth > 0 ? round2(m / storeCountMonth) : 0)
+  // monthlyAvgPerStore：分母用月末口径，与"月度业绩 = 整月在营"语义对齐。
+  // 月末在营 0 店（只关店仍可选的门店、未开业门店）→ null，前端 formatAmount 显示「--」，
+  // 与 admin 数据中心 perStore 分母 ≤0 返回 null 一致（#401）；返回 0 会和「在营但零业绩」混淆。
+  const avg = (m) => (storeCountMonth > 0 ? round2(m / storeCountMonth) : null)
 
   ctx.result = {
     date,
-    scope: { type: scopeType, id: scopeId || null, name: scopeName },
+    scope: {
+      type: scopeType,
+      id: scopeId || null,
+      name: resolvedScope.name,
+      inactive: resolvedScope.inactive,
+      // 仅 inactive 时有意义：false → 空态提示「当前账号没有其它在营门店可查看」；null = 未知
+      hasActiveAlternative: scopeHasAlternative,
+    },
     storeRevenue: {
       today: round2(storeRevToday),
       month: round2(storeRevMonth),
@@ -1018,7 +1138,17 @@ async function storeRanking(ctx) {
 // 不再用 skills 字段门控 — staff_wechat_users.skills 在历史员工档案中 1174/2020 为 NULL/空（如刘恋
 // FY-240804002 hired_at=2026-03-13、skills 空但有 888 元 allocation），导致 ranking 漏算 33% 业绩。
 // 各 metric 子查询按真实归属事实聚合，不再按 role_type 白名单截断；
-// 末尾再用 WHERE COALESCE(value,0) > 0 把零值员工排除（无业绩不入榜）。
+// 末尾入榜口径见下（2026-09-24 用户拍板，#290）。
+//
+// ★ 入榜口径：WHERE (pe.has_skills OR COALESCE(value,0) <> 0)
+//   ——「有技能标签的员工无条件入榜（含零值/负值），无标签者仅在有非零产能时入榜」。
+//   原写法 `> 0` 语义是「无业绩不入榜」，但它比该意图宽：连**有**业绩而净额为负
+//   （退款冲销超过新单）的员工也一并吞掉，与「退款负数冲销不删行」硬口径冲突，
+//   且同板块门店榜（storeRanking）从不按 value 剔行 —— 两榜规则本不该分裂。
+//   2026-09-01~22 生产实测：admin 侧 2 人被吞（合计 −10,902.00）。
+//   候选池用 has_skills 而非白名单 ARRAY['美容师','养生师']：后者会把品项老师/
+//   推广部/售前老师共 139 万（27.8%）排出榜单。OR 右半边是防漏算兜底 ——
+//   skills 非必填，漏填即静默掉榜（2026-05-20 正栽于此，当时漏算 33%）。
 // metrics.md employeeCount 指标仍保留 skills 过滤（语义是"产能技师在职数"，与 ranking 候选池语义不同）。
 
 /**
@@ -1048,7 +1178,8 @@ function producerEmployeesCte(storeFilter, orgScope) {
     COALESCE(s.store_name, ds.store_name, o.name)        AS store_name,
     CASE WHEN o.type = '市场' THEN o.id
          WHEN op.type = '市场' THEN op.id
-         ELSE NULL END                                   AS anchor_market_id
+         ELSE NULL END                                   AS anchor_market_id,
+    (COALESCE(cardinality(array_remove(array_remove(sw.skills, ''), NULL)), 0) > 0) AS has_skills
   FROM staff_wechat_users sw
   LEFT JOIN stores s     ON s.store_id     = sw.store_id
   LEFT JOIN org_nodes o  ON o.id           = sw.org_node_id
@@ -1059,7 +1190,7 @@ function producerEmployeesCte(storeFilter, orgScope) {
     AND (sw.resigned_at IS NULL OR sw.resigned_at::date > NOW()::date)
 ),
 producer_employees AS (
-  SELECT pb.employee_id, pb.employee_name, pb.store_id, pb.store_name
+  SELECT pb.employee_id, pb.employee_name, pb.store_id, pb.store_name, pb.has_skills
   FROM producer_base pb
   WHERE (pb.store_id IS NOT NULL AND ${storeFilter.sql})
      OR (pb.store_id IS NULL AND ${orgScope.sql})
@@ -1088,7 +1219,23 @@ function buildOrgAnchorScope(visibleStoreIds, startIdx) {
   }
 }
 
-const STAFF_ORDER_BY = `ORDER BY value DESC, pe.employee_name ASC, pe.employee_id ASC`
+// ★ 2026-09-24 #290 用户拍板：非零优先、零值垫底。
+// 入榜口径放开后「有标签零产能」的员工大量进榜（生产实测：本月业绩榜 94 行、
+// 今日视图 247 行为 0.00），纯 `value DESC` 会把本次要救的负值员工压到 0.00 行**之下**
+// （实测第 252/253 名），修复反而更难被看见。加 `(value <> 0) DESC` 首键后，
+// 负值紧跟正值（第 158/159 名），零值整体垫底。
+// ⚠️ assignRanks 只比较相邻值是否相等、不要求单调，故名次仍正确：
+//    正值 1~157 → 负值 158/159 → 零值并列 160。
+/**
+ * 员工榜排序（单源）。`valueExpr` 必须与该榜 SELECT 里 `AS value` 的表达式**逐字相同**。
+ *
+ * ⚠️ 不能写成 `ORDER BY (value <> 0) DESC`：PostgreSQL 只允许 SELECT 输出别名作为
+ * **独立排序项**，一旦参与表达式就按真实列解析，而来源表里没有 value 列 →
+ * `column "value" does not exist`，整个 staffRanking 直接报错。
+ * （闸门 2 round-1 codex 抓到；当时单测只匹配 SQL 文本，反把无效语法钉死了。）
+ */
+const staffOrderBy = (valueExpr) =>
+  `ORDER BY (${valueExpr} <> 0) DESC, ${valueExpr} DESC, pe.employee_name ASC, pe.employee_id ASC`
 
 /* ----- 6 个员工排行榜 metric 子查询 ----- */
 
@@ -1117,8 +1264,8 @@ SELECT
   COALESCE(r.v, 0)::numeric AS value
 FROM producer_employees pe
 LEFT JOIN revenue_by_emp r ON r.employee_id = pe.employee_id
-WHERE COALESCE(r.v, 0) > 0
-${STAFF_ORDER_BY}`,
+WHERE (pe.has_skills OR COALESCE(r.v, 0) <> 0)
+${staffOrderBy('COALESCE(r.v, 0)')}`,
     storeFilter.params,
   )
 }
@@ -1165,8 +1312,8 @@ SELECT
   COALESCE(c.v, 0)::numeric AS value
 FROM producer_employees pe
 LEFT JOIN consume_by_emp c ON c.employee_id = pe.employee_id
-WHERE COALESCE(c.v, 0) > 0
-${STAFF_ORDER_BY}`,
+WHERE (pe.has_skills OR COALESCE(c.v, 0) <> 0)
+${staffOrderBy('COALESCE(c.v, 0)')}`,
     storeFilter.params,
   )
 }
@@ -1199,8 +1346,8 @@ SELECT
   COALESCE(n.v, 0)::numeric AS value
 FROM producer_employees pe
 LEFT JOIN new_member_by_emp n ON n.employee_id = pe.employee_id
-WHERE COALESCE(n.v, 0) > 0
-${STAFF_ORDER_BY}`,
+WHERE (pe.has_skills OR COALESCE(n.v, 0) <> 0)
+${staffOrderBy('COALESCE(n.v, 0)')}`,
     storeFilter.params,
   )
 }
@@ -1233,8 +1380,8 @@ SELECT
   COALESCE(f.v, 0)::numeric AS value
 FROM producer_employees pe
 LEFT JOIN footfall_by_emp f ON f.employee_id = pe.employee_id
-WHERE COALESCE(f.v, 0) > 0
-${STAFF_ORDER_BY}`,
+WHERE (pe.has_skills OR COALESCE(f.v, 0) <> 0)
+${staffOrderBy('COALESCE(f.v, 0)')}`,
     storeFilter.params,
   )
 }
@@ -1274,8 +1421,8 @@ SELECT
   COALESCE(p.v, 0)::numeric AS value
 FROM producer_employees pe
 LEFT JOIN project_by_emp p ON p.employee_id = pe.employee_id
-WHERE COALESCE(p.v, 0) > 0
-${STAFF_ORDER_BY}`,
+WHERE (pe.has_skills OR COALESCE(p.v, 0) <> 0)
+${staffOrderBy('COALESCE(p.v, 0)')}`,
     storeFilter.params,
   )
 }
@@ -1325,8 +1472,8 @@ SELECT
 FROM producer_employees pe
 LEFT JOIN sales_comm   sc1 ON sc1.employee_id = pe.employee_id
 LEFT JOIN service_comm sc2 ON sc2.employee_id = pe.employee_id
-WHERE COALESCE(sc1.v, 0) + COALESCE(sc2.v, 0) > 0
-${STAFF_ORDER_BY}`,
+WHERE (pe.has_skills OR COALESCE(sc1.v, 0) + COALESCE(sc2.v, 0) <> 0)
+${staffOrderBy('COALESCE(sc1.v, 0) + COALESCE(sc2.v, 0)')}`,
     storeFilter.params,
   )
 }
@@ -1438,7 +1585,7 @@ async function salesData(ctx) {
   const svcP = [startDate, endDate, ...scSvc.params]
 
   const t0 = Date.now()
-  const [revRows, custRevRows, consRows, custConsRows, prodOutRows, catRows, kindRows, nameRows, skeletonRows] =
+  const [revRows, custRevRows, consRows, custConsRows, prodOutRows, catRows, kindRows, nameRows, skeletonRows, resolvedScope] =
     await Promise.all([
       // SQL 1: 总业绩（一律按款项业绩归属日期 spe.performance_date；
       //        原注释「后续回款/退款按真实发生日」自 #137 收敛后已失效，见文件头）
@@ -1604,6 +1751,8 @@ async function salesData(ctx) {
           ORDER BY product_kind, category_name`,
         [],
       ),
+      // #400：门店 scope 的组织节点已停用 → 上面取数全被 activeStoreCondition 滤光，前端据此出空态
+      resolveScope(scopeType, scopeId),
     ])
 
   const elapsed = Date.now() - t0
@@ -1679,6 +1828,7 @@ async function salesData(ctx) {
     oldMemberProductOut: fmt(prodOutRows[0]?.old_member),
     bySalesCategory,
     byProductKind,
+    scope: { type: scopeType, id: scopeId, name: resolvedScope.name, inactive: resolvedScope.inactive },
   }
 
   if (elapsed > 800) {

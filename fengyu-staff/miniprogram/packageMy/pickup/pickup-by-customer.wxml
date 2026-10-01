@@ -52,20 +52,30 @@
     <view wx:elif="{{items.length === 0}}" class="empty-card">
       该顾客暂无可提货的家居产品
     </view>
+    <!-- #350：按销售单分组。组头 = 销售单号 / 下单日期 / 开单门店；明细显示顾客实际单价 -->
     <view wx:else class="item-list">
-      <view wx:for="{{items}}" wx:key="saleItemId" class="item-card">
-        <view class="item-head">
-          <text class="item-name">{{item.productName || '商品'}}</text>
-          <text class="store-tag">{{item.storeName || item.storeId}}</text>
+      <view wx:for="{{groups}}" wx:for-item="group" wx:key="saleOrderId" class="order-group">
+        <view class="order-group-head">
+          <text class="order-no">{{group.saleOrderId}}</text>
+          <view class="order-meta">
+            <text>下单 {{group.orderDate}}</text>
+            <text class="store-tag">{{group.storeName}}</text>
+          </view>
         </view>
-        <view wx:if="{{item.specName}}" class="item-spec">{{item.specName}}</view>
-        <view class="item-progress">
-          <text class="remaining">待提 {{item.remaining}}</text>
-          <text>已付 {{item.paidQuantity}}</text>
-          <text>购买 {{item.quantity}}</text>
-        </view>
-        <view class="item-action">
-          <button class="pickup-btn" data-idx="{{index}}" bindtap="onPickupTap">录入提货</button>
+        <view wx:for="{{group.items}}" wx:key="saleItemId" class="item-card">
+          <view class="item-head">
+            <text class="item-name">{{item.productName || '商品'}}</text>
+            <text class="unit-price">单价 {{item.unitRealPriceText}}</text>
+          </view>
+          <view wx:if="{{item.specName}}" class="item-spec">{{item.specName}}</view>
+          <view class="item-progress">
+            <text class="remaining">待提 {{item.remaining}}</text>
+            <text>已付 {{item.paidQuantity}}</text>
+            <text>购买 {{item.quantity}}</text>
+          </view>
+          <view class="item-action">
+            <button class="pickup-btn" data-sale-item-id="{{item.saleItemId}}" bindtap="onPickupTap">录入提货</button>
+          </view>
         </view>
       </view>
     </view>

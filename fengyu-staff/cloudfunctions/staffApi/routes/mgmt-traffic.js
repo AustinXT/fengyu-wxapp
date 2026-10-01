@@ -6,7 +6,7 @@
  *   2. 到店客流（区间维度）
  *   3. 会员状态与客活（截面 + 区间 + 本月激活）
  *   4. 会员被经营（6 桶 + 客单价）
- *   5. 新会员经营（数量 / 消费 / trialFootfall）
+ *   5. 新会员经营（数量 / 消费 / trialFootfall）；消费 = 款项流水 + WorkFine 历史单（#289）
  *
  * 口径权威源：notes/references/metrics.md「客量数据子页」章节
  */
@@ -14,7 +14,23 @@
 const pg = require('../db/pg')
 const { requireManagementLevel } = require('../middleware/auth')
 const { validateManagementScope, buildManagementStoreScope } = require('../utils/scope')
+// 在营口径单源（#401）：只看门店组织节点 is_active，与 mgmt-dashboard.js / admin scopeFilterSql 同源
+const { activeStoreCondition } = require('../utils/store-status')
 const { excludeDepositRefundSql } = require('../utils/consume-filter')
+const { getMemberThreshold } = require('../utils/config')
+
+/**
+ * 会员被经营 6 档分桶的固定下界（星钻 1w / 粉钻 3w / 金钻 6w / 黑钻 10w）。
+ * 最低一档下界 = 会员门槛 system_configs.new_member_threshold（getMemberThreshold，#292）。
+ * ⚠️ admin 同值独立副本：fengyu-admin/src/lib/data-center/spend-buckets.ts（禁止跨端共享代码），
+ * 由 fengyu-admin consistency.customer.test.ts 守护。tier 标签 '<1990' / '1990-1W' 保持写死（2026-09-25 拍板）。
+ */
+const SPEND_BUCKET_FLOORS = Object.freeze({
+  star: 10000,
+  pink: 30000,
+  gold: 60000,
+  black: 100000,
+})
 
 const VALID_PERIODS = ['month', 'lastMonth', 'year']
 
@@ -22,12 +38,16 @@ const VALID_PERIODS = ['month', 'lastMonth', 'year']
 
 /** sale/service 表的 store_id scope 过滤片段（与 mgmt-dashboard.js 同实现） */
 function buildSaleScope(scopeType, scopeId, alias, startIdx) {
-  return buildManagementStoreScope(scopeType, scopeId, `${alias}.store_id`, startIdx)
+  const column = `${alias}.store_id`
+  const scope = buildManagementStoreScope(scopeType, scopeId, column, startIdx)
+  return { sql: `(${scope.sql}) AND ${activeStoreCondition(column)}`, params: scope.params }
 }
 
 /** client_wechat_users.bound_store_id scope（与 mgmt-dashboard.js 同实现） */
 function buildClientScope(scopeType, scopeId, alias, startIdx) {
-  return buildManagementStoreScope(scopeType, scopeId, `${alias}.bound_store_id`, startIdx)
+  const column = `${alias}.bound_store_id`
+  const scope = buildManagementStoreScope(scopeType, scopeId, column, startIdx)
+  return { sql: `(${scope.sql}) AND ${activeStoreCondition(column)}`, params: scope.params }
 }
 
 /**
@@ -264,14 +284,27 @@ async function queryStatusBreakdown(scopeType, scopeId) {
 }
 
 /**
- * 一次客活 / 二次客活
+ * 一次客活 / 二次客活 = 区间内到店**天数** = 1 / >= 2（#298）
+ *
+ * 到店天数按 (client_user_id, service_date) 去重，同日多张服务单只算 1 天；
+ * 与 cron monthly_activity 同轴。admin 侧同口径在 lib/data-center/visit-days.ts（visitDaysSql），
+ * 两端独立副本，由 fengyu-admin consistency.customer.test.ts 守护。
+ *
+ * ★ 会员守卫 `became_member_at IS NOT NULL AND ::date <= endDateExpr(period)`（#414，用户 2026-09-25 拍板同步）：
+ * `customer_status` 是 cron 重算的**当前**截面、不随 period 回溯，缺守卫时「区间内到店过、现在是保有会员、
+ * 但入会晚于区间终点」的人也会被计入。admin 侧该守卫是达成率「分子 ⊆ 分母」的承重条件；
+ * staff 无达成率，补它是为了**同名指标两端不分叉**（#298 刚统一过口径）。
+ * 只影响 period='lastMonth'（终点是上月末）：prod 实测 一次 511→486 / 二次 894→847，合计 −72 人。
+ * 'month' / 'year' 的终点是 NOW()::date，守卫对全部会员恒真，数字不变。
+ * ⚠ cron `refresh-monthly-activity` 与 `db/scripts/calc-monthly-activity.js` **不带**这条
+ * （它们给当月到店的所有顾客打标、含非会员，加了会改自己的口径）。
  */
 async function queryActiveOnce(scopeType, scopeId, period) {
   const ssc = buildSaleScope(scopeType, scopeId, 'so', 1)
   const csc = buildClientScope(scopeType, scopeId, 'c', 1 + ssc.params.length)
   const rows = await pg.query(
     `WITH visit_count AS (
-       SELECT so.client_user_id, COUNT(*) AS n
+       SELECT so.client_user_id, COUNT(DISTINCT so.service_date) AS days
          FROM service_orders so
         WHERE ${ssc.sql}
           AND so.status = '已完成'
@@ -284,7 +317,9 @@ async function queryActiveOnce(scopeType, scopeId, period) {
        JOIN client_wechat_users c ON c.user_id = vc.client_user_id
       WHERE ${csc.sql}
         AND c.customer_status IN ('保有会员-稳定', '保有会员-有效')
-        AND vc.n = 1`,
+        AND c.became_member_at IS NOT NULL
+        AND c.became_member_at::date <= ${endDateExpr(period)}
+        AND vc.days = 1`,
     [...ssc.params, ...csc.params],
   )
   return Number(rows[0]?.v || 0)
@@ -295,7 +330,7 @@ async function queryActiveTwice(scopeType, scopeId, period) {
   const csc = buildClientScope(scopeType, scopeId, 'c', 1 + ssc.params.length)
   const rows = await pg.query(
     `WITH visit_count AS (
-       SELECT so.client_user_id, COUNT(*) AS n
+       SELECT so.client_user_id, COUNT(DISTINCT so.service_date) AS days
          FROM service_orders so
         WHERE ${ssc.sql}
           AND so.status = '已完成'
@@ -308,7 +343,9 @@ async function queryActiveTwice(scopeType, scopeId, period) {
        JOIN client_wechat_users c ON c.user_id = vc.client_user_id
       WHERE ${csc.sql}
         AND c.customer_status IN ('保有会员-稳定', '保有会员-有效')
-        AND vc.n >= 2`,
+        AND c.became_member_at IS NOT NULL
+        AND c.became_member_at::date <= ${endDateExpr(period)}
+        AND vc.days >= 2`,
     [...ssc.params, ...csc.params],
   )
   return Number(rows[0]?.v || 0)
@@ -391,6 +428,10 @@ async function queryReactivated(scopeType, scopeId, period, startDate, bucket) {
 
 async function queryMemberOps(scopeType, scopeId, period) {
   const sc = buildSaleScope(scopeType, scopeId, 'o', 1)
+  const threshold = await getMemberThreshold()
+  // 门槛参数占位（字符串拼接而非模板串：守护的 SQL 词法器会把 `$${` 读成 PG dollar-quote）
+  const th = '$' + (sc.params.length + 1)
+  const f = SPEND_BUCKET_FLOORS
   const rows = await pg.query(
     `WITH member_spend AS (
        SELECT o.client_user_id,
@@ -408,22 +449,22 @@ async function queryMemberOps(scopeType, scopeId, period) {
         GROUP BY o.client_user_id
      )
      SELECT
-       COUNT(*) FILTER (WHERE spend < 1990) AS bucket1_count,
-       COALESCE(SUM(spend) FILTER (WHERE spend < 1990), 0) AS bucket1_spend,
-       COUNT(*) FILTER (WHERE spend >= 1990 AND spend < 10000) AS bucket2_count,
-       COALESCE(SUM(spend) FILTER (WHERE spend >= 1990 AND spend < 10000), 0) AS bucket2_spend,
-       COUNT(*) FILTER (WHERE spend >= 10000 AND spend < 30000) AS bucket3_count,
-       COALESCE(SUM(spend) FILTER (WHERE spend >= 10000 AND spend < 30000), 0) AS bucket3_spend,
-       COUNT(*) FILTER (WHERE spend >= 30000 AND spend < 60000) AS bucket4_count,
-       COALESCE(SUM(spend) FILTER (WHERE spend >= 30000 AND spend < 60000), 0) AS bucket4_spend,
-       COUNT(*) FILTER (WHERE spend >= 60000 AND spend < 100000) AS bucket5_count,
-       COALESCE(SUM(spend) FILTER (WHERE spend >= 60000 AND spend < 100000), 0) AS bucket5_spend,
-       COUNT(*) FILTER (WHERE spend >= 100000) AS bucket6_count,
-       COALESCE(SUM(spend) FILTER (WHERE spend >= 100000), 0) AS bucket6_spend,
+       COUNT(*) FILTER (WHERE spend < ${th}) AS bucket1_count,
+       COALESCE(SUM(spend) FILTER (WHERE spend < ${th}), 0) AS bucket1_spend,
+       COUNT(*) FILTER (WHERE spend >= ${th} AND spend < ${f.star}) AS bucket2_count,
+       COALESCE(SUM(spend) FILTER (WHERE spend >= ${th} AND spend < ${f.star}), 0) AS bucket2_spend,
+       COUNT(*) FILTER (WHERE spend >= ${f.star} AND spend < ${f.pink}) AS bucket3_count,
+       COALESCE(SUM(spend) FILTER (WHERE spend >= ${f.star} AND spend < ${f.pink}), 0) AS bucket3_spend,
+       COUNT(*) FILTER (WHERE spend >= ${f.pink} AND spend < ${f.gold}) AS bucket4_count,
+       COALESCE(SUM(spend) FILTER (WHERE spend >= ${f.pink} AND spend < ${f.gold}), 0) AS bucket4_spend,
+       COUNT(*) FILTER (WHERE spend >= ${f.gold} AND spend < ${f.black}) AS bucket5_count,
+       COALESCE(SUM(spend) FILTER (WHERE spend >= ${f.gold} AND spend < ${f.black}), 0) AS bucket5_spend,
+       COUNT(*) FILTER (WHERE spend >= ${f.black}) AS bucket6_count,
+       COALESCE(SUM(spend) FILTER (WHERE spend >= ${f.black}), 0) AS bucket6_spend,
        COALESCE(SUM(spend), 0) AS total_spend,
        COUNT(*) AS total_count
      FROM member_spend`,
-    sc.params,
+    [...sc.params, threshold],
   )
   const r = rows[0] || {}
   const round2 = (v) => Math.round(Number(v || 0) * 100) / 100
@@ -459,8 +500,16 @@ async function queryNewMemberCount(scopeType, scopeId, period) {
   return Number(rows[0]?.v || 0)
 }
 
+/**
+ * ★ 归店用 `c.bound_store_id`（顾客绑定门店），与分母 queryNewMemberCount 逐字同源
+ * （#439，用户 2026-09-26 拍板方案 A）。语义 = 「这批新会员给本店带来多少钱」，钱跟着人走。
+ *
+ * 此前用 buildSaleScope（`o.store_id`，订单发生门店），与分母的 buildClientScope 是两套归店口径 ——
+ * 员工端 wxml 的「新会员客单价」（mgmt-traffic-stats.ts 里 spend / count）正是拿这两个数相除，
+ * 「顾客绑定 A 店、在 B 店消费」时人进 A 的分母、钱进 B 的分子。admin 侧同型，两端同步整改。
+ */
 async function queryNewMemberSpend(scopeType, scopeId, period) {
-  const sc = buildSaleScope(scopeType, scopeId, 'o', 1)
+  const sc = buildClientScope(scopeType, scopeId, 'c', 1)
   const rows = await pg.query(
     `SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
        FROM sale_order_performance_events spe
@@ -474,6 +523,42 @@ async function queryNewMemberSpend(scopeType, scopeId, period) {
         AND spe.change_type IN ('首次支付', '回款', '退款')
         AND spe.legacy_source IS DISTINCT FROM 'workfine'
         AND spe.performance_date BETWEEN ${startDateExpr(period)} AND ${endDateExpr(period)}`,
+    sc.params,
+  )
+  return Number(rows[0]?.v || 0)
+}
+
+/**
+ * 新会员对应消费 · WorkFine 历史单分支（#289）。与 queryNewMemberSpend 相加 = 新会员消费。
+ *
+ * WorkFine 单在款项流水里没有行，不补这条时「本年」这类跨 2026-07-03 割点的区间低报约 4 成；
+ * 截至 2026-09-26 prod 数据，WorkFine 单归属日期最晚到 2026-08-01，区间起点 ≥ 2026-08-02 时本分支为 0
+ * （数据现状不是约束：历史单拉取不限日期，再拉入更晚的单会随之计入）。
+ * 金额 / 过滤口径照搬本端顾客详情页 legacy_year_stats（mgmt-customer.js / customer.js），
+ * 人群条件与 scope 列（c.bound_store_id）同 queryNewMemberSpend（#439 起归店跟着人走）。与线上单时间重叠不去重（2026-09-26 拍板）。
+ *
+ * ⚠️ admin 同口径副本：fengyu-admin customer.ts::queryNewMemberLegacySpend + lib/data-center/workfine-legacy-spend.ts，
+ * 两端逐字一致、legacy 片段四份副本整段等值，由 fengyu-admin consistency.customer.test.ts 守护。
+ */
+async function queryNewMemberLegacySpend(scopeType, scopeId, period) {
+  const sc = buildClientScope(scopeType, scopeId, 'c', 1)
+  const rows = await pg.query(
+    `SELECT COALESCE(SUM(
+      CASE
+        WHEN EXISTS (SELECT 1 FROM sale_items si WHERE si.sale_order_id = o.sale_order_id)
+        THEN (SELECT SUM(si2.received::numeric) FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
+        ELSE o.received::numeric
+      END
+    ), 0) AS v
+       FROM sale_orders o
+       JOIN client_wechat_users c ON c.user_id = o.client_user_id
+      WHERE ${sc.sql}
+        AND c.became_member_at IS NOT NULL
+        AND c.became_member_at::date BETWEEN ${startDateExpr(period)} AND ${endDateExpr(period)}
+        AND o.status IN ('已支付', '部分支付', '已完成')
+        AND o.sale_order_type IN ('销售单', '转换单')
+        AND o.legacy_source = 'workfine'
+        AND o.performance_attribution_date BETWEEN ${startDateExpr(period)} AND ${endDateExpr(period)}`,
     sc.params,
   )
   return Number(rows[0]?.v || 0)
@@ -561,6 +646,7 @@ async function summary(ctx) {
     memberOps,
     newMemberCount,
     newMemberSpend,
+    newMemberLegacySpend,
     trialFootfall,
     scopeName,
   ] = await Promise.all([
@@ -575,6 +661,7 @@ async function summary(ctx) {
     queryMemberOps(scopeType, scopeId, period),
     queryNewMemberCount(scopeType, scopeId, period),
     queryNewMemberSpend(scopeType, scopeId, period),
+    queryNewMemberLegacySpend(scopeType, scopeId, period),
     queryTrialFootfall(scopeType, scopeId, period),
     resolveScopeName(scopeType, scopeId),
   ])
@@ -602,7 +689,8 @@ async function summary(ctx) {
     memberOps,
     newMembers: {
       count: newMemberCount,
-      spend: Math.round(Number(newMemberSpend) * 100) / 100,
+      // 款项流水 + WorkFine 历史单（#289）；前端「新会员客单价」= spend ÷ count
+      spend: Math.round((Number(newMemberSpend) + Number(newMemberLegacySpend)) * 100) / 100,
       trialFootfall,
     },
     computedAt: new Date().toISOString(),

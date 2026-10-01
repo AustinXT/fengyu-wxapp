@@ -25,6 +25,17 @@ on:
       #   新增内联副本却忘了加路径会直接红。
       - 'fengyu-admin/src/db/seed.ts'
       - 'fengyu-staff/scripts/manual-e2e/monitor-pk-conflicts.mjs'
+      # #300 冻结守护：查询及独立分摊/实收副本的改动也必须触发真库验收
+      - 'fengyu-admin/src/actions/data-center/sales.ts'
+      - 'fengyu-admin/src/lib/payment-allocatable.ts'
+      - 'fengyu-admin/src/lib/paid-sessions.ts'
+      - 'fengyu-staff/cloudfunctions/staffApi/routes/mgmt-dashboard.js'
+      - 'fengyu-staff/cloudfunctions/staffApi/utils/payment-allocatable.js'
+      - 'fengyu-staff/cloudfunctions/staffApi/utils/paid-sessions.js'
+      - 'fengyu-client/cloudfunctions/clientApi/utils/payment-allocatable.js'
+      - 'fengyu-client/cloudfunctions/clientApi/utils/paid-sessions.js'
+      - 'fengyu-client/cloudfunctions/payNotify/payment-allocatable.js'
+      - 'fengyu-client/cloudfunctions/payNotify/paid-sessions.js'
       - '.github/workflows/db-script-tests.yml'
 
 jobs:
@@ -87,3 +98,47 @@ jobs:
         env:
           QUANTITY_SPLIT_PG_TEST_URL: postgresql://postgres:test@localhost:5432/test
         run: node --test db/scripts/__tests__/quantity-split-backfill.pg.test.js
+
+      # #351 盘点实盘数允许 0：非盘点类型「> 0」只剩 trigger 兜底，行为必须在真 PG 上跑
+      # （跨端 §7 只能钉 SQL 文本，钉不住 PL/pgSQL 的执行语义）
+      - name: Run #351 doc item quantity trigger regression
+        env:
+          INVENTORY_PG_TEST_URL: postgresql://postgres:test@localhost:5432/test
+        run: node --test db/scripts/__tests__/inventory-doc-item-quantity.pg.test.js
+
+      # #341 提货冻结出库金额：CHECK 两列同生同灭 + 金额恒等式、BEFORE INSERT 兜底补齐、
+      # GCK 明细成本兜底顺序（门店 → 市场 → 供应链）都是 DB 语义，跨端守护只钉得住源码文本
+      - name: Run #341 pickup frozen amount regression
+        env:
+          PICKUP_PG_TEST_URL: postgresql://postgres:test@localhost:5432/test
+        run: node --test db/scripts/__tests__/pickup-amount.pg.test.js
+
+  shengmei-freeze:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install db deps
+        working-directory: db
+        run: npm ci
+      # 与迁移完整性 workflow 同协议，处理 0018/0023/0028 的历史初始化限制。
+      - name: Bootstrap isolated database
+        env:
+          DATABASE_URL: postgresql://postgres:test@localhost:5432/test
+        run: bash db/scripts/bootstrap-from-zero.sh
+      - name: Run #300 shengmei historical freeze regression
+        env:
+          SHENGMEI_PG_TEST_URL: postgresql://postgres:test@localhost:5432/test
+        run: NODE_PATH="$PWD/db/node_modules" node --test db/scripts/__tests__/shengmei-freeze.pg.test.js

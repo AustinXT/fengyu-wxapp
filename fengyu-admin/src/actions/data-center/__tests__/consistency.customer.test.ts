@@ -9,22 +9,69 @@
  * 守护策略 = "关键不变量字面量匹配"（仿 dashboard.consistency.test.ts）：
  *   1. became_member_at（会员/新会员历史化口径）
  *   2. customer_status 枚举值 '沉睡'/'冰冻'/'休眠'（D-6 重命名后，禁 '预警沉睡'）
- *   3. 消费分桶阈值 1990 / 10000 / 30000 / 60000 / 100000（左闭右开）
+ *   3. 消费分桶：最低档下界 = 会员门槛 getMemberThreshold()（#292），其余 SPEND_BUCKET_FLOORS 1w/3w/6w/10w（左闭右开）
  *   4. sales_category IN ('自销自耗','他销自耗')（项目数口径）
  *   5. 成交率分母 = 期初未达会员的到店活跃池 ∪ 本期全部新增会员（D-conv-denom=1c，#284；
  *      两端 KPI 侧走 `sqlInFunction` 切函数体断言，明细侧走 `adminSql` 块）
  *   6. spend = SUM(sale_order_performance_events.amount) @ performance_date（#138 起，与业绩 KPI 同源；
  *      不再按父订单 status 过滤、排除储值卡抵扣；非 metrics.md 的 paid_amount）
  *   7. anchor 反推关键字面量（visits_90d_prev / 6 months / 12 months / 90 days）
+ *   8. 一次/二次客活 = 到店天数，(顾客, service_date) 去重（#298）—— 跨定义：admin visitDaysSql /
+ *      staff mgmt-traffic / cron refresh-monthly-activity 三方由同一组口径常量拼出整段快照
  *
  * 任一端口径变更必须双端同步，否则数据中心客量板块与员工端 mgmtTraffic 数字对不上。
  */
 import fs from 'node:fs'
+import { createHash } from 'node:crypto'
 import path from 'node:path'
 import ts from 'typescript'
 import { describe, it, expect, beforeAll } from 'vitest'
+import { sql } from 'drizzle-orm'
+import { PgDialect } from 'drizzle-orm/pg-core'
+import { visitDaysSql } from '@/lib/data-center/visit-days'
+import { UPDATE_MONTHLY_ACTIVITY_SQL } from '@/cron/steps/refresh-monthly-activity'
+import { SPEND_BUCKET_FLOORS } from '@/lib/data-center/spend-buckets'
+import { determineMemberLevel } from '@/cron/lib/member-level'
 
 const ADMIN_CUSTOMER = path.resolve(__dirname, '../customer.ts')
+const ADMIN_COLUMNS = path.resolve(__dirname, '../../../lib/data-center/columns.ts')
+const ADMIN_CRON_ACTIVITY = path.resolve(__dirname, '../../../cron/steps/refresh-monthly-activity.ts')
+const ADMIN_BOARD = path.resolve(
+  __dirname,
+  '../../../app/(main)/(analytics)/data-center/_components/customer/customer-board.tsx',
+)
+
+/**
+ * #414 会员守卫：达成率的分子必须带与分母 `reg` 逐字相同的谓词。
+ * `endExpr` 是各处对区间终点的写法，其余逐字相同：
+ *   - admin 明细 `end` / admin KPI `range.end` / staff `endDateExpr(period)`
+ *
+ * **四份副本里三份带、一份不带**（用户 2026-09-25 拍板）：
+ *   - **带**：admin `queryActive` + 明细 `visit_count` + staff `mgmt-traffic.js` 两个函数
+ *     （同名指标两端不分叉，延续 #298 的统一）
+ *   - **不带**：cron `refresh-monthly-activity` 与 `db/scripts/calc-monthly-activity.js`
+ *     —— 它们给当月到店的**所有**顾客打标（含非会员），加了会改自己的口径
+ *
+ * 所以 `staffExpected` **要**拼这段、`cronActivity` **不**拼；两个方向各有一条断言钉着
+ * （见第 9 组「staff 两个客活函数带……」与「cron monthly_activity 不得带……」）。
+ */
+const memberGuard = (endExpr: string): string =>
+  'c.became_member_at IS NOT NULL AND c.became_member_at::date <= ${' + endExpr + '}'
+
+/**
+ * CTE 段切片：定位不到 / 顺序反了 / 起点多命中都 **throw**，绝不静默退化成"匹配全文"或返回空串。
+ *
+ * ⚠ 返回空串是危险默认：配 `toBe(expected)` 还算 fail-closed，一旦日后有人改成 `toContain`，
+ * `''.includes(x)` 里 `toContain('')` 就恒真了（pr-ready boundary P3-8）。
+ */
+function sliceBlock(text: string, from: string, to: string): string {
+  const a = text.indexOf(from)
+  const b = text.indexOf(to, a + from.length)
+  if (a < 0) throw new Error(`sliceBlock: 找不到起点 ${from}`)
+  if (b <= a) throw new Error(`sliceBlock: 找不到终点 ${to}（起点 ${from} 之后）`)
+  if (text.indexOf(from, a + from.length) >= 0) throw new Error(`sliceBlock: 起点 ${from} 命中多处`)
+  return text.slice(a, b)
+}
 const STAFF_MGMT_TRAFFIC = path.resolve(
   __dirname,
   '../../../../../fengyu-staff/cloudfunctions/staffApi/routes/mgmt-traffic.js',
@@ -101,7 +148,12 @@ const EXPECTED_SPE_BLOCKS: Record<'admin' | 'staff', string[]> = {
     // 门店/市场明细·会员消费分桶 —— 用 skel JOIN 代替 ${sc}
     "SELECT ${groupId} AS group_id, o.client_user_id, SUM(spe.amount::numeric) AS spend FROM sale_order_performance_events spe JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id JOIN skel sk ON sk.store_id = o.store_id JOIN client_wechat_users c ON c.user_id = o.client_user_id WHERE spe.sale_order_type IN ('销售单', '转换单') AND spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款', '退款') AND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN ${start} AND ${end} AND c.customer_type = '会员客' GROUP BY ${groupId}, o.client_user_id )",
     // 门店/市场明细·新会员消费
-    "SELECT ${groupId} AS group_id, COALESCE(SUM(spe.amount::numeric), 0) AS new_spend FROM sale_order_performance_events spe JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id JOIN skel sk ON sk.store_id = o.store_id JOIN client_wechat_users c ON c.user_id = o.client_user_id WHERE c.became_member_at IS NOT NULL AND c.became_member_at::date BETWEEN ${start} AND ${end} AND spe.sale_order_type IN ('销售单', '转换单') AND spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款', '退款') AND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN ${start} AND ${end} GROUP BY ${groupId} )",
+    // #439：归店从 `o.store_id`（订单店）改 `c.bound_store_id`（绑定店），与分母 newmem 归店 JOIN 逐字同源。
+    // JOIN 次序随之调整（skel 要排在 c 之后，否则 c.bound_store_id 还不可见）。
+    // ⚠ **刻意不补** `c.bound_store_id IS NOT NULL`（尽管分母 newmem 里有那句冗余的）：
+    // 内连接已排除 NULL，而下方「明细·新会员消费的 WHERE 与 KPI 版一致」按逐字比对，
+    // 差异只允许出现在 scope 段 —— 往这里补一句会直接打红那条。见 customer.ts 该 CTE 上方的说明。
+    "SELECT ${groupId} AS group_id, COALESCE(SUM(spe.amount::numeric), 0) AS new_spend FROM sale_order_performance_events spe JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id JOIN client_wechat_users c ON c.user_id = o.client_user_id JOIN skel sk ON sk.store_id = c.bound_store_id WHERE c.became_member_at IS NOT NULL AND c.became_member_at::date BETWEEN ${start} AND ${end} AND spe.sale_order_type IN ('销售单', '转换单') AND spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款', '退款') AND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN ${start} AND ${end} GROUP BY ${groupId} )",
   ],
   staff: [
     // queryMemberOps（会员经营 + 6 档分桶）
@@ -166,7 +218,9 @@ function sqlTemplatesFromSource(src: string, fileName: string): string[] {
  * 提取结果与快照逐字相同 —— 运行时 SQL 已语法错误，守护却全绿（fail-open）。
  * 现在改为抛错，由 vitest 直接报红。
  *
- * ⚠ 已知未覆盖的 PG 词法形态（**当前两文件零命中**，引入时最坏是误红）：
+ * ⚠ 已知未覆盖的 PG 词法形态（**当前两文件零命中**）。原写「最坏是误红」不成立（codex #289 r7）：
+ *   `E'a\'--x'` 会在转义引号处错收尾、把串内 `--` 当注释连同后文一起剥掉，**可能假绿**。
+ *   #289 的签名扫描遇到这两种字面量直接抛错兜底；本函数的其它调用方引入它们前须先补词法支持：
  *   - `E'...'` 的反斜杠转义、`U&'...'` unicode 字符串（GLM r7 B1）
  *   - `name$tag$` 这种 tag 与前一标识符的边界
  *   - `${...}` 配平不识别 span 内 JS 字符串里的裸 `{` / `}`（如 `${f('}')}`）
@@ -383,6 +437,28 @@ function sqlInFunction(src: string, fileName: string, fnName: string): string {
   return normalize(out.map(stripSqlComments).join(' \n '))
 }
 
+/**
+ * 指定函数声明的**完整源码**（剥 JS 注释 + 归一空白），含非 SQL 部分：
+ * scope 生产者的列名实参、mode→条件的三元映射、结果取值 —— sqlInFunction 只收模板串，看不到这些（#298 评审 P2）。
+ */
+function fnSource(src: string, fileName: string, fnName: string): string {
+  const sf = ts.createSourceFile(
+    fileName,
+    src,
+    ts.ScriptTarget.Latest,
+    true,
+    fileName.endsWith('.js') ? ts.ScriptKind.JS : ts.ScriptKind.TS,
+  )
+  const hits: string[] = []
+  const visit = (n: ts.Node): void => {
+    if (ts.isFunctionDeclaration(n) && n.name?.text === fnName) hits.push(src.slice(n.getStart(sf), n.getEnd()))
+    ts.forEachChild(n, visit)
+  }
+  ts.forEachChild(sf, visit)
+  if (hits.length !== 1) throw new Error(`fnSource: ${fnName} 在 ${fileName} 中命中 ${hits.length} 处`)
+  return normalize(stripComments(hits[0]))
+}
+
 describe('客量板块两端口径一致性守护', () => {
   let adminSrc: string
   let staffSrc: string
@@ -475,87 +551,159 @@ describe('客量板块两端口径一致性守护', () => {
     })
   })
 
-  describe('消费分桶阈值（左闭右开，6 档）', () => {
-    const thresholds = ['1990', '10000', '30000', '60000', '100000']
-
-    /**
-     * ⚠ 必须带数字边界（GLM r4 P3-2）：裸的 `toContain('10000')` 恒真，
-     * 因为 `100000` 里就含 `10000` —— 把 `< 10000` 整个删掉这条断言也不会红。
-     */
-    for (const [side, getSrc] of [
-      ['admin', () => adminSql],
-      ['staff', () => staffSql],
-    ] as Array<[string, () => string]>) {
-      it(`${side} 含全部 5 个阈值字面量（带数字边界）`, () => {
-        for (const t of thresholds) {
-          expect(getSrc(), `${side} 缺阈值 ${t}（或只作为更长数字的子串出现）`).toMatch(
-            new RegExp(`(?<!\\d)${t}(?!\\d)`),
-          )
-        }
-      })
+  /**
+   * 3. 消费分桶（左闭右开，6 档）—— #292 起档位来源收敛：
+   *   - 最低档下界 / 经营人数门槛 = 会员门槛 getMemberThreshold()（system_configs.new_member_threshold，与品项板同源）
+   *   - 其余四个下界 = SPEND_BUCKET_FLOORS（admin lib/data-center/spend-buckets.ts；staff mgmt-traffic.js 同值独立副本）
+   * 守护方式：两端分桶投影**整段逐字快照**（占位插值原文），+ 门槛/常量来源锁 + 两端常量值等值 +
+   * 常量与会员等级档位同数（determineMemberLevel）。SQL 里不得再出现写死的 1990。
+   * 行为侧（改配置值后两板块同步变化）见 member-threshold-sync.test.ts 与 staff mgmt-traffic.test.js。
+   */
+  describe('消费分桶档位来源（#292：门槛读配置 + 固定档位单源）', () => {
+    const between = (text: string, from: string, to: string): string => {
+      const a = text.indexOf(from)
+      const b = text.indexOf(to, a)
+      return a >= 0 && b > a ? text.slice(a, b).trim() : ''
     }
 
-    /**
-     * 分桶区间成对锁死。两端都必须有 —— GLM r4 指出 staff 此前只有 `toContain` 弱断言，
-     * 把 `< 60000` 改成 `< 50000` 时 `'60000'` 仍被下一桶的 `>= 60000` 满足 → 全绿。
-     */
-    const PAIRS: Array<[string, RegExp]> = [
-      ['[1990, 10000)', /spend\s*>=\s*1990\s+AND\s+spend\s*<\s*10000/g],
-      ['[10000, 30000)', /spend\s*>=\s*10000\s+AND\s+spend\s*<\s*30000/g],
-      ['[30000, 60000)', /spend\s*>=\s*30000\s+AND\s+spend\s*<\s*60000/g],
-      ['[60000, 100000)', /spend\s*>=\s*60000\s+AND\s+spend\s*<\s*100000/g],
-      ['[100000, ∞)', /spend\s*>=\s*100000/g],
-      ['(-∞, 1990)', /spend\s*<\s*1990/g],
-    ]
+    const ADMIN_BUCKETS =
+      'COUNT(*) FILTER (WHERE spend < ${threshold}) AS bucket_d, ' +
+      'COUNT(*) FILTER (WHERE spend >= ${threshold} AND spend < ${floors.star}) AS bucket_c, ' +
+      'COUNT(*) FILTER (WHERE spend >= ${floors.star} AND spend < ${floors.pink}) AS bucket_b, ' +
+      'COUNT(*) FILTER (WHERE spend >= ${floors.pink} AND spend < ${floors.gold}) AS bucket_a, ' +
+      'COUNT(*) FILTER (WHERE spend >= ${floors.gold} AND spend < ${floors.black}) AS bucket_v, ' +
+      'COUNT(*) FILTER (WHERE spend >= ${floors.black}) AS bucket_vic, ' +
+      'COUNT(*) FILTER (WHERE spend >= ${threshold}) AS operated_total,'
 
-    /**
-     * ⚠ 必须按**出现次数**断言，不能只判「存在」：
-     * staff 每个区间写两遍（`bucketN_count` 的 `COUNT(*) FILTER` + `bucketN_spend` 的
-     * `SUM(spend) FILTER`），只改其中一处时「存在」断言仍绿 —— 实测确认过这条漏网。
-     * admin 每个区间只写一遍。
-     */
-    for (const [side, getCode, times] of [
-      ['admin', () => adminSql, 1],
-      ['staff', () => staffSql, 2],
-    ] as Array<[string, () => string, number]>) {
-      it(`${side} 分桶区间为左闭右开（按出现次数锁死，防单处漂移）`, () => {
-        for (const [label, re] of PAIRS) {
-          const hits = getCode().match(re) ?? []
-          expect(
-            hits.length,
-            `${side} 的分桶区间 ${label} 出现 ${hits.length} 次，期望 ${times} 次` +
-              `（改了其中一处上/下界？${side === 'staff' ? 'count 与 spend 两处必须同改' : ''}）`,
-          ).toBe(times)
-        }
-      })
+    const STAFF_BUCKETS =
+      'COUNT(*) FILTER (WHERE spend < ${th}) AS bucket1_count, ' +
+      'COALESCE(SUM(spend) FILTER (WHERE spend < ${th}), 0) AS bucket1_spend, ' +
+      'COUNT(*) FILTER (WHERE spend >= ${th} AND spend < ${f.star}) AS bucket2_count, ' +
+      'COALESCE(SUM(spend) FILTER (WHERE spend >= ${th} AND spend < ${f.star}), 0) AS bucket2_spend, ' +
+      'COUNT(*) FILTER (WHERE spend >= ${f.star} AND spend < ${f.pink}) AS bucket3_count, ' +
+      'COALESCE(SUM(spend) FILTER (WHERE spend >= ${f.star} AND spend < ${f.pink}), 0) AS bucket3_spend, ' +
+      'COUNT(*) FILTER (WHERE spend >= ${f.pink} AND spend < ${f.gold}) AS bucket4_count, ' +
+      'COALESCE(SUM(spend) FILTER (WHERE spend >= ${f.pink} AND spend < ${f.gold}), 0) AS bucket4_spend, ' +
+      'COUNT(*) FILTER (WHERE spend >= ${f.gold} AND spend < ${f.black}) AS bucket5_count, ' +
+      'COALESCE(SUM(spend) FILTER (WHERE spend >= ${f.gold} AND spend < ${f.black}), 0) AS bucket5_spend, ' +
+      'COUNT(*) FILTER (WHERE spend >= ${f.black}) AS bucket6_count, ' +
+      'COALESCE(SUM(spend) FILTER (WHERE spend >= ${f.black}), 0) AS bucket6_spend,'
+
+    const adminBuckets = (src: string) =>
+      between(
+        sqlInFunction(src, ADMIN_CUSTOMER, 'queryOpsBreakdown'),
+        'COUNT(*) FILTER (WHERE spend <',
+        'COALESCE(SUM(spend), 0) AS member_spend_total',
+      )
+    const staffBuckets = (src: string) =>
+      between(
+        sqlInFunction(src, STAFF_MGMT_TRAFFIC, 'queryMemberOps'),
+        'COUNT(*) FILTER (WHERE spend <',
+        'COALESCE(SUM(spend), 0) AS total_spend',
+      )
+    /** 剥 JS 注释 + 归一空白后，切出某个函数声明到下一个顶层 function 之间的源码 */
+    const fnCode = (src: string, head: string): string => {
+      const code = normalize(stripComments(src))
+      const a = code.indexOf(head)
+      const b = code.indexOf(' function ', a + head.length)
+      return a >= 0 ? code.slice(a, b > a ? b : undefined) : ''
     }
 
-    /**
-     * 「会员经营人数」（spend >= 1990 去重人数）的门槛必须与分桶同值。
-     * 它落在 GROUP BY **之后**的外层投影里，不在块级快照射程内（GLM r4 P3-2），
-     * 故单独锁一条；否则把 `>= 1990` 改成 `>= 199` 时，分桶断言仍由明细查询满足 → 全绿。
-     *
-     * ⚠ **仅 admin 有这条**：staff 的 `queryMemberOps` 只返回 6 个桶的 count/spend
-     * （`bucket1_count` … `bucket6_count`），不产出「经营人数」聚合，由调用方按桶汇总。
-     * 这是两端有意的产出差异，不是漏改 —— 两端的**分桶阈值**仍由上面的成对 regex 共同锁死。
-     */
-    it('admin「经营人数」门槛为 spend >= 1990（staff 无此聚合，见注释）', () => {
-      // ⚠ 必须逐个 alias 锁：admin 有两处（KPI 的 `AS v` + 明细的 `AS operated_total`），
-      // 只判「存在」时改掉其中一处，另一处仍满足正则 → 全绿（实测确认过这条漏网）。
-      for (const alias of ['v', 'operated_total']) {
-        expect(
-          adminSql,
-          `admin 的经营人数门槛（AS ${alias}）不是 FILTER (WHERE spend >= 1990)`,
-        ).toMatch(new RegExp(`FILTER\\s*\\(\\s*WHERE\\s+spend\\s*>=\\s*1990\\s*\\)\\s+AS\\s+${alias}(?![A-Za-z0-9_])`))
+    it('admin 明细分桶投影整段快照（门槛 + SPEND_BUCKET_FLOORS）', () => {
+      expect(adminBuckets(adminSrc)).toBe(ADMIN_BUCKETS)
+    })
+
+    it('admin 会员经营人数 KPI = spend >= 门槛（外层投影整段，到模板结尾）', () => {
+      const t = sqlInFunction(adminSrc, ADMIN_CUSTOMER, 'queryOperatedMembers')
+      const at = t.lastIndexOf(') SELECT ')
+      expect(at).toBeGreaterThan(0)
+      expect(t.slice(at + 2)).toBe('SELECT COUNT(*) FILTER (WHERE spend >= ${threshold}) AS v FROM member_spend')
+    })
+
+    it('staff queryMemberOps 分桶投影整段快照（占位 th + 本地 SPEND_BUCKET_FLOORS）', () => {
+      expect(staffBuckets(staffSrc)).toBe(STAFF_BUCKETS)
+    })
+
+    it('门槛来源：两端都走 getMemberThreshold()，且真正传进了查询', () => {
+      expect(adminCode).toContain("import { getMemberThreshold } from '@/lib/member-threshold'")
+      expect(adminCode).toContain("import { SPEND_BUCKET_FLOORS } from '@/lib/data-center/spend-buckets'")
+      expect(adminCode.match(/const threshold = await getMemberThreshold\(\)/g)).toHaveLength(1)
+      expect(adminCode).toContain('queryOperatedMembers(session, scope, r, threshold)')
+      expect(adminCode).toContain("queryOpsBreakdown(session, scope, cur, 'market', threshold)")
+      expect(adminCode).toContain("queryOpsBreakdown(session, scope, cur, 'store', threshold)")
+      expect(fnCode(adminSrc, 'async function queryOpsBreakdown(')).toMatch(/const floors = SPEND_BUCKET_FLOORS(?![\w$])/)
+
+      const staffCode = normalize(stripComments(staffSrc))
+      expect(staffCode).toContain("const { getMemberThreshold } = require('../utils/config')")
+      const ops = fnCode(staffSrc, 'async function queryMemberOps(')
+      expect(ops).toContain('const threshold = await getMemberThreshold()')
+      expect(ops).toContain("const th = '$' + (sc.params.length + 1)")
+      expect(ops).toMatch(/const f = SPEND_BUCKET_FLOORS(?![\w$])/)
+      expect(ops).toContain('[...sc.params, threshold],')
+    })
+
+    it('两端固定档位同值，且与会员等级档位同数（星钻/粉钻/金钻/黑钻下界）', () => {
+      expect({ ...SPEND_BUCKET_FLOORS }).toEqual({ star: 10000, pink: 30000, gold: 60000, black: 100000 })
+      const staffCode = normalize(stripComments(staffSrc))
+      const m = staffCode.match(/const SPEND_BUCKET_FLOORS = Object\.freeze\(\{([^}]*)\}\)/g)
+      expect(m).toHaveLength(1)
+      expect(m![0]).toBe(
+        'const SPEND_BUCKET_FLOORS = Object.freeze({ ' +
+          `star: ${SPEND_BUCKET_FLOORS.star}, pink: ${SPEND_BUCKET_FLOORS.pink}, ` +
+          `gold: ${SPEND_BUCKET_FLOORS.gold}, black: ${SPEND_BUCKET_FLOORS.black}, })`,
+      )
+      const huge = 1e9 // 门槛取极大，只看固定档位
+      for (const [k, level] of [
+        ['star', '星钻'],
+        ['pink', '粉钻'],
+        ['gold', '金钻'],
+        ['black', '黑钻'],
+      ] as const) {
+        expect(determineMemberLevel(SPEND_BUCKET_FLOORS[k], huge)).toBe(level)
+        expect(determineMemberLevel(SPEND_BUCKET_FLOORS[k] - 0.01, huge)).not.toBe(level)
       }
-      expect(
-        staffSql,
-        'staff 侧出现了经营人数聚合 —— 若这是有意新增，请同步本用例与两端出数对比',
-      ).not.toMatch(/FILTER\s*\(\s*WHERE\s+spend\s*>=\s*1990\s*\)/)
+    })
+
+    it('两端 SQL 不得再写死门槛 1990', () => {
+      expect(adminSql).not.toMatch(/(?<!\d)1990(?!\d)/)
+      expect(sqlInFunction(adminSrc, ADMIN_CUSTOMER, 'queryOperatedMembers')).not.toMatch(/(?<!\d)1990(?!\d)/)
+      expect(sqlInFunction(adminSrc, ADMIN_CUSTOMER, 'queryOpsBreakdown')).not.toMatch(/(?<!\d)1990(?!\d)/)
+      expect(sqlInFunction(staffSrc, STAFF_MGMT_TRAFFIC, 'queryMemberOps')).not.toMatch(/(?<!\d)1990(?!\d)/)
+    })
+
+    it('staff 无「经营人数」聚合（两端有意的产出差异，由调用方按桶汇总）', () => {
+      expect(sqlInFunction(staffSrc, STAFF_MGMT_TRAFFIC, 'queryMemberOps')).not.toMatch(
+        /FILTER\s*\(\s*WHERE\s+spend\s*>=\s*\$\{th\}\s*\)\s+AS/,
+      )
     })
 
     it('admin 不复用 spending_tier 列（区间消费 ≠ lifetime 快照）', () => {
       expect(adminCode).not.toMatch(/spending_tier/)
+    })
+
+    it('反向验证：改档位 / 写回 1990 / 门槛不传入都会红', () => {
+      const mut = (src: string, a: string, b: string) => {
+        expect(src).toContain(a)
+        return src.replace(a, b)
+      }
+      expect(adminBuckets(mut(adminSrc, 'spend < ${threshold}) AS bucket_d', 'spend < 1990) AS bucket_d'))).not.toBe(
+        ADMIN_BUCKETS,
+      )
+      expect(
+        adminBuckets(mut(adminSrc, 'spend >= ${floors.star} AND spend < ${floors.pink}', 'spend >= ${floors.star} AND spend < 25000')),
+      ).not.toBe(ADMIN_BUCKETS)
+      // staff 只改 count 不改 spend（两处必须同改）
+      expect(
+        staffBuckets(mut(staffSrc, 'COUNT(*) FILTER (WHERE spend >= ${f.gold} AND spend < ${f.black})', 'COUNT(*) FILTER (WHERE spend >= ${f.gold} AND spend < 90000)')),
+      ).not.toBe(STAFF_BUCKETS)
+      // 用 SQL 注释把原文补回去
+      expect(
+        staffBuckets(mut(staffSrc, 'FILTER (WHERE spend < ${th}) AS bucket1_count', 'FILTER (WHERE spend < 1990) AS bucket1_count -- FILTER (WHERE spend < ${th}) AS bucket1_count')),
+      ).not.toBe(STAFF_BUCKETS)
+      // staff 取了门槛却没传进参数
+      expect(fnCode(mut(staffSrc, '[...sc.params, threshold],', 'sc.params,'), 'async function queryMemberOps(')).not.toContain(
+        '[...sc.params, threshold],',
+      )
     })
   })
 
@@ -1308,4 +1456,1787 @@ describe('客量板块两端口径一致性守护', () => {
       expect(adminSrc).toMatch(/mgmt-traffic/i)
     })
   })
+  /**
+   * 8. 一次/二次客活 = 到店天数（#298）—— **跨定义**一致性守护
+   *
+   * 同名概念「一次客活 / 二次客活」在仓里有三处运行时定义，2026-09 审计发现前两处按服务单行数、
+   * 后一处按到店天数，同一个 admin 里差 62 人（审计区间 09-01~09-22；到 09-24 为 63 人）：
+   *   ① admin 数据中心 KPI（queryActive）与明细（queryRegActiveBreakdown）→ 共用 visitDaysSql
+   *   ② staffApi mgmt-traffic（queryActiveOnce / queryActiveTwice）→ 独立副本
+   *   ③ cron refresh-monthly-activity（顾客列表「月度客活」筛选的数据源）
+   * 三方的预期文本都由下面同一组口径常量拼出来：改任何一方的去重列 / 过滤条件 / 档位阈值，
+   * 要么它自己的整段快照红，要么（改了常量）其余两方一起红 —— 不存在只改一侧还全绿的路径。
+   * （db/scripts/calc-monthly-activity.js 与一次性 repair 脚本同为按天，但已退役/一次性，不在守护内。）
+   *
+   * 整段逐字等值，不做「含某字面量」匹配（见 EXPECTED_SPE_BLOCKS 上方四轮评审记录）。
+   *   - visitDaysSql 按 **Drizzle 实际渲染出的 SQL** 比对，连同日期轴白名单的取值一起锁住；
+   *   - customer.ts 用的 visitDaysSql 必须就是上面被渲染的那一个（import 来源 + 无本地同名替身）；
+   *   - KPI / staff 按**整个函数源码**比对（含 scope 列名实参与 once/twice 映射，只锁模板串会漏）。
+   */
+  describe('一次/二次客活 = 到店天数，(顾客, service_date) 去重（#298，跨定义）', () => {
+    const VISIT_DAY_COL = 'so.service_date'
+    const VISIT_FILTER = "so.status = '已完成' AND so.client_user_id IS NOT NULL"
+    const RETAINED = "c.customer_status IN ('保有会员-稳定', '保有会员-有效')"
+
+    const staffExpected = (fnName: string, daysClause: string): string =>
+      `async function ${fnName}(scopeType, scopeId, period) { ` +
+      "const ssc = buildSaleScope(scopeType, scopeId, 'so', 1) " +
+      "const csc = buildClientScope(scopeType, scopeId, 'c', 1 + ssc.params.length) " +
+      'const rows = await pg.query( ' +
+      `\`WITH visit_count AS ( SELECT so.client_user_id, COUNT(DISTINCT ${VISIT_DAY_COL}) AS days ` +
+      `FROM service_orders so WHERE \${ssc.sql} AND ${VISIT_FILTER} ` +
+      `AND ${VISIT_DAY_COL} BETWEEN \${startDateExpr(period)} AND \${endDateExpr(period)} ` +
+      'GROUP BY so.client_user_id ) SELECT COUNT(*) AS v FROM visit_count vc ' +
+      'JOIN client_wechat_users c ON c.user_id = vc.client_user_id ' +
+      'WHERE ${csc.sql} AND ' + RETAINED + ' AND ' + memberGuard('endDateExpr(period)') +
+      ` AND ${daysClause}\`, ` +
+      '[...ssc.params, ...csc.params], ) return Number(rows[0]?.v || 0) }'
+
+    const adminKpiExpected =
+      'async function queryActive( session: AuthSession, scope: DataCenterScope, range: ResolvedRange, ' +
+      "mode: 'once' | 'twice', ): Promise<number> { " +
+      "const ssc = scopeFilterSql(session, scope, 'so.store_id') " +
+      "const csc = scopeFilterSql(session, scope, 'c.bound_store_id') " +
+      "const daysClause = mode === 'once' ? sql`vc.days = 1` : sql`vc.days >= 2` " +
+      'const rows = await db.execute(sql` ' +
+      "WITH visit_days AS (${visitDaysSql({ axis: 'service_date', scope: ssc, range })}), " +
+      'visit_count AS ( SELECT vd.client_user_id, COUNT(DISTINCT vd.visit_date) AS days ' +
+      'FROM visit_days vd GROUP BY vd.client_user_id ) ' +
+      'SELECT COUNT(*) AS v FROM visit_count vc JOIN client_wechat_users c ON c.user_id = vc.client_user_id ' +
+      'WHERE ${csc} AND ' + RETAINED + ' AND ' + memberGuard('range.end') +
+      ' AND ${daysClause} `) return num(first(rows).v) }'
+
+    const breakdownActiveExpected =
+      "visit_days AS (${visitDaysSql({ axis: 'service_date', scope: serviceScope, range })}), " +
+      'visit_count AS ( SELECT vd.client_user_id, c.bound_store_id AS store_id, ' +
+      'COUNT(DISTINCT vd.visit_date) AS days, c.customer_status AS cstatus ' +
+      'FROM visit_days vd JOIN client_wechat_users c ON c.user_id = vd.client_user_id ' +
+      'WHERE ${customerScope} AND c.bound_store_id IS NOT NULL AND ' + memberGuard('end') + ' ' +
+      'GROUP BY vd.client_user_id, c.bound_store_id, c.customer_status ), ' +
+      'active AS ( SELECT store_id, COUNT(*) FILTER (WHERE days = 1) AS visit_once, ' +
+      'COUNT(*) FILTER (WHERE days >= 2) AS visit_twice FROM visit_count ' +
+      `WHERE cstatus IN ('保有会员-稳定', '保有会员-有效') GROUP BY store_id ), `
+
+    const cronActivity = (src: string): string => normalize(stripSqlComments(src))
+    // 切不出即 throw（原先返回 ''，配 toBe 尚且 fail-closed，但改成 toContain 就会恒真）
+    const breakdownActive = (src: string): string =>
+      sliceBlock(sqlInFunction(src, ADMIN_CUSTOMER, 'queryRegActiveBreakdown'), 'visit_days AS (', 'status_agg AS (')
+
+    /** customer.ts 里 visitDaysSql 标识符的全部出现：来源 import + 声明 + 引用 */
+    const visitDaysSqlUsage = (src: string) => {
+      const sf = ts.createSourceFile(ADMIN_CUSTOMER, src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+      const imports: string[] = []
+      let localDecls = 0
+      let refs = 0
+      const visit = (n: ts.Node): void => {
+        if (ts.isImportDeclaration(n)) {
+          const named = n.importClause?.namedBindings
+          if (named && ts.isNamedImports(named) && named.elements.some((e) => e.name.text === 'visitDaysSql')) {
+            imports.push(normalize(n.getText(sf)))
+          }
+          return
+        }
+        if (
+          (ts.isVariableDeclaration(n) || ts.isFunctionDeclaration(n) || ts.isParameter(n) || ts.isClassDeclaration(n)) &&
+          n.name &&
+          ts.isIdentifier(n.name) &&
+          n.name.text === 'visitDaysSql'
+        ) {
+          localDecls++
+        }
+        if (ts.isIdentifier(n) && n.text === 'visitDaysSql') refs++
+        ts.forEachChild(n, visit)
+      }
+      ts.forEachChild(sf, visit)
+      return { imports, localDecls, refs }
+    }
+
+    it('admin visitDaysSql 渲染结果：DISTINCT (client_user_id, service_date) + 已完成 + 挂顾客', () => {
+      const q = new PgDialect().sqlToQuery(
+        visitDaysSql({ axis: 'service_date', scope: sql`TRUE`, range: { start: '2026-09-01', end: '2026-09-24' } }),
+      )
+      expect(normalize(q.sql)).toBe(
+        `SELECT DISTINCT so.client_user_id, ${VISIT_DAY_COL} AS visit_date FROM service_orders so ` +
+          `WHERE TRUE AND ${VISIT_FILTER} AND ${VISIT_DAY_COL} BETWEEN $1 AND $2`,
+      )
+      expect(q.params).toEqual(['2026-09-01', '2026-09-24'])
+    })
+
+    it('visitDaysSql 拒绝白名单外的日期轴（含原型链键；sql.raw 只吃闭集）', () => {
+      for (const axis of ['completed_at', 'toString', 'constructor', '__proto__']) {
+        expect(() =>
+          visitDaysSql({ axis: axis as never, scope: sql`TRUE`, range: { start: '2026-09-01', end: '2026-09-24' } }),
+        ).toThrow(/未知日期轴/)
+      }
+    })
+
+    it('customer.ts 用的 visitDaysSql 就是被渲染校验的那一个（import 来源锁定，无本地替身）', () => {
+      const u = visitDaysSqlUsage(adminSrc)
+      expect(u.imports).toEqual(["import { visitDaysSql } from '@/lib/data-center/visit-days'"])
+      expect(u.localDecls).toBe(0)
+      // 引用恰为 KPI 1 + 明细 1（import 节点不计入）
+      expect(u.refs).toBe(2)
+    })
+
+    it('admin KPI queryActive 整个函数快照（scope 列名 + once/twice 映射 + 经 visitDaysSql 按天数分档）', () => {
+      expect(fnSource(adminSrc, ADMIN_CUSTOMER, 'queryActive')).toBe(adminKpiExpected)
+    })
+
+    it('admin 明细 queryRegActiveBreakdown：客活段整段快照 + scope 生产者 + 外层汇总不对调', () => {
+      expect(breakdownActive(adminSrc)).toBe(breakdownActiveExpected)
+      const fn = fnSource(adminSrc, ADMIN_CUSTOMER, 'queryRegActiveBreakdown')
+      expect(fn).toContain("const serviceScope = scopeFilterSql(session, scope, 'so.store_id')")
+      expect(fn).toContain("const customerScope = scopeFilterSql(session, scope, 'c.bound_store_id')")
+      expect(fn.match(/const serviceScope = /g)).toHaveLength(1)
+      expect(fn.match(/const customerScope = /g)).toHaveLength(1)
+      // 外层汇总：两列各恰好出现一次且一一对应（对调 → 红）
+      const sqlText = sqlInFunction(adminSrc, ADMIN_CUSTOMER, 'queryRegActiveBreakdown')
+      expect(sqlText).toContain(
+        'COALESCE(SUM(active.visit_once), 0) AS visit_once, COALESCE(SUM(active.visit_twice), 0) AS visit_twice,',
+      )
+      expect(sqlText.match(/active\.visit_once/g)).toHaveLength(1)
+      expect(sqlText.match(/active\.visit_twice/g)).toHaveLength(1)
+      // 结果映射（行为侧另见 customer.test.ts 的 visitOnce=3 / visitTwice=2 断言）
+      expect(fn).toContain('visitOnce: num(r.visit_once), visitTwice: num(r.visit_twice),')
+    })
+
+    it('staff queryActiveOnce / queryActiveTwice 整个函数快照（含 scope 生产者）', () => {
+      expect(fnSource(staffSrc, STAFF_MGMT_TRAFFIC, 'queryActiveOnce')).toBe(
+        staffExpected('queryActiveOnce', 'vc.days = 1'),
+      )
+      expect(fnSource(staffSrc, STAFF_MGMT_TRAFFIC, 'queryActiveTwice')).toBe(
+        staffExpected('queryActiveTwice', 'vc.days >= 2'),
+      )
+    })
+
+    it('cron monthly_activity 段 2 整段快照（顾客列表「月度客活」筛选的数据源）', () => {
+      expect(cronActivity(UPDATE_MONTHLY_ACTIVITY_SQL)).toBe(
+        `WITH visit_days AS ( SELECT so.client_user_id, COUNT(DISTINCT ${VISIT_DAY_COL}) AS days ` +
+          `FROM service_orders so WHERE ${VISIT_FILTER} ` +
+          `AND ${VISIT_DAY_COL} >= date_trunc('month', CURRENT_DATE)::date ` +
+          `AND ${VISIT_DAY_COL} < (date_trunc('month', CURRENT_DATE) + INTERVAL '1 month')::date ` +
+          'GROUP BY so.client_user_id ) UPDATE client_wechat_users u SET monthly_activity = ' +
+          "(CASE WHEN vd.days >= 2 THEN '二次客活' ELSE '一次客活' END)::monthly_activity, updated_at = NOW() " +
+          'FROM visit_days vd WHERE u.user_id = vd.client_user_id',
+      )
+    })
+
+    it('反向验证：各侧回退 / 对调 / 替身都会让对应快照红', () => {
+      const mutate = (src: string, from: string, to: string): string => {
+        expect(src).toContain(from)
+        return src.replace(from, to)
+      }
+      const onlyIn = (src: string, fnHead: string, from: string, to: string): string => {
+        const at = src.indexOf(fnHead)
+        expect(at).toBeGreaterThanOrEqual(0)
+        return src.slice(0, at) + mutate(src.slice(at), from, to)
+      }
+      // staff：只改 once（孪生函数 twice 保持原样 → 按函数名定位）
+      const staffMut = onlyIn(staffSrc, 'async function queryActiveOnce', 'COUNT(DISTINCT so.service_date) AS days', 'COUNT(*) AS days')
+      expect(fnSource(staffMut, STAFF_MGMT_TRAFFIC, 'queryActiveOnce')).not.toBe(staffExpected('queryActiveOnce', 'vc.days = 1'))
+      expect(fnSource(staffMut, STAFF_MGMT_TRAFFIC, 'queryActiveTwice')).toBe(staffExpected('queryActiveTwice', 'vc.days >= 2'))
+      // staff：改完用 SQL 注释把字面量补回去
+      const staffComment = onlyIn(
+        staffSrc,
+        'async function queryActiveOnce',
+        'COUNT(DISTINCT so.service_date) AS days',
+        'COUNT(*) AS days -- COUNT(DISTINCT so.service_date) AS days',
+      )
+      expect(fnSource(staffComment, STAFF_MGMT_TRAFFIC, 'queryActiveOnce')).not.toBe(staffExpected('queryActiveOnce', 'vc.days = 1'))
+      // staff：scope 生产者列别名被改
+      const staffScope = onlyIn(staffSrc, 'async function queryActiveTwice', "buildSaleScope(scopeType, scopeId, 'so', 1)", "buildSaleScope(scopeType, scopeId, 'c', 1)")
+      expect(fnSource(staffScope, STAFF_MGMT_TRAFFIC, 'queryActiveTwice')).not.toBe(staffExpected('queryActiveTwice', 'vc.days >= 2'))
+      // cron 改成按行数
+      const cronMut = mutate(UPDATE_MONTHLY_ACTIVITY_SQL, 'COUNT(DISTINCT so.service_date)', 'COUNT(so.service_date)')
+      expect(cronActivity(cronMut)).not.toBe(cronActivity(UPDATE_MONTHLY_ACTIVITY_SQL))
+      // admin KPI：once/twice 映射对调
+      const kpiSwap = mutate(adminSrc, "mode === 'once' ? sql`vc.days = 1`", "mode !== 'once' ? sql`vc.days = 1`")
+      expect(fnSource(kpiSwap, ADMIN_CUSTOMER, 'queryActive')).not.toBe(adminKpiExpected)
+      // admin KPI：scope 列名被改
+      const kpiScope = onlyIn(adminSrc, 'async function queryActive(', "scopeFilterSql(session, scope, 'so.store_id')", "scopeFilterSql(session, scope, 'c.bound_store_id')")
+      expect(fnSource(kpiScope, ADMIN_CUSTOMER, 'queryActive')).not.toBe(adminKpiExpected)
+      // admin 明细：绕开 visitDaysSql 直接数行
+      const bdMut = mutate(adminSrc, 'COUNT(DISTINCT vd.visit_date) AS days,', 'COUNT(*) AS days,')
+      expect(breakdownActive(bdMut)).not.toBe(breakdownActiveExpected)
+      // admin：换 import 来源 / 本地同名替身
+      const importSwap = mutate(adminSrc, "from '@/lib/data-center/visit-days'", "from '@/lib/data-center/visit-days-legacy'")
+      expect(visitDaysSqlUsage(importSwap).imports).not.toEqual(["import { visitDaysSql } from '@/lib/data-center/visit-days'"])
+      const localStub = mutate(
+        adminSrc,
+        "import { visitDaysSql } from '@/lib/data-center/visit-days'\n",
+        'const visitDaysSql = (o: unknown) => sql`${o}`\n',
+      )
+      const u = visitDaysSqlUsage(localStub)
+      expect(u.imports).toEqual([])
+      expect(u.localDecls).toBe(1)
+    })
+  })
+
+  /**
+   * 9. 一次/二次**达成率**分母 = registered，且分子人群谓词 ⊇ 分母人群谓词（#414）
+   *
+   * ## 为什么需要一组单独的守护
+   *
+   * 改前的分母是 `retained`（末 90 天到店的保有会员），而分子是「区间内到店的保有会员」——
+   * 两者在生产上是**同一批人**（2026-09-25 实测两池各 1889、双向差集 0），
+   * 于是 36 家门店的 `1次达成率 + 2次达成率` **精确恒等 100.0%**，这两列不携带任何「达成」信息。
+   * 用户 2026-09-25 拍板改用 `registered`（会员注册截面）。
+   *
+   * 只换分母**不够**：`customer_status` 是 cron 重算的**当前**截面、不随 `end` 回溯，
+   * 而 `reg` 带 `became_member_at::date <= end`。缺守卫时「区间内到店、现在是保有会员、
+   * 但入会晚于区间终点」的人进分子不进分母（2026-07-08~07-31 实测 36 人，
+   * 把九江丽都店顶到 7/7 = 100.0%）。因此真正要钉的不变量是：
+   *
+   *   **分子的人群谓词 ⊇ 分母的人群谓词** ⇒ visit_once/visit_twice ⊆ registered ⇒ 达成率结构性 ≤ 100%。
+   *
+   * ## 写法：派生式，不是两处各抄一份
+   *
+   * 会员守卫从**分母段现读**，再断言它逐字出现在分子段（KPI 侧只允许区间终点的写法不同：
+   * `${range.end}` vs `${end}`）。改分母谓词而忘了同步分子 → 派生出的新串在分子段找不到 → 红。
+   * 另配两段整段快照（分母 `reg` / 分子 `visit_count`，后者在第 8 组），
+   * 堵住「两侧一起改成别的谓词」这条派生式看不见的路径。
+   *
+   * 切片一律 fail-closed（切不出即 throw），不退化成全文匹配。
+   */
+  describe('达成率分母 = registered + 分子人群谓词 ⊇ 分母人群谓词（#414）', () => {
+    const breakdownSql = (src: string): string => sqlInFunction(src, ADMIN_CUSTOMER, 'queryRegActiveBreakdown')
+    const regBlock = (src: string): string => sliceBlock(breakdownSql(src), 'reg AS (', 'ret AS (')
+    const visitCountBlock = (src: string): string =>
+      sliceBlock(breakdownSql(src), 'visit_count AS (', 'active AS (')
+
+    /** 分母整段快照 —— 堵「分子分母一起改成别的谓词」这条派生式看不见的路径 */
+    const regExpected =
+      'reg AS ( SELECT c.bound_store_id AS store_id, COUNT(*) AS registered ' +
+      'FROM client_wechat_users c WHERE ${customerScope} AND c.bound_store_id IS NOT NULL ' +
+      'AND ' + memberGuard('end') + ' GROUP BY c.bound_store_id ), '
+
+    /**
+     * 从**分母**现读会员守卫（派生源）；抓不到即红。
+     *
+     * 插值名的字符类刻意窄：`[A-Za-z.()]` 只够写 `end` / `range.end` / `endDateExpr(period)` 三种真实写法。
+     * `${ end }`（带空格）/ `${end_date}`（下划线）/ `${range?.end}` 一律不匹配 ⇒ `not.toBeNull()` 红，
+     * 是 fail-closed 不是漏网（pr-ready boundary 实测逐一确认过）。
+     * 语义取反（`>=`）同样不匹配，且整段快照会红。
+     */
+    const GUARD_RE = /c\.became_member_at IS NOT NULL AND c\.became_member_at::date <= \$\{[A-Za-z.()]+\}/
+
+    it('分母 reg 整段快照（COUNT(*) AS registered + bound_store_id 归组 + 会员守卫）', () => {
+      expect(regBlock(adminSrc)).toBe(regExpected)
+    })
+
+    /**
+     * `reg` CTE 到返回字段之间还有**一跳外层投影**，此前无人守（codex round-1 P1）。
+     * 把它改成 `COALESCE(SUM(reg.registered), 0) / 2 AS registered`：
+     * `regBlock` 快照不变、`visit_count` 不变、`buildBreakdownRows` 仍除以 `ra.registered`、
+     * 行为测试直接注入 `regActiveRows` 根本不跑这段 SQL ⇒ **全绿**，而单店 10 人会变成 5 人、两率合计 200%。
+     * 第 8 组已对分子的两列投影做了同样的钉（`active.visit_once` / `visit_twice`），分母这列漏了。
+     */
+    it('分母的外层投影不得被加工（SUM(reg.registered) 原样透传）', () => {
+      const sqlText = breakdownSql(adminSrc)
+      expect(sqlText).toContain('COALESCE(SUM(reg.registered), 0) AS registered,')
+      expect(sqlText.match(/reg\.registered/g)).toHaveLength(1)
+      // 结果映射同样不得改道
+      expect(fnSource(adminSrc, ADMIN_CUSTOMER, 'queryRegActiveBreakdown')).toContain(
+        'registered: num(r.registered),',
+      )
+    })
+
+    /**
+     * 外层 `FROM skel sk LEFT JOIN ... ON ...` 的**关联条件**此前不在任何快照内
+     * （`regBlock` 止于 `ret AS (`、第 8 组片段止于 `status_agg AS (`、投影断言只覆盖 `SUM(...)` 行）。
+     * 把 `LEFT JOIN reg ON reg.store_id = sk.store_id` 改成 `= sk.market_id`，分母会整列错位归组
+     * 而上面全部断言照绿（GLM round-2 提出，本 session 复核成立）。
+     * 六条 JOIN 整段逐字钉死 —— 分子分母任何一条改了归组键都会红。
+     */
+    /**
+     * 归组键生产者（`groupId` 三元 + `group_name` 三元）也不在任何快照内（GLM round-3 P3-2）：
+     * JOIN 快照刻意截在 ` GROUP BY ` 之前，投影断言只覆盖 `SUM(...)` 行。
+     * 两分支对调 ⇒ `buildBreakdownRows` 按 marketId/storeId 取 map 全 miss ⇒ 明细整列 0/null。
+     * 那是**响亮**的破坏不是静默错数，但一行断言就能收口，没理由不收。
+     */
+    it('明细归组键生产者不得对调（market ↔ store）', () => {
+      const fn = fnSource(adminSrc, ADMIN_CUSTOMER, 'queryRegActiveBreakdown')
+      expect(fn).toContain(
+        "const groupId = group === 'market' ? sql.raw('sk.market_id') : sql.raw('sk.store_id')",
+      )
+      expect(fn).toContain(
+        "${group === 'market' ? sql.raw('MAX(sk.market_name)') : sql.raw('MAX(sk.store_name)')} AS group_name,",
+      )
+    })
+
+    /**
+     * ⚠ 快照必须**一直包到 `GROUP BY` 为止**，不能截在它之前（codex round-6 P2）。
+     * 把 `GROUP BY ${groupId}` 改成 `GROUP BY ${groupId}, sk.store_id`：JOIN 部分逐字未变、
+     * 其余断言也不碰它 ⇒ 全绿；而 SQL 会为同一个 group_id 返回多行，
+     * `map.set(id, …)` 相互覆盖。构造：scope = 市场 M，店 A 注册 10 人且 10 人各到店 1 次、
+     * 店 B 注册 90 人且无人到店 —— 正确市场行是 10/100 = 10%，改后会变成 10/10 = 100% 或 0/90 = 0%。
+     */
+    /**
+     * **整段外层查询**（投影 + JOIN + GROUP BY）逐字快照。
+     *
+     * 不能只钉 JOIN 与 `GROUP BY`，也不能只钉分母那一行投影：在 `SELECT` 里**追加一列同名**
+     * `COUNT(DISTINCT sk.store_id) AS registered,`，正确的 `SUM(reg.registered)` 行仍在、
+     * `reg.registered` 仍只出现一次、JOIN/GROUP BY 快照不覆盖投影区、行为测试直接注入
+     * `regActiveRows` 不跑 SQL、dist 探针只筛已知整行 ⇒ **全绿**；
+     * 而 postgres.js 按列顺序写对象，后一个 `registered` 覆盖前一个
+     * ⇒ 门店 A 注册 10 人、2 人到店时，20% 变成 2/1 = 200%（codex round-9 P2）。
+     *
+     * 逐列钉死是这里的**闭集**：任何增列 / 删列 / 改名 / 换顺序都不等。
+     */
+    it('外层查询整段快照（投影 + JOIN + GROUP BY，逐列钉死）', () => {
+      const sqlText = breakdownSql(adminSrc)
+      const from = sqlText.indexOf('SELECT ${groupId} AS group_id,')
+      expect(from).toBeGreaterThan(0)
+      expect(sqlText.slice(from).trim()).toBe(
+        'SELECT ${groupId} AS group_id, ' +
+          "${group === 'market' ? sql.raw('MAX(sk.market_name)') : sql.raw('MAX(sk.store_name)')} AS group_name, " +
+          'MAX(sk.market_name) AS market_name, ' +
+          'COALESCE(SUM(reg.registered), 0) AS registered, ' +
+          'COALESCE(SUM(ret.retained), 0) AS retained, ' +
+          'COALESCE(SUM(active.visit_once), 0) AS visit_once, ' +
+          'COALESCE(SUM(active.visit_twice), 0) AS visit_twice, ' +
+          'COALESCE(SUM(status_agg.dormant), 0) AS dormant, ' +
+          'COALESCE(SUM(react.react_dormant), 0) AS react_dormant, ' +
+          'COALESCE(SUM(status_agg.frozen), 0) AS frozen, ' +
+          'COALESCE(SUM(react.react_frozen), 0) AS react_frozen, ' +
+          'COALESCE(SUM(status_agg.deep), 0) AS deep, ' +
+          'COALESCE(SUM(react.react_deep), 0) AS react_deep ' +
+          'FROM skel sk ' +
+          'LEFT JOIN reg ON reg.store_id = sk.store_id ' +
+          'LEFT JOIN ret ON ret.store_id = sk.store_id ' +
+          'LEFT JOIN active ON active.store_id = sk.store_id ' +
+          'LEFT JOIN status_agg ON status_agg.store_id = sk.store_id ' +
+          'LEFT JOIN react ON react.store_id = sk.store_id ' +
+          'GROUP BY ${groupId}',
+      )
+    })
+
+    it('分子（明细 visit_count）带的会员守卫与分母逐字相同 —— 从分母现读，不硬编码', () => {
+      const denom = regBlock(adminSrc).match(GUARD_RE)
+      expect(denom).not.toBeNull()
+      expect(visitCountBlock(adminSrc)).toContain(denom![0])
+    })
+
+    it('分子（KPI queryActive）带的会员守卫与分母同源（仅区间终点写法 range.end vs end 不同）', () => {
+      const denom = regBlock(adminSrc).match(GUARD_RE)
+      expect(denom).not.toBeNull()
+      // ⚠ 必须用 sqlInFunction 而不是 fnSource：fnSource 走 stripComments，它**刻意不剥 SQL `--`**，
+      // 于是「把守卫整行注释掉」也能让 GUARD_RE 在注释文本上命中 → 绿（pr-ready boundary P2-1）。
+      // sqlInFunction 复用 stripSqlComments，注释掉即匹配不到。
+      const kpi = sqlInFunction(adminSrc, ADMIN_CUSTOMER, 'queryActive').match(GUARD_RE)
+      expect(kpi).not.toBeNull()
+      expect(kpi![0].replace('${range.end}', '${end}')).toBe(denom![0])
+    })
+
+    /**
+     * `${end}` / `${start}` 是明细侧三处守卫（reg / ret / visit_count）的**唯一**日期来源，
+     * 而整段快照只锁 `${end}` 这个**字面**、不锁它是谁。
+     * 把 `const end = range.end` 改成 `const end = todayStr()`，本组全部断言 + 第 8 组快照**照样全绿**，
+     * 而明细不再随所选区间回溯、与直接用 `range.end` 的 KPI 当场分叉（pr-ready boundary P1-1）。
+     * 同函数的 serviceScope / customerScope 生产者在第 8 组已被锁住，这两个漏了。
+     */
+    it('明细的区间端点直取 range，不得换成别的日期源', () => {
+      const fn = fnSource(adminSrc, ADMIN_CUSTOMER, 'queryRegActiveBreakdown')
+      expect(fn).toContain('const start = range.start')
+      expect(fn).toContain('const end = range.end')
+      expect(fn.match(/const start = /g)).toHaveLength(1)
+      expect(fn.match(/const end = /g)).toHaveLength(1)
+    })
+
+    /**
+     * 取某个 metrics 属性的取值表达式（从该键到下一个键之间）。
+     *
+     * ⚠ 不要写成 `/visitOnceRate:[^,]*ra\.retained/` —— 取值里 `safeDiv(ra.visitOnce, ra.retained)`
+     * 本身含逗号，`[^,]*` 跨不过去 ⇒ 该正则**永不匹配** ⇒ 配 `not.toMatch` 就是恒真的空断言。
+     * 这条是本轮红检当场抓出来的（见 [[feedback-hollow-assertion-four-shapes]] 第 2 型）。
+     */
+    const propValue = (fn: string, key: string, nextKey: string): string => {
+      const a = fn.indexOf(key + ':')
+      const b = fn.indexOf(nextKey + ':', a + key.length)
+      if (a < 0) throw new Error(`propValue: 找不到 ${key}`)
+      if (b <= a) throw new Error(`propValue: ${key} 之后找不到 ${nextKey}`)
+      return fn.slice(a, b)
+    }
+
+    it('达成率分母取 registered，不是 retained', () => {
+      const fn = fnSource(adminSrc, ADMIN_CUSTOMER, 'buildBreakdownRows')
+      expect(fn).toContain('visitOnceRate: ra ? safeDiv(ra.visitOnce, ra.registered) : null,')
+      expect(fn).toContain('visitTwiceRate: ra ? safeDiv(ra.visitTwice, ra.registered) : null,')
+      // 回退防线：两条比率的取值里都不得再出现 retained
+      //（retained 自身仍是展示列，所以不能整函数禁 retained，只能限定在取值表达式内）
+      expect(propValue(fn, 'visitOnceRate', 'visitTwice')).not.toContain('ra.retained')
+      expect(propValue(fn, 'visitTwiceRate', 'dormant')).not.toContain('ra.retained')
+    })
+
+    it('明细/导出表头标出分母是「会员注册」（#294 同族：文案不得与口径脱钩）', () => {
+      const cols = fs.readFileSync(ADMIN_COLUMNS, 'utf-8')
+      const body = normalize(stripComments(cols))
+      expect(body).toContain("{ key: 'visitOnceRate', label: '1次达成率(÷会员注册)', unit: 'percent' }")
+      expect(body).toContain("{ key: 'visitTwiceRate', label: '2次达成率(÷会员注册)', unit: 'percent' }")
+    })
+
+    /**
+     * KPI 卡的 hint 同样是口径自述，删掉不会有任何测试红（pr-ready boundary P3-5）。
+     * ⚠ 措辞有讲究：「截至区间终点」只修饰「已入会」，**不**修饰「保有会员」——
+     * `customer_status` 仍是**今日**截面（#414 只修了时态的一半，见 metrics.md D-visit-rate-denom），
+     * 写成「截至区间终点的保有会员」就是新的文案-口径脱钩。
+     */
+    it('KPI 卡 hint 标出会员守卫，且不把「保有会员」也说成截至区间终点', () => {
+      const board = normalize(stripComments(fs.readFileSync(ADMIN_BOARD, 'utf-8')))
+      for (const k of ['visitOnce', 'visitTwice']) {
+        const cell = sliceBlock(board, `{ key: "${k}",`, '}')
+        expect(cell).toContain('截至区间终点已入会')
+      }
+      expect(board).not.toContain('截至区间终点的保有会员')
+    })
+
+    /**
+     * **跨端同源**：staff `mgmt-traffic.js` 的同名指标「一次/二次客活」带**同一条**会员守卫
+     * （用户 2026-09-25 拍板同步，实测 staff 选「上月」一次 511→486 / 二次 894→847，合计 −72 人）。
+     * staff 本身没有达成率，补它是为了不把 #298 刚统一过的同名指标重新劈成两个口径。
+     *
+     * 这里同样走**派生式**：守卫从 admin 的分母 `reg` 现读，只允许区间终点的写法不同
+     * （admin 明细 `${end}` / admin KPI `${range.end}` / staff `${endDateExpr(period)}`）。
+     * ⚠ cron `refresh-monthly-activity` 与 `db/scripts/calc-monthly-activity.js` **不带**这条
+     * —— 它们给当月到店的所有顾客打标（含非会员），加了会改自己的口径。下面第二条断言钉住这一点。
+     */
+    it('staff 两个客活函数带与 admin 分母同源的会员守卫（仅区间终点写法不同）', () => {
+      const denom = regBlock(adminSrc).match(GUARD_RE)![0]
+      for (const fn of ['queryActiveOnce', 'queryActiveTwice']) {
+        const staffGuard = sqlInFunction(staffSrc, STAFF_MGMT_TRAFFIC, fn).match(GUARD_RE)
+        expect(staffGuard).not.toBeNull()
+        expect(staffGuard![0].replace('${endDateExpr(period)}', '${end}')).toBe(denom)
+      }
+    })
+
+    it('cron monthly_activity 不得带会员守卫（它含非会员，加了会改自己的口径）', () => {
+      expect(normalize(stripSqlComments(UPDATE_MONTHLY_ACTIVITY_SQL))).not.toMatch(/became_member_at/)
+    })
+
+    /**
+     * 上面那条只读**常量**，而线上执行的是 `buildUpdateMonthlyActivitySql(ctx)` 的产物
+     * （`refresh-monthly-activity.ts:89` → `tx.execute(sql.raw(updateSql))`）。
+     * 在那个构造器里追加一次 `.replace()` 给 SQL 尾部挂上 `AND u.became_member_at IS NOT NULL`，
+     * 常量不变 ⇒ 上面那条、第 8 组 cron 快照、cron 专项测试**全绿**，
+     * 而当月新到店的体验客会被整批漏掉（codex round-10 P2）。
+     * 所以把「常量 → 运行时 SQL」这一跳也钉死：构造器只允许做 CURRENT_DATE 的日期注入。
+     */
+    it('cron 的运行时 SQL 构造器整段快照（常量 → 执行 SQL 这一跳）', () => {
+      const cronSrc = fs.readFileSync(ADMIN_CRON_ACTIVITY, 'utf-8')
+      expect(fnSource(cronSrc, ADMIN_CRON_ACTIVITY, 'buildUpdateMonthlyActivitySql')).toBe(
+        'function buildUpdateMonthlyActivitySql(ctx?: CronContext): string { ' +
+          'if (!ctx?.referenceDate) return UPDATE_MONTHLY_ACTIVITY_SQL ' +
+          'const dateStr = formatYmd(ctx.referenceDate) ' +
+          "return UPDATE_MONTHLY_ACTIVITY_SQL.replace(/CURRENT_DATE/g, `('${dateStr}'::date)`) }",
+      )
+    })
+
+    /**
+     * 构造器与调用点之间还有最后一跳：`tx.execute(sql.raw(updateSql))` 与
+     * `queryRegActiveBreakdown(session, scope, cur, 'market' | 'store')`。
+     * 在这两处插一次 `.replace()` / 换掉实参，上面全部快照都看不见（codex round-11 P2）。
+     *
+     * ⚠ **这条回退到此为止**：再往下还有 `sql.raw` → drizzle → pg driver，
+     * 「守住下一跳」可以无限推下去。本组守护的目标是**口径漂移**（有人改 SQL 忘了同步另一侧），
+     * 不是「对有提交权限的人做防篡改」——后者任何字面量守护都做不到（同理见本文件开头
+     * 关于「改测试来配合改坏的代码」的声明）。
+     * 收在这一跳的理由：这两处是**口径值真正被消费**的地方，再往下都是通用管道、与口径无关。
+     */
+    it('执行跳与调用点不得夹带加工（回退链的终点）', () => {
+      const cronSrc = normalize(stripComments(fs.readFileSync(ADMIN_CRON_ACTIVITY, 'utf-8')))
+      expect(cronSrc).toContain('const updated = (await tx.execute(sql.raw(updateSql)))')
+      expect(cronSrc.match(/tx\.execute\(sql\.raw\(updateSql\)\)/g)).toHaveLength(1)
+
+      // `getCustomerBoard` 是 `withPermission(...)` 赋值的 const，不是函数声明，
+      // `fnSource` 切不出（它对此 fail-closed 地 throw）—— 所以在剥注释后的全文上断言。
+      //
+      // ⚠ 只断言「两行都在 + 条数 2」**不够**（codex round-18 P2）：把 Promise.all 数组里
+      // 'market' 与 'store' 两次调用的**顺序**对调，两行仍都在、条数仍是 2 ⇒ 全绿，
+      // 而解构出来的 regActiveByMarket / regActiveByStore 拿到的是对方的 map，
+      // 两个 buildBreakdownRows 全 miss ⇒ 明细整表注册/到店归 0、达成率 null。
+      // 产物逐字节比对也拦不住 —— 它会忠实构建这份错误源码。
+      // 所以把**解构 + Promise.all + 装配**整段钉死：位置、顺序、消费槽位一并锁住。
+      const assembly = sliceBlock(
+        adminCode,
+        'const [ regActiveByMarket,',
+        "const byStore = buildBreakdownRows('store',",
+      )
+      expect(assembly).toBe(
+        'const [ regActiveByMarket, opsByMarket, regActiveByStore, opsByStore, ] = await Promise.all([ ' +
+          "queryRegActiveBreakdown(session, scope, cur, 'market'), " +
+          "queryOpsBreakdown(session, scope, cur, 'market', threshold), " +
+          "queryRegActiveBreakdown(session, scope, cur, 'store'), " +
+          "queryOpsBreakdown(session, scope, cur, 'store', threshold), ]) " +
+          "const byMarket = buildBreakdownRows('market', skeleton, regActiveByMarket, opsByMarket) ",
+      )
+      expect(adminCode).toContain(
+        "const byStore = buildBreakdownRows('store', skeleton, regActiveByStore, opsByStore)",
+      )
+      expect(adminCode.match(/queryRegActiveBreakdown\(session,/g)).toHaveLength(2)
+    })
+
+    /**
+     * staff 侧的守卫写的是 `${endDateExpr(period)}` —— 派生式断言只看到这个**调用字面量**，
+     * 看不到它算出什么（codex round-1 P2）。把 `lastMonth` 分支改成 `NOW()::date`，
+     * 整函数快照与派生式断言全绿，而 staff 的上月客活会把"9 月才入会的人"算进 8 月，
+     * 与 admin 静默分叉 —— 正好是本轮刚合并掉的那个分叉。
+     * 两个生产者一起钉：`endDateExpr` 是守卫的终点，`startDateExpr` 是同一条 SQL 的区间起点。
+     */
+    it('staff 的区间端点生产者整函数快照（守卫终点的实际含义）', () => {
+      expect(fnSource(staffSrc, STAFF_MGMT_TRAFFIC, 'endDateExpr')).toBe(
+        'function endDateExpr(period) { ' +
+          "if (period === 'lastMonth') { return `(date_trunc('month', NOW()) - INTERVAL '1 day')::date` } " +
+          'return `NOW()::date` }',
+      )
+      expect(fnSource(staffSrc, STAFF_MGMT_TRAFFIC, 'startDateExpr')).toBe(
+        'function startDateExpr(period) { ' +
+          "if (period === 'month') { return `date_trunc('month', NOW())::date` } " +
+          "if (period === 'lastMonth') { return `date_trunc('month', NOW() - INTERVAL '1 month')::date` } " +
+          "return `date_trunc('year', NOW())::date` }",
+      )
+    })
+
+    it('反向验证：删守卫 / 改分母 / 改表头 都会红', () => {
+      const mutate = (src: string, from: string, to: string): string => {
+        expect(src.split(from)).toHaveLength(2) // 锚点在目标文件里必须唯一，否则打到别处 → 假红
+        return src.replace(from, to)
+      }
+      const denom = regBlock(adminSrc).match(GUARD_RE)![0]
+
+      // ① 只删分子（明细）的守卫 —— 派生式断言必须红，且分母快照仍绿（证明变异落点精确）
+      const dropNum = mutate(
+        adminSrc,
+        '        AND c.bound_store_id IS NOT NULL\n        AND c.became_member_at IS NOT NULL\n        AND c.became_member_at::date <= ${end}\n      GROUP BY vd.client_user_id',
+        '        AND c.bound_store_id IS NOT NULL\n      GROUP BY vd.client_user_id',
+      )
+      expect(visitCountBlock(dropNum)).not.toContain(denom)
+      expect(regBlock(dropNum)).toBe(regExpected)
+
+      // ② 只删 KPI 分子的守卫
+      const dropKpi = mutate(
+        adminSrc,
+        "      AND c.customer_status IN ('保有会员-稳定', '保有会员-有效')\n      AND c.became_member_at IS NOT NULL\n      AND c.became_member_at::date <= ${range.end}\n",
+        "      AND c.customer_status IN ('保有会员-稳定', '保有会员-有效')\n",
+      )
+      expect(fnSource(dropKpi, ADMIN_CUSTOMER, 'queryActive').match(GUARD_RE)).toBeNull()
+
+      // ③ 用 SQL 注释把守卫「补回去」——剥注释后仍应红（#284 那条假绿路径的同型攻击）
+      const commentBack = mutate(
+        adminSrc,
+        '        AND c.became_member_at IS NOT NULL\n        AND c.became_member_at::date <= ${end}\n      GROUP BY vd.client_user_id',
+        '      -- AND c.became_member_at IS NOT NULL AND c.became_member_at::date <= ${end}\n      GROUP BY vd.client_user_id',
+      )
+      expect(visitCountBlock(commentBack)).not.toContain(denom)
+
+      // ④ 分母回退成 retained
+      const revert = mutate(
+        adminSrc,
+        'visitOnceRate: ra ? safeDiv(ra.visitOnce, ra.registered) : null,',
+        'visitOnceRate: ra ? safeDiv(ra.visitOnce, ra.retained) : null,',
+      )
+      const revertedFn = fnSource(revert, ADMIN_CUSTOMER, 'buildBreakdownRows')
+      expect(revertedFn).not.toContain('visitOnceRate: ra ? safeDiv(ra.visitOnce, ra.registered) : null,')
+      expect(propValue(revertedFn, 'visitOnceRate', 'visitTwice')).toContain('ra.retained')
+      // 只回退了 once，twice 仍是 registered —— 证明变异落点精确，不是整段被改花
+      expect(propValue(revertedFn, 'visitTwiceRate', 'dormant')).not.toContain('ra.retained')
+
+      // ⑤ 分母计数列改写。⚠ 这条**语义中性**（`user_id` 是 PK，两种写法恒等），
+      // 它证明的是"整段快照逐字紧"，**不是**"口径被改坏了"。别把它当口径级红检数（pr-ready boundary P3-1）。
+      const regSwap = mutate(adminSrc, 'COUNT(*) AS registered', 'COUNT(DISTINCT c.user_id) AS registered')
+      expect(regBlock(regSwap)).not.toBe(regExpected)
+
+      // ⑦ KPI 侧的 comment-back 攻击（此前只对明细侧做了，两侧不对称 = 遗漏）
+      const kpiComment = mutate(
+        adminSrc,
+        '      AND c.became_member_at IS NOT NULL\n      AND c.became_member_at::date <= ${range.end}\n      AND ${daysClause}',
+        '      -- AND c.became_member_at IS NOT NULL AND c.became_member_at::date <= ${range.end}\n      AND ${daysClause}',
+      )
+      expect(sqlInFunction(kpiComment, ADMIN_CUSTOMER, 'queryActive').match(GUARD_RE)).toBeNull()
+
+      // ⑧ 明细的日期源被换掉（整段快照看不见，靠上面那条 `const end = range.end` 断言拦）
+      // ⚠ `const end = range.end` 在文件里有两处（queryRegActiveBreakdown / queryOpsBreakdown），
+      // 锚点必须带下一行才唯一 —— 否则 replace 打到另一个函数上就是假红。
+      const endSwap = mutate(
+        adminSrc,
+        "const end = range.end\n  const serviceScope = scopeFilterSql(session, scope, 'so.store_id')",
+        "const end = range.start\n  const serviceScope = scopeFilterSql(session, scope, 'so.store_id')",
+      )
+      const endSwapFn = fnSource(endSwap, ADMIN_CUSTOMER, 'queryRegActiveBreakdown')
+      expect(endSwapFn).not.toContain('const end = range.end')
+      // 段级快照与派生式**都看不见**这个改动（SQL 文本里仍是 `${end}`）→ 证明上一条断言不是冗余
+      expect(regBlock(endSwap)).toBe(regExpected)
+      expect(visitCountBlock(endSwap)).toContain(denom)
+
+      // ⑨ KPI 卡 hint 被抹掉
+      const board = fs.readFileSync(ADMIN_BOARD, 'utf-8')
+      const hintMut = mutate(board, '、且截至区间终点已入会的保有会员（同日多单算 1 天）" },\n  { key: "visitTwice"', '的保有会员（同日多单算 1 天）" },\n  { key: "visitTwice"')
+      expect(normalize(stripComments(hintMut))).not.toContain('到店 1 天、且截至区间终点已入会')
+
+      // ⑥ 表头把分母标注抹掉
+      const cols = fs.readFileSync(ADMIN_COLUMNS, 'utf-8')
+      const colsMut = mutate(cols, "label: '1次达成率(÷会员注册)'", "label: '1次达成率'")
+      expect(normalize(stripComments(colsMut))).not.toContain(
+        "{ key: 'visitOnceRate', label: '1次达成率(÷会员注册)', unit: 'percent' }",
+      )
+    })
+  })
+  /**
+   * 10. 新客客单价：分子与分母**归店同源**（#439，用户 2026-09-26 拍板方案 A）
+   *
+   * ## 为什么需要单独一组
+   *
+   * 改前分母按 `c.bound_store_id`（顾客绑定门店）、分子按 `o.store_id`（订单发生门店）——
+   * 「顾客绑定 A 店、在 B 店消费」时**人进 A 的分母、钱进 B 的分子**。
+   * 生产实测 6 家门店受影响、最高 ±13.3%（九江大润发 2596 vs 2994）。
+   * 且分子此前**不要求**绑定门店存在/在营而分母要求，于是「绑定店为空或已停用的新会员在在营店消费」
+   * 会让钱进分子却无对应分母 ⇒ 集团虚高、门店维度出现「分母 0 而分子 > 0 ⇒ 页面 `--` 却有业绩」。
+   *
+   * ⚠ 它**不会显形为 > 100%**（客单价无上限），所以 #287 / #414 那种"一眼看出"的信号在这里不存在
+   * —— 只能靠守护钉死，这也是它拖到 #414 的 sibling 审计才被发现的原因。
+   *
+   * ## 写法：派生式，从**分母**现读归店列，不硬编码
+   *
+   * 改分母的归店列而忘了同步分子 → 派生出的新串在分子里找不到 → 红。
+   * 两端各自成立，且 admin KPI / admin 明细 / staff 三处都覆盖。
+   */
+  describe('新客客单价分子分母归店同源（#439）', () => {
+    /** admin 侧：scope 生产者的列名实参 */
+    const SCOPE_COL_RE = /scopeFilterSql\(session, scope, '([a-z_.]+)'\)/
+    /** staff 侧：scope 生产者的函数名 + 别名实参 */
+    const STAFF_SCOPE_RE = /(build[A-Za-z]+Scope)\(scopeType, scopeId, '([a-z]+)', 1\)/
+
+    it('admin KPI：分子的 scope 列 = 分母的 scope 列（从分母现读）', () => {
+      const denomFn = fnSource(adminSrc, ADMIN_CUSTOMER, 'queryNewMemberCount')
+      const numerFn = fnSource(adminSrc, ADMIN_CUSTOMER, 'queryNewMemberSpend')
+      const denom = denomFn.match(SCOPE_COL_RE)
+      const numer = numerFn.match(SCOPE_COL_RE)
+      expect(denom, '分母里抓不到 scopeFilterSql 的列名实参').not.toBeNull()
+      expect(numer, '分子里抓不到 scopeFilterSql 的列名实参').not.toBeNull()
+      expect(numer![1]).toBe(denom![1])
+      // 同时钉死它确实是顾客维度那一列 —— 否则两侧一起改成 o.store_id 也能"同源"
+      expect(denom![1]).toBe('c.bound_store_id')
+
+      /**
+       * 与 staff 侧对称的落点守护（GLM round-2 P3-2：staff 补了、admin 漏了）。
+       * `.match()` 只取首个命中，于是
+       *   const scGuard = scopeFilterSql(session, scope, 'c.bound_store_id'); void scGuard
+       *   const sc = scopeFilterSql(session, scope, 'o.store_id')   // 实际用的
+       * 能让上面三条全绿。这里钉住：函数体内 scope 生产者**恰好 1 个**，且 WHERE 用的就是它。
+       */
+      for (const [label, body] of [['分母', denomFn], ['分子', numerFn]] as const) {
+        expect(body.match(/scopeFilterSql\(/g), `admin ${label} 里的 scope 生产者应恰好 1 个`).toHaveLength(1)
+        expect(body, `admin ${label} 的 WHERE 应直接用 \${sc}`).toContain('WHERE ${sc}')
+      }
+    })
+
+    it('admin 明细：分子的骨架 JOIN = 分母的骨架 JOIN（从分母现读）', () => {
+      const bd = sqlInFunction(adminSrc, ADMIN_CUSTOMER, 'queryOpsBreakdown')
+      const JOIN_RE = /JOIN skel sk ON sk\.store_id = ([a-z_.]+)/
+      const denom = sliceBlock(bd, 'newmem AS (', 'newmem_spend AS (').match(JOIN_RE)
+      const numer = sliceBlock(bd, 'newmem_spend AS (', 'traffic_cust AS (').match(JOIN_RE)
+      expect(denom, 'newmem 里抓不到骨架 JOIN').not.toBeNull()
+      expect(numer, 'newmem_spend 里抓不到骨架 JOIN').not.toBeNull()
+      expect(numer![1]).toBe(denom![1])
+      expect(denom![1]).toBe('c.bound_store_id')
+      // 分子不得再按订单店归组（放在这里而不是只看上面的相等，是为了让失败信息直指回退）
+      expect(sliceBlock(bd, 'newmem_spend AS (', 'traffic_cust AS (')).not.toContain(
+        'JOIN skel sk ON sk.store_id = o.store_id',
+      )
+    })
+
+    /**
+     * 「分母 0 而分子 > 0 已消除」真正依赖的是**人群子集**，而人群由两段的
+     * `became_member_at` 谓词决定 —— 归店 JOIN 只决定归到哪一组。
+     *
+     * ⚠ 分母 `newmem` 既不含 `spe`、也不在 `EXPECTED_SPE_BLOCKS` 里，上面几条又只读它的 JOIN 一行，
+     * 于是把 `newmem` 的 `BETWEEN ${start} AND ${end}` 改成 `<= ${end}`（分母变大、子集仍成立但口径变了），
+     * 或反过来把分子改宽（子集直接破），一致性套件都全绿（pr-ready caliber-adversary P2-2）。
+     * 这里从**分母**现读这段谓词，断言分子逐字相同。
+     */
+    it('admin 明细：分子与分母的 became_member_at 谓词逐字相同（人群子集的真正依据）', () => {
+      const bd = sqlInFunction(adminSrc, ADMIN_CUSTOMER, 'queryOpsBreakdown')
+      const MEMBER_RE = /c\.became_member_at IS NOT NULL AND c\.became_member_at::date BETWEEN \$\{[a-zA-Z.]+\} AND \$\{[a-zA-Z.]+\}/
+      const denom = sliceBlock(bd, 'newmem AS (', 'newmem_spend AS (').match(MEMBER_RE)
+      const numer = sliceBlock(bd, 'newmem_spend AS (', 'traffic_cust AS (').match(MEMBER_RE)
+      expect(denom, 'newmem 里抓不到 became_member_at 谓词').not.toBeNull()
+      expect(numer, 'newmem_spend 里抓不到 became_member_at 谓词').not.toBeNull()
+      expect(numer![0]).toBe(denom![0])
+      // KPI 侧两条同理（它们的 WHERE 由 EXPECTED_SPE_BLOCKS 逐字钉死，这里只钉"两者相等"）
+      const kpiDenom = fnSource(adminSrc, ADMIN_CUSTOMER, 'queryNewMemberCount').match(MEMBER_RE)
+      const kpiNumer = fnSource(adminSrc, ADMIN_CUSTOMER, 'queryNewMemberSpend').match(MEMBER_RE)
+      expect(kpiDenom).not.toBeNull()
+      expect(kpiNumer![0]).toBe(kpiDenom![0])
+    })
+
+    /**
+     * 上面几条切片都靠 `newmem AS (` → `newmem_spend AS (` → `newmem_legacy_spend AS (` → `traffic_cust AS (`
+     * 这个**书写先后**（#289 在 newmem_spend 与 traffic_cust 之间插了 newmem_legacy_spend）。
+     * 将来在中间再插新 CTE，切片会连带切进新 CTE 的 JOIN / 谓词而不报错（sibling P3）。这里钉住四者相邻。
+     */
+    it('四个 CTE 相邻（切片锚点的前提）', () => {
+      const bd = sqlInFunction(adminSrc, ADMIN_CUSTOMER, 'queryOpsBreakdown')
+      const i1 = bd.indexOf('newmem AS (')
+      const i2 = bd.indexOf('newmem_spend AS (')
+      const i3 = bd.indexOf('newmem_legacy_spend AS (')
+      const i4 = bd.indexOf('traffic_cust AS (')
+      expect([i1, i2, i3, i4].every((i) => i > 0)).toBe(true)
+      expect(i1).toBeLessThan(i2)
+      expect(i2).toBeLessThan(i3)
+      expect(i3).toBeLessThan(i4)
+      // 相邻：**每段间隙都要查**（codex round-1 P3：原先只查了第一处，
+      // 在 newmem_spend 与 traffic_cust 之间插 CTE 时这条名叫「三个 CTE 相邻」的断言照样绿）
+      for (const [a, aLen, b, label] of [
+        [i1, 'newmem AS ('.length, i2, 'newmem → newmem_spend'],
+        [i2, 'newmem_spend AS ('.length, i3, 'newmem_spend → newmem_legacy_spend'],
+        [i3, 'newmem_legacy_spend AS ('.length, i4, 'newmem_legacy_spend → traffic_cust'],
+      ] as const) {
+        expect(
+          bd.slice(a + aLen, b).match(/\b[a-z_]+ AS \(/g),
+          `${label} 之间插了新 CTE，切片锚点失效`,
+        ).toBeNull()
+      }
+    })
+
+    it('staff：分子与分母用同一个 scope 生产者和同一个别名', () => {
+      const denomFn = fnSource(staffSrc, STAFF_MGMT_TRAFFIC, 'queryNewMemberCount')
+      const numerFn = fnSource(staffSrc, STAFF_MGMT_TRAFFIC, 'queryNewMemberSpend')
+      const denom = denomFn.match(STAFF_SCOPE_RE)
+      const numer = numerFn.match(STAFF_SCOPE_RE)
+      expect(denom, 'staff 分母里抓不到 scope 生产者').not.toBeNull()
+      expect(numer, 'staff 分子里抓不到 scope 生产者').not.toBeNull()
+      expect([numer![1], numer![2]]).toEqual([denom![1], denom![2]])
+      expect(denom![1]).toBe('buildClientScope')
+      // 别名也钉死绝对值 —— 只比"两侧相等"的话，两侧一起写 'x' 也全绿（boundary P2-2）
+      expect(denom![2]).toBe('c')
+
+      /**
+       * ⚠ `.match()` 只取**首个**命中，也不校验"抓到的那个变量就是插进 WHERE 的那个"。
+       * staff 本来就有双 scope 的写法（queryActive / queryTrialFootfall），于是
+       *   const scClient = buildClientScope(..., 'c', 1)            // 被上面读到
+       *   const sc = buildSaleScope(..., 'o', 1 + scClient.params.length)  // 实际用的
+       * 能让上面全绿（第二个 startIdx 不是字面量 1，正则根本不匹配）——boundary P2-1。
+       * 这里钉住：函数体内**只有一个** scope 生产者，且 WHERE 用的就是它，params 也来自它。
+       */
+      for (const [label, body] of [['分母', denomFn], ['分子', numerFn]] as const) {
+        expect(body.match(/build[A-Za-z]+Scope\(/g), `staff ${label} 里的 scope 生产者应恰好 1 个`).toHaveLength(1)
+        expect(body, `staff ${label} 的 WHERE 应直接用 sc.sql`).toContain('WHERE ${sc.sql}')
+        // ⚠ 光 `toContain('sc.params')` 不够：`pg.query(sql, sc.params.map(() => 'store-002'))`
+        // 会让 SQL 文本、生产者数量、别名、WHERE 落点、SQL 快照、staff 形态测试**全部不变**，
+        // 而绑定值指向另一家门店 ⇒ 分母算 001、分子算 002，客单价直接错（codex round-1 P2）。
+        // 这里钉住它就是 pg.query 的**第二实参本身**（归一后模板反引号紧跟 `, sc.params, )`）。
+        expect(body, `staff ${label} 的 params 应是 pg.query 的第二实参本身`).toContain('`, sc.params, )')
+      }
+    })
+
+    it('反向验证：任一侧回退到订单店都会红', () => {
+      const mutate = (src: string, from: string, to: string): string => {
+        expect(src.split(from), `锚点不唯一：${from}`).toHaveLength(2)
+        return src.replace(from, to)
+      }
+
+      // ① admin KPI 分子回退
+      const kpiBack = mutate(
+        adminSrc,
+        "const sc = scopeFilterSql(session, scope, 'c.bound_store_id')\n  const rows = await db.execute(sql`\n    SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v",
+        "const sc = scopeFilterSql(session, scope, 'o.store_id')\n  const rows = await db.execute(sql`\n    SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v",
+      )
+      expect(
+        fnSource(kpiBack, ADMIN_CUSTOMER, 'queryNewMemberSpend').match(SCOPE_COL_RE)![1],
+      ).not.toBe(fnSource(kpiBack, ADMIN_CUSTOMER, 'queryNewMemberCount').match(SCOPE_COL_RE)![1])
+
+      // ② admin 明细分子回退（锚点带上 spe 前缀，避免打到 #289 的 newmem_legacy_spend——两者 JOIN 后两行逐字相同）
+      const bdBack = mutate(
+        adminSrc,
+        'JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id\n      JOIN client_wechat_users c ON c.user_id = o.client_user_id\n      JOIN skel sk ON sk.store_id = c.bound_store_id',
+        'JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id\n      JOIN skel sk ON sk.store_id = o.store_id\n      JOIN client_wechat_users c ON c.user_id = o.client_user_id',
+      )
+      const bdSql = sqlInFunction(bdBack, ADMIN_CUSTOMER, 'queryOpsBreakdown')
+      expect(sliceBlock(bdSql, 'newmem_spend AS (', 'traffic_cust AS (')).toContain(
+        'JOIN skel sk ON sk.store_id = o.store_id',
+      )
+
+      // ③ staff 分子回退
+      const staffBack = mutate(
+        staffSrc,
+        "const sc = buildClientScope(scopeType, scopeId, 'c', 1)\n  const rows = await pg.query(\n    `SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v",
+        "const sc = buildSaleScope(scopeType, scopeId, 'o', 1)\n  const rows = await pg.query(\n    `SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v",
+      )
+      expect(
+        fnSource(staffBack, STAFF_MGMT_TRAFFIC, 'queryNewMemberSpend').match(STAFF_SCOPE_RE)![1],
+      ).toBe('buildSaleScope')
+    })
+  })
+})
+
+/**
+ * #289 新客客单价分子的 WorkFine 历史单分支 —— 两端逐字一致 + legacy 片段四份副本整段等值。
+ *
+ * WorkFine 单在款项流水里没有行，分子另起一条订单级分支（口径照搬 staff 顾客详情页 legacy_year_stats）。
+ * 四份副本（项目禁止跨端共享代码）：
+ *   1. staff mgmt-customer.js 详情页 legacy_year_stats
+ *   2. staff customer.js 详情页 legacy_year_stats
+ *   3. admin lib/data-center/workfine-legacy-spend.ts（KPI queryNewMemberLegacySpend + 明细 newmem_legacy_spend 共用）
+ *   4. staff mgmt-traffic.js queryNewMemberLegacySpend
+ *
+ * ⚠ **合同（用户 2026-09-26 拍板）**：本组守护拦的是**正常开发中的无意重复与漂移**——有人照着详情页再抄一份、
+ *   单端改了口径、helper 被别处复用、换了写法没同步等。**刻意混淆的对抗式绕过不在射程**（转义 / 拼接说明符、
+ *   package.json 重定向、藏进测试目录、符号链接等等，闸门 2 共 19 轮已尽量封堵，下方闭集保留），
+ *   新发现的此类变体登记为已知射程，由四份副本的逐字等值守护 + 代码评审兜底。
+ *
+ * 守护全部走**整段等值**（memory feedback-literal-guard-whole-segment-equality）：
+ *   - 金额表达式：四份与同一常量逐字相等
+ *   - 过滤条件：按顶层 AND 切成合取项，每份与「公共核心 + 该份专属项」的**有序闭集**逐项相等
+ *     （追加 / 删除 / 调序 / 包一层 OR 都会让列表不等）
+ *   - admin KPI 展开 helper 后与 staff mgmt-traffic **逐字**相等：插值不抹成占位，
+ *     而是按显式映射表逐个翻译（`${sc}`→`${sc.sql}` 等），槽位顺序一并锁住
+ *   - 明细 CTE 与结果合并整段快照
+ */
+describe('#289 新客客单价 WorkFine 分支（两端逐字一致 + legacy 片段四份副本）', () => {
+  const STAFF_ROUTES = path.resolve(__dirname, '../../../../../fengyu-staff/cloudfunctions/staffApi/routes')
+  const STAFF_MGMT_CUSTOMER = path.join(STAFF_ROUTES, 'mgmt-customer.js')
+  const STAFF_CUSTOMER = path.join(STAFF_ROUTES, 'customer.js')
+  const ADMIN_LEGACY = path.resolve(__dirname, '../../../lib/data-center/workfine-legacy-spend.ts')
+
+  const LEGACY_AMOUNT =
+    'COALESCE(SUM( CASE WHEN EXISTS (SELECT 1 FROM sale_items si WHERE si.sale_order_id = o.sale_order_id) ' +
+    'THEN (SELECT SUM(si2.received::numeric) FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id) ' +
+    'ELSE o.received::numeric END ), 0)'
+  /** 四份共有的订单过滤核心（顺序即各份中的相对顺序） */
+  const STATUS = "o.status IN ('已支付', '部分支付', '已完成')"
+  const ORDER_TYPE = "o.sale_order_type IN ('销售单', '转换单')"
+  const LEGACY = "o.legacy_source = 'workfine'"
+
+  /** 各份的完整合取项有序闭集（核心 + 专属：scope / 人群 / 顾客 / 日期） */
+  const EXPECTED_CONJUNCTS: Record<'detail' | 'adminHelper' | 'mgmtTraffic', string[]> = {
+    detail: [
+      STATUS,
+      ORDER_TYPE,
+      'o.client_user_id = $1',
+      LEGACY,
+      'o.performance_attribution_date >= $2::date',
+      "o.performance_attribution_date < ($2::date + INTERVAL '1 year')",
+    ],
+    adminHelper: [STATUS, ORDER_TYPE, LEGACY, 'o.performance_attribution_date BETWEEN ${range.start} AND ${range.end}'],
+    mgmtTraffic: [
+      '${sc.sql}',
+      'c.became_member_at IS NOT NULL',
+      'c.became_member_at::date BETWEEN ${startDateExpr(period)} AND ${endDateExpr(period)}',
+      STATUS,
+      ORDER_TYPE,
+      LEGACY,
+      'o.performance_attribution_date BETWEEN ${startDateExpr(period)} AND ${endDateExpr(period)}',
+    ],
+  }
+
+  /** 按顶层 ` AND ` 切合取项；`BETWEEN x AND y` 的 AND 不是合取，拼回去 */
+  function conjuncts(where: string): string[] {
+    const parts = where.split(' AND ')
+    const out: string[] = []
+    for (const p of parts) {
+      const prev = out[out.length - 1]
+      if (prev !== undefined && /\bBETWEEN\s+\S+$/.test(prev)) out[out.length - 1] = `${prev} AND ${p}`
+      else out.push(p)
+    }
+    return out
+  }
+
+  /** 从单个模板文本取出 `SELECT <amount> AS <alias> FROM sale_orders o …WHERE <where>` 的两段 */
+  function splitQuery(text: string, alias: string): { amount: string; from: string; where: string } {
+    const esc = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const m = new RegExp(`^SELECT (.*) AS ${esc} (FROM sale_orders o(?: .*?)?) WHERE (.*)$`).exec(text)
+    if (!m) throw new Error(`splitQuery: 形态不符（alias=${alias}）：${text.slice(0, 120)}…`)
+    return { amount: m[1], from: m[2], where: m[3] }
+  }
+
+  let adminSrc: string
+  let staffSrc: string
+  let legacySrc: string
+  let helperAmount: string
+  let helperFilter: string
+
+  /** staff 详情页 legacy_year_stats CTE 的查询体 */
+  const DETAIL_FNS: Record<string, string> = {
+    [STAFF_MGMT_CUSTOMER]: 'getConsumptionStatsScoped',
+    [STAFF_CUSTOMER]: 'getConsumptionStats',
+  }
+  const detailCte = (file: string): string => {
+    const src = fs.readFileSync(file, 'utf-8')
+    const tpl = sqlInFunction(src, file, DETAIL_FNS[file])
+    const block = sliceBlock(tpl, 'legacy_year_stats AS (', '), actual_stats AS (')
+    return block.replace(/^legacy_year_stats AS \( /, '').trim()
+  }
+
+  beforeAll(() => {
+    adminSrc = fs.readFileSync(ADMIN_CUSTOMER, 'utf-8')
+    staffSrc = fs.readFileSync(STAFF_MGMT_TRAFFIC, 'utf-8')
+    legacySrc = fs.readFileSync(ADMIN_LEGACY, 'utf-8')
+    helperAmount = sqlInFunction(legacySrc, ADMIN_LEGACY, 'workfineLegacyReceivedSumSql')
+    helperFilter = sqlInFunction(legacySrc, ADMIN_LEGACY, 'workfineLegacyOrderSql')
+  })
+
+  it('金额表达式四份副本逐字相等（有明细取明细，否则订单实收）', () => {
+    const staffTraffic = splitQuery(sqlInFunction(staffSrc, STAFF_MGMT_TRAFFIC, 'queryNewMemberLegacySpend'), 'v')
+    const copies: Array<[string, string]> = [
+      ['staff mgmt-customer.js 详情页', splitQuery(detailCte(STAFF_MGMT_CUSTOMER), 'year_total').amount],
+      ['staff customer.js 详情页', splitQuery(detailCte(STAFF_CUSTOMER), 'year_total').amount],
+      ['admin workfine-legacy-spend.ts', helperAmount],
+      ['staff mgmt-traffic.js', staffTraffic.amount],
+    ]
+    for (const [label, amount] of copies) expect(amount, `${label} 的 legacy 金额表达式漂移`).toBe(LEGACY_AMOUNT)
+  })
+
+  it('过滤条件四份副本：各自的合取项有序闭集逐项相等（核心三项同文同序）', () => {
+    for (const file of [STAFF_MGMT_CUSTOMER, STAFF_CUSTOMER]) {
+      const q = splitQuery(detailCte(file), 'year_total')
+      expect(q.from, `${path.basename(file)} FROM 子句`).toBe('FROM sale_orders o')
+      expect(conjuncts(q.where), `${path.basename(file)} 详情页过滤`).toEqual(EXPECTED_CONJUNCTS.detail)
+    }
+    expect(conjuncts(helperFilter), 'admin workfineLegacyOrderSql').toEqual(EXPECTED_CONJUNCTS.adminHelper)
+    const staffTraffic = splitQuery(sqlInFunction(staffSrc, STAFF_MGMT_TRAFFIC, 'queryNewMemberLegacySpend'), 'v')
+    expect(staffTraffic.from).toBe('FROM sale_orders o JOIN client_wechat_users c ON c.user_id = o.client_user_id')
+    expect(conjuncts(staffTraffic.where), 'staff mgmt-traffic.js').toEqual(EXPECTED_CONJUNCTS.mgmtTraffic)
+  })
+
+  /** 展开 admin 的两个 helper 插值，再把 admin 插值逐个翻译成 staff 写法（槽位不抹平） */
+  const ADMIN_TO_STAFF: Array<[string, string]> = [
+    ['${sc}', '${sc.sql}'],
+    ['${range.start}', '${startDateExpr(period)}'],
+    ['${range.end}', '${endDateExpr(period)}'],
+  ]
+  function expandAdmin(text: string): string {
+    const expanded = text
+      .split('${workfineLegacyReceivedSumSql()}').join(helperAmount)
+      .split('${workfineLegacyOrderSql(range)}').join(helperFilter)
+    return normalize(expanded)
+  }
+  function toStaff(text: string): string {
+    let out = text
+    for (const [a, s] of ADMIN_TO_STAFF) out = out.split(a).join(s)
+    // 翻译后不得残留 admin 侧插值（映射表漏项会在这里暴露，而不是静默比对成功）
+    const leftovers = (out.match(/\$\{[^}]*\}/g) ?? []).filter(
+      (x) => !['${sc.sql}', '${startDateExpr(period)}', '${endDateExpr(period)}'].includes(x),
+    )
+    expect(leftovers, 'admin 侧有未登记的插值').toEqual([])
+    return out
+  }
+
+  it('admin KPI queryNewMemberLegacySpend（展开 helper 后）与 staff queryNewMemberLegacySpend 逐字一致', () => {
+    const admin = expandAdmin(sqlInFunction(adminSrc, ADMIN_CUSTOMER, 'queryNewMemberLegacySpend'))
+    const staff = sqlInFunction(staffSrc, STAFF_MGMT_TRAFFIC, 'queryNewMemberLegacySpend')
+    expect(toStaff(admin)).toBe(staff)
+    // scope 挂在顾客绑定门店上（#439 起与款项流水分支、分母三者同源，满足 #401 在营接线）
+    expect(fnSource(adminSrc, ADMIN_CUSTOMER, 'queryNewMemberLegacySpend')).toContain(
+      "const sc = scopeFilterSql(session, scope, 'c.bound_store_id')",
+    )
+    expect(fnSource(staffSrc, STAFF_MGMT_TRAFFIC, 'queryNewMemberLegacySpend')).toContain(
+      "const sc = buildClientScope(scopeType, scopeId, 'c', 1)",
+    )
+  })
+
+  it('admin 明细 newmem_legacy_spend CTE 整段快照（与 KPI 同片段、scope 走 skel、按组汇总）', () => {
+    const ops = sqlInFunction(adminSrc, ADMIN_CUSTOMER, 'queryOpsBreakdown')
+    expect(sliceBlock(ops, 'newmem_legacy_spend AS (', 'traffic_cust AS (')).toBe(
+      'newmem_legacy_spend AS ( SELECT ${groupId} AS group_id, ${workfineLegacyReceivedSumSql()} AS legacy_spend ' +
+        'FROM sale_orders o JOIN client_wechat_users c ON c.user_id = o.client_user_id ' +
+        'JOIN skel sk ON sk.store_id = c.bound_store_id ' +
+        'WHERE c.became_member_at IS NOT NULL AND c.became_member_at::date BETWEEN ${start} AND ${end} ' +
+        'AND ${workfineLegacyOrderSql(range)} GROUP BY ${groupId} ), ',
+    )
+    // 与款项流水分支相加后才出列；LEFT JOIN 恰好一次（缺了 → 全部组的 legacy 为 NULL → 0）
+    const adds = ops.match(/COALESCE\(newmem_spend\.new_spend, 0\) \+ COALESCE\(newmem_legacy_spend\.legacy_spend, 0\) AS new_spend,/g) ?? []
+    expect(adds.length).toBe(1)
+    const joins = ops.match(/LEFT JOIN newmem_legacy_spend ON newmem_legacy_spend\.group_id = gs\.group_id/g) ?? []
+    expect(joins.length).toBe(1)
+  })
+
+  it('customer.ts 只经 helper 使用 legacy 片段：两个 helper 各恰好 2 次（KPI + 明细），不得内联副本', () => {
+    // 按 AST 数 CallExpression（codex r3 P3）：正则剥 JS 注释会把字符串里的 `//` 当注释，同行其后的调用会被漏计
+    const sf = ts.createSourceFile(ADMIN_CUSTOMER, adminSrc, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+    const calls: Record<string, string[]> = {}
+    const visit = (n: ts.Node): void => {
+      if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && /^workfineLegacy/.test(n.expression.text)) {
+        ;(calls[n.expression.text] ??= []).push(n.arguments.map((a) => a.getText(sf)).join(', '))
+      }
+      ts.forEachChild(n, visit)
+    }
+    visit(sf)
+    expect(calls).toEqual({
+      workfineLegacyReceivedSumSql: ['', ''],
+      workfineLegacyOrderSql: ['range', 'range'],
+    })
+    // 每个 helper 调用必须解析到登记模块的 ImportSpecifier（codex r5/r6 P2：参数 / 局部变量 / 函数声明 /
+    // 具名函数表达式等任何同名绑定遮蔽时，调用文本不变但运行时走遮蔽实现）。用 TypeChecker 做作用域解析，
+    // 覆盖全部遮蔽形态；只建单文件 program（noResolve），不依赖路径别名解析。
+    const program = ts.createProgram({
+      rootNames: [ADMIN_CUSTOMER],
+      options: { noResolve: true, noLib: true, allowJs: false, target: ts.ScriptTarget.Latest },
+      host: Object.assign(ts.createCompilerHost({}), {
+        getSourceFile: (f: string, lang: ts.ScriptTarget) => (f === ADMIN_CUSTOMER ? ts.createSourceFile(f, adminSrc, lang, true) : undefined),
+      }),
+    })
+    const checker = program.getTypeChecker()
+    const psf = program.getSourceFile(ADMIN_CUSTOMER)!
+    const unresolved: string[] = []
+    const checkCalls = (n: ts.Node): void => {
+      if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && /^workfineLegacy/.test(n.expression.text)) {
+        const decl = checker.getSymbolAtLocation(n.expression)?.declarations?.[0]
+        const fromModule =
+          decl && ts.isImportSpecifier(decl) && ts.isStringLiteral(decl.parent.parent.parent.moduleSpecifier)
+            ? decl.parent.parent.parent.moduleSpecifier.text
+            : null
+        if (fromModule !== '@/lib/data-center/workfine-legacy-spend') {
+          unresolved.push(`${n.expression.text}@${psf.getLineAndCharacterOfPosition(n.getStart(psf)).line + 1}`)
+        }
+      }
+      ts.forEachChild(n, checkCalls)
+    }
+    checkCalls(psf)
+    expect(unresolved, 'helper 调用没有解析到登记模块的导入（被同名绑定遮蔽？）').toEqual([])
+    // helper 必须从登记的 workfine-legacy-spend 导入（codex r4 P2：改从范围外同名模块导入可旁路）
+    const imports = sf.statements
+      .filter(ts.isImportDeclaration)
+      .filter((d) => /workfineLegacy/.test(d.importClause?.getText(sf) ?? ''))
+      .map((d) => d.getText(sf))
+    expect(imports).toEqual([
+      "import { workfineLegacyOrderSql, workfineLegacyReceivedSumSql } from '@/lib/data-center/workfine-legacy-spend'",
+    ])
+    // 内联副本由下方「所有者闭集」按 AST 扫描拦截（customer.ts 不在任何登记所有者里）
+  })
+
+  /**
+   * 分子装配段整段快照（codex r1 P2：`toContain` 只证明「某处有这行」，挡不住「另起一条分流实现、原行留着」）。
+   * admin 钉 KPI 回调整段（三条查询、解构顺序、相加与除法）；staff 钉 summary 的 Promise.all 解构 + 调用列表
+   * （两列按下标配对，调序即错位）与 newMembers 装配。
+   */
+  it('两端分子装配段整段快照（KPI 回调 / staff Promise.all + newMembers）', () => {
+    const code = normalize(stripComments(adminSrc))
+    expect(sliceBlock(code, 'withComparison( async (r) => { const [spend, legacySpend, count]', 'withComparison((r) => queryServiceCount(')).toBe(
+      'withComparison( async (r) => { const [spend, legacySpend, count] = await Promise.all([ ' +
+        'queryNewMemberSpend(session, scope, r), queryNewMemberLegacySpend(session, scope, r), queryNewMemberCount(session, scope, r), ' +
+        "]) return count > 0 ? round2((spend + legacySpend) / count) : null }, comparison, 'amount', enabled, ), ",
+    )
+    const staff = fnSource(staffSrc, STAFF_MGMT_TRAFFIC, 'summary')
+    expect(sliceBlock(staff, 'const [ registration,', ' const elapsed')).toBe(
+      'const [ registration, traffic, statusBreakdown, activeOnce, activeTwice, reactivatedFromWarn, reactivatedFromFrozen, ' +
+        'reactivatedFromDeep, memberOps, newMemberCount, newMemberSpend, newMemberLegacySpend, trialFootfall, scopeName, ] = await Promise.all([ ' +
+        'queryRegistration(scopeType, scopeId, period), queryTraffic(scopeType, scopeId, period), queryStatusBreakdown(scopeType, scopeId), ' +
+        'queryActiveOnce(scopeType, scopeId, period), queryActiveTwice(scopeType, scopeId, period), ' +
+        "queryReactivated(scopeType, scopeId, period, startDate, 'warn'), queryReactivated(scopeType, scopeId, period, startDate, 'frozen'), " +
+        "queryReactivated(scopeType, scopeId, period, startDate, 'deep'), queryMemberOps(scopeType, scopeId, period), " +
+        'queryNewMemberCount(scopeType, scopeId, period), queryNewMemberSpend(scopeType, scopeId, period), ' +
+        'queryNewMemberLegacySpend(scopeType, scopeId, period), queryTrialFootfall(scopeType, scopeId, period), ' +
+        'resolveScopeName(scopeType, scopeId), ])',
+    )
+    expect(sliceBlock(staff, 'newMembers: {', ' computedAt')).toBe(
+      'newMembers: { count: newMemberCount, spend: Math.round((Number(newMemberSpend) + Number(newMemberLegacySpend)) * 100) / 100, trialFootfall, },',
+    )
+  })
+
+  /**
+   * 副本**闭集**（codex r1 P2）：上面几条只守已登记的四份，新增第五份 legacy 片段、或在数据中心另写一条
+   * WorkFine 旁路实现，它们都看不见。这里全仓扫源码（AST 取模板串 → 剥 SQL 注释 → 按所在函数归属），
+   * 要求签名出现的「文件:函数 × 次数」与登记表**完全相等**：多一处、少一处、挪了函数都红。
+   *   A 金额签名 `si2.received::numeric`：admin src + staffApi + clientApi + analyst 全量（db/、scripts/ 等根外目录不在内）
+   *   B 订单级 WorkFine 过滤 `legacy_source = 'workfine'`：admin src + staffApi + clientApi + analyst 全量
+   * ⚠ A 里 mgmt-customer.js / customer.js 各 2 次 = order_stats（累计消费，非 legacy 副本）+ legacy_year_stats。
+   * JS 层的静态拆分（`+` 拼接、括号、常量模板插值 `${'…'}`）先常量求值再扫，拦得住。
+   * ⚠ 合同：本组只拦「新增副本 / 旁路 / 挪位置」。已登记所有者的 SQL **内容**不归它管——
+   *   本单四份副本的内容由上方逐字等值守护负责；legacy-orders / clientApi 等非本单所有者只做登记，
+   *   其内部「删真实过滤 + 放死代码字符串补次数」这类改写不在射程内（codex r5 P2 讨论，见 _tmp/issue-289/review）。
+   * ⚠ 射程（只是 tripwire，不是 SQL 语义分析）：
+   *   - JS 层掺变量（`'…si2.' + col`）或运行时拼装，无法静态判定
+   *   - SQL 层的等价改写：PG 相邻字面量拼接 `'work' 'fine'` / `'work' || 'fine'`、无通配符的 `LIKE 'workfine'`、换别名 `si3.received`、
+   *     引号标识符 `"si2".received` / `"legacy_source"`、`CAST(si2.received AS numeric)`、同义 / 近似类型
+   *     `::decimal` / `::float8` / `::double precision` / 省略 cast，过滤写成 `IN ('workfine')` / `= ANY(...)`
+   *   - 目录符号链接不跟随、四个扫描根之外的目录（db/ 等）不在射程
+   *   - `-- 注释 ${未知插值} 签名`：若插值运行时以换行开头，签名实际生效但被当注释剥掉
+   *   这类由上面四份副本的逐字等值守护与代码评审兜底。
+   */
+  const REPO = path.resolve(__dirname, '../../../../..')
+  // PG 允许 `.` / `::` 两侧有空白 / 注释（剥注释后成空格），签名同样容忍（codex/GLM r6 P2）
+  // 大小写不敏感：PG 未加引号的标识符 / 类型名折叠为小写（GLM r6 P3）
+  const SIG_AMOUNT = /\bsi2\s*\.\s*received\s*::\s*numeric/gi
+  const SIG_LEGACY_ORDER = /legacy_source\s*=\s*'workfine'/gi
+  /**
+   * 粗锚点：原文含锚点才进入「剥 SQL 注释 → 匹配签名」。不能拿签名本身在剥注释前短路——
+   * `legacy_source/*x*\/ = 'workfine'` 这类注释夹断的写法原文不匹配、剥完才匹配（codex r5 P2）。
+   * 已接受的误伤面：含 received / workfine 的非 SQL 字符串（import 路径、日志文案）也会进 SQL 词法器，
+   * 若其中出现未终止的 `'` / `$$` / `/*` 会整测报红——方向是 fail-closed，届时把那处改写或改用常量即可。
+   */
+  const SIG_ANCHOR = new Map<string, RegExp>([
+    [SIG_AMOUNT.source, /si2|received/i],
+    [SIG_LEGACY_ORDER.source, /legacy_source|workfine/i],
+  ])
+  const EXPECTED_AMOUNT_OWNERS: Record<string, number> = {
+    'fengyu-admin/src/lib/data-center/workfine-legacy-spend.ts:workfineLegacyReceivedSumSql': 1,
+    'fengyu-staff/cloudfunctions/staffApi/routes/customer.js:getConsumptionStats': 2,
+    'fengyu-staff/cloudfunctions/staffApi/routes/mgmt-customer.js:getConsumptionStatsScoped': 2,
+    'fengyu-staff/cloudfunctions/staffApi/routes/mgmt-traffic.js:queryNewMemberLegacySpend': 1,
+  }
+  const EXPECTED_LEGACY_ORDER_OWNERS: Record<string, number> = {
+    // admin 历史订单核对流程（审核 / 驳回 / 改金额 / 改手机号），不是统计口径
+    'fengyu-admin/src/actions/legacy-orders.ts:approveLegacyOrder': 2,
+    'fengyu-admin/src/actions/legacy-orders.ts:batchApproveLegacyOrders': 2,
+    'fengyu-admin/src/actions/legacy-orders.ts:rejectLegacyOrder': 1,
+    'fengyu-admin/src/actions/legacy-orders.ts:updateLegacyOrderAmount': 2,
+    'fengyu-admin/src/actions/legacy-orders.ts:updateLegacyOrderPhone': 1,
+    'fengyu-admin/src/lib/data-center/workfine-legacy-spend.ts:workfineLegacyOrderSql': 1,
+    // clientApi：登录绑定手机号时认领历史单、可预约项目过滤历史单 NULL 卡
+    'fengyu-client/cloudfunctions/clientApi/routes/auth.js:bindPhone': 1,
+    'fengyu-client/cloudfunctions/clientApi/routes/order.js:appointableItems': 1,
+    // customer.js 另两处不是金额副本：detail = 待核对历史单计数（status='未审核'），paidOrders = 历史单 NULL 卡不下发（M12）
+    'fengyu-staff/cloudfunctions/staffApi/routes/customer.js:detail': 1,
+    'fengyu-staff/cloudfunctions/staffApi/routes/customer.js:getConsumptionStats': 1,
+    'fengyu-staff/cloudfunctions/staffApi/routes/customer.js:paidOrders': 1,
+    'fengyu-staff/cloudfunctions/staffApi/routes/mgmt-customer.js:getConsumptionStatsScoped': 1,
+    'fengyu-staff/cloudfunctions/staffApi/routes/mgmt-traffic.js:queryNewMemberLegacySpend': 1,
+  }
+
+  /** 扫描根：每个根必须存在且非空（codex r3 P3：只看合计文件数时，某个根写错路径仍能绿） */
+  const AMOUNT_ROOTS = ['fengyu-admin/src', 'fengyu-staff/cloudfunctions/staffApi', 'fengyu-client/cloudfunctions', 'fengyu-analyst/src']
+  /**
+   * B：整个 admin src + 整个 staffApi。codex r3 P2（只扫 mgmt-*.js 漏辅助文件）、r4 P2（只扫 data-center 两目录时，
+   * 把 helper 改成从范围外的同名模块导入即可旁路）、GLM r3 P3（clientApi 侧不在射程）、GLM r6 P3（analyst）—— 一律扩到四个根全量，
+   * 现存合法所有者逐个登记（legacy-orders 审核流程、clientApi 登录绑定 / 卡包过滤等都不是金额副本）。
+   */
+  const LEGACY_ORDER_ROOTS = ['fengyu-admin/src', 'fengyu-staff/cloudfunctions/staffApi', 'fengyu-client/cloudfunctions', 'fengyu-analyst/src']
+
+  /** 生产源码扩展名（codex r12/r13：.jsx、.mts、.cts 也是可被加载的模块） */
+  const SOURCE_EXT = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/
+  /** 声明文件不是运行时代码（codex r14 P3） */
+  const DECL_EXT = /\.d\.(ts|mts|cts)$/
+  const scriptKindOf = (rel: string): ts.ScriptKind =>
+    /\.(ts|mts|cts)$/.test(rel) ? ts.ScriptKind.TS : rel.endsWith('.tsx') ? ts.ScriptKind.TSX : rel.endsWith('.jsx') ? ts.ScriptKind.JSX : ts.ScriptKind.JS
+  /** listSources 跳过的目录 / 文件——唯一判定（codex r19 P2：两套不等价规则会留缝） */
+  const SKIP_DIR = (name: string): boolean => name === 'node_modules' || name === '__tests__' || name.startsWith('.')
+  const SKIP_FILE = (name: string): boolean => /\.(test|spec)\./.test(name)
+  /** 绝对路径是否落在被扫描跳过的位置（任一目录段 SKIP_DIR，或文件名 SKIP_FILE） */
+  const isSkippedPath = (abs: string): boolean => {
+    const segs = path.relative(REPO, abs).split(path.sep)
+    const file = segs.pop() ?? ''
+    return segs.some((d) => d !== '..' && SKIP_DIR(d)) || SKIP_FILE(file)
+  }
+  /** 剥 TS 透明包装 / 括号 / 逗号序列（callee 与条件共用） */
+  const unwrapExpr = (e: ts.Expression): ts.Expression => {
+    for (;;) {
+      if (ts.isParenthesizedExpression(e) || ts.isAsExpression(e) || ts.isTypeAssertionExpression(e) || ts.isNonNullExpression(e) || ts.isSatisfiesExpression(e)) e = e.expression
+      else if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.CommaToken) e = e.right
+      else return e
+    }
+  }
+  /** 模块说明符的常量求值（字符串 / 模板 / `+` / TS 包装 / 字面量条件），求不出返回 null */
+  const staticSpec = (n: ts.Node): string | null => {
+    if (ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n)) return n.text
+    if (ts.isParenthesizedExpression(n) || ts.isAsExpression(n) || ts.isTypeAssertionExpression(n) || ts.isNonNullExpression(n) || ts.isSatisfiesExpression(n)) return staticSpec(n.expression)
+    if (ts.isConditionalExpression(n)) {
+      const c = unwrapExpr(n.condition)
+      if (c.kind === ts.SyntaxKind.TrueKeyword) return staticSpec(n.whenTrue)
+      if (c.kind === ts.SyntaxKind.FalseKeyword) return staticSpec(n.whenFalse)
+      return null
+    }
+    if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+      const l = staticSpec(n.left)
+      const r = l === null ? null : staticSpec(n.right)
+      return l !== null && r !== null ? l + r : null
+    }
+    if (ts.isTemplateExpression(n)) {
+      let out = n.head.text
+      for (const sp of n.templateSpans) {
+        const v = staticSpec(sp.expression)
+        if (v === null) return null
+        out += v + sp.literal.text
+      }
+      return out
+    }
+    return null
+  }
+  /** 取节点上的模块说明符表达式（静态导入 / re-export / import-equals / import() / require，callee 已解包） */
+  const moduleSpecNode = (n: ts.Node): ts.Expression | undefined => {
+    if ((ts.isImportDeclaration(n) || ts.isExportDeclaration(n)) && n.moduleSpecifier) return n.moduleSpecifier
+    if (ts.isImportEqualsDeclaration(n) && ts.isExternalModuleReference(n.moduleReference)) return n.moduleReference.expression
+    if (ts.isCallExpression(n) && n.arguments[0]) {
+      const callee = unwrapExpr(n.expression)
+      if (callee.kind === ts.SyntaxKind.ImportKeyword || (ts.isIdentifier(callee) && callee.text === 'require')) return n.arguments[0]
+    }
+    return undefined
+  }
+
+  function listSources(rel: string): string[] {
+    const root = path.join(REPO, rel)
+    expect(fs.existsSync(root), `扫描根不存在：${rel}`).toBe(true)
+    const out: string[] = []
+    const walk = (dir: string) => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, e.name)
+        if (e.isDirectory()) {
+          if (SKIP_DIR(e.name)) continue
+          walk(full)
+        } else if (SOURCE_EXT.test(e.name) && !DECL_EXT.test(e.name) && !SKIP_FILE(e.name)) {
+          out.push(path.relative(REPO, full))
+        }
+      }
+    }
+    walk(root)
+    expect(out.length, `扫描根为空：${rel}`).toBeGreaterThan(0)
+    return out
+  }
+  const scopeOf = (roots: string[]): string[] => {
+    const files = roots.flatMap(listSources)
+    expect(new Set(files).size, '扫描根有重叠（同一文件被扫两次会重复计数）').toBe(files.length)
+    return files
+  }
+
+  /**
+   * 源码里签名出现次数，按「文件:所在函数」汇总。
+   *
+   * 文本单元按 AST 组装（codex r3 P2，不再用正则挖 `${}`）：
+   *   - 字符串 / 无插值模板：本身
+   *   - 带插值模板：各插值都能常量求值 → 整段拼接；否则只拼静态片段（插值处断开，签名不能跨未知值成立）
+   *   - `+` 拼接（可带括号）：两侧都能常量求值才整段折叠（`'…si2.received' + '::numeric'` 拦得住）
+   * 被上层整段扫过的叶子不重复计数；进入 `${}` 插值表达式时复位（里面的内层模板单独计）。
+   */
+  /** 逐文件结果缓存（签名 + 文件 + 内容哈希）：红检多次整树重扫时只重算被注入的那个文件 */
+  const ownerCache = new Map<string, Record<string, number>>()
+  function signatureOwners(files: Array<[rel: string, src: string]>, sig: RegExp): Record<string, number> {
+    const owners: Record<string, number> = {}
+    for (const [rel, src] of files) {
+      const cacheKey = `${sig.source}/${sig.flags}\u0000${rel}\u0000${createHash('sha1').update(src).digest('hex')}`
+      const cached = ownerCache.get(cacheKey)
+      if (cached) {
+        for (const [k, v] of Object.entries(cached)) owners[k] = (owners[k] ?? 0) + v
+        continue
+      }
+      const fileOwners: Record<string, number> = {}
+      const kind = scriptKindOf(rel)
+      const sf = ts.createSourceFile(rel, src, ts.ScriptTarget.Latest, true, kind)
+      /** 所有者 = 最外层的具名声明（顶层函数 / `export const x = withPermission(…)` / 类方法所在的最外层名） */
+      const ownerOf = (n: ts.Node): string => {
+        let owner = '<module>'
+        for (let p: ts.Node | undefined = n.parent; p; p = p.parent) {
+          if ((ts.isFunctionDeclaration(p) || ts.isMethodDeclaration(p) || ts.isClassDeclaration(p)) && p.name) owner = p.name.getText(sf)
+          else if (ts.isVariableDeclaration(p)) owner = p.name.getText(sf)
+        }
+        return owner
+      }
+      /** 常量求值：能确定完整文本返回字符串，否则 null */
+      /** 常量求值：与说明符侧同一实现（GLM r19 P3：两份等价实现日后会漂移） */
+      const constant = staticSpec
+      /**
+       * 本节点作为一个扫描单元的文本；不是字符串类节点返回 null。
+       * 带未知插值的模板：静态片段之间放哨兵 `\u0000`（非空白，签名里的 `\s*` 跨不过去，codex r4 P2），
+       * 先整体剥 SQL 注释（注释可能跨插值），再按哨兵切段各自计数。
+       */
+      const SENTINEL = '\u0000'
+      const unitText = (n: ts.Node): string | null => {
+        const c = constant(n)
+        if (c !== null) return c
+        if (ts.isTemplateExpression(n)) return [n.head.text, ...n.templateSpans.map((sp) => sp.literal.text)].join(SENTINEL)
+        return null
+      }
+      const count = (n: ts.Node, text: string): number => {
+        const re = new RegExp(sig.source, sig.flags)
+        const anchor = SIG_ANCHOR.get(sig.source)
+        if (!anchor) throw new Error(`签名扫描：签名 ${sig.source} 没有登记粗锚点`)
+        // 原文不含锚点 → 无需剥注释（全仓大量非 SQL 模板在这里短路）
+        if (!anchor.test(text)) return 0
+        // 本词法器不认识 E'…' 反斜杠转义 / U&'…'，会错位剥掉真实条件（codex r7 P2）→ 含锚点时直接红
+        // （误伤面：值恰为单字母 `'E'` 的字面量、`'…E' '…'` 相邻拼接也会被判为 E-string——fail-closed，改写即可）
+        if (/(^|[^\w$])[Ee]'|(^|[^\w$])[Uu]&'/.test(text)) {
+          throw new Error(`签名扫描：${rel}:${ownerOf(n)} 含签名锚点且用了 E'…' / U&'…' 字符串，词法器不支持，请改写`)
+        }
+        // 含锚点却无法做 SQL 词法分析 → 直接红（codex r4 P2：回退原文会让注释里的诱饵补足被删的有效命中）
+        let stripped: string
+        try {
+          stripped = stripSqlComments(text)
+        } catch (e) {
+          throw new Error(`签名扫描：${rel}:${ownerOf(n)} 含签名锚点但 SQL 词法分析失败（${(e as Error).message}），请改写该处 SQL`)
+        }
+        return stripped.split(SENTINEL).reduce((sum, piece) => sum + (piece.match(re)?.length ?? 0), 0)
+      }
+      const visit = (n: ts.Node, covered: boolean): void => {
+        let nextCovered = covered
+        if (!covered) {
+          const text = unitText(n)
+          if (text !== null) {
+            const hits = count(n, text)
+            if (hits > 0) {
+              const key = `${rel}:${ownerOf(n)}`
+              fileOwners[key] = (fileOwners[key] ?? 0) + hits
+            }
+            nextCovered = true
+          }
+        }
+        // `${}` 插值表达式只在外层模板**不能**整段常量求值时复位下钻；能整段求值时插值已计入外层（codex r4 P2）
+        const resetsSpan = (c: ts.Node) =>
+          ts.isTemplateSpan(n) && c === n.expression && constant(n.parent) === null
+        ts.forEachChild(n, (c) => visit(c, resetsSpan(c) ? false : nextCovered))
+      }
+      ts.forEachChild(sf, (c) => visit(c, false))
+      ownerCache.set(cacheKey, fileOwners)
+      for (const [k, v] of Object.entries(fileOwners)) owners[k] = (owners[k] ?? 0) + v
+    }
+    return owners
+  }
+
+  const fileCache = new Map<string, string>()
+  const read = (rels: string[]): Array<[string, string]> =>
+    rels.map((r) => {
+      if (!fileCache.has(r)) fileCache.set(r, fs.readFileSync(path.join(REPO, r), 'utf-8'))
+      return [r, fileCache.get(r)!]
+    })
+
+  it('legacy 金额签名的所有者闭集（admin / staffApi / clientApi / analyst 全量）', () => {
+    expect(signatureOwners(read(scopeOf(AMOUNT_ROOTS)), SIG_AMOUNT)).toEqual(EXPECTED_AMOUNT_OWNERS)
+  }, 30_000) // 全仓 AST 扫描：满载下单跑约 1s，放宽超时防随机红（memory project-repo-scan-guards-flaky-under-load）
+
+  it('订单级 WorkFine 过滤的所有者闭集（admin / staffApi / clientApi / analyst 全量）', () => {
+    expect(signatureOwners(read(scopeOf(LEGACY_ORDER_ROOTS)), SIG_LEGACY_ORDER)).toEqual(EXPECTED_LEGACY_ORDER_OWNERS)
+  }, 30_000) // 全仓 AST 扫描：满载下单跑约 1s，放宽超时防随机红（memory project-repo-scan-guards-flaky-under-load）
+
+  /**
+   * helper 的**消费者**闭集（codex r8 P2）：签名只活在 helper 里，别的 admin 文件导入 helper 自拼一条 WorkFine 查询，
+   * A / B 两个所有者闭集都不会变。这里要求模块名 `workfine-legacy-spend` 在 admin 生产源码里
+   * 只被 helper 自身与 customer.ts 引用（按 AST 解码 / 常量求值说明符并解析路径，静态导入、re-export、
+   * import()、require 都算；非常量说明符的静态片段里带 helper 名即违规），且 customer.ts 内两个导入符号的
+   * 每处引用都是登记函数里的直接调用。
+   * ⚠ type-only 引用（`import type` / `export type … from` / `typeof helper`）也按违规处理——无运行时风险，
+   *   属已知误伤面（fail-closed），真要用改为引用函数的返回类型即可。
+   * ⚠ 射程：fengyu-admin/src 之外的文件（admin 根级 middleware / instrumentation、analyst、云函数）直接导入或中转
+   *   re-export 不在扫描域（跨子项目 import 违反 monorepo 规约）；路径解析走 TypeScript 模块解析器（项目 tsconfig），
+   *   与 webpack 实际解析仍可能有细微差异（如 webpack 专有 alias），由写法闭集兜底
+   *   （tsconfig 另配 paths 别名不在内）；把 helper 名拆散到插值两侧 / 经变量间接的非常量说明符属对抗式绕过，不在射程；
+   *   require 只认（可带括号 / 逗号序列 / TS 包装的）直接标识符调用；`module.require` / `globalThis.require` /
+   *   `const r = require; r(…)` / `createRequire` / `eval` / `Function()` 等伪装形态不在射程。
+   */
+  /** 消费者检查（可注入文件内容，供下方红检复用）。返回各项违规，全空 + byOwner 全等才算过 */
+  /** admin 项目 tsconfig 的 compilerOptions（模块解析用） */
+  const adminCompilerOptions = (() => {
+    const cfgPath = path.join(REPO, 'fengyu-admin/tsconfig.json')
+    const cfg = ts.readConfigFile(cfgPath, ts.sys.readFile)
+    return ts.parseJsonConfigFileContent(cfg.config, ts.sys, path.dirname(cfgPath)).options
+  })()
+  const consumerFileCache = new Map<string, { opaque: string[]; consumer: boolean; importDecls: number; otherRefs: string[]; anchored: string[] }>()
+  function helperConsumers(adminFiles: Array<[string, string]>, customerSrc: string) {
+    const HELPER_FILE = 'fengyu-admin/src/lib/data-center/workfine-legacy-spend.ts'
+    const CUSTOMER_FILE = 'fengyu-admin/src/actions/data-center/customer.ts'
+    // 模块引用按 AST 取**解码后**的说明符（codex r9 P2：`l` 转义、常量拼接的 import() / require 都要还原），
+    // 能解析到 helper 文件的即为消费者；非常量说明符的静态片段带 helper 名即违规
+    const constSpec = staticSpec // 与「跳过位置」检查同一实现
+    const helperAbs = path.join(REPO, HELPER_FILE)
+    const helperReal = fs.realpathSync(helperAbs)
+    /**
+     * 用 TypeScript 自己的模块解析器（读项目 tsconfig：moduleResolution=bundler + paths）求最终文件，再 realpath 比对
+     * （codex r18 P2：手写解析永远补不全——目录 package.json 的 main、其它 paths 别名、index、扩展名映射……）。
+     * 解析器不认识的 webpack resource query / fragment 先剥掉；解析失败（不存在的路径）按「不是 helper」处理，
+     * 这类说明符若带 helper 名，已由写法闭集拦下。
+     */
+    const resolvesToHelper = (fromRel: string, spec: string): boolean => {
+      const clean = spec.replace(/[?#].*$/, '')
+      const containing = path.join(REPO, fromRel)
+      const resolved = ts.resolveModuleName(clean, containing, adminCompilerOptions, ts.sys).resolvedModule?.resolvedFileName
+      const candidates = [resolved, path.isAbsolute(clean) ? clean : undefined].filter((f): f is string => !!f)
+      return candidates.some((f) => fs.existsSync(f) && fs.realpathSync(f).toLowerCase() === helperReal.toLowerCase())
+    }
+    const consumers = new Set<string>()
+    const opaque: string[] = []
+    let customerImportDecls = 0
+    const customerOtherRefs: string[] = []
+    const anchored: string[] = []
+    // 逐文件结果按（文件, 内容 sha1）缓存（GLM r12 P3）：红检多例整树重扫时只重算被注入的文件
+    type FileScan = { opaque: string[]; consumer: boolean; importDecls: number; otherRefs: string[]; anchored: string[] }
+    const scanFile = (rel: string, src: string): FileScan => {
+      const key = `${rel}\u0000${createHash('sha1').update(src).digest('hex')}`
+      const hit = consumerFileCache.get(key)
+      if (hit) return hit
+      const out: FileScan = { opaque: [], consumer: false, importDecls: 0, otherRefs: [], anchored: [] }
+      const sf = ts.createSourceFile(rel, src, ts.ScriptTarget.Latest, true, scriptKindOf(rel))
+      const visit = (n: ts.Node): void => {
+        const specNode = moduleSpecNode(n) // callee 解包（括号 / 逗号 / TS 包装）同一实现
+        if (specNode) {
+          const spec = constSpec(specNode)
+          if (spec === null) {
+            // 非常量说明符：静态片段（解码后）里带 helper 名才判红（codex r20 P2：一律判红会误伤
+            // `import(\`./reports/${x}\`)` 这类与 helper 无关的正常代码，超出合同）。
+            // 刻意把 helper 名拆散到插值两侧的写法属对抗式绕过，按合同不在射程
+            const pieces: string[] = []
+            // 只收集**会贡献说明符值**的节点（codex r21 P2：条件表达式的 condition、函数实参等不参与最终路径，
+            // 扫进来会让 `import(kind === 'legacy-spend' ? './a' : './b')` 误红）
+            const collect = (m: ts.Node): void => {
+              if (ts.isStringLiteral(m) || ts.isNoSubstitutionTemplateLiteral(m)) pieces.push(m.text)
+              else if (ts.isTemplateExpression(m)) {
+                pieces.push(m.head.text, ...m.templateSpans.map((sp) => sp.literal.text))
+                for (const sp of m.templateSpans) collect(sp.expression)
+              } else if (ts.isConditionalExpression(m)) {
+                collect(m.whenTrue)
+                collect(m.whenFalse)
+              } else if (ts.isBinaryExpression(m) && [ts.SyntaxKind.PlusToken, ts.SyntaxKind.BarBarToken, ts.SyntaxKind.QuestionQuestionToken, ts.SyntaxKind.AmpersandAmpersandToken].includes(m.operatorToken.kind)) {
+                collect(m.left)
+                collect(m.right)
+              } else if (ts.isParenthesizedExpression(m) || ts.isAsExpression(m) || ts.isTypeAssertionExpression(m) || ts.isNonNullExpression(m) || ts.isSatisfiesExpression(m)) {
+                collect(m.expression)
+              }
+              // 其它（标识符、调用、属性访问等）的运行时值未知，不深入
+            }
+            collect(specNode)
+            if (pieces.some((t) => /legacy-spend/i.test(t))) out.opaque.push(`${rel}:${specNode.getText(sf)}`)
+          } else {
+            // ① 写法闭集：带 helper 名的常量说明符全部登记，由 EXPECTED_ANCHORED_SPECS 整表比对（codex r16 P2）
+            if (/legacy-spend/i.test(spec)) out.anchored.push(`${rel} | ${spec}`)
+            // ② 认不出的前缀（`~/`、`#` 等别名）又带锚点：无法解析，按 opaque 红；普通包名（react、pg、@scope/pkg）照常放行
+            const knownPrefix = /^(@\/|\.|\/)/.test(spec)
+            const barePackage = /^(@[\w.-]+\/)?[\w.-]+(\/[\w.-]+)*$/.test(spec.replace(/^node:/, ''))
+            if (!knownPrefix && !barePackage && /legacy|workfine/i.test(spec)) out.opaque.push(`${rel}:${specNode.getText(sf)}`)
+          }
+          if (spec !== null && resolvesToHelper(rel, spec)) {
+            out.consumer = true
+            // customer.ts 只允许一条具名 ImportDeclaration 指向 helper；re-export、export *、import-equals、
+            // require / import() 解构都会让引用闭集看不见（GLM r9 P2）
+            if (ts.isImportDeclaration(n)) out.importDecls++
+            else out.otherRefs.push(n.getText(sf).slice(0, 80))
+          }
+        }
+        ts.forEachChild(n, visit)
+      }
+      visit(sf)
+      consumerFileCache.set(key, out)
+      return out
+    }
+    for (const [rel, src] of adminFiles) {
+      if (rel === HELPER_FILE) continue
+      const r = scanFile(rel, src)
+      opaque.push(...r.opaque)
+      anchored.push(...r.anchored)
+      if (r.consumer) consumers.add(rel)
+      if (rel === CUSTOMER_FILE) {
+        customerImportDecls += r.importDecls
+        customerOtherRefs.push(...r.otherRefs)
+      }
+    }
+
+    // customer.ts 内两个导入符号的**每一处引用**都必须是登记函数里的直接调用（codex r9 P2：
+    // `const f = workfineLegacyOrderSql` 这类别名 / 对象封装 / 再导出转发后，按标识符数调用就看不见）
+    const program = ts.createProgram({
+      rootNames: [ADMIN_CUSTOMER],
+      options: { noResolve: true, noLib: true, target: ts.ScriptTarget.Latest },
+      host: Object.assign(ts.createCompilerHost({}), {
+        getSourceFile: (f: string, lang: ts.ScriptTarget) => (f === ADMIN_CUSTOMER ? ts.createSourceFile(f, customerSrc, lang, true) : undefined),
+      }),
+    })
+    const checker = program.getTypeChecker()
+    const psf = program.getSourceFile(ADMIN_CUSTOMER)!
+    const imported = new Set<ts.Symbol>()
+    const stray: string[] = []
+    for (const st of psf.statements) {
+      if (ts.isImportDeclaration(st) && ts.isStringLiteral(st.moduleSpecifier) && resolvesToHelper(CUSTOMER_FILE, st.moduleSpecifier.text)) {
+        const nb = st.importClause?.namedBindings
+        // 只允许具名导入（默认 / 命名空间导入会让「引用」形态失控）
+        if (!(nb && ts.isNamedImports(nb)) || st.importClause?.name) stray.push('非具名导入')
+        if (nb && ts.isNamedImports(nb)) for (const el of nb.elements) imported.add(checker.getSymbolAtLocation(el.name)!)
+      }
+    }
+    if (imported.size !== 2) stray.push(`导入符号数 ${imported.size}`)
+    if (customerImportDecls !== 1) stray.push(`指向 helper 的 import 声明数 ${customerImportDecls}`)
+    for (const r of customerOtherRefs) stray.push(`非 import 形式引用 helper：${r}`)
+    const byOwner: Record<string, number> = {}
+    const visitRefs = (n: ts.Node): void => {
+      if (ts.isIdentifier(n) && !ts.isImportSpecifier(n.parent)) {
+        const sym = checker.getSymbolAtLocation(n)
+        if (sym && imported.has(sym)) {
+          const isDirectCall = ts.isCallExpression(n.parent) && n.parent.expression === n
+          // 与 signatureOwners 的 ownerOf 同一规则：最外层具名声明（函数 / 方法 / 类 / 变量）（GLM r15 P3）
+          let owner = '<module>'
+          for (let p: ts.Node | undefined = n.parent; p; p = p.parent) {
+            if ((ts.isFunctionDeclaration(p) || ts.isMethodDeclaration(p) || ts.isClassDeclaration(p)) && p.name) owner = p.name.getText(psf)
+            else if (ts.isVariableDeclaration(p)) owner = p.name.getText(psf)
+          }
+          if (isDirectCall) {
+            const key = `${owner}:${n.text}`
+            byOwner[key] = (byOwner[key] ?? 0) + 1
+          } else {
+            stray.push(`${n.text}@${psf.getLineAndCharacterOfPosition(n.getStart(psf)).line + 1}`)
+          }
+        }
+      }
+      ts.forEachChild(n, visitRefs)
+    }
+    visitRefs(psf)
+    return { opaque, consumers: [...consumers], stray, byOwner, anchored: anchored.sort() } // 期望表同样排序后比较
+  }
+  /**
+   * 名字里带 helper 模块名（`legacy-spend`，大小写不敏感、转义已解码）的常量说明符，按「文件 | 说明符」整表登记
+   * （codex r16 P2）。指向 helper 文件的说明符必然带这个名字，所以与其逐个补路径解析的缝（绝对路径、`.jsx`、
+   * `?query`、未知别名……），不如锁死写法本身：只有 customer.ts 这一条，任何新写法 / 新文件都红。
+   * 锚点刻意只取 helper 名而不取 legacy / workfine 泛词——否则别处正常引用 `@/lib/workfine-legacy` 等既有模块也会红，
+   * 守护就成了与 #289 无关改动的路障。
+   */
+  const EXPECTED_ANCHORED_SPECS: string[] = ['fengyu-admin/src/actions/data-center/customer.ts | @/lib/data-center/workfine-legacy-spend']
+  const EXPECTED_CONSUMER_CALLS = {
+    'queryNewMemberLegacySpend:workfineLegacyReceivedSumSql': 1,
+    'queryNewMemberLegacySpend:workfineLegacyOrderSql': 1,
+    'queryOpsBreakdown:workfineLegacyReceivedSumSql': 1,
+    'queryOpsBreakdown:workfineLegacyOrderSql': 1,
+  }
+  const CONSUMER_OK = {
+    anchored: [...EXPECTED_ANCHORED_SPECS].sort(),
+    opaque: [],
+    consumers: ['fengyu-admin/src/actions/data-center/customer.ts'],
+    stray: [],
+    byOwner: EXPECTED_CONSUMER_CALLS,
+  }
+
+  it('扫描根内没有符号链接，admin src 内没有 package.json（GLM r16/r17、codex r18 P2：别名文件 / 目录 main / 链接子树可绕开扫描）', () => {
+    const offenders: string[] = []
+    let rootAbs = ''
+    // 云函数一级目录的依赖清单（`<cloudfunctions>/<函数名>/package.json`）是部署必需——动态放行，
+    // 以后新增云函数不会被误伤（codex r20 P2）；更深的目录 package.json 才可能被当作 main 重定向
+    const isFunctionManifest = (full: string) => path.basename(path.dirname(path.dirname(full))) === 'cloudfunctions'
+    const walk = (dir: string, admin: boolean) => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, e.name)
+        // 依赖目录（worktree 下可能是软链）与测试夹具目录不属于生产源码（与 listSources 同一 SKIP_DIR）
+        if (SKIP_DIR(e.name)) continue
+        // 符号链接默认禁止，只放行 `.md` 文档链接（AGENTS.md → CLAUDE.md 是项目约定）（codex r19 P2：无扩展名链接也可被 require）
+        const badLink = e.isSymbolicLink() && !/\.md$/i.test(e.name)
+        // 目录 package.json 的 main 能把不带目标名的路径指向任意文件：四个根的**子目录**里都禁止（根目录自身的依赖清单放行）
+        const subPackage = e.name === 'package.json' && (admin || path.dirname(full) !== rootAbs) && !isFunctionManifest(full)
+        if (badLink || subPackage) offenders.push(path.relative(REPO, full))
+        else if (e.isDirectory()) walk(full, admin)
+      }
+    }
+    for (const root of AMOUNT_ROOTS) {
+      rootAbs = path.join(REPO, root)
+      walk(rootAbs, root === 'fengyu-admin/src')
+    }
+    expect(offenders).toEqual([])
+  })
+
+  /**
+   * 扫描根内被 listSources 跳过的位置（`__tests__`、`.` 开头目录、`.test.` / `.spec.` 文件）不得被生产代码导入
+   * （GLM r17 P2：第五份副本放进 `src/lib/__tests__/x.ts` 再由生产代码导入，四个闭集都看不见）。现存零处。
+   */
+  /** 各项目的模块解析配置：admin / analyst 读各自 tsconfig（bundler + `@/` paths），云函数按 Node10（CommonJS） */
+  const projectOf = (rel: string): { options: ts.CompilerOptions; srcRoot: string | null } => {
+    const tsconfigOf = (proj: string) => {
+      const cfgPath = path.join(REPO, proj, 'tsconfig.json')
+      const cfg = ts.readConfigFile(cfgPath, ts.sys.readFile)
+      return ts.parseJsonConfigFileContent(cfg.config, ts.sys, path.dirname(cfgPath)).options
+    }
+    if (rel.startsWith('fengyu-admin/')) return { options: adminCompilerOptions, srcRoot: path.join(REPO, 'fengyu-admin/src') }
+    if (rel.startsWith('fengyu-analyst/')) return { options: (analystOptions ??= tsconfigOf('fengyu-analyst')), srcRoot: path.join(REPO, 'fengyu-analyst/src') }
+    return { options: { moduleResolution: ts.ModuleResolutionKind.Node10, allowJs: true, resolveJsonModule: true }, srcRoot: null }
+  }
+  let analystOptions: ts.CompilerOptions | undefined
+  /** JSON 与前端静态资源（bundler 资源 loader 处理，不作为 JS 执行）——扩展名闭集 */
+  // 与 Next.js 原生静态导入类型对齐（codex r20 P2：漏项会让正常新增资源导入误红）
+  const ASSET_EXT = /\.(json|css|scss|sass|less|png|jpe?g|gif|svg|webp|avif|bmp|ico|woff2?|ttf|otf|eot|mp4|webm|mov|mp3|wav|flac|aac)$/i
+
+  /**
+   * 生产代码不得加载「扫描看不见」的文件（GLM r17/r18、codex r19 P2）：
+   *   - 落在被跳过的位置（`__tests__` / 隐藏目录 / `.test.` 文件）
+   *   - 最终文件不在源码扩展名白名单、也不是登记的资源类型（CommonJS 会把 `.txt` / 无扩展名文件当 JS 加载）
+   *   - `#` 子路径导入（package.json `imports` 字段可把任意名字映射到任意文件；现存零处）
+   * 说明符先常量求值（拼接 / TS 包装 / 字面量条件），再按所属项目的模块规则解析到最终文件、取 realpath 判定；
+   * 解析不到（目标尚不存在等）时按所属项目的字面路径兜底，不放行。
+   * ⚠ 射程：`@db/*` 等指向四个扫描根之外（db/）的 paths 别名；非常量说明符（网关 `require('./routes/' + module)` 是合法存量）、`require.resolve` / `module.require` /
+   *   `globalThis.require` 等成员形式、`.json` 数据文件里承载的 SQL 文本，均不在本条射程。
+   */
+  function skippedImportOffenders(files: Array<[string, string]>): string[] {
+    const offenders: string[] = []
+    for (const [rel, src] of files) {
+      const sf = ts.createSourceFile(rel, src, ts.ScriptTarget.Latest, true, scriptKindOf(rel))
+      const { options, srcRoot } = projectOf(rel)
+      const visit = (n: ts.Node): void => {
+        const specNode = moduleSpecNode(n)
+        const spec = specNode ? staticSpec(specNode)?.replace(/[?#].*$/, '') : undefined
+        const rawSpec = specNode ? staticSpec(specNode) : undefined
+        if (rawSpec?.startsWith('#')) offenders.push(`${rel} → ${rawSpec}（# 子路径导入）`)
+        else if (spec && /^(\.|@\/|\/)/.test(spec)) {
+          const containing = path.join(REPO, rel)
+          const resolved = ts.resolveModuleName(spec, containing, options, ts.sys).resolvedModule?.resolvedFileName
+          const target =
+            resolved ??
+            (spec.startsWith('.')
+              ? path.resolve(path.dirname(containing), spec)
+              : spec.startsWith('@/')
+                ? path.join(srcRoot ?? path.dirname(containing), spec.slice(2))
+                : spec)
+          const real = fs.existsSync(target) ? fs.realpathSync(target) : target
+          const loadableOutsideScan = fs.existsSync(real) && fs.statSync(real).isFile() && !SOURCE_EXT.test(real) && !ASSET_EXT.test(real)
+          if (isSkippedPath(real) || loadableOutsideScan) offenders.push(`${rel} → ${spec}`)
+        }
+        ts.forEachChild(n, visit)
+      }
+      visit(sf)
+    }
+    return offenders
+  }
+
+  it('生产代码不加载扫描看不见的文件（测试 / 隐藏目录、测试文件、非源码扩展名、# 子路径）', () => {
+    expect(skippedImportOffenders(read(scopeOf(AMOUNT_ROOTS)))).toEqual([])
+  }, 30_000)
+
+  it('红检：跳过位置闭集拦得住拼接 / TS 包装 / 逗号 require / 非源码扩展名 / 各项目 @/ / # 子路径', () => {
+    const files = read(scopeOf(AMOUNT_ROOTS))
+    const withExtra = (rel: string, extra: string) => {
+      expect(files.some(([r]) => r === rel), `注入目标不在扫描范围：${rel}`).toBe(true)
+      return files.map(([r, s]): [string, string] => [r, r === rel ? s + extra : s])
+    }
+    const staffDash = 'fengyu-staff/cloudfunctions/staffApi/routes/mgmt-dashboard.js'
+    const eff = 'fengyu-admin/src/actions/data-center/efficiency.ts'
+    const analystFile = files.find(([r]) => r.startsWith('fengyu-analyst/src/'))![0]
+    const CASES: Array<[string, Array<[string, string]>]> = [
+      ['staff 拼接 require __tests__', withExtra(staffDash, "\nconst __c = () => require('./__tests__/' + 'dc-copy')\n")],
+      ['admin as 包装 require __tests__', withExtra(eff, "\nexport const __c = () => (require as NodeRequire)('./__tests__/dc-copy')\n")],
+      ['staff 逗号序列 require __tests__', withExtra(staffDash, "\nconst __c = () => (0, require)('./__tests__/dc-copy')\n")],
+      ['admin 导入 .test. 文件', withExtra(eff, "\nimport { x as __x } from '@/lib/foo.test.helper'\n")],
+      ['analyst 的 @/ 指向 __tests__', withExtra(analystFile, "\nimport { x as __x } from '@/lib/__tests__/dc-copy'\n")],
+      ['staff # 子路径', withExtra(staffDash, "\nconst __c = () => require('#copy')\n")],
+      ['admin # 子路径', withExtra(eff, "\nimport { x as __x } from '#legacy'\n")],
+      ['staff 加载非源码扩展名文件', withExtra(staffDash, "\nconst __c = () => require('../CLAUDE.md')\n")],
+    ]
+    for (const [label, injected] of CASES) {
+      expect(skippedImportOffenders(injected).length, `「${label}」未被跳过位置闭集拦下`).toBeGreaterThan(0)
+    }
+  }, 30_000)
+
+  it('helper 消费者闭集：只有 customer.ts 的 KPI 与明细两处在用', () => {
+    expect(helperConsumers(read(scopeOf(['fengyu-admin/src'])), adminSrc)).toEqual(CONSUMER_OK)
+  }, 30_000) // 全量扫 admin src
+
+  it('红检：消费者闭集拦得住别处导入 / 转义说明符 / 拼接 require / 动态 import / 别名转发 / 对象封装', () => {
+    const files = read(scopeOf(['fengyu-admin/src']))
+    const eff = 'fengyu-admin/src/actions/data-center/efficiency.ts'
+    const withExtra = (rel: string, extra: string) => files.map(([r, s]): [string, string] => [r, r === rel ? s + extra : s])
+    // customer.ts 本身也在 admin 文件表里：注入 customer.ts 时两处都要改（文件扫描 + 引用解析）
+    const withCustomer = (extra: string) => withExtra('fengyu-admin/src/actions/data-center/customer.ts', extra)
+    expect(files.some(([r]) => r === eff)).toBe(true)
+    const CASES: Array<[string, Array<[string, string]>, string]> = [
+      ['别处具名导入自拼', withExtra(eff, "\nimport { workfineLegacyOrderSql as __w } from '@/lib/data-center/workfine-legacy-spend'\nexport const __q = () => __w({ start: '', end: '' })\n"), adminSrc],
+      ['转义说明符', withExtra(eff, "\nimport { workfineLegacyOrderSql as __w } from '@/lib/data-center/workfine-\\u006cegacy-spend'\n"), adminSrc],
+      ['常量拼接 require', withExtra(eff, "\nexport const __d = () => require('@/lib/data-center/workfine-' + 'legacy-spend')\n"), adminSrc],
+      ['customer.ts 别名转发', files, adminSrc + '\nconst __amount = workfineLegacyReceivedSumSql\nvoid __amount\n'],
+      ['customer.ts 对象封装', files, adminSrc + '\nexport const __h = { f: workfineLegacyOrderSql }\n'],
+      ['customer.ts 新增一处直接调用', files, adminSrc + "\nexport const __c = () => workfineLegacyOrderSql({ start: '', end: '' })\n"],
+      ['.jsx 模块导入 helper', [...files, ['fengyu-admin/src/components/__x.jsx', "import { workfineLegacyOrderSql } from '@/lib/data-center/workfine-legacy-spend'\nexport const X = () => <div>{String(workfineLegacyOrderSql)}</div>\n"]], adminSrc],
+      ['as 包装的 require', withExtra(eff, "\nexport const __r = () => (require as NodeRequire)('@/lib/data-center/workfine-legacy-spend')\n"), adminSrc],
+      ['嵌套表达式按运行顺序拼出锚点', withExtra(eff, "\nexport const __r = () => import(`@/lib/data-center/work${true ? 'fine-leg' : ''}acy-spend`)\n"), adminSrc],
+      ['.jsx 后缀说明符', withExtra(eff, "\nimport { workfineLegacyOrderSql as __w } from '@/lib/data-center/workfine-legacy-spend.jsx'\n"), adminSrc],
+      ['绝对路径 require', withExtra(eff, `\nexport const __r = () => require('${path.join(REPO, 'fengyu-admin/src/lib/data-center/workfine-legacy-spend.ts')}')\n`), adminSrc],
+      ['未知别名前缀带锚点', withExtra(eff, "\nimport { workfineLegacyOrderSql as __w } from '~/lib/data-center/workfine-legacy-spend'\n"), adminSrc],
+      ['resource query 说明符', withExtra(eff, "\nexport const __r = () => require('@/lib/data-center/workfine-legacy-spend?x')\n"), adminSrc],
+      ['逗号序列 require', withExtra(eff, "\nexport const __r = () => (0, require)('@/lib/data-center/workfine-legacy-spend')\n"), adminSrc],
+      ['大小写变体说明符', withExtra(eff, "\nimport { workfineLegacyOrderSql as __w } from '@/lib/data-center/Workfine-Legacy-Spend'\n"), adminSrc],
+      ['括号包裹的 require', withExtra(eff, "\nexport const __r = () => (require)('@/lib/data-center/workfine-legacy-spend')\n"), adminSrc],
+      ['转义路径 + 非常量表达式', withExtra(eff, "\nexport const __r = (x: boolean) => import(x ? '@/lib/data-center/workf\\u0069ne-\\u006cegacy-spend' : './x')\n"), adminSrc],
+      ['.js 后缀说明符', withExtra(eff, "\nimport { workfineLegacyOrderSql as __w } from '@/lib/data-center/workfine-legacy-spend.js'\n"), adminSrc],
+      ['customer.ts re-export-from', withCustomer("\nexport { workfineLegacyOrderSql } from '@/lib/data-center/workfine-legacy-spend'\n"), adminSrc + "\nexport { workfineLegacyOrderSql } from '@/lib/data-center/workfine-legacy-spend'\n"],
+      ['customer.ts require 解构', withCustomer("\nconst { workfineLegacyOrderSql: __w } = require('@/lib/data-center/workfine-legacy-spend')\n"), adminSrc + "\nconst { workfineLegacyOrderSql: __w } = require('@/lib/data-center/workfine-legacy-spend')\n"],
+    ]
+    for (const [label, adminFiles, customerSrc] of CASES) {
+      expect(helperConsumers(adminFiles, customerSrc), `「${label}」未被消费者闭集拦下`).not.toEqual(CONSUMER_OK)
+    }
+    // 反向：与 helper 无关的正常动态加载不误伤（codex r20 P2）
+    expect(helperConsumers(withExtra(eff, "\nexport const __r = (x: string) => import(`./reports/${x}`)\n"), adminSrc)).toEqual(CONSUMER_OK)
+    expect(
+      helperConsumers(withExtra(eff, "\nexport const __r = (kind: string) => import(kind === 'legacy-spend' ? './reports/a' : './reports/b')\n"), adminSrc),
+      '条件部分里出现 helper 名不应误伤（codex r21 P2）',
+    ).toEqual(CONSUMER_OK)
+  }, 30_000)
+
+  it('文件发现：生产源码扩展名闭集与解析方式', () => {
+    for (const f of ['a.ts', 'a.tsx', 'a.mts', 'a.cts', 'a.js', 'a.jsx', 'a.mjs', 'a.cjs']) expect(SOURCE_EXT.test(f), f).toBe(true)
+    for (const f of ['a.json', 'a.md', 'a.d.ts.map', 'a.css']) expect(SOURCE_EXT.test(f), f).toBe(false)
+    for (const f of ['a.d.ts', 'a.d.mts', 'a.d.cts']) expect(DECL_EXT.test(f), f).toBe(true)
+    for (const f of ['a.ts', 'a.mts', 'dts.ts']) expect(DECL_EXT.test(f), f).toBe(false)
+    expect(['a.ts', 'a.mts', 'a.cts', 'a.tsx', 'a.jsx', 'a.js', 'a.cjs'].map(scriptKindOf)).toEqual([
+      ts.ScriptKind.TS, ts.ScriptKind.TS, ts.ScriptKind.TS, ts.ScriptKind.TSX, ts.ScriptKind.JSX, ts.ScriptKind.JS, ts.ScriptKind.JS,
+    ])
+  })
+
+  it('扫描器单元：拆分 / 插值 / 括号能拼出签名的都计入，插值未知时不跨插值拼接，不重复计数', () => {
+    const one = (code: string) => signatureOwners([['x.ts', code]], SIG_AMOUNT)
+    expect(one("function a() { return 'si2.received' + '::numeric' }")).toEqual({ 'x.ts:a': 1 })
+    expect(one("function a() { return 'si2.received' + (`${''}` + '::numeric') }")).toEqual({ 'x.ts:a': 1 })
+    expect(one("function a() { return `si2.received${'::numeric'}` }")).toEqual({ 'x.ts:a': 1 })
+    expect(one("function a() { return `si2.received::numeric ${'}'} si2.received::numeric` }")).toEqual({ 'x.ts:a': 2 })
+    expect(one('function a(x) { return `si2.received${x}::numeric` }')).toEqual({})
+    // 插值里的内层模板单独计一次，外层不重复
+    expect(one('function a(f) { return sql`SELECT ${f ? sql`si2.received::numeric` : sql`1`} FROM t` }')).toEqual({ 'x.ts:a': 1 })
+    // SQL 注释里的不计
+    expect(one('function a() { return `-- si2.received::numeric\nSELECT 1` }')).toEqual({})
+    // TS 透明包装里的常量同样折叠（codex r14 P2）
+    expect(one("function a() { return 'si2.received' + ('::numeric' as const) }")).toEqual({ 'x.ts:a': 1 })
+    // 字面量条件取对应分支（GLM r17 P3）
+    expect(one("function a() { return `si2.received${true ? '::numeric' : ''}` }")).toEqual({ 'x.ts:a': 1 })
+    expect(one("function a() { return `si2.received${false ? '' : '::numeric'}` }")).toEqual({ 'x.ts:a': 1 })
+    expect(one("function a() { return `si2.received${(true as const) ? '::numeric' : ''}` }")).toEqual({ 'x.ts:a': 1 })
+    // 常量模板里插值自身就是完整签名：只计一次（外层整段已含）
+    expect(one("function a() { return `${'si2.received::numeric'}` }")).toEqual({ 'x.ts:a': 1 })
+    // 未知插值不跨接：`\s*` 也跨不过哨兵
+    const wf = (code: string) => signatureOwners([['x.ts', code]], SIG_LEGACY_ORDER)
+    expect(wf("function a() { return 'o.legacy_source' + (\" = 'workfine'\" satisfies string) }")).toEqual({ 'x.ts:a': 1 })
+    expect(wf("function a(x) { return `o.legacy_source${x} = 'workfine'` }")).toEqual({})
+    expect(wf("function a(x) { return `${x} o.legacy_source = 'workfine' ${x}` }")).toEqual({ 'x.ts:a': 1 })
+    // 含签名却无法做 SQL 词法分析：直接抛错，不回退原文
+    expect(() => one('function a() { return `$$ si2.received::numeric` }')).toThrow(/x\.ts:a 含签名锚点但 SQL 词法分析失败/)
+    // 大小写折叠
+    expect(one('function a() { return `SELECT SUM(SI2.RECEIVED::NUMERIC)` }')).toEqual({ 'x.ts:a': 1 })
+    expect(wf("function a() { return `AND O.LEGACY_SOURCE = 'workfine'` }")).toEqual({ 'x.ts:a': 1 })
+    // E-string / U&-string：词法器不支持，含锚点即抛错（codex r7 P2）
+    expect(() => wf("function a() { return `WHERE E'a\\'--x' IS NOT NULL AND o.legacy_source = 'workfine'` }")).toThrow(/E'…' \/ U&'…'/)
+    expect(() => wf("function a() { return `WHERE U&'d\\0061t' = 'x' AND o.legacy_source = 'workfine'` }")).toThrow(/E'…' \/ U&'…'/)
+    // 注释夹断签名：剥注释后成立，要计入（codex r5 P2）
+    expect(wf("function a() { return `o.legacy_source/*x*/ = 'workfine'` }")).toEqual({ 'x.ts:a': 1 })
+    expect(wf("function a() { return `o.legacy_source -- x\n = 'workfine'` }")).toEqual({ 'x.ts:a': 1 })
+    expect(one('function a() { return `si2.received/**/::numeric` }')).toEqual({ 'x.ts:a': 1 })
+    expect(one('function a() { return `si2/*x*/.received::numeric` }')).toEqual({ 'x.ts:a': 1 })
+    expect(one('function a() { return `si2 . -- x\n received :: numeric` }')).toEqual({ 'x.ts:a': 1 })
+  })
+
+  it('红检：真实源码注入第五份副本 / 旁路实现都会让闭集变红', () => {
+    const dashboard = 'fengyu-staff/cloudfunctions/staffApi/routes/mgmt-dashboard.js'
+    const staffHelper = 'fengyu-staff/cloudfunctions/staffApi/utils/scope.js'
+    const adminCustomer = 'fengyu-admin/src/actions/data-center/customer.ts'
+    const amountFiles = scopeOf(AMOUNT_ROOTS)
+    const legacyFiles = scopeOf(LEGACY_ORDER_ROOTS)
+    // 基线：未注入时与期望全等（否则下面的「不等」没有意义）
+    expect(signatureOwners(read(amountFiles), SIG_AMOUNT)).toEqual(EXPECTED_AMOUNT_OWNERS)
+    expect(signatureOwners(read(legacyFiles), SIG_LEGACY_ORDER)).toEqual(EXPECTED_LEGACY_ORDER_OWNERS)
+    const inject = (files: string[], rel: string, extra: string): Array<[string, string]> => {
+      expect(files, `注入目标不在扫描范围：${rel}`).toContain(rel)
+      return read(files).map(([r, s]): [string, string] => [r, r === rel ? s + extra : s])
+    }
+    const CASES: Array<[string, Array<[string, string]>, RegExp, Record<string, number>]> = [
+      ['staff 新增第五份金额副本', inject(amountFiles, dashboard,
+        '\nasync function queryNewMemberLegacySpendV2() {\n  return pg.query(`SELECT COALESCE(SUM((SELECT SUM(si2.received::numeric) FROM sale_items si2)), 0) AS v`)\n}\n'),
+        SIG_AMOUNT, EXPECTED_AMOUNT_OWNERS],
+      ['admin 数据中心 WorkFine 旁路（字符串拼 SQL）', inject(legacyFiles, adminCustomer,
+        "\nexport function legacyBypass() {\n  return \"SELECT SUM(o.received) FROM sale_orders o WHERE o.legacy_source = 'workfine'\"\n}\n"),
+        SIG_LEGACY_ORDER, EXPECTED_LEGACY_ORDER_OWNERS],
+      ['金额签名拆成两段字符串拼接', inject(amountFiles, dashboard,
+        "\nfunction splitAmt() { return 'SELECT SUM(si2.received' + '::numeric) FROM sale_items si2' }\n"),
+        SIG_AMOUNT, EXPECTED_AMOUNT_OWNERS],
+      ['WorkFine 过滤拆成字符串 + 模板拼接', inject(legacyFiles, adminCustomer,
+        "\nexport function splitWf() { return 'WHERE o.legacy_source = ' + (`'workfine'`) }\n"),
+        SIG_LEGACY_ORDER, EXPECTED_LEGACY_ORDER_OWNERS],
+      ['签名经常量插值拼出', inject(amountFiles, dashboard,
+        "\nfunction viaTpl() { return 'si2.received' + `${''}` + '::numeric' }\n"),
+        SIG_AMOUNT, EXPECTED_AMOUNT_OWNERS],
+      ['WorkFine 过滤经模板常量插值拼出', inject(legacyFiles, adminCustomer,
+        "\nexport function viaSpan() { return `WHERE o.legacy_source = ${`'workfine'`}` }\n"),
+        SIG_LEGACY_ORDER, EXPECTED_LEGACY_ORDER_OWNERS],
+      ['staff 非 mgmt-* 辅助文件里的 WorkFine 旁路', inject(legacyFiles, staffHelper,
+        "\nfunction legacyHelper() { return `AND o.legacy_source = 'workfine'` }\n"),
+        SIG_LEGACY_ORDER, EXPECTED_LEGACY_ORDER_OWNERS],
+    ]
+    for (const [label, files, sig, expected] of CASES) {
+      expect(signatureOwners(files, sig), `「${label}」未被闭集拦下`).not.toEqual(expected)
+    }
+    // 挪函数：计数不变但所有者变了
+    const moved = read(legacyFiles).map(([r, s]): [string, string] => [
+      r,
+      r.endsWith('routes/mgmt-traffic.js') ? s.replace('async function queryNewMemberLegacySpend(', 'async function queryNewMemberLegacySpend2(') : s,
+    ])
+    expect(signatureOwners(moved, SIG_LEGACY_ORDER), '「挪进别的函数」未被闭集拦下').not.toEqual(EXPECTED_LEGACY_ORDER_OWNERS)
+  }, 30_000) // 全仓 AST 扫描：满载下单跑约 1s，放宽超时防随机红（memory project-repo-scan-guards-flaky-under-load）
 })

@@ -385,7 +385,7 @@ staff.todoList → 6 种待办:
 
 > 历史勘误：「库存」曾列为暂不实现，已被进销存 v3 推翻（见
 > `docs/changes/arch/011_inventory-domain-v3.md`）。现状：`routes/inventory.js` 提供
-> 11 个 action（stockList / reportableSkuOptions / storeOptions / docOrgOptions /
+> 12 个 action（stockList / reportableSkuOptions / stocktakeSkuOptions / storeOptions / docOrgOptions /
 > docList / docDetail / createDoc / confirmReceive / approveDoc / rejectDoc 等），
 > 仅门店层主体（`buildInventoryLocationScope` 按 source/target_org_node_id 双端点
 > org 树过滤）；写操作要求动作与 scope 来自同一角色绑定；响应与入参均不含金额字段

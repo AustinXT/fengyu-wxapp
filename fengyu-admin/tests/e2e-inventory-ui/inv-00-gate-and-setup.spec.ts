@@ -31,9 +31,10 @@ import { readCutoverStatus } from './_helpers/cutover'
 
 test.setTimeout(300_000)
 
-/** 库存管理全部 11 个路由（src/app/(main)/(inventory)/inventory/） */
+/** 库存管理全部列表路由（src/app/(main)/(inventory)/inventory/，不含详情页与跳转壳） */
 const INVENTORY_ROUTES = [
   { path: '/inventory/stocks', heading: /实时库存|库存查询|库存/ },
+  { path: '/inventory/movements', heading: /进出明细/ },
   { path: '/inventory/docs', heading: /单据|库存单据/ },
   { path: '/inventory/operations/supply-chain', heading: /供应链|需求与采购/ },
   { path: '/inventory/operations/market', heading: /市场|需求与采购/ },
@@ -55,10 +56,11 @@ test('INV-00：环境自检 —— 目标库 / 账号 / 页面可达 / 门禁状
     const dbInfo = psql(`SELECT current_database() || '@' || COALESCE(inet_server_addr()::text, 'local')`)
     recordVerdict(verdicts, 'db: 目标库是 dev fengyu_wxapp', dbInfo.startsWith('fengyu_wxapp@'), dbInfo)
 
-    // ── Step 2: seed 4 个测试账号（幂等）───────────────────────────
+    // ── Step 2: seed 全部测试账号（幂等）───────────────────────────
     console.log('[INV-00] Step 2: seed 测试账号')
     const seeded = await seedInventoryAccounts()
-    recordVerdict(verdicts, 'seed: 4 个账号已就位', seeded.length === 4, `count=${seeded.length}`)
+    const expectedSeeds = Object.keys(INVT_ACCOUNTS).length
+    recordVerdict(verdicts, `seed: ${expectedSeeds} 个账号已就位`, seeded.length === expectedSeeds, `count=${seeded.length}`)
 
     const verified = await verifyInventoryAccounts()
     const byId = new Map(verified.map((r) => [r.employeeId, r]))
@@ -83,6 +85,7 @@ test('INV-00：环境自检 —— 目标库 / 账号 / 页面可达 / 门禁状
     // scope 类型必须与角色 allowed_scope_types 匹配（DB 触发器已校验，这里复核落库结果）
     recordVerdict(verdicts, 'seed: 供应链账号 scope 类型 = 总部', byId.get('INVT-SC-01')?.scopeType === '总部', byId.get('INVT-SC-01')?.scopeType ?? '?')
     recordVerdict(verdicts, 'seed: 市场账号 scope 类型 = 市场', byId.get('INVT-MK-01')?.scopeType === '市场', byId.get('INVT-MK-01')?.scopeType ?? '?')
+    recordVerdict(verdicts, 'seed: 自贡市场账号 scope 类型 = 市场', byId.get('INVT-MK-02')?.scopeType === '市场', byId.get('INVT-MK-02')?.scopeType ?? '?')
     recordVerdict(verdicts, 'seed: 门店账号 scope 类型 = 门店', byId.get('INVT-ST-01')?.scopeType === '门店', byId.get('INVT-ST-01')?.scopeType ?? '?')
 
     // 门店库存员禁止登录 admin —— migration 0039 的硬约束，INV-08 会实测

@@ -162,10 +162,103 @@
   box-sizing: border-box;
 }
 
+.submit-actions {
+  display: flex;
+  gap: 16rpx;
+}
+
+.draft-tip {
+  margin-bottom: 12rpx;
+  color: #D4820A;
+  font-size: 24rpx;
+}
+
+.draft-button {
+  flex: 1;
+  border: 1rpx solid var(--color-primary);
+  border-radius: 6rpx;
+  background: #FFFFFF;
+  color: var(--color-primary);
+  font-size: 28rpx;
+  line-height: 78rpx;
+}
+
 .submit-button {
+  flex: 2;
   border-radius: 6rpx;
   background: var(--color-primary);
   color: #FFFFFF;
   font-size: 28rpx;
   line-height: 80rpx;
+}
+
+/* 门店报货选品弹层（#339） */
+.sku-picker {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.sku-picker-title {
+  padding: 28rpx 24rpx 8rpx;
+  color: #222;
+  font-size: 30rpx;
+  font-weight: 600;
+  text-align: center;
+}
+
+.sku-picker-list {
+  flex: 1;
+  height: 0;
+}
+
+.sku-option {
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+  padding: 24rpx;
+  border-bottom: 1rpx solid #F0F0F0;
+}
+
+.sku-option-active .sku-option-name {
+  color: var(--color-primary);
+}
+
+.sku-option-name {
+  color: #222;
+  font-size: 28rpx;
+  word-break: break-all;
+}
+
+.sku-option-stock {
+  color: #888;
+  font-size: 24rpx;
+}
+
+/* 盘点：放弃当前所选产品（未加入明细时提交会被拦下，#352） */
+.clear-selected {
+  display: inline-block;
+  margin-top: 12rpx;
+  color: #888;
+  font-size: 24rpx;
+}
+
+/* 盘点：已在明细里的产品（#352），再点会被拒绝 */
+.sku-option-added {
+  color: #B8B8B8;
+}
+
+.sku-picker-tip {
+  padding: 32rpx 24rpx;
+  color: #999;
+  font-size: 24rpx;
+  text-align: center;
+}
+
+.sku-picker-error {
+  color: #D94040;
+}
+
+.sku-picker-more {
+  color: #5E8BB3;
 }

@@ -12,12 +12,22 @@
         </view>
         <mgmt-scope-picker
           default-scope="{{ defaultScope }}"
+          applied-inactive="{{ scope.inactive }}"
+          auto-correct="{{ scopeAutoCorrect }}"
+          resolve-default="{{ scopeResolveDefault }}"
           bind:change="onScopeChange"
+          bind:defaultresolved="onScopeDefaultResolved"
         />
       </view>
 
       <!-- 三态壳：loading / error 时由组件接管，content 时渲染 slot -->
-      <mgmt-data-state state="{{ summaryState }}" bind:retry="onSummaryRetry">
+      <!-- empty 仅在 scope 落到已停用门店时出现（#400）；在营门店无业绩照常渲染 0 -->
+      <mgmt-data-state
+        state="{{ summaryState }}"
+        empty-text="{{ summaryEmptyText }}"
+        empty-hint="{{ summaryEmptyHint }}"
+        bind:retry="onSummaryRetry"
+      >
         <view wx:if="{{ display }}">
           <!-- 大卡片：2×2 -->
           <view class="mgmt-dash-grid-large">
@@ -262,6 +272,8 @@
       <!-- 排行榜表格 -->
       <view class="ranking-table">
         <view class="ranking-table-title">员工排行榜</view>
+        <!-- #299 口径说明，与 admin STAFF_OUTPUT_SCOPE_NOTE 逐字一致（cross-end-staff-output-note.test.js 守护） -->
+        <view class="ranking-table-note">数值为员工个人全域产出</view>
 
         <view class="ranking-table-header">
           <view class="col col-rank">排名</view>

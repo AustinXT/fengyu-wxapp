@@ -5,6 +5,7 @@ import { sql } from 'drizzle-orm'
 import type { DashboardStats } from '@/lib/types'
 import { hasRole } from '@/lib/auth'
 import { withPermission } from '@/lib/with-permission'
+import { activeStoreCondition } from '@/lib/store-status'
 
 /**
  * 业务角色看板（manager/finance）零默认值。
@@ -36,16 +37,23 @@ const ZERO_BUSINESS: Pick<DashboardStats,
   totalPaidAmount: 0,
 }
 
-/** 查询系统概览指标（admin/hr/product 共用） */
+/**
+ * 查询系统概览指标（admin/hr/product 共用）
+ *
+ * 门店数 = 统计范围（lib/store-status，只看节点 is_active）∩ 按今天（上海）历史化的在营：
+ * `opening_date <= 今天 AND (closed_at IS NULL OR closed_at > 今天)`，与数据中心门店数
+ * （`data-center/sales.ts` runStoreCount，区间末取今天）同一口径（#422）。
+ * 筹备中未开业、无开业日期的门店不计入；is_closed 只作时点条件、不作范围（#401），由 closed_at 表达。
+ */
 async function getAdminStats() {
   const rows = await db.execute(sql`
     SELECT
       (SELECT COUNT(*)
          FROM stores s
-         JOIN org_nodes o ON s.org_node_id = o.id
-        WHERE s.is_closed = false
-          AND o.type = '门店'
-          AND o.is_active = true) AS total_stores,
+        WHERE ${activeStoreCondition(sql`s.store_id`)}
+          AND s.opening_date IS NOT NULL
+          AND s.opening_date::date <= (NOW() AT TIME ZONE 'Asia/Shanghai')::date
+          AND (s.closed_at IS NULL OR s.closed_at::date > (NOW() AT TIME ZONE 'Asia/Shanghai')::date)) AS total_stores,
       (SELECT COUNT(*) FROM staff_wechat_users WHERE is_resigned = false) AS total_employees,
       (SELECT COUNT(*) FROM products WHERE deleted_at IS NULL) AS total_products,
       (SELECT COUNT(*) FROM client_wechat_users) AS total_customers

@@ -46,6 +46,8 @@ const LIST_PAGE_GATES: Record<string, Clause[]> = {
   '/store-unbind': ['store_unbind:list'],
   '/inventory': ['inventory:list', 'inventory:stock_list'],
   '/inventory/stocks': ['inventory:stock_list'],
+  '/inventory/movements': ['inventory:stock_list'],
+  '/inventory/pending-receipts': ['inventory:list'],
   '/inventory/operations': ['inventory:list', 'inventory:stock_list'],
   '/inventory/operations/[level]': ['inventory:list', 'inventory:stock_list'],
   '/inventory/operations/supply-chain': ['inventory:list', 'inventory:stock_list'],
@@ -67,6 +69,13 @@ const LIST_PAGE_GATES: Record<string, Clause[]> = {
   '/data-center/customer': ['data_center:dashboard'],
   '/data-center/efficiency': ['data_center:dashboard'],
   '/data-center/product': ['data_center:dashboard'],
+  // 经营明细报表（#367）：SSR 闸门 = 各页 scope 数据源（兼任闸门）+ getDataStartDates（dashboard）。
+  // 顾客明细 / 员工提成类的数据源是 withAllPermissions（dashboard + 专用权限点，同一角色授权）。
+  '/data-center/daily-overview': ['data_center:dashboard'],
+  '/data-center/customer-frequency': ['data_center:dashboard', 'data_center:customer_detail'],
+  '/data-center/remaining-cards': ['data_center:dashboard', 'data_center:customer_detail'],
+  '/data-center/operating-master': ['data_center:dashboard'],
+  '/data-center/commission-daily': ['data_center:dashboard', 'data_center:staff_commission'],
   '/org': ['org:list'],
   '/stores': ['store:list'],
   '/merchants': ['merchant:list'], // 商户管理（admin + finance）；getMerchantsPaginated
@@ -135,6 +144,7 @@ const SUBPAGES: Array<{ href: string; parent: string; entryGate?: string; clause
   { href: '/merchants/create', parent: '/merchants', entryGate: 'merchant:create', clauses: ['merchant:create', 'merchant:list'] },
   { href: '/inventory/skus', parent: '/inventory', clauses: ['inventory:stock_list'] },
   { href: '/inventory/stocks', parent: '/inventory', clauses: ['inventory:stock_list'] },
+  { href: '/inventory/movements', parent: '/inventory', clauses: ['inventory:stock_list'] },
   { href: '/inventory/docs', parent: '/inventory', clauses: ['inventory:list', 'inventory:stock_list'] },
   { href: '/inventory/docs/[id]', parent: '/inventory', clauses: ['inventory:list'] },
   { href: '/inventory/operations', parent: '/inventory', clauses: ['inventory:list', 'inventory:stock_list'] },
@@ -142,6 +152,8 @@ const SUBPAGES: Array<{ href: string; parent: string; entryGate?: string; clause
   { href: '/inventory/suppliers', parent: '/inventory', clauses: ['inventory:stock_list'] },
   { href: '/inventory/sku-mappings', parent: '/inventory', clauses: ['inventory:stock_list'] },
   { href: '/inventory/promotions', parent: '/inventory/skus', clauses: ['inventory:stock_list'] },
+  // 提成明细（#367）：只能从员工提成日报下钻，不进菜单
+  { href: '/data-center/commission-daily/detail', parent: '/data-center/commission-daily', clauses: ['data_center:dashboard', 'data_center:staff_commission'] },
 ]
 
 const ALL_ROLES: RoleType[] = [

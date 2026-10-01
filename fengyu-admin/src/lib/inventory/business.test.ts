@@ -13,14 +13,22 @@ vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }))
 
 import {
   allocateMarketReportSourceLinks,
+  autoBatchNo,
+  lineBatchNo,
   approveItemCompanyShipmentCancellation,
+  approveReturnForRestock,
   assertSkuAvailableToMarket,
   cancelSupplyChainPurchaseOrder,
   cancelItemCompanyShipment,
+  createInventoryConversion,
   createItemCompanyShipment,
   createItemCompanyReplenishment,
   createMarketStaffPurchase,
   createMarketReplenishment,
+  deleteMarketReplenishmentDraft,
+  deleteStoreReplenishmentDraft,
+  saveMarketReplenishmentDraft,
+  saveStoreReplenishmentDraft,
   allocateRetainedQuantity,
   createPurchaseOrder,
   createReturnForRestock,
@@ -38,6 +46,8 @@ import {
   receiveSupplyChainPurchaseOrder,
   rejectItemCompanyShipmentCancellation,
   requestItemCompanyShipmentCancellation,
+  storeReplenishmentCoverage,
+  summarizeStoreReplenishmentRequests,
 } from './business'
 import { db } from '@/db'
 import ts from 'typescript'
@@ -178,7 +188,7 @@ function marketSkuRow(skuId: string, marketPurchasePrice = '100') {
     owner_market_id: null,
     supply_chain_purchase_price: null,
     market_purchase_price: marketPurchasePrice,
-    store_purchase_price: null,
+    store_purchase_price: null as string | null,
     market_staff_purchase_price: null,
     item_company_purchase_price: null,
   }
@@ -275,7 +285,7 @@ function initializedCutoverExecutor(txExecute: (query: unknown) => Promise<unkno
 function mockQuoteTransaction(skus: ReturnType<typeof marketSkuRow>[], promotions: unknown[]) {
   const txExecute = vi.fn()
     .mockResolvedValueOnce([{
-      location_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ',
+      location_id: 'M1', org_node_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ',
     }])
   for (const sku of skus) txExecute.mockResolvedValueOnce([sku])
   txExecute.mockResolvedValueOnce(promotions)
@@ -303,7 +313,7 @@ describe('inventory business action input guards', () => {
       supplyChainLocationId: 'HQ', items: [],
     })).rejects.toThrow('采购订单至少需要一条明细')
     await expect(createItemCompanyShipment(SESSION, {
-      purchaseOrderId: 'CGD-1', sourceOrgNodeId: 'HQ', items: [],
+      marketId: 'M1', sourceOrgNodeId: 'HQ', items: [], giftItems: [],
     })).rejects.toThrow('品项公司发货至少需要一条明细')
     await expect(receiveSupplyChainPurchaseOrder(SESSION, {
       purchaseOrderId: 'PCG-1', supplyChainLocationId: 'HQ', items: [],
@@ -338,10 +348,10 @@ describe('inventory business action input guards', () => {
     const txExecute = vi.fn()
       .mockResolvedValueOnce([itemCompanyShipmentRow({ status: '待收货' })])
       .mockResolvedValueOnce([{
-        location_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
+        location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
       }])
       .mockResolvedValueOnce([{
-        location_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ',
+        location_id: 'M1', org_node_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ',
       }])
       .mockResolvedValueOnce([{
         ...storeRequestItemRow(), doc_id: 'GFH-1', lot_id: 101, quantity: '5',
@@ -387,7 +397,7 @@ describe('inventory business action input guards', () => {
         status: '待审批', cancellationRequestReason: '物流信息异常',
       })])
       .mockResolvedValueOnce([{
-        location_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
+        location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
       }])
     vi.mocked(db.execute).mockResolvedValue([] as never)
     vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
@@ -403,13 +413,13 @@ describe('inventory business action input guards', () => {
     expect(queries).not.toContain('inventory_movements')
   })
 
-  it('拥有撤回审批权限的用户审批后恢复总部库存并回退采购订单履约数量', async () => {
+  it('拥有撤回审批权限的用户审批后恢复总部库存；采购行 fulfilled 只记入库，不随撤回回退（#335）', async () => {
     const txExecute = vi.fn()
       .mockResolvedValueOnce([itemCompanyShipmentRow({
         status: '待审批', cancellationRequestReason: '物流信息异常',
       })])
       .mockResolvedValueOnce([{
-        location_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
+        location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
       }])
       .mockResolvedValueOnce([{
         ...storeRequestItemRow(), doc_id: 'GFH-1', lot_id: 101, quantity: '5',
@@ -428,7 +438,8 @@ describe('inventory business action input guards', () => {
     const queries = txExecute.mock.calls.map(([query]) => renderSql(query)).join('\n')
     expect(queries).not.toContain('UPDATE inventory_stock_lots')
     expect(queries).toContain('INSERT INTO inventory_movements')
-    expect(queries).toContain('UPDATE inventory_doc_items purchase_item')
+    // 发货从不回写采购行（#335），撤回也就不能再去回退它 —— 回退会把已入库量减掉
+    expect(queries).not.toContain('UPDATE inventory_doc_items purchase_item')
     expect(queries).toContain("SET status = '已取消'")
   })
 
@@ -438,7 +449,7 @@ describe('inventory business action input guards', () => {
         status: '待审批', cancellationRequestReason: '物流信息异常',
       })])
       .mockResolvedValueOnce([{
-        location_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
+        location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
       }])
       .mockResolvedValue([])
     vi.mocked(db.execute).mockResolvedValue([] as never)
@@ -506,7 +517,7 @@ describe('inventory business action input guards', () => {
   it('无门店员工按组织树追溯市场并拒绝跨市场员工购', async () => {
     const txExecute = vi.fn()
       .mockResolvedValueOnce([{
-        location_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ',
+        location_id: 'M1', org_node_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ',
       }])
       .mockResolvedValueOnce([{
         employee_id: 'E002', name: '市场二员工', store_id: null, org_node_id: 'D2', store_market_id: null,
@@ -526,7 +537,7 @@ describe('inventory business action input guards', () => {
   it('员工购候选项只返回所选市场组织树中的在职员工', async () => {
     mockSyncLocationsShortCircuit()
       .mockResolvedValueOnce([{
-        location_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ',
+        location_id: 'M1', org_node_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ',
       }] as never)
       .mockResolvedValueOnce([
         { employee_id: 'E001', name: '员工甲' },
@@ -557,7 +568,7 @@ describe('inventory business action input guards', () => {
   it('供应链员工购候选项排除市场链路和门店员工', async () => {
     mockSyncLocationsShortCircuit()
       .mockResolvedValueOnce([{
-        location_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
+        location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
       }] as never)
       .mockResolvedValueOnce([{ employee_id: 'E-HQ', name: '总部员工' }] as never)
 
@@ -578,7 +589,7 @@ describe('inventory business action input guards', () => {
   it('市场员工购候选项的递归 CTE 不再混用别名与原名（#130 回归）', async () => {
     mockSyncLocationsShortCircuit()
       .mockResolvedValueOnce([{
-        location_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ',
+        location_id: 'M1', org_node_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ',
       }] as never)
       .mockResolvedValueOnce([] as never)
 
@@ -651,7 +662,7 @@ describe('inventory business action input guards', () => {
   it('自采入库必须引用有效且启用的供应商实体', async () => {
     const txExecute = vi.fn()
       .mockResolvedValueOnce([{
-        location_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ',
+        location_id: 'M1', org_node_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ',
       }])
       .mockResolvedValueOnce([])
     vi.mocked(db.execute).mockResolvedValue([] as never)
@@ -670,10 +681,10 @@ describe('inventory business action input guards', () => {
   it('已由市场库存履约的门店报货不能再次进入市场报货', async () => {
     const txExecute = vi.fn()
       .mockResolvedValueOnce([{
-        location_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ',
+        location_id: 'M1', org_node_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ',
       }])
       .mockResolvedValueOnce([{
-        location_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
+        location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
       }])
       .mockResolvedValueOnce([storeRequestItemRow('5')])
       .mockResolvedValueOnce([{
@@ -697,7 +708,7 @@ describe('inventory business action input guards', () => {
   it('品项公司报货需求拒绝非供应链 SKU', async () => {
     const txExecute = vi.fn()
       .mockResolvedValueOnce([{
-        location_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
+        location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
       }])
       .mockResolvedValueOnce([{
         ...marketSkuRow('SELF-SKU'),
@@ -712,13 +723,13 @@ describe('inventory business action input guards', () => {
     await expect(createItemCompanyReplenishment(SESSION, {
       supplyChainLocationId: 'HQ',
       items: [{ skuId: 'SELF-SKU', quantity: 1 }],
-    })).rejects.toThrow('品项公司报货只能选择供应链 SKU')
+    })).rejects.toThrow('只能选择供应链 SKU')
   })
 
   it('品项公司报货需求要求已维护供应链采购价', async () => {
     const txExecute = vi.fn()
       .mockResolvedValueOnce([{
-        location_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
+        location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
       }])
       .mockResolvedValueOnce([{
         ...marketSkuRow('SKU-NO-COST'),
@@ -827,7 +838,7 @@ describe('inventory business action input guards', () => {
         supplier_id: null, supplier_name: null,
       }])
       .mockResolvedValueOnce([{
-        location_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
+        location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
       }])
       // 收敛后不再回溯唯一的品项公司报货需求单，直接读本单明细
       .mockResolvedValueOnce([purchaseOrderItem])
@@ -866,26 +877,9 @@ describe('inventory business action input guards', () => {
     })).rejects.toThrow('采购订单只能引用市场报货汇总或品项公司报货需求')
   })
 
-  it('两条链路按行级市场归属分流：无市场归属的行不能发货、有市场归属的行不能直接入库', async () => {
-    // #194 收敛掉 `供应链采购订单` 之后，分流不再看 doc_type，而是看明细行的 market_id。
-    // 这两条断言钉的就是这个新口径。
-    const shipmentExecutor = vi.fn()
-      .mockResolvedValueOnce([{
-        id: 'CGD-1', doc_type: '采购订单', status: '待收货',
-        source_org_node_id: null, target_org_node_id: 'HQ', market_id: null,
-        supplier_id: null, supplier_name: null,
-      }])
-      .mockResolvedValueOnce([{ location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null }])
-      .mockResolvedValueOnce([{ ...storeRequestItemRow(), doc_id: 'CGD-1', market_id: null }])
-    vi.mocked(db.execute).mockResolvedValue([] as never)
-    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
-      execute: initializedCutoverExecutor(shipmentExecutor),
-    } as never))
-    await expect(createItemCompanyShipment(SESSION, {
-      purchaseOrderId: 'CGD-1', sourceOrgNodeId: 'HQ',
-      items: [{ purchaseOrderItemId: 1, lotId: 1, quantity: 1 }],
-    })).rejects.toThrow('该采购明细没有市场归属')
-
+  it('有市场归属的行可以走供应链采购入库（#335）', async () => {
+    // 市场行越过了原先的「有市场归属」拦截，走到了 SKU 来源校验：
+    // 用一个非供应链 SKU 当哨兵，报的是 SKU 来源错而不是市场归属错。
     const receiptExecutor = vi.fn()
       .mockResolvedValueOnce([{
         id: 'CGD-2', doc_type: '采购订单', status: '待收货',
@@ -894,13 +888,139 @@ describe('inventory business action input guards', () => {
       }])
       .mockResolvedValueOnce([{ location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null }])
       .mockResolvedValueOnce([{ ...storeRequestItemRow(), doc_id: 'CGD-2', market_id: 'M1' }])
+      .mockResolvedValueOnce([{ ...supplierBoundSkuRow(), source_type: '市场自采', owner_market_id: 'M1' }])
+    vi.mocked(db.execute).mockResolvedValue([] as never)
     vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
       execute: initializedCutoverExecutor(receiptExecutor),
     } as never))
-    await expect(receiveSupplyChainPurchaseOrder(SESSION, {
+    const receipt = receiveSupplyChainPurchaseOrder(SESSION, {
       purchaseOrderId: 'CGD-2', supplyChainLocationId: 'HQ',
       items: [{ purchaseOrderItemId: 1, quantity: 1 }],
-    })).rejects.toThrow('该采购明细有市场归属')
+    })
+    await expect(receipt).rejects.toThrow('只能选择供应链 SKU')
+    await expect(receipt).rejects.not.toThrow('有市场归属')
+  })
+
+  it('市场报货汇总行的 SKU 不是供应链商品时，建采购订单直接拒绝（#335 Q3）', async () => {
+    const txExecute = vi.fn()
+      .mockResolvedValueOnce([{ location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null }])
+      .mockResolvedValueOnce([{ ...storeRequestItemRow(), doc_id: 'MHZ-1', market_id: 'M1' }])
+      .mockResolvedValueOnce([{
+        id: 'MHZ-1', doc_type: '市场报货汇总', status: '已完成',
+        source_org_node_id: null, target_org_node_id: 'HQ', market_id: null,
+        supplier_id: null, supplier_name: null,
+      }])
+      .mockResolvedValueOnce([{ ...supplierBoundSkuRow(), source_type: '市场自采', owner_market_id: 'M1' }])
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
+      execute: initializedCutoverExecutor(txExecute),
+    } as never))
+
+    await expect(createPurchaseOrder(SESSION, {
+      supplyChainLocationId: 'HQ',
+      items: [{ sourceItemId: 1, quantity: 1 }],
+    })).rejects.toThrow('采购订单只能采购供应链商品')
+  })
+
+  describe('采购 / 入库 / 发货数量多于两位小数时在入口拒绝（#335）', () => {
+    const hqRow = { location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null }
+    const orderRow = {
+      id: 'CGD-1', doc_type: '采购订单', status: '待收货',
+      source_org_node_id: null, target_org_node_id: 'HQ', market_id: null,
+      supplier_id: null, supplier_name: null,
+    }
+    function mockTx(...results: unknown[]) {
+      const txExecute = vi.fn()
+      for (const result of results) txExecute.mockResolvedValueOnce(result)
+      vi.mocked(db.execute).mockResolvedValue([] as never)
+      vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
+        execute: initializedCutoverExecutor(txExecute),
+      } as never))
+    }
+
+    it.each([1.234, 1e-9])('采购数量 %s 被拒', async (quantity) => {
+      mockTx([hqRow])
+      await expect(createPurchaseOrder(SESSION, {
+        supplyChainLocationId: 'HQ',
+        items: [{ sourceItemId: 1, quantity }],
+      })).rejects.toThrow('采购数量最多保留两位小数')
+    })
+
+    it('合法的大数量不被浮点残差误伤（越过精度校验走到来源校验）', async () => {
+      mockTx([hqRow], [{ ...storeRequestItemRow(), doc_id: 'ZBH-1' }], [{
+        id: 'ZBH-1', doc_type: '品项公司报货需求', status: '草稿',
+        source_org_node_id: null, target_org_node_id: 'HQ', market_id: null,
+        supplier_id: null, supplier_name: null,
+      }], [supplierBoundSkuRow()])
+      await expect(createPurchaseOrder(SESSION, {
+        supplyChainLocationId: 'HQ',
+        items: [{ sourceItemId: 1, quantity: 1234567890.12 }],
+      })).rejects.toThrow('采购订单必须引用有效的品项公司报货需求单')
+    })
+
+    it('实收数量 1.234 被拒', async () => {
+      mockTx([orderRow], [hqRow], [{ ...storeRequestItemRow(), doc_id: 'CGD-1' }], [supplierBoundSkuRow()])
+      await expect(receiveSupplyChainPurchaseOrder(SESSION, {
+        purchaseOrderId: 'CGD-1', supplyChainLocationId: 'HQ',
+        items: [{ purchaseOrderItemId: 1, quantity: 1.234 }],
+      })).rejects.toThrow('实收数量最多保留两位小数')
+    })
+
+    it('发货数量 1.234 被拒', async () => {
+      mockTx(
+        [hqRow],
+        [{ location_id: 'M1', org_node_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ' }],
+        [{ ...storeRequestItemRow(), doc_id: 'MBH-1' }],
+        [{
+          id: 'MBH-1', doc_type: '市场报货', status: '已完成',
+          source_org_node_id: 'M1', target_org_node_id: 'HQ', market_id: 'M1',
+          supplier_id: null, supplier_name: null,
+        }],
+      )
+      await expect(createItemCompanyShipment(SESSION, {
+        marketId: 'M1', sourceOrgNodeId: 'HQ',
+        items: [{ reportItemId: 1, lotId: 1, quantity: 1.234 }],
+      })).rejects.toThrow('发货数量最多保留两位小数')
+    })
+  })
+
+  it('关闭部分入库的采购订单：不再看发货量（#336 发货直连报货单），按已入库量释放汇总行（#335）', async () => {
+    const summaryItem = {
+      ...storeRequestItemRow(), id: 10, doc_id: 'MHZ-1', market_id: 'M1',
+      quantity: '10', fulfilled_quantity: '10',
+    }
+    const txExecute = vi.fn()
+      .mockResolvedValueOnce([{
+        id: 'CGD-1', doc_type: '采购订单', status: '待收货',
+        source_org_node_id: null, target_org_node_id: 'HQ', market_id: null,
+        supplier_id: null, supplier_name: null,
+      }])
+      .mockResolvedValueOnce([{ location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null }])
+      .mockResolvedValueOnce([{ ...storeRequestItemRow('3'), doc_id: 'CGD-1', market_id: 'M1', quantity: '10' }])
+      .mockResolvedValueOnce([{ relation_type: '报货汇总采购订单', from_item_id: 10, to_item_id: 1, quantity: '10' }])
+      .mockResolvedValueOnce([{ quantity: '3' }]) // 已入库（释放计算）
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([summaryItem])
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
+      execute: initializedCutoverExecutor(txExecute),
+    } as never))
+
+    await expect(cancelSupplyChainPurchaseOrder(SESSION, {
+      purchaseOrderId: 'CGD-1', cancellationReason: '供应商短供',
+    })).resolves.toEqual({ success: true })
+    // 汇总行 fulfilled 10 → 3：只退还未入库的 7，已入库的 3 继续占用（市场行不再整行作废）
+    const summaryRelease = txExecute.mock.calls
+      .map(([query]) => query as { queryChunks?: unknown[] })
+      .find((query) => renderSql(query).includes('SET fulfilled_quantity')
+        && (query.queryChunks ?? []).includes(10))
+    expect(summaryRelease?.queryChunks).toContain('3')
+    const queries = txExecute.mock.calls.map(([query]) => renderSql(query)).join('\n')
+    expect(queries).toContain("SET status = '已取消'")
+    // 关单不再查「采购订单发货」血缘（关系类型是绑定参数，要看参数而不是 SQL 文本）
+    const relationParams = txExecute.mock.calls.flatMap(([query]) => sqlParams(query))
+    expect(relationParams).toContain('采购订单供应链采购入库')
+    expect(relationParams).not.toContain('采购订单发货')
   })
 
   it('福利报价始终以 SKU 市场进货价为基础，不接受方案中的基础价快照', async () => {
@@ -914,6 +1034,35 @@ describe('inventory business action input guards', () => {
       marketStandardUnitPrice: 100,
       marketUnitDiscount: 10,
       marketActualUnitPrice: 90,
+      storeStandardUnitPrice: null,
+    })
+  })
+
+  it('#363 B 市场价格权不能读取 A 市场门店参考价', async () => {
+    const mixed = {
+      employeeId: 'E1',
+      roles: [
+        { role: 'inventory_market_operator', scopeId: 'M1', scopeType: '市场', actions: ['inventory:market_operate'], scopeStoreIds: [], scopeOrgNodeIds: ['M1'] },
+        { role: 'inventory_market_finance', scopeId: 'M2', scopeType: '市场', actions: ['inventory:market_price_view'], scopeStoreIds: [], scopeOrgNodeIds: ['M2'] },
+      ],
+      permissions: { actions: ['inventory:market_operate', 'inventory:market_price_view'], scopeStoreIds: [] },
+    } as never
+    const execute = mockQuoteTransaction([], [])
+    await expect(quoteMarketReplenishmentPrices(mixed, {
+      marketId: 'M1', items: [{ skuId: 'SKU-1', quantity: 1 }],
+    })).rejects.toThrow('PERMISSION_DENIED: 无权查看该市场报货价格')
+    expect(execute).toHaveBeenCalledTimes(1)
+  })
+
+  it('#363 门店参考价来自 SKU，福利不影响门店参考价或市场实际价', async () => {
+    mockQuoteTransaction([{ ...marketSkuRow('SKU-1'), store_purchase_price: '150' }], [
+      promotionRow({ planId: 'P1', planNo: 'P1', skuId: 'SKU-1', discount: '10' }),
+    ])
+    await expect(quoteMarketReplenishmentPrices(PRICE_SESSION, {
+      marketId: 'M1', items: [{ skuId: 'SKU-1', quantity: 2 }],
+    })).resolves.toMatchObject({
+      items: [expect.objectContaining({ storeStandardUnitPrice: 150, marketStandardUnitPrice: 100, marketUnitDiscount: 10, marketActualUnitPrice: 90 })],
+      totalActualAmount: 180,
     })
   })
 
@@ -1055,6 +1204,481 @@ describe('inventory business action input guards', () => {
  * 回归背景：曾误按市场 scope 校验（assertLocationWritable(session, market)），
  * 导致供应链库存员（总部 scope）被 PERMISSION_DENIED 卡死，三级主链路中断。
  */
+describe('品项公司发货直接引用市场报货单（#336）', () => {
+  beforeEach(() => {
+    vi.resetAllMocks()
+  })
+
+  const reportHeader = (overrides: Record<string, unknown> = {}) => ({
+    id: 'MBH-1', doc_type: '市场报货', status: '已完成',
+    source_org_node_id: 'M1', target_org_node_id: 'HQ', market_id: 'M1',
+    supplier_id: null, supplier_name: null,
+    ...overrides,
+  })
+  const reportItem = (id: number, quantity: string) => ({
+    ...storeRequestItemRow(), id, doc_id: 'MBH-1', quantity, request_quantity: quantity,
+  })
+
+  /**
+   * 按 SQL 内容路由的事务 mock：报货行 / 报货单 / 批次 / SKU 各按固定数据回，
+   * 「市场报货发货」已发量按 shippedByItem 回，写入语句逐条收集供断言。
+   */
+  function mockShipment(input: {
+    items: ReturnType<typeof reportItem>[]
+    header?: Record<string, unknown>
+    shippedByItem?: Record<number, string>
+    lotQuantity?: string
+    insertLinkError?: unknown
+  }) {
+    const links: unknown[][] = []
+    const docItems: unknown[][] = []
+    let nextItemId = 500
+    const executor = vi.fn(async (query: unknown) => {
+      const rendered = renderSql(query)
+      const params = sqlParams(query)
+      if (rendered.includes('INSERT INTO inventory_doc_links')) {
+        if (input.insertLinkError) throw input.insertLinkError
+        links.push(params)
+        return []
+      }
+      if (rendered.includes('INSERT INTO inventory_doc_items')) {
+        docItems.push(params)
+        return [{ id: String(nextItemId++) }]
+      }
+      if (rendered.includes('INSERT INTO')) return []
+      if (rendered.includes('FROM inventory_doc_links')) {
+        return [{ quantity: input.shippedByItem?.[Number(params[0])] ?? '0' }]
+      }
+      if (rendered.includes('FROM inventory_stock_reservations')) return [{ quantity: '0' }]
+      if (rendered.includes('FROM inventory_stock_lots')) {
+        return [{ ...shipmentSourceLotRow(), quantity_on_hand: input.lotQuantity ?? '100' }]
+      }
+      if (rendered.includes('FROM inventory_skus')) return [supplierBoundSkuRow()]
+      if (rendered.includes('FROM inventory_locations')) {
+        return params.includes('M1')
+          ? [{ location_id: 'M1', org_node_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ' }]
+          : [{ location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null }]
+      }
+      if (rendered.includes('FROM inventory_doc_items')) {
+        const row = input.items.find((item) => item.id === Number(params[0]))
+        return row ? [row] : []
+      }
+      if (rendered.includes('FROM inventory_docs') && rendered.includes('FOR UPDATE')) {
+        return [reportHeader(input.header)]
+      }
+      return []
+    })
+    mockSyncLocationsShortCircuit()
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
+      execute: initializedCutoverExecutor(executor),
+    } as never))
+    return { links, docItems }
+  }
+
+  it('正常发货超过报货未发量时拒绝，报错写明本次最多可发数量', async () => {
+    mockShipment({ items: [reportItem(1, '30')], shippedByItem: { 1: '10' } })
+    await expect(createItemCompanyShipment(SESSION, {
+      marketId: 'M1', sourceOrgNodeId: 'HQ',
+      items: [{ reportItemId: 1, lotId: 101, quantity: 21 }],
+    })).rejects.toThrow('本次最多可发 20')
+  })
+
+  it('同一报货行拆成多行（不同批号）时按合计封顶', async () => {
+    mockShipment({ items: [reportItem(1, '30')], shippedByItem: { 1: '10' } })
+    await expect(createItemCompanyShipment(SESSION, {
+      marketId: 'M1', sourceOrgNodeId: 'HQ',
+      items: [
+        { reportItemId: 1, lotId: 101, quantity: 15 },
+        { reportItemId: 1, lotId: 102, quantity: 6 },
+      ],
+    })).rejects.toThrow('本次最多可发 20')
+  })
+
+  it('引用别的市场报的报货单被拒', async () => {
+    mockShipment({ items: [reportItem(1, '30')], header: { source_org_node_id: 'M2', market_id: 'M2' } })
+    await expect(createItemCompanyShipment(SESSION, {
+      marketId: 'M1', sourceOrgNodeId: 'HQ',
+      items: [{ reportItemId: 1, lotId: 101, quantity: 1 }],
+    })).rejects.toThrow('不是该收货市场报的')
+  })
+
+  it('引用非市场报货单被拒', async () => {
+    mockShipment({ items: [reportItem(1, '30')], header: { doc_type: '采购订单' } })
+    await expect(createItemCompanyShipment(SESSION, {
+      marketId: 'M1', sourceOrgNodeId: 'HQ',
+      items: [{ reportItemId: 1, lotId: 101, quantity: 1 }],
+    })).rejects.toThrow('必须引用有效的市场报货单')
+  })
+
+  it('发货总部必须是报货单指定的供应链主体', async () => {
+    mockShipment({ items: [reportItem(1, '30')], header: { target_org_node_id: 'HQ2' } })
+    await expect(createItemCompanyShipment(SESSION, {
+      marketId: 'M1', sourceOrgNodeId: 'HQ',
+      items: [{ reportItemId: 1, lotId: 101, quantity: 1 }],
+    })).rejects.toThrow('指定的供应链主体发出')
+  })
+
+  it('赠送行不受报货数量封顶，写「市场报货赠送发货」直连血缘并生成独立批号；正常行 request_quantity 记报货数量', async () => {
+    const { links, docItems } = mockShipment({ items: [reportItem(1, '1')], shippedByItem: { 1: '0' } })
+    const result = await createItemCompanyShipment(SESSION, {
+      marketId: 'M1', sourceOrgNodeId: 'HQ',
+      items: [{ reportItemId: 1, lotId: 101, quantity: 1 }],
+      giftItems: [{ reportItemId: 1, lotId: 101, quantity: 2 }],
+    })
+    expect(result.id).toMatch(/^GFH-/)
+    expect(links).toHaveLength(2)
+    expect(links[0]).toEqual(expect.arrayContaining(['MBH-1', result.id, '市场报货发货', 1]))
+    expect(links[1]).toEqual(expect.arrayContaining(['MBH-1', result.id, '市场报货赠送发货', 1]))
+    expect(links.flat()).not.toContain('采购订单发货')
+    expect(docItems).toHaveLength(2)
+    // 正常行沿用总部批号；赠送行 = 发货单号-行号（#345），与正常货区分
+    expect(docItems[0]).toContain('B-001')
+    expect(docItems[1]).toContain(`${result.id}-02`)
+    expect(docItems[1]).not.toContain('B-001')
+  })
+
+  it('同一批次被正常行与赠送行共用时按合计校验可用量（在写入前拦下，不靠 applyLotDelta 兜底）', async () => {
+    const { docItems } = mockShipment({ items: [reportItem(1, '10')], lotQuantity: '5' })
+    await expect(createItemCompanyShipment(SESSION, {
+      marketId: 'M1', sourceOrgNodeId: 'HQ',
+      items: [{ reportItemId: 1, lotId: 101, quantity: 4 }],
+      giftItems: [{ reportItemId: 1, lotId: 101, quantity: 2 }],
+    })).rejects.toThrow('可用 5')
+    expect(docItems).toHaveLength(0)
+  })
+
+  it('非「已完成」的市场报货单（草稿 / 待审批异常单）不能发货，与汇总守卫同口径', async () => {
+    mockShipment({ items: [reportItem(1, '30')], header: { status: '草稿' } })
+    await expect(createItemCompanyShipment(SESSION, {
+      marketId: 'M1', sourceOrgNodeId: 'HQ',
+      items: [{ reportItemId: 1, lotId: 101, quantity: 1 }],
+    })).rejects.toThrow('必须引用有效的市场报货单')
+  })
+
+  it('发货批次的商品与报货行不一致时拒绝', async () => {
+    mockShipment({ items: [{ ...reportItem(1, '30'), sku_id: 'SKU-OTHER' }] })
+    await expect(createItemCompanyShipment(SESSION, {
+      marketId: 'M1', sourceOrgNodeId: 'HQ',
+      items: [{ reportItemId: 1, lotId: 101, quantity: 1 }],
+    })).rejects.toThrow('发货批次与市场报货商品不一致')
+  })
+
+  it('入参形状：非数组明细、非法 id、同报货行同批次重复都在事务前拒绝（不静默丢行、不让 NaN 进 SQL）', async () => {
+    const cases: Array<[Record<string, unknown>, RegExp]> = [
+      [{ items: { reportItemId: 1 } }, /发货明细格式不正确/],
+      [{ items: [], giftItems: 'x' }, /赠送明细格式不正确/],
+      [{ items: [{ reportItemId: true, lotId: 101, quantity: 1 }] }, /市场报货明细不正确/],
+      [{ items: [{ reportItemId: '1.5', lotId: 101, quantity: 1 }] }, /市场报货明细不正确/],
+      [{ items: [{ reportItemId: 1, lotId: Number.NaN, quantity: 1 }] }, /请为每行选择发货批次/],
+      [{ items: [null] }, /市场报货明细不正确/],
+      [{
+        items: [{ reportItemId: 1, lotId: 101, quantity: 1 }, { reportItemId: '1', lotId: 101, quantity: 2 }],
+      }, /不能重复填写/],
+    ]
+    for (const [input, pattern] of cases) {
+      await expect(createItemCompanyShipment(SESSION, {
+        marketId: 'M1', sourceOrgNodeId: 'HQ', ...input,
+      } as never)).rejects.toThrow(pattern)
+    }
+    expect(vi.mocked(db.transaction)).not.toHaveBeenCalled()
+  })
+
+  it('同一报货行正常与赠送各一行、同批次不算重复', async () => {
+    const { links } = mockShipment({ items: [reportItem(1, '5')] })
+    await createItemCompanyShipment(SESSION, {
+      marketId: 'M1', sourceOrgNodeId: 'HQ',
+      items: [{ reportItemId: 1, lotId: 101, quantity: 1 }],
+      giftItems: [{ reportItemId: 1, lotId: 101, quantity: 1 }],
+    })
+    expect(links).toHaveLength(2)
+  })
+
+  it.each([false, true])('旧口径（采购订单发货）的发货单收货时给出可操作的报错：撤回后按报货单重发（赠送行=%s 也拦）', async (isGift) => {
+    const shipmentRow = {
+      id: 'GFH-OLD', doc_type: '品项公司发货', status: '待收货',
+      source_org_node_id: 'HQ', target_org_node_id: 'M1', market_id: 'M1',
+      supplier_id: null, supplier_name: null,
+      cancellation_request_reason: null, cancellation_requested_by: null, cancellation_requested_at: null,
+    }
+    const executor = vi.fn(async (query: unknown) => {
+      const rendered = renderSql(query)
+      const params = sqlParams(query)
+      // 价格快照 SQL 也 JOIN inventory_doc_items，必须排在明细分支之前；旧单没有「市场报货发货」血缘
+      if (rendered.includes('FROM inventory_doc_links')) return []
+      if (rendered.includes('FROM inventory_stock_lots')) return [shipmentSourceLotRow()]
+      if (rendered.includes('FROM inventory_skus')) return [marketSkuRow('SKU-1')]
+      if (rendered.includes('FROM inventory_locations')) {
+        return params.includes('M1')
+          ? [{ location_id: 'M1', org_node_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ' }]
+          : [{ location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null }]
+      }
+      if (rendered.includes('FROM inventory_doc_items')) {
+        return [{ ...storeRequestItemRow(), id: 7, doc_id: 'GFH-OLD', lot_id: 101, quantity: '1', is_gift: isGift }]
+      }
+      if (rendered.includes('FROM inventory_docs')) return [shipmentRow]
+      return []
+    })
+    mockSyncLocationsShortCircuit()
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
+      execute: initializedCutoverExecutor(executor),
+    } as never))
+    await expect(receiveItemCompanyShipment(SESSION, {
+      shipmentId: 'GFH-OLD', items: [{ shipmentItemId: 7, receivedQuantity: 1 }],
+    })).rejects.toThrow('请申请撤回后按市场报货单重新发货')
+  })
+
+  it('触发器兜底 RAISE「关联数量超出来源明细」改写为可读的 CONFLICT 文案', async () => {
+    const raise = Object.assign(new Error('Failed query: insert into inventory_doc_links'), {
+      cause: Object.assign(new Error('关联数量超出来源明细：来源 1, 现有关联 1, 本次 1'), { code: 'P0001' }),
+    })
+    mockShipment({ items: [reportItem(1, '1')], insertLinkError: raise })
+    await expect(createItemCompanyShipment(SESSION, {
+      marketId: 'M1', sourceOrgNodeId: 'HQ',
+      items: [{ reportItemId: 1, lotId: 101, quantity: 1 }],
+    })).rejects.toThrow('CONFLICT: 正常发货数量超过报货未发量')
+  })
+})
+
+describe('批号自动生成（#345）', () => {
+  beforeEach(() => {
+    vi.resetAllMocks()
+  })
+
+  it('autoBatchNo：格式为「单号-两位行号」，行号超过两位不截断', () => {
+    expect(autoBatchNo('GRK-20260925-0001', 1)).toBe('GRK-20260925-0001-01')
+    expect(autoBatchNo('GRK-20260925-0001', 12)).toBe('GRK-20260925-0001-12')
+    expect(autoBatchNo('GRK-20260925-0001', 123)).toBe('GRK-20260925-0001-123')
+  })
+
+  it('autoBatchNo：同日不同单号、同单不同行号都不重号（单号全局唯一 ⇒ 批号全局唯一）', () => {
+    const generated = new Set<string>()
+    for (let sequence = 1; sequence <= 50; sequence += 1) {
+      const docId = `GRK-20260925-${String(sequence).padStart(4, '0')}`
+      for (let lineNo = 1; lineNo <= 120; lineNo += 1) generated.add(autoBatchNo(docId, lineNo))
+    }
+    expect(generated.size).toBe(50 * 120)
+    // 不同单据类型前缀不会撞号
+    expect(autoBatchNo('ZRK-20260925-0001', 1)).not.toBe(autoBatchNo('GRK-20260925-0001', 1))
+  })
+
+  it('lineBatchNo：赠送属性与来源批次一致时沿用来源批号，翻转（任一方向）时按单号-行号换批号', () => {
+    const normalLot = { batchNo: 'B-1', isGift: false }
+    const giftLot = { batchNo: 'GFH-20260925-0001-02', isGift: true }
+    expect(lineBatchNo(normalLot, false, 'FPH-20260925-0001', 1)).toBe('B-1')
+    expect(lineBatchNo(normalLot, true, 'FPH-20260925-0001', 2)).toBe('FPH-20260925-0001-02')
+    expect(lineBatchNo(giftLot, true, 'FPH-20260925-0001', 2)).toBe('GFH-20260925-0001-02')
+    expect(lineBatchNo(giftLot, false, 'FPH-20260925-0001', 1)).toBe('FPH-20260925-0001-01')
+    // 来源批次无批号（存量）拨赠送同样生成
+    expect(lineBatchNo({ batchNo: '', isGift: false }, true, 'GFH-20260925-0003', 1)).toBe('GFH-20260925-0003-01')
+  })
+
+  it('autoBatchNo：行号必须是正整数', () => {
+    expect(() => autoBatchNo('GRK-20260925-0001', 0)).toThrow()
+    expect(() => autoBatchNo('GRK-20260925-0001', 1.5)).toThrow()
+  })
+
+  function mockSupplyChainReceipt() {
+    const lotInserts: unknown[][] = []
+    const itemInserts: unknown[][] = []
+    let lastLotBatchNo = ''
+    let lastLotCost: string | null = null
+    const executor = vi.fn(async (query: unknown) => {
+      const rendered = renderSql(query)
+      if (rendered.includes('INSERT INTO inventory_stock_lots')) {
+        const params = sqlParams(query)
+        lotInserts.push(params)
+        // upsertLot 的 VALUES 顺序：location_id, sku_id, lot_key, sku_name, spec_name, supplier, supplier_id, product_series, batch_no
+        lastLotBatchNo = String(params[8])
+        lastLotCost = params[12] as string | null
+        return [{ id: '7' }]
+      }
+      if (rendered.includes('FROM inventory_stock_lots')) {
+        return [{ ...shipmentSourceLotRow(), id: '7', batch_no: lastLotBatchNo, supply_chain_unit_cost: lastLotCost, source_doc_id: null }]
+      }
+      if (rendered.includes('INSERT INTO inventory_doc_items')) {
+        itemInserts.push(sqlParams(query))
+        return [{ id: '9' }]
+      }
+      if (rendered.includes('FROM inventory_doc_links')) return [{ quantity: '0' }]
+      if (rendered.includes('FROM inventory_doc_items')) {
+        return [{ ...storeRequestItemRow(), doc_id: 'CGD-1', market_id: null, supply_chain_unit_cost: '80' }]
+      }
+      if (rendered.includes('FROM inventory_skus')) return [supplierBoundSkuRow()]
+      if (rendered.includes('FROM inventory_locations')) {
+        return [{ location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null }]
+      }
+      if (rendered.includes('FROM inventory_docs') && rendered.includes('FOR UPDATE')) {
+        return [{
+          id: 'CGD-1', doc_type: '采购订单', status: '待收货',
+          source_org_node_id: null, target_org_node_id: 'HQ', market_id: null,
+          supplier_id: null, supplier_name: null,
+        }]
+      }
+      return []
+    })
+    mockSyncLocationsShortCircuit()
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
+      execute: initializedCutoverExecutor(executor),
+    } as never))
+    return { lotInserts, itemInserts, executor }
+  }
+
+  it('供应链采购入库批号留空：批次与入库明细写入「入库单号-01」，不再写空串', async () => {
+    const { lotInserts, itemInserts } = mockSupplyChainReceipt()
+    const result = await receiveSupplyChainPurchaseOrder(SESSION, {
+      purchaseOrderId: 'CGD-1', supplyChainLocationId: 'HQ',
+      items: [{ purchaseOrderItemId: 1, quantity: 1, batchNo: '   ' }],
+    })
+    expect(result.id).toMatch(/^GRK-\d{8}-0001$/)
+    const expected = `${result.id}-01`
+    expect(lotInserts).toHaveLength(1)
+    expect(lotInserts[0][8]).toBe(expected)
+    // lot_key 的批号段同步变化（同批实物的批次键按生成批号归一）
+    expect(String(lotInserts[0][2])).toContain(`|${expected}|`)
+    expect(itemInserts).toHaveLength(1)
+    expect(itemInserts[0]).toContain(expected)
+  })
+
+  it('供应链采购入库手填批号：原样保存，不生成', async () => {
+    const { lotInserts, itemInserts } = mockSupplyChainReceipt()
+    const result = await receiveSupplyChainPurchaseOrder(SESSION, {
+      purchaseOrderId: 'CGD-1', supplyChainLocationId: 'HQ',
+      items: [{ purchaseOrderItemId: 1, quantity: 1, batchNo: 'B-MANUAL' }],
+    })
+    expect(lotInserts[0][8]).toBe('B-MANUAL')
+    expect(lotInserts[0]).not.toContain(`${result.id}-01`)
+    expect(itemInserts[0]).toContain('B-MANUAL')
+  })
+
+  // ── #346 入库单价优惠 ──
+  // insertDocItem VALUES 序：… quantity[12], stock_snapshot[13], request_quantity[14], fulfilled_quantity[15],
+  // standard_unit_price[16], unit_discount[17], actual_unit_price[18], amount[19], supply_chain_unit_cost[20]
+  // upsertLot VALUES 序：… is_gift[11], supply_chain_unit_cost[12]
+  it('#346 填优惠 20（标准进价 80）：明细 标准 80 / 优惠 20 / 实际 60、批次成本 60', async () => {
+    const { lotInserts, itemInserts } = mockSupplyChainReceipt()
+    await receiveSupplyChainPurchaseOrder(SESSION, {
+      purchaseOrderId: 'CGD-1', supplyChainLocationId: 'HQ',
+      items: [{ purchaseOrderItemId: 1, quantity: 2, unitDiscount: 20 }],
+    })
+    expect(lotInserts[0][12]).toBe('60')
+    expect(itemInserts[0].slice(16, 21)).toEqual(['80', '20', '60', '120', '60'])
+  })
+
+  it('#346 不填优惠：与原来一致（实际 = 标准，优惠记 0）', async () => {
+    const { lotInserts, itemInserts } = mockSupplyChainReceipt()
+    await receiveSupplyChainPurchaseOrder(SESSION, {
+      purchaseOrderId: 'CGD-1', supplyChainLocationId: 'HQ',
+      items: [{ purchaseOrderItemId: 1, quantity: 1 }],
+    })
+    expect(lotInserts[0][12]).toBe('80')
+    expect(itemInserts[0].slice(16, 19)).toEqual(['80', '0', '80'])
+  })
+
+  it('#346 优惠等于标准进价放行（实际进价 0）', async () => {
+    const { lotInserts } = mockSupplyChainReceipt()
+    await receiveSupplyChainPurchaseOrder(SESSION, {
+      purchaseOrderId: 'CGD-1', supplyChainLocationId: 'HQ',
+      items: [{ purchaseOrderItemId: 1, quantity: 1, unitDiscount: 80 }],
+    })
+    expect(lotInserts[0][12]).toBe('0')
+  })
+
+  it.each([
+    ['为负', -1, '单价优惠不能小于 0'],
+    ['大于标准进价', 80.01, '单价优惠不能大于标准进价'],
+    ['超两位小数', 1.005, '单价优惠最多保留两位小数'],
+    ['十六进制串', '0x10', '单价优惠不是有效数字'],
+    ['布尔', true, '单价优惠不是有效数字'],
+  ])('#346 优惠%s被拒', async (_label, unitDiscount, message) => {
+    const { lotInserts } = mockSupplyChainReceipt()
+    await expect(receiveSupplyChainPurchaseOrder(SESSION, {
+      purchaseOrderId: 'CGD-1', supplyChainLocationId: 'HQ',
+      items: [{ purchaseOrderItemId: 1, quantity: 1, unitDiscount: unitDiscount as never }],
+    })).rejects.toThrow(message)
+    expect(lotInserts).toHaveLength(0)
+  })
+
+  it('#346 办理权与价格权分在同一主体的两条绑定上不能拼接：填优惠被拒；同一绑定两权兼具放行', async () => {
+    const binding = (actions: string[]) => ({
+      role: `custom_${actions.length}`, scopeId: 'HQ', scopeType: '总部', actions, scopeStoreIds: [], scopeOrgNodeIds: ['HQ'],
+    })
+    const split = {
+      employeeId: 'E-SC4', name: '拆分绑定', phone: '13800000015',
+      roles: [binding(['inventory:supply_chain_operate']), binding(['inventory:stock_list', 'inventory:supply_chain_price_view'])],
+      permissions: { actions: ['inventory:supply_chain_operate', 'inventory:supply_chain_price_view'], scopeStoreIds: [] },
+    } as never
+    const { executor } = mockSupplyChainReceipt()
+    await expect(receiveSupplyChainPurchaseOrder(split, {
+      purchaseOrderId: 'CGD-1', supplyChainLocationId: 'HQ',
+      items: [{ purchaseOrderItemId: 1, quantity: 1, unitDiscount: 10 }],
+    })).rejects.toThrow('PERMISSION_DENIED')
+    expect(executor.mock.calls.some(([query]) => renderSql(query).includes('FROM inventory_doc_items'))).toBe(false)
+
+    const single = { ...(split as object), roles: [binding(['inventory:supply_chain_operate', 'inventory:supply_chain_price_view'])] } as never
+    const { lotInserts } = mockSupplyChainReceipt()
+    await receiveSupplyChainPurchaseOrder(single, {
+      purchaseOrderId: 'CGD-1', supplyChainLocationId: 'HQ',
+      items: [{ purchaseOrderItemId: 1, quantity: 1, unitDiscount: 10 }],
+    })
+    expect(lotInserts[0][12]).toBe('70')
+  })
+
+  it('#346 采购行缺下单价快照时不能填优惠（否则会扣在商品档案现价上）', async () => {
+    const lotInserts: unknown[][] = []
+    const executor = vi.fn(async (query: unknown) => {
+      const rendered = renderSql(query)
+      if (rendered.includes('INSERT INTO inventory_stock_lots')) { lotInserts.push(sqlParams(query)); return [{ id: '7' }] }
+      if (rendered.includes('FROM inventory_doc_links')) return [{ quantity: '0' }]
+      if (rendered.includes('FROM inventory_doc_items')) {
+        return [{ ...storeRequestItemRow(), doc_id: 'CGD-1', market_id: null, supply_chain_unit_cost: null }]
+      }
+      if (rendered.includes('FROM inventory_skus')) return [supplierBoundSkuRow()]
+      if (rendered.includes('FROM inventory_locations')) {
+        return [{ location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null }]
+      }
+      if (rendered.includes('FROM inventory_docs') && rendered.includes('FOR UPDATE')) {
+        return [{ id: 'CGD-1', doc_type: '采购订单', status: '待收货', source_org_node_id: null, target_org_node_id: 'HQ', market_id: null, supplier_id: null, supplier_name: null }]
+      }
+      return []
+    })
+    mockSyncLocationsShortCircuit()
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({ execute: initializedCutoverExecutor(executor) } as never))
+    await expect(receiveSupplyChainPurchaseOrder(SESSION, {
+      purchaseOrderId: 'CGD-1', supplyChainLocationId: 'HQ',
+      items: [{ purchaseOrderItemId: 1, quantity: 1, unitDiscount: 10 }],
+    })).rejects.toThrow('采购行缺少下单价快照，不能填单价优惠')
+    expect(lotInserts).toHaveLength(0)
+  })
+
+  it('#346 看不到供应链价格的办理人填优惠：读采购行之前 PERMISSION_DENIED（防探测进价）；不填优惠照常入库', async () => {
+    const operatorOnly = {
+      employeeId: 'E-SC2', name: '供应链办理员', phone: '13800000013',
+      roles: [{
+        role: 'custom_supply_chain_operator', scopeId: 'HQ', scopeType: '总部',
+        actions: ['inventory:supply_chain_operate'], scopeStoreIds: [], scopeOrgNodeIds: ['HQ'],
+      }],
+      permissions: { actions: ['inventory:supply_chain_operate'], scopeStoreIds: [] },
+    } as never
+    const { executor } = mockSupplyChainReceipt()
+    await expect(receiveSupplyChainPurchaseOrder(operatorOnly, {
+      purchaseOrderId: 'CGD-1', supplyChainLocationId: 'HQ',
+      items: [{ purchaseOrderItemId: 1, quantity: 1, unitDiscount: 100 }],
+    })).rejects.toThrow(/PERMISSION_DENIED.*单价优惠/)
+    expect(executor.mock.calls.some(([query]) => renderSql(query).includes('FROM inventory_doc_items'))).toBe(false)
+
+    const { lotInserts } = mockSupplyChainReceipt()
+    await receiveSupplyChainPurchaseOrder(operatorOnly, {
+      purchaseOrderId: 'CGD-1', supplyChainLocationId: 'HQ',
+      items: [{ purchaseOrderItemId: 1, quantity: 1 }],
+    })
+    expect(lotInserts[0][12]).toBe('80')
+  })
+})
+
 describe('createPurchaseOrder 供应链 scope 归属', () => {
   beforeEach(() => {
     vi.resetAllMocks()
@@ -1111,6 +1735,490 @@ describe('createPurchaseOrder 供应链 scope 归属', () => {
       supplyChainLocationId: 'HQ',
       items: [{ sourceItemId: 1, quantity: 1 }],
     })).rejects.toThrow('PERMISSION_DENIED')
+  })
+})
+
+describe('库存转换仅供应链可做（#343）', () => {
+  const hqRow = { location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null }
+  const lotRow = { ...shipmentSourceLotRow(), quantity_on_hand: '10' }
+  function mockTx(...results: unknown[]) {
+    const txExecute = vi.fn()
+    for (const result of results) txExecute.mockResolvedValueOnce(result)
+    txExecute.mockResolvedValue([])
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
+      execute: initializedCutoverExecutor(txExecute),
+    } as never))
+    return txExecute
+  }
+  const input = (locationId: string) => ({
+    locationId,
+    sources: [{ sourceLotId: 101, quantity: 1 }],
+    targets: [{ targetSkuId: 'SKU-2', quantity: 1, unitPrice: 10 }],
+  })
+
+  it.each([
+    ['市场', 'M1'],
+    ['门店', 'S1'],
+  ])('%s主体被拒（lib 层按主体类型兜底，不依赖 action 权限闸）', async (locationType, locationId) => {
+    mockTx([{ location_id: locationId, org_node_id: locationId, location_type: locationType, name: locationType, parent_location_id: 'HQ' }])
+    await expect(createInventoryConversion(SESSION, input(locationId)))
+      .rejects.toThrow('库存转换主体必须是总部库存主体')
+  })
+
+  it('非 admin 的供应链会话（scope 仅总部）传入市场主体：先报主体类型错，不是 PERMISSION_DENIED', async () => {
+    const supplyChainOnly = {
+      employeeId: 'E-SC1',
+      name: '供应链库存员',
+      phone: '13800000012',
+      roles: [{
+        role: 'inventory_supply_chain_operator', scopeId: 'HQ', scopeType: '总部',
+        actions: ['inventory:supply_chain_operate'], scopeStoreIds: [], scopeOrgNodeIds: ['HQ'],
+      }],
+      permissions: { actions: ['inventory:supply_chain_operate'], scopeStoreIds: [] },
+    } as never
+    mockTx([{ location_id: 'M1', org_node_id: 'M1', location_type: '市场', name: '市场', parent_location_id: 'HQ' }])
+    await expect(createInventoryConversion(supplyChainOnly, input('M1')))
+      .rejects.toThrow('库存转换主体必须是总部库存主体')
+  })
+
+  it('来源批次的 SKU 是自建商品（市场自采）时拒绝，文案指明自建商品', async () => {
+    mockTx([hqRow], [lotRow], [{ quantity: '0' }], [{ ...supplierBoundSkuRow('SKU-1'), source_type: '市场自采', owner_market_id: 'M1' }])
+    await expect(createInventoryConversion(SESSION, input('HQ')))
+      .rejects.toThrow('自建商品不能转换')
+  })
+
+  it('目标 SKU 是自建商品（转让店）时拒绝，文案指明自建商品', async () => {
+    mockTx(
+      [hqRow], [lotRow], [{ quantity: '0' }],
+      [supplierBoundSkuRow('SKU-1')],
+      [{ ...supplierBoundSkuRow('SKU-2'), source_type: '转让店', owner_market_id: 'M1' }],
+    )
+    await expect(createInventoryConversion(SESSION, input('HQ')))
+      .rejects.toThrow('自建商品不能转换')
+  })
+})
+
+/**
+ * #344 转换多对多：用一个极小的内存假库跑完整流程 —— 批次表（lot_key 去重）+ 流水回写在手量，
+ * 逐一断言来源批次扣减量、目标批次增加量、目标批次单价与 doc_links 分摊数量。
+ * 真库上的触发器（金额 / 单头合计 / 0043 数量上限）由 smoke-inventory-transfer 在 PG 上实跑。
+ */
+describe('库存转换多对多与成本守恒（#344）', () => {
+  interface FakeLot { id: number; sku_id: string; batch_no: string; expiry_date: string | null; is_gift: boolean; quantity_on_hand: number; supply_chain_unit_cost: string | null; lot_key?: string; source_doc_id: string | null }
+  const hqRow = { location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null }
+
+  function fakeDb(seed: Array<Partial<FakeLot> & { id: number; sku_id: string }>, reserved: Record<number, number> = {}) {
+    const lots = new Map<number, FakeLot>()
+    for (const lot of seed) {
+      lots.set(lot.id, { batch_no: `B-${lot.id}`, expiry_date: null, is_gift: false, quantity_on_hand: 100, supply_chain_unit_cost: '10', source_doc_id: 'GRK-OLD', ...lot })
+    }
+    let nextLotId = 900
+    let nextItemId = 1
+    const items: Array<{ id: number; docId: string; lotId: number; quantity: number; standardUnitPrice: unknown; actualUnitPrice: unknown; supplyChainUnitCost: unknown }> = []
+    const links: Array<{ fromItemId: number; toItemId: number; quantity: number; relationType: string }> = []
+    const lotLocks: number[] = []
+    const movements: Array<{ lotId: number; delta: number; before: number; after: number }> = []
+    const executor = vi.fn(async (query: unknown) => {
+      const rendered = renderSql(query)
+      const params = sqlParams(query)
+      if (rendered.includes('INSERT INTO inventory_stock_lots')) {
+        // VALUES：location_id, sku_id, lot_key, sku_name, spec_name, supplier, supplier_id, product_series,
+        // batch_no, expiry_date, expiry_date_key, is_gift, supply_chain_unit_cost, …, source_doc_id
+        const lotKey = String(params[2])
+        const existing = [...lots.values()].find((lot) => lot.lot_key === lotKey)
+        if (existing) return [{ id: String(existing.id) }]
+        const id = nextLotId++
+        lots.set(id, {
+          id, sku_id: String(params[1]), lot_key: lotKey, batch_no: String(params[8]),
+          expiry_date: (params[9] as string | null) ?? null, is_gift: Boolean(params[11]), quantity_on_hand: 0,
+          supply_chain_unit_cost: params[12] as string | null, source_doc_id: String(params[params.length - 1]),
+        })
+        return [{ id: String(id) }]
+      }
+      if (rendered.includes('FROM inventory_stock_lots') && rendered.includes('FOR UPDATE')) {
+        const lot = lots.get(Number(params[0]))
+        if (!lot) return []
+        lotLocks.push(lot.id)
+        return [{
+          ...shipmentSourceLotRow(), ...lot, id: String(lot.id), sku_name: `商品${lot.sku_id}`,
+          quantity_on_hand: String(lot.quantity_on_hand),
+        }]
+      }
+      if (rendered.includes('FROM inventory_stock_reservations')) return [{ quantity: String(reserved[Number(params[0])] ?? 0) }]
+      if (rendered.includes('FROM inventory_skus')) return [supplierBoundSkuRow(String(params[0]))]
+      if (rendered.includes('FROM inventory_locations')) return [hqRow]
+      if (rendered.includes('INSERT INTO inventory_doc_items')) {
+        // VALUES：doc_id, lot_id, sku_id, sku_name, spec_name, supplier, supplier_id, market_id, product_series,
+        // batch_no, expiry_date, is_gift, quantity, stock_snapshot, request_quantity, fulfilled_quantity,
+        // standard_unit_price, unit_discount, actual_unit_price, amount, supply_chain_unit_cost, …
+        const id = nextItemId++
+        items.push({
+          id, docId: String(params[0]), lotId: Number(params[1]), quantity: Number(params[12]),
+          standardUnitPrice: params[16], actualUnitPrice: params[18], supplyChainUnitCost: params[20],
+        })
+        return [{ id: String(id) }]
+      }
+      if (rendered.includes('INSERT INTO inventory_movements')) {
+        // VALUES：movement_key, lot_id, location_id, sku_id, doc_id, doc_item_id, direction, quantity_delta, …
+        const lot = lots.get(Number(params[1]))!
+        movements.push({ lotId: lot.id, delta: Number(params[7]), before: Number(params[8]), after: Number(params[9]) })
+        lot.quantity_on_hand = Math.round((lot.quantity_on_hand + Number(params[7])) * 100) / 100
+        return []
+      }
+      if (rendered.includes('INSERT INTO inventory_doc_links')) {
+        links.push({ relationType: String(params[2]), fromItemId: Number(params[3]), toItemId: Number(params[4]), quantity: Number(params[5]) })
+        return []
+      }
+      return []
+    })
+    mockSyncLocationsShortCircuit()
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
+      execute: initializedCutoverExecutor(executor),
+    } as never))
+    const newLots = () => [...lots.values()].filter((lot) => lot.id >= 900)
+    return { lots, items, links, lotLocks, movements, newLots }
+  }
+
+  beforeEach(() => {
+    vi.resetAllMocks()
+  })
+
+  it('13A + 13B → 13 套（N→1）：两批次各扣 13，套装批次 +13 单价 30，两条来源都关联到套装明细', async () => {
+    const fake = fakeDb([
+      { id: 101, sku_id: 'SKU-A', supply_chain_unit_cost: '10' },
+      { id: 102, sku_id: 'SKU-B', supply_chain_unit_cost: '20' },
+    ])
+    const result = await createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 101, quantity: 13 }, { sourceLotId: 102, quantity: 13 }],
+      targets: [{ targetSkuId: 'SKU-SET', quantity: 13, unitPrice: 30 }],
+    })
+    expect(fake.lots.get(101)!.quantity_on_hand).toBe(87)
+    expect(fake.lots.get(102)!.quantity_on_hand).toBe(87)
+    const [setLot] = fake.newLots()
+    expect(setLot).toMatchObject({ sku_id: 'SKU-SET', quantity_on_hand: 13, supply_chain_unit_cost: '30', is_gift: false })
+    expect(setLot.batch_no).toBe(`${result.inboundId}-01`)
+    expect(setLot.source_doc_id).toBe(result.inboundId)
+    const inbound = fake.items.find((item) => item.docId === result.inboundId)!
+    expect(inbound).toMatchObject({ standardUnitPrice: '30', actualUnitPrice: '30' })
+    // 出库明细实际单价显式写成本单价（金额由触发器按它计算）
+    expect(fake.items.filter((item) => item.docId === result.outboundId).map((item) => item.actualUnitPrice)).toEqual(['10', '20'])
+    expect(fake.links).toEqual([
+      { relationType: '库存转换', fromItemId: 1, toItemId: inbound.id, quantity: 13 },
+      { relationType: '库存转换', fromItemId: 2, toItemId: inbound.id, quantity: 13 },
+    ])
+  })
+
+  it('同一批次 25 → 12 X + 13 Y：批次扣 25，两个目标批次各 +12 / +13，关联 12 / 13', async () => {
+    const fake = fakeDb([{ id: 101, sku_id: 'SKU-A', supply_chain_unit_cost: '10', quantity_on_hand: 25 }])
+    await createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 101, quantity: 25 }],
+      targets: [
+        { targetSkuId: 'SKU-X', quantity: 12, unitPrice: 10 },
+        { targetSkuId: 'SKU-Y', quantity: 13, unitPrice: 10 },
+      ],
+    })
+    expect(fake.lots.get(101)!.quantity_on_hand).toBe(0)
+    expect(fake.newLots().map((lot) => [lot.sku_id, lot.quantity_on_hand, lot.supply_chain_unit_cost])).toEqual([
+      ['SKU-X', 12, '10'],
+      ['SKU-Y', 13, '10'],
+    ])
+    expect(fake.links.map((link) => link.quantity)).toEqual([12, 13])
+  })
+
+  it('一盒拆三种单件（1→N）：盒子扣 1，三个单件批次各 +1，单价按自填 20/30/40', async () => {
+    const fake = fakeDb([{ id: 103, sku_id: 'SKU-BOX', supply_chain_unit_cost: '90', quantity_on_hand: 5 }])
+    await createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 103, quantity: 1 }],
+      targets: [
+        { targetSkuId: 'SKU-PANTS', quantity: 1, unitPrice: 20 },
+        { targetSkuId: 'SKU-BODY', quantity: 1, unitPrice: 30 },
+        { targetSkuId: 'SKU-BRA', quantity: 1, unitPrice: 40 },
+      ],
+    })
+    expect(fake.lots.get(103)!.quantity_on_hand).toBe(4)
+    expect(fake.newLots().map((lot) => [lot.sku_id, lot.quantity_on_hand, lot.supply_chain_unit_cost])).toEqual([
+      ['SKU-PANTS', 1, '20'],
+      ['SKU-BODY', 1, '30'],
+      ['SKU-BRA', 1, '40'],
+    ])
+    // 同一来源明细的关联合计 = 1，不超过来源数量（0043 上限）
+    expect(fake.links.map((link) => link.quantity)).toEqual([0.34, 0.33, 0.33])
+  })
+
+  it('一瓶拆两个半瓶：瓶扣 1、半瓶 +2 单价 25；关联数量记 1（不是 2）', async () => {
+    const fake = fakeDb([{ id: 104, sku_id: 'SKU-BOTTLE', supply_chain_unit_cost: '50', quantity_on_hand: 3 }])
+    await createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 104, quantity: 1 }],
+      targets: [{ targetSkuId: 'SKU-HALF', quantity: 2, unitPrice: 25 }],
+    })
+    expect(fake.lots.get(104)!.quantity_on_hand).toBe(2)
+    expect(fake.newLots().map((lot) => [lot.sku_id, lot.quantity_on_hand, lot.supply_chain_unit_cost])).toEqual([['SKU-HALF', 2, '25']])
+    expect(fake.links.map((link) => link.quantity)).toEqual([1])
+  })
+
+  it('同一批次分两行出库：按批次汇总校验可用量（可用 10，6 + 5 被拒）', async () => {
+    fakeDb([{ id: 101, sku_id: 'SKU-A', quantity_on_hand: 10 }])
+    await expect(createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 101, quantity: 6 }, { sourceLotId: 101, quantity: 5 }],
+      targets: [{ targetSkuId: 'SKU-X', quantity: 11, unitPrice: 10 }],
+    })).rejects.toThrow('库存不足')
+  })
+
+  it('可用量扣除未完成预留：在手 10、预留 5 时出库 6 被拒', async () => {
+    fakeDb([{ id: 101, sku_id: 'SKU-A', quantity_on_hand: 10 }], { 101: 5 })
+    await expect(createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 101, quantity: 6 }],
+      targets: [{ targetSkuId: 'SKU-X', quantity: 6, unitPrice: 10 }],
+    })).rejects.toThrow('库存不足')
+  })
+
+  it('同一批次分两行出库且未超可用量：批次只锁一次，两条流水连续扣减（10 → 4 → 1）', async () => {
+    const fake = fakeDb([{ id: 101, sku_id: 'SKU-A', quantity_on_hand: 10 }])
+    await createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 101, quantity: 6 }, { sourceLotId: 101, quantity: 3 }],
+      targets: [{ targetSkuId: 'SKU-X', quantity: 9, unitPrice: 10 }],
+    })
+    expect(fake.lotLocks.filter((id) => id === 101)).toHaveLength(1)
+    expect(fake.lots.get(101)!.quantity_on_hand).toBe(1)
+    // 共用同一快照对象：第二条流水的前值是 4，不是重新读出的 10
+    expect(fake.movements.filter((movement) => movement.lotId === 101)).toEqual([
+      { lotId: 101, delta: -6, before: 10, after: 4 },
+      { lotId: 101, delta: -3, before: 4, after: 1 },
+    ])
+  })
+
+  it('多批次按 id 升序加锁（与入参顺序无关；防并发主力是全局 cutover 锁，这里是纵深防御）', async () => {
+    const fake = fakeDb([
+      { id: 101, sku_id: 'SKU-A', supply_chain_unit_cost: '10' },
+      { id: 102, sku_id: 'SKU-B', supply_chain_unit_cost: '20' },
+    ])
+    await createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 102, quantity: 1 }, { sourceLotId: 101, quantity: 1 }],
+      targets: [{ targetSkuId: 'SKU-SET', quantity: 1, unitPrice: 30 }],
+    })
+    expect(fake.lotLocks.slice(0, 2)).toEqual([101, 102])
+  })
+
+  it('成本不守恒（差额超出分位误差）硬拦截', async () => {
+    fakeDb([{ id: 101, sku_id: 'SKU-A', supply_chain_unit_cost: '10' }, { id: 102, sku_id: 'SKU-B', supply_chain_unit_cost: '20' }])
+    await expect(createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 101, quantity: 13 }, { sourceLotId: 102, quantity: 13 }],
+      targets: [{ targetSkuId: 'SKU-SET', quantity: 13, unitPrice: 31 }],
+    })).rejects.toThrow(/INVALID_PARAMS.*成本不守恒.*来源合计 390\.00.*目标合计 403\.00/)
+  })
+
+  it('严格 1 分：100 拆 7 件统一按 14.29（差 0.03）被拒；拆分补差 3 件 14.28 + 4 件 14.29 放行', async () => {
+    fakeDb([{ id: 101, sku_id: 'SKU-A', supply_chain_unit_cost: '100' }])
+    await expect(createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 101, quantity: 1 }],
+      targets: [{ targetSkuId: 'SKU-X', quantity: 7, unitPrice: 14.29 }],
+    })).rejects.toThrow(/成本不守恒.*差额 0\.03 超出允许误差 0\.01/)
+    const fake = fakeDb([{ id: 101, sku_id: 'SKU-A', supply_chain_unit_cost: '100' }])
+    await createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 101, quantity: 1 }],
+      targets: [{ targetSkuId: 'SKU-X', quantity: 3, unitPrice: 14.28 }, { targetSkuId: 'SKU-X', quantity: 4, unitPrice: 14.29 }],
+    })
+    expect(fake.newLots().map((lot) => [lot.quantity_on_hand, lot.supply_chain_unit_cost])).toEqual([[3, '14.28'], [4, '14.29']])
+  })
+
+  it('赠送与非赠送批次混放被拒', async () => {
+    fakeDb([{ id: 101, sku_id: 'SKU-A' }, { id: 105, sku_id: 'SKU-B', is_gift: true, supply_chain_unit_cost: '0' }])
+    await expect(createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 101, quantity: 1 }, { sourceLotId: 105, quantity: 1 }],
+      targets: [{ targetSkuId: 'SKU-SET', quantity: 1, unitPrice: 10 }],
+    })).rejects.toThrow('赠送批次与非赠送批次不能混在同一张转换单里')
+  })
+
+  it('全赠送来源：目标批次标赠送、单价 0；单价非 0 被拒', async () => {
+    const fake = fakeDb([{ id: 105, sku_id: 'SKU-B', is_gift: true, supply_chain_unit_cost: '15' }])
+    await createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 105, quantity: 2 }],
+      targets: [{ targetSkuId: 'SKU-HALF', quantity: 4, unitPrice: 0 }],
+    })
+    expect(fake.newLots()[0]).toMatchObject({ is_gift: true, supply_chain_unit_cost: '0', quantity_on_hand: 4 })
+    // 赠送来源的成本按 0 计，不管批次上残留的历史成本（实际单价与成本快照都记 0）
+    expect(fake.items[0].actualUnitPrice).toBe('0')
+    expect(fake.items[0].supplyChainUnitCost).toBe('0')
+
+    fakeDb([{ id: 105, sku_id: 'SKU-B', is_gift: true, supply_chain_unit_cost: '0' }])
+    await expect(createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 105, quantity: 1 }],
+      targets: [{ targetSkuId: 'SKU-HALF', quantity: 2, unitPrice: 0.01 }],
+    })).rejects.toThrow('赠送批次转换的目标单价必须为 0')
+  })
+
+  it('来源批次成本为负：拒绝（负数舍入方向与 PG 不同，守恒失去意义）', async () => {
+    fakeDb([{ id: 101, sku_id: 'SKU-A', supply_chain_unit_cost: '-0.5' }])
+    await expect(createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 101, quantity: 1 }],
+      targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 0 }],
+    })).rejects.toThrow('供应链成本为负数')
+  })
+
+  it('来源批次缺少供应链成本：拒绝（无从守恒）', async () => {
+    fakeDb([{ id: 101, sku_id: 'SKU-A', supply_chain_unit_cost: null }])
+    await expect(createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 101, quantity: 1 }],
+      targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 0 }],
+    })).rejects.toThrow('来源批次缺少供应链成本')
+  })
+
+  it('目标 SKU 与任一来源 SKU 相同被拒', async () => {
+    fakeDb([{ id: 101, sku_id: 'SKU-A' }, { id: 102, sku_id: 'SKU-B' }])
+    await expect(createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 101, quantity: 1 }, { sourceLotId: 102, quantity: 1 }],
+      targets: [{ targetSkuId: 'SKU-B', quantity: 1, unitPrice: 20 }],
+    })).rejects.toThrow('目标 SKU 不能与来源 SKU 相同')
+  })
+
+  it.each([
+    ['来源为空', { sources: [], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 1 }] }, '至少需要一条来源明细'],
+    ['目标为空', { sources: [{ sourceLotId: 101, quantity: 1 }], targets: [] }, '至少需要一条目标明细'],
+    ['单价为负', { sources: [{ sourceLotId: 101, quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: -1 }] }, '转换目标单价不能为空且不能小于 0'],
+    ['单价超两位小数', { sources: [{ sourceLotId: 101, quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 1.005 }] }, '最多保留两位小数'],
+    ['数量为 0', { sources: [{ sourceLotId: 101, quantity: 0 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 1 }] }, '转换出库数量必须大于 0'],
+    ['效期格式错', { sources: [{ sourceLotId: 101, quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 10, targetExpiryDate: '2026/10/01' }] }, '目标效期格式应为 YYYY-MM-DD'],
+    ['效期不是真实日期', { sources: [{ sourceLotId: 101, quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 10, targetExpiryDate: '2026-02-31' }] }, '目标效期格式应为 YYYY-MM-DD'],
+    ['转换日期不是真实日期', { docDate: '2026-02-31', sources: [{ sourceLotId: 101, quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 0 }] }, '转换日期格式应为 YYYY-MM-DD'],
+    ['单价为空串（Number 会当 0）', { sources: [{ sourceLotId: 101, quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: '' }] }, '转换目标单价不能为空且不能小于 0'],
+    ['单价为十六进制串', { sources: [{ sourceLotId: 101, quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: '0x10' }] }, '转换目标单价不能为空且不能小于 0'],
+    ['数量为科学计数串', { sources: [{ sourceLotId: 101, quantity: '1e2' }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 0 }] }, '转换出库数量必须大于 0'],
+    ['单价为 false', { sources: [{ sourceLotId: 101, quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: false }] }, '转换目标单价不能为空且不能小于 0'],
+    ['单价缺省', { sources: [{ sourceLotId: 101, quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1 }] }, '转换目标单价不能为空且不能小于 0'],
+    ['数量超 numeric(12,2) 上界', { sources: [{ sourceLotId: 101, quantity: 1e11 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 1 }] }, '转换出库数量不能超过 9999999999.99'],
+    ['来源批次 id 为 true', { sources: [{ sourceLotId: true, quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 0 }] }, '请选择转换来源批次'],
+    ['来源批次 id 为数组', { sources: [{ sourceLotId: [101], quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 0 }] }, '请选择转换来源批次'],
+    ['来源批次 id 为十六进制串', { sources: [{ sourceLotId: '0x65', quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 0 }] }, '请选择转换来源批次'],
+    ['来源明细为 null', { sources: [null], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 1 }] }, '库存转换来源明细格式不正确'],
+    ['目标 SKU 非字符串', { sources: [{ sourceLotId: 101, quantity: 1 }], targets: [{ targetSkuId: 123, quantity: 1, unitPrice: 1 }] }, '转换目标 SKU 格式不正确'],
+    ['来源数量太少分不到每个目标', { sources: [{ sourceLotId: 101, quantity: 0.01 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 0 }, { targetSkuId: 'SKU-Y', quantity: 1, unitPrice: 0 }] }, '无法分摊到每个目标行'],
+    ['目标数量合计超上界', { sources: [{ sourceLotId: 101, quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 9999999999, unitPrice: 0 }, { targetSkuId: 'SKU-Y', quantity: 9999999999, unitPrice: 0 }] }, '目标数量合计不能超过'],
+    ['单头备注非字符串', { remark: 123, sources: [{ sourceLotId: 101, quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 0 }] }, '备注格式不正确'],
+    ['关联条数超过 500（30 × 30）', { sources: Array.from({ length: 30 }, (_, index) => ({ sourceLotId: 101 + index, quantity: 1 })), targets: Array.from({ length: 30 }, () => ({ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 0 })) }, '上限 500'],
+    ['目标行超过 100', { sources: [{ sourceLotId: 101, quantity: 1 }], targets: Array.from({ length: 101 }, () => ({ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 0 })) }, '各不能超过 100 行'],
+  ])('入参校验：%s（开事务前就拒）', async (_label, body, message) => {
+    await expect(createInventoryConversion(SESSION, { locationId: 'HQ', ...body } as never)).rejects.toThrow(message)
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('看不到供应链价格的会话：读任何批次之前就 PERMISSION_DENIED（防止拿守恒结果当判定器探成本）', async () => {
+    const operatorOnly = {
+      employeeId: 'E-SC2', name: '供应链办理员', phone: '13800000013',
+      roles: [{
+        role: 'custom_supply_chain_operator', scopeId: 'HQ', scopeType: '总部',
+        actions: ['inventory:supply_chain_operate'], scopeStoreIds: [], scopeOrgNodeIds: ['HQ'],
+      }],
+      permissions: { actions: ['inventory:supply_chain_operate'], scopeStoreIds: [] },
+    } as never
+    const fake = fakeDb([{ id: 101, sku_id: 'SKU-A', supply_chain_unit_cost: '37.5' }])
+    // 即便单价恰好守恒也拒：成功与否本身就会泄露成本
+    await expect(createInventoryConversion(operatorOnly, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 101, quantity: 1 }],
+      targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 37.5 }],
+    })).rejects.toThrow(/PERMISSION_DENIED.*供应链价格查看权限/)
+    expect(fake.lotLocks).toEqual([])
+  })
+
+  it('价格可见性按本主体的角色绑定判：绑定 A 在 HQ2 有价格权、绑定 B 在 HQ 只有办理权 → 在 HQ 转换被拒', async () => {
+    const binding = (scopeId: string, actions: string[]) => ({
+      role: `custom_${scopeId}`, scopeId, scopeType: '总部', actions, scopeStoreIds: [], scopeOrgNodeIds: [scopeId],
+    })
+    const mixed = {
+      employeeId: 'E-SC3', name: '混合绑定', phone: '13800000014',
+      roles: [
+        binding('HQ2', ['inventory:supply_chain_operate', 'inventory:supply_chain_price_view']),
+        binding('HQ', ['inventory:supply_chain_operate']),
+      ],
+      permissions: { actions: ['inventory:supply_chain_operate', 'inventory:supply_chain_price_view'], scopeStoreIds: [] },
+    } as never
+    const input = {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 101, quantity: 1 }],
+      targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 1 }],
+    }
+    const fake = fakeDb([{ id: 101, sku_id: 'SKU-A', supply_chain_unit_cost: '37.5' }])
+    await expect(createInventoryConversion(mixed, input)).rejects.toThrow('PERMISSION_DENIED')
+    expect(fake.lotLocks).toEqual([])
+
+    // 对照：价格权绑定就在 HQ 上时照常给出金额
+    const priced = { ...(mixed as object), roles: [binding('HQ', ['inventory:supply_chain_operate', 'inventory:supply_chain_price_view'])] } as never
+    fakeDb([{ id: 101, sku_id: 'SKU-A', supply_chain_unit_cost: '37.5' }])
+    await expect(createInventoryConversion(priced, input)).rejects.toThrow('来源合计 37.50')
+  })
+
+  it('同一主体两条绑定分别持办理权 / 价格权不能拼接：须有一条绑定同时持两权', async () => {
+    const binding = (actions: string[]) => ({
+      role: `custom_${actions.length}`, scopeId: 'HQ', scopeType: '总部', actions, scopeStoreIds: [], scopeOrgNodeIds: ['HQ'],
+    })
+    const input = {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 101, quantity: 1 }],
+      targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 10 }],
+    }
+    const split = {
+      employeeId: 'E-SC4', name: '拆分绑定', phone: '13800000015',
+      roles: [binding(['inventory:supply_chain_operate']), binding(['inventory:stock_list', 'inventory:supply_chain_price_view'])],
+      permissions: { actions: ['inventory:supply_chain_operate', 'inventory:supply_chain_price_view'], scopeStoreIds: [] },
+    } as never
+    const fake = fakeDb([{ id: 101, sku_id: 'SKU-A', supply_chain_unit_cost: '10' }])
+    await expect(createInventoryConversion(split, input)).rejects.toThrow('PERMISSION_DENIED')
+    expect(fake.lotLocks).toEqual([])
+
+    const single = { ...(split as object), roles: [binding(['inventory:supply_chain_operate', 'inventory:supply_chain_price_view'])] } as never
+    const ok = fakeDb([{ id: 101, sku_id: 'SKU-A', supply_chain_unit_cost: '10' }])
+    await createInventoryConversion(single, input)
+    expect(ok.newLots()).toHaveLength(1)
+  })
+
+  it('金额超上限且不守恒：先报金额上限（与表单同序）', async () => {
+    fakeDb([{ id: 101, sku_id: 'SKU-A', supply_chain_unit_cost: '100000', quantity_on_hand: 200000 }])
+    await expect(createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 101, quantity: 100000 }],
+      targets: [{ targetSkuId: 'SKU-X', quantity: 100000, unitPrice: 99999 }],
+    })).rejects.toThrow('库存转换金额合计超出上限')
+  })
+
+  it('拆行放大成本被拒：同一批次（成本 0.50）拆 100 行 0.01，目标 1 件按 1.00', async () => {
+    fakeDb([{ id: 101, sku_id: 'SKU-A', supply_chain_unit_cost: '0.5', quantity_on_hand: 1 }])
+    await expect(createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: Array.from({ length: 100 }, () => ({ sourceLotId: 101, quantity: 0.01 })),
+      targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 1 }],
+    })).rejects.toThrow(/成本不守恒.*来源合计 0\.50.*目标合计 1\.00/)
+  })
+
+  it('目标效期留空取来源批次中最早的效期', async () => {
+    const fake = fakeDb([
+      { id: 101, sku_id: 'SKU-A', expiry_date: '2027-06-01' },
+      { id: 102, sku_id: 'SKU-B', expiry_date: '2027-01-01', supply_chain_unit_cost: '10' },
+    ])
+    await createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 101, quantity: 1 }, { sourceLotId: 102, quantity: 1 }],
+      targets: [{ targetSkuId: 'SKU-SET', quantity: 1, unitPrice: 20 }],
+    })
+    expect(fake.newLots()[0].expiry_date).toBe('2027-01-01')
   })
 })
 
@@ -2395,7 +3503,10 @@ describe('整单收货入口 receiveXxxInFull（#192）', () => {
       if (rendered.includes('FROM inventory_stock_lots')) return [shipmentSourceLotRow()]
       if (rendered.includes('FROM inventory_skus')) return [marketSkuRow('SKU-1')]
       if (rendered.includes('FROM inventory_doc_items')) {
-        const id = Number(sqlParams(query)[0])
+        // #358 整单闸：先按 doc_id 锁整张单的明细（参数是单号），再逐行按明细 id 锁
+        const param = sqlParams(query)[0]
+        if (typeof param === 'string' && Number.isNaN(Number(param))) return [...downstreamItems.values()]
+        const id = Number(param)
         itemIds.push(id)
         const row = downstreamItems.get(id)
         return row ? [row] : []
@@ -2499,6 +3610,53 @@ describe('整单收货入口 receiveXxxInFull（#192）', () => {
     await expect(receiveItemCompanyShipmentInFull(SESSION, { shipmentId: 'GFH-1' }))
       .rejects.toThrow('实收数量不能超过待收数量')
   })
+
+  /*
+   * #358（甲方拍板 A：实物短少一律走撤回）：带 items 的「去收货」同样只能整单收。
+   * 三条一起钉：少收拒、漏行拒、足额整单放行（走到建单号的哨兵）—— 只钉前两条的话，
+   * 把闸门写成「一律拒绝」也全绿。
+   */
+  describe('去收货只能整单确认（#358）', () => {
+    const items = [
+      shipmentItemRow(1, '10', '3'), // 待收 7（admin 早先放行过的部分收货存量）
+      shipmentItemRow(2, '5', '5'), // 已收满
+      shipmentItemRow(3, '8', '0'), // 待收 8
+    ]
+
+    it('某行实收少于待收 → INVALID_PARAMS，不建单', async () => {
+      mockBothSyncProbes()
+      mockReceiveTransaction(new Map(items.map((row) => [row.id, row])))
+      await expect(receiveItemCompanyShipment(SESSION, {
+        shipmentId: 'GFH-1',
+        items: [
+          { shipmentItemId: 1, receivedQuantity: 6.99 },
+          { shipmentItemId: 3, receivedQuantity: 8 },
+        ],
+      })).rejects.toThrow(/^INVALID_PARAMS: 收货须按待收数量整单确认/)
+    })
+
+    it('漏掉仍有待收的行 → INVALID_PARAMS，不建单', async () => {
+      mockBothSyncProbes()
+      mockReceiveTransaction(new Map(items.map((row) => [row.id, row])))
+      await expect(receiveItemCompanyShipment(SESSION, {
+        shipmentId: 'GFH-1',
+        items: [{ shipmentItemId: 1, receivedQuantity: 7 }],
+      })).rejects.toThrow(/^INVALID_PARAMS: 收货须按待收数量整单确认/)
+    })
+
+    it('每行实收 = 待收、已收满的行不传 → 过闸（走到建单号）', async () => {
+      mockBothSyncProbes()
+      const { itemIds } = mockReceiveTransaction(new Map(items.map((row) => [row.id, row])))
+      await expect(receiveItemCompanyShipment(SESSION, {
+        shipmentId: 'GFH-1',
+        items: [
+          { shipmentItemId: 1, receivedQuantity: 7 },
+          { shipmentItemId: 3, receivedQuantity: 8 },
+        ],
+      })).rejects.toThrow(SENTINEL)
+      expect(itemIds).toEqual([1, 3])
+    })
+  })
 })
 
 /**
@@ -2595,5 +3753,1063 @@ describe('库存主体解析确定性（#251）', () => {
     // 撞值时不存在正确的那一行，正确性由上面的 CONFLICT 保障。
     expect(flat).toContain('ORDER BY location_id')
     expect(flat).toContain('LIMIT 2')
+  })
+})
+
+describe('分院配货报货单可选：引用 / 自选 / 混合（#337）', () => {
+  beforeEach(() => {
+    vi.resetAllMocks()
+  })
+
+  const LOCATIONS: Record<string, Record<string, unknown>> = {
+    M1: { location_id: 'M1', org_node_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ', is_active: true },
+    M2: { location_id: 'M2', org_node_id: 'M2', location_type: '市场', name: '市场二', parent_location_id: 'HQ', is_active: true },
+    S1: { location_id: 'S1', org_node_id: 'ORG-S1', location_type: '门店', name: '门店一', parent_location_id: 'M1', is_active: true },
+    S2: { location_id: 'S2', org_node_id: 'ORG-S2', location_type: '门店', name: '门店二', parent_location_id: 'M1', is_active: true },
+    S9: { location_id: 'S9', org_node_id: 'ORG-S9', location_type: '门店', name: '外市场门店', parent_location_id: 'M2', is_active: true },
+  }
+  const LOTS: Record<number, { skuId: string; onHand: string; isGift?: boolean }> = {
+    11: { skuId: 'SKU-1', onHand: '10' },
+    12: { skuId: 'SKU-2', onHand: '10' },
+    13: { skuId: 'SKU-3', onHand: '3' },
+    // #359：SKU-1 的赠送批次（赠送货跟着批号走，市场价记 0）
+    14: { skuId: 'SKU-1', onHand: '2', isGift: true },
+  }
+
+  function mockAllocation(options: { storePrices?: Record<string, string | null>; requestSource?: string } = {}) {
+    const storePrices: Record<string, string | null> = { 'SKU-1': '50', 'SKU-2': '60', 'SKU-3': '70', ...options.storePrices }
+    const writes = {
+      links: [] as unknown[][],
+      reservations: [] as unknown[][],
+      fulfilledUpdates: [] as unknown[][],
+      items: [] as unknown[][],
+      movements: [] as unknown[][],
+      headers: [] as unknown[][],
+    }
+    let itemId = 100
+    const executor = vi.fn(async (query: unknown) => {
+      const rendered = renderSql(query)
+      const params = sqlParams(query)
+      if (rendered.includes('INSERT INTO inventory_doc_links')) { writes.links.push(params); return [] }
+      if (rendered.includes('INSERT INTO inventory_stock_reservations')) { writes.reservations.push(params); return [] }
+      if (rendered.includes('INSERT INTO inventory_movements')) { writes.movements.push(params); return [] }
+      if (rendered.includes('INSERT INTO inventory_docs')) { writes.headers.push(params); return [] }
+      if (rendered.includes('INSERT INTO inventory_doc_items')) {
+        writes.items.push(params)
+        itemId += 1
+        return [{ id: itemId }]
+      }
+      if (rendered.includes('UPDATE inventory_doc_items')) { writes.fulfilledUpdates.push(params); return [] }
+      if (rendered.includes('FROM inventory_locations')) {
+        const endpoint = String(params[0])
+        const row = Object.values(LOCATIONS).find((location) => location.location_id === endpoint || location.org_node_id === endpoint)
+        return row ? [row] : []
+      }
+      if (rendered.includes('FROM inventory_stock_reservations')) return [{ quantity: '0' }]
+      if (rendered.includes('FROM inventory_stock_lots')) {
+        const lotId = Number(params[0])
+        const lot = LOTS[lotId]
+        if (!lot) return []
+        return [{
+          ...shipmentSourceLotRow(), id: lotId, location_id: 'M1', sku_id: lot.skuId, sku_name: `测试 ${lot.skuId}`,
+          batch_no: `B-${lotId}`, quantity_on_hand: lot.onHand, source_doc_id: null, supplier_id: null,
+          ...(lot.isGift ? { is_gift: true, market_standard_unit_price: '0', market_actual_unit_price: '0', supply_chain_unit_cost: '0' } : {}),
+        }]
+      }
+      if (rendered.includes('FROM inventory_skus')) {
+        const skuId = String(params.find((param) => typeof param === 'string' && param.startsWith('SKU-')))
+        return [{ ...marketSkuRow(skuId), store_purchase_price: storePrices[skuId] ?? null }]
+      }
+      if (rendered.includes('FROM inventory_doc_links')) return [{ quantity: '0' }]
+      if (rendered.includes('FROM inventory_doc_items') && rendered.includes('FOR UPDATE')) {
+        return [storeRequestItemRow()]
+      }
+      if (rendered.includes('FROM inventory_doc_items')) return [{ sku_id: 'SKU-1' }]
+      if (rendered.includes('FROM inventory_docs') && rendered.includes('FOR UPDATE')) {
+        return [{
+          id: 'DBH-1', doc_type: '门店报货', status: '已完成',
+          source_org_node_id: options.requestSource ?? 'ORG-S1', target_org_node_id: 'M1', market_id: 'M1',
+          supplier_id: null, supplier_name: null,
+        }]
+      }
+      return []
+    })
+    mockSyncLocationsShortCircuit()
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
+      execute: initializedCutoverExecutor(executor),
+    } as never))
+    return { writes, executor }
+  }
+
+  it('纯引用：保持改造前行为 —— 写血缘 / 预留并回写报货 fulfilled_quantity', async () => {
+    const { writes } = mockAllocation()
+    const result = await createStoreAllocation(SESSION, {
+      storeRequestId: 'DBH-1', sourceMarketId: 'M1',
+      items: [{ requestItemId: 1, lotId: 11, quantity: 2, giftQuantity: 1 }],
+    })
+    expect(result.id).toMatch(/^FPH-\d{8}-0001$/)
+    expect(writes.links.map((params) => params.find((param) => typeof param === 'string' && param.startsWith('门店报货'))))
+      .toEqual(['门店报货配货', '门店报货赠送配货'])
+    expect(writes.reservations).toHaveLength(2)
+    expect(writes.fulfilledUpdates).toHaveLength(1)
+    expect(writes.movements).toHaveLength(2)
+    // 单头收货门店来自报货主体（insertDocHeader 归一成 org_node_id）
+    expect(writes.headers[0]).toContain('ORG-S1')
+  })
+
+  it('纯自选：不传 storeRequestId 不再报「门店报货单」必填；只写明细与流水，不写血缘 / 预留 / 报货回写', async () => {
+    const { writes, executor } = mockAllocation()
+    const result = await createStoreAllocation(SESSION, {
+      targetStoreId: 'ORG-S1', sourceMarketId: 'M1',
+      items: [{ skuId: 'SKU-2', lotId: 12, quantity: 3, giftQuantity: 1, storeUnitDiscount: 5 }],
+    })
+    expect(result.id).toMatch(/^FPH-/)
+    expect(writes.links).toHaveLength(0)
+    expect(writes.reservations).toHaveLength(0)
+    expect(writes.fulfilledUpdates).toHaveLength(0)
+    expect(writes.items).toHaveLength(2)
+    expect(writes.movements).toHaveLength(2)
+    expect(writes.headers[0]).toContain('ORG-S1')
+    // 价格口径与引用路径一致：实际单价 = 门店进货价 60 − 优惠 5
+    expect(writes.items[0]).toContain('55')
+    expect(writes.items[0]).toContain('165')
+    // 不触碰任何门店报货单
+    const touchedRequest = executor.mock.calls.some(([query]) => renderSql(query).includes('FROM inventory_docs') && renderSql(query).includes('FOR UPDATE'))
+    expect(touchedRequest).toBe(false)
+  })
+
+  it('混合：只有引用行写血缘并回写报货进度，自选行没有血缘与预留记录', async () => {
+    const { writes } = mockAllocation()
+    await createStoreAllocation(SESSION, {
+      storeRequestId: 'DBH-1', targetStoreId: 'S1', sourceMarketId: 'M1',
+      items: [
+        { requestItemId: 1, lotId: 11, quantity: 2 },
+        { requestItemId: null, skuId: 'SKU-2', lotId: 12, quantity: 4 },
+      ],
+    })
+    expect(writes.items).toHaveLength(2)
+    expect(writes.links).toHaveLength(1)
+    expect(writes.links[0]).toContain('门店报货配货')
+    // 血缘的 to_item_id 只指向引用行生成的明细（第一条 = 101）
+    expect(writes.links[0]).toContain(101)
+    expect(writes.links[0]).not.toContain(102)
+    expect(writes.reservations).toHaveLength(1)
+    expect(writes.fulfilledUpdates).toHaveLength(1)
+  })
+
+  it('同一批次跨行累计判可用量，且共用快照让出库流水的 before/after 连续', async () => {
+    const { writes } = mockAllocation()
+    await createStoreAllocation(SESSION, {
+      storeRequestId: 'DBH-1', sourceMarketId: 'M1',
+      items: [
+        { requestItemId: 1, lotId: 11, quantity: 4 },
+        { requestItemId: null, skuId: 'SKU-3', lotId: 13, quantity: 1 },
+        { requestItemId: null, skuId: 'SKU-3', lotId: 13, quantity: 2 },
+      ],
+    })
+    // 批次 13 可用 3：第二条的 quantity_before 必须是第一条之后的 2，而不是快照里的 3
+    const lot13 = writes.movements.filter((params) => params.includes(13))
+    expect(lot13.map((params) => params.slice(-4, -2))).toEqual([['3', '2'], ['2', '0']])
+
+    mockAllocation()
+    await expect(createStoreAllocation(SESSION, {
+      targetStoreId: 'S1', sourceMarketId: 'M1',
+      items: [
+        { skuId: 'SKU-3', lotId: 13, quantity: 2 },
+        { skuId: 'SKU-3', lotId: 13, quantity: 1, giftQuantity: 1 },
+      ],
+    })).rejects.toThrow('库存不足')
+  })
+
+  it('自选行 SKU 未设门店进货价时拒绝', async () => {
+    mockAllocation({ storePrices: { 'SKU-2': null } })
+    await expect(createStoreAllocation(SESSION, {
+      targetStoreId: 'S1', sourceMarketId: 'M1',
+      items: [{ skuId: 'SKU-2', lotId: 12, quantity: 1 }],
+    })).rejects.toThrow('未设置门店进货价')
+  })
+
+  it('自选行批次可用量不足时拒绝', async () => {
+    mockAllocation()
+    await expect(createStoreAllocation(SESSION, {
+      targetStoreId: 'S1', sourceMarketId: 'M1',
+      items: [{ skuId: 'SKU-3', lotId: 13, quantity: 4 }],
+    })).rejects.toThrow('库存不足')
+  })
+
+  it('收货门店不属于配货市场时拒绝', async () => {
+    mockAllocation()
+    await expect(createStoreAllocation(SESSION, {
+      targetStoreId: 'S9', sourceMarketId: 'M1',
+      items: [{ skuId: 'SKU-2', lotId: 12, quantity: 1 }],
+    })).rejects.toThrow('门店不属于当前配货市场')
+  })
+
+  it('带报货单但收货门店与报货主体不一致时拒绝', async () => {
+    const { writes } = mockAllocation()
+    await expect(createStoreAllocation(SESSION, {
+      storeRequestId: 'DBH-1', targetStoreId: 'S2', sourceMarketId: 'M1',
+      items: [{ requestItemId: 1, lotId: 11, quantity: 1 }],
+    })).rejects.toThrow('收货门店与门店报货单的报货门店不一致')
+    expect(writes.items).toHaveLength(0)
+  })
+
+  it('同一门店的两种 id 写法（store_id / org_node_id）视为同一门店', async () => {
+    mockAllocation()
+    await expect(createStoreAllocation(SESSION, {
+      storeRequestId: 'DBH-1', targetStoreId: 'S1', sourceMarketId: 'M1',
+      items: [{ requestItemId: 1, lotId: 11, quantity: 1 }],
+    })).resolves.toMatchObject({ id: expect.stringMatching(/^FPH-/) })
+  })
+
+  it('引用单里已有的 SKU 不能再加自选行绕过未配量上限', async () => {
+    const { writes } = mockAllocation()
+    await expect(createStoreAllocation(SESSION, {
+      storeRequestId: 'DBH-1', sourceMarketId: 'M1',
+      items: [
+        { requestItemId: 1, lotId: 11, quantity: 5 },
+        { skuId: 'SKU-1', lotId: 11, quantity: 3 },
+      ],
+    })).rejects.toThrow('已在引用的门店报货单中')
+    expect(writes.items).toHaveLength(0)
+  })
+
+  it('入口参数：无报货单时收货门店必填；无报货单不能带报货明细；自选 SKU 与批次须一致；标识非字符串按参数错误', async () => {
+    await expect(createStoreAllocation(SESSION, {
+      sourceMarketId: 'M1', items: [{ skuId: 'SKU-2', lotId: 12, quantity: 1 }],
+    })).rejects.toThrow('INVALID_PARAMS: 收货门店不能为空')
+    await expect(createStoreAllocation(SESSION, {
+      targetStoreId: 'S1', sourceMarketId: 'M1', items: [{ requestItemId: 1, lotId: 11, quantity: 1 }],
+    })).rejects.toThrow('未引用门店报货单时不能按报货明细配货')
+    await expect(createStoreAllocation(SESSION, {
+      targetStoreId: 42 as never, sourceMarketId: 'M1', items: [{ lotId: 12, quantity: 1 }],
+    })).rejects.toThrow('INVALID_PARAMS: 收货门店格式不正确')
+    for (const lotId of [NaN, 1.5, 'abc', 0, undefined, true, [12], { id: 12 }, 1e21, '12abc']) {
+      await expect(createStoreAllocation(SESSION, {
+        targetStoreId: 'S1', sourceMarketId: 'M1', items: [{ skuId: 'SKU-2', lotId: lotId as never, quantity: 1 }],
+      })).rejects.toThrow('INVALID_PARAMS: 请为每条配货明细选择库存批次')
+    }
+    for (const requestItemId of [true, [5], 1.5, 1e21]) {
+      await expect(createStoreAllocation(SESSION, {
+        storeRequestId: 'DBH-1', sourceMarketId: 'M1', items: [{ requestItemId: requestItemId as never, lotId: 11, quantity: 1 }],
+      })).rejects.toThrow('INVALID_PARAMS: 门店报货明细不正确')
+    }
+    // 自选行商品必填（与前端「商品」必填同源）
+    for (const skuId of [undefined, null, '', '   ']) {
+      await expect(createStoreAllocation(SESSION, {
+        targetStoreId: 'S1', sourceMarketId: 'M1', items: [{ skuId: skuId as never, lotId: 12, quantity: 1 }],
+      })).rejects.toThrow('INVALID_PARAMS: 自选配货明细必须选择商品')
+    }
+    expect(db.transaction).not.toHaveBeenCalled()
+
+    mockAllocation()
+    await expect(createStoreAllocation(SESSION, {
+      targetStoreId: 'S1', sourceMarketId: 'M1', items: [{ skuId: 'SKU-1', lotId: 12, quantity: 1 }],
+    })).rejects.toThrow('配货批次与所选商品不一致')
+    // 数字串批次号照常接受
+    mockAllocation()
+    await expect(createStoreAllocation(SESSION, {
+      targetStoreId: 'S1', sourceMarketId: 'M1', items: [{ skuId: 'SKU-2', lotId: '12' as never, quantity: 1 }],
+    })).resolves.toMatchObject({ id: expect.stringMatching(/^FPH-/) })
+  })
+  describe('赠送数量单独选批次（#359）', () => {
+    /** 明细写入参数里的 lot_id 是第 2 个绑定参数（doc_id 之后）；按写入顺序给出每行的批次 */
+    const itemLotIds = (items: unknown[][]) => items.map((params) => params[1])
+
+    it('正常从普通批次、赠送从赠送批次：两行各记各的批次与流水，赠送行金额 0', async () => {
+      const { writes } = mockAllocation()
+      await createStoreAllocation(SESSION, {
+        storeRequestId: 'DBH-1', sourceMarketId: 'M1',
+        items: [{ requestItemId: 1, lotId: 11, quantity: 3, giftQuantity: 2, giftLotId: 14 }],
+      })
+      expect(itemLotIds(writes.items)).toEqual([11, 14])
+      // 出库流水同样分别落在两个批次上
+      expect(writes.movements.map((params) => params.find((param) => param === 11 || param === 14))).toEqual([11, 14])
+      // 血缘：正常 → 门店报货配货（3），赠送 → 门店报货赠送配货（2）
+      expect(writes.links.map((params) => params.find((param) => typeof param === 'string' && param.startsWith('门店报货'))))
+        .toEqual(['门店报货配货', '门店报货赠送配货'])
+      expect(writes.fulfilledUpdates).toHaveLength(1)
+    })
+
+    it('只配赠送：不必选正常批次；不传赠送批次则沿用正常批次（改造前口径）', async () => {
+      const giftOnly = mockAllocation()
+      await createStoreAllocation(SESSION, {
+        storeRequestId: 'DBH-1', sourceMarketId: 'M1',
+        items: [{ requestItemId: 1, quantity: 0, giftQuantity: 1, giftLotId: 14 }],
+      })
+      expect(itemLotIds(giftOnly.writes.items)).toEqual([14])
+      expect(giftOnly.writes.fulfilledUpdates).toHaveLength(0)
+
+      // 只配赠送、只传 lotId：赠送沿用 lotId
+      const giftViaLotId = mockAllocation()
+      await createStoreAllocation(SESSION, {
+        storeRequestId: 'DBH-1', sourceMarketId: 'M1',
+        items: [{ requestItemId: 1, lotId: 14, quantity: 0, giftQuantity: 1 }],
+      })
+      expect(itemLotIds(giftViaLotId.writes.items)).toEqual([14])
+
+      const legacy = mockAllocation()
+      await createStoreAllocation(SESSION, {
+        storeRequestId: 'DBH-1', sourceMarketId: 'M1',
+        items: [{ requestItemId: 1, lotId: 11, quantity: 1, giftQuantity: 1 }],
+      })
+      expect(itemLotIds(legacy.writes.items)).toEqual([11, 11])
+    })
+
+    it('入口校验：有正常数量必须选正常批次、有赠送数量必须有赠送批次；非法赠送批次号被拒', async () => {
+      await expect(createStoreAllocation(SESSION, {
+        storeRequestId: 'DBH-1', sourceMarketId: 'M1',
+        items: [{ requestItemId: 1, quantity: 1, giftQuantity: 1, giftLotId: 14 }],
+      })).rejects.toThrow('INVALID_PARAMS: 请为每条配货明细选择库存批次')
+      await expect(createStoreAllocation(SESSION, {
+        storeRequestId: 'DBH-1', sourceMarketId: 'M1',
+        items: [{ requestItemId: 1, quantity: 0, giftQuantity: 1 }],
+      })).rejects.toThrow('INVALID_PARAMS: 请为赠送数量选择库存批次')
+      for (const giftLotId of ['abc', 0, 1.5, true]) {
+        await expect(createStoreAllocation(SESSION, {
+          storeRequestId: 'DBH-1', sourceMarketId: 'M1',
+          items: [{ requestItemId: 1, lotId: 11, quantity: 1, giftQuantity: 1, giftLotId: giftLotId as never }],
+        })).rejects.toThrow('INVALID_PARAMS: 请为赠送数量选择库存批次')
+      }
+      expect(db.transaction).not.toHaveBeenCalled()
+    })
+
+    it('赠送批次同样核 SKU 与可用量：SKU 不符 / 超出赠送批次可用量被拒', async () => {
+      mockAllocation()
+      await expect(createStoreAllocation(SESSION, {
+        storeRequestId: 'DBH-1', sourceMarketId: 'M1',
+        items: [{ requestItemId: 1, lotId: 11, quantity: 1, giftQuantity: 1, giftLotId: 12 }],
+      })).rejects.toThrow('配货批次与门店报货 SKU 不一致')
+      mockAllocation()
+      await expect(createStoreAllocation(SESSION, {
+        targetStoreId: 'S1', sourceMarketId: 'M1',
+        items: [{ skuId: 'SKU-2', lotId: 12, quantity: 1, giftQuantity: 1, giftLotId: 14 }],
+      })).rejects.toThrow('配货批次与所选商品不一致')
+      // 正常与赠送显式同批次：可用量按合计判（11 有 10 件，正常 8 + 赠送 3 超出）
+      mockAllocation()
+      await expect(createStoreAllocation(SESSION, {
+        storeRequestId: 'DBH-1', sourceMarketId: 'M1',
+        items: [{ requestItemId: 1, lotId: 11, quantity: 5, giftQuantity: 6, giftLotId: 11 }],
+      })).rejects.toThrow(/库存不足/)
+      // 赠送批次 14 只有 2 件：赠送 3 件超出（可用量按各自批次累计，不与正常批次 11 的 10 件混算）
+      mockAllocation()
+      await expect(createStoreAllocation(SESSION, {
+        storeRequestId: 'DBH-1', sourceMarketId: 'M1',
+        items: [{ requestItemId: 1, lotId: 11, quantity: 1, giftQuantity: 3, giftLotId: 14 }],
+      })).rejects.toThrow(/库存不足/)
+    })
+  })
+})
+
+/**
+ * 采购覆盖的门店与实际配货门店错位（#362）。
+ * 复现：同市场同 SKU，门店 A（报货明细 id 小）报 10、B 报 6，市场可用 6；
+ * 市场报货采购 10，血缘按 id 全挂 A；到货前市场把现货 6 配给 A。
+ * 旧口径逐行截断：A = max(10 − 10 − 6, 0) = 0，B = 6 → 待配 6、建议采购 6；
+ * 实际 16 已被现货 6 + 在途 10 覆盖。
+ */
+describe('门店报货汇总按在途采购封顶（#362）', () => {
+  beforeEach(() => {
+    vi.resetAllMocks()
+  })
+
+  /** 改造前的逐行口径，只作对照：新口径在「无在途」时必须与它逐字相同 */
+  const legacy = (rows: Array<{ q: number; s: number; f: number }>, available: number) => {
+    const outstanding = rows.reduce((sum, row) => sum + Math.max(row.q - row.s - row.f, 0), 0)
+    return { outstandingQuantity: outstanding, suggestedPurchaseQuantity: Math.max(outstanding - available, 0) }
+  }
+  const coverage = (rows: Array<{ q: number; s: number; f: number }>, inTransit: number, available: number) =>
+    storeReplenishmentCoverage({
+      rowOutstanding: rows.reduce((sum, row) => sum + Math.max(row.q - row.s - row.f, 0), 0),
+      undelivered: rows.reduce((sum, row) => sum + (row.q - row.f), 0),
+      inTransit,
+      available,
+    })
+
+  it('复现场景：A 被采购覆盖又拿到现货，B 不再显示待配 6 / 建议采购 6', () => {
+    const rows = [{ q: 10, s: 10, f: 6 }, { q: 6, s: 0, f: 0 }]
+    expect(legacy(rows, 0)).toEqual({ outstandingQuantity: 6, suggestedPurchaseQuantity: 6 })
+    expect(coverage(rows, 10, 0)).toEqual({ outstandingQuantity: 0, suggestedPurchaseQuantity: 0 })
+  })
+
+  it('对照：配货门店与采购覆盖门店一致 / 无在途时，与旧口径逐字相同', () => {
+    // A 被采购覆盖 10（在途），现货 6 配给未被覆盖的 B；C 另报 4
+    const aligned = [{ q: 10, s: 10, f: 0 }, { q: 6, s: 0, f: 6 }, { q: 4, s: 0, f: 0 }]
+    expect(coverage(aligned, 10, 0)).toEqual(legacy(aligned, 0))
+    expect(coverage(aligned, 10, 0)).toEqual({ outstandingQuantity: 4, suggestedPurchaseQuantity: 4 })
+    // 采购已全部到货（在途 0）并配给同一门店：已汇总与已配指向同一批货，不能相减双扣
+    const arrived = [{ q: 10, s: 10, f: 10 }, { q: 6, s: 0, f: 0 }]
+    expect(coverage(arrived, 0, 0)).toEqual(legacy(arrived, 0))
+    expect(coverage(arrived, 0, 0)).toEqual({ outstandingQuantity: 6, suggestedPurchaseQuantity: 6 })
+    // 从没报过货：在途 0，未送达 = 逐行口径
+    const fresh = [{ q: 5, s: 0, f: 2 }, { q: 3, s: 0, f: 0 }]
+    expect(coverage(fresh, 0, 4)).toEqual(legacy(fresh, 4))
+  })
+
+  it('配货量超过采购覆盖时仍正确扣减：溢出的在途只抵别家门店的真实缺口', () => {
+    // A 报 10、采购覆盖 4（在途），现货配给 A 8 → A 只差 2，在途 4 里 2 是 B 的；B 报 6 → 还差 4
+    const rows = [{ q: 10, s: 4, f: 8 }, { q: 6, s: 0, f: 0 }]
+    expect(legacy(rows, 1)).toEqual({ outstandingQuantity: 6, suggestedPurchaseQuantity: 5 })
+    expect(coverage(rows, 4, 1)).toEqual({ outstandingQuantity: 4, suggestedPurchaseQuantity: 3 })
+    // 在途未被溢出（A 没多拿）：封顶不收紧，结果与旧口径相同
+    const partial = [{ q: 10, s: 4, f: 3 }, { q: 6, s: 0, f: 0 }]
+    expect(coverage(partial, 4, 0)).toEqual(legacy(partial, 0))
+  })
+
+  it('性质：任意多行 × 任意在途，结果不高于旧口径；在途为 0 时与旧口径逐字相同', () => {
+    // 线性同余伪随机（固定种子，可复现），枚举 500 组行形态：已汇总、已配各自独立取值且满足 已配 ≤ 数量
+    let seed = 362
+    const rand = (max: number) => {
+      seed = (seed * 1103515245 + 12345) % 2147483648
+      return seed % (max + 1)
+    }
+    for (let round = 0; round < 500; round += 1) {
+      const rows = Array.from({ length: 1 + rand(4) }, () => {
+        const q = 1 + rand(20)
+        return { q, s: rand(q), f: rand(q) }
+      })
+      const available = rand(15)
+      const inTransit = rand(30)
+      const next = coverage(rows, inTransit, available)
+      const old = legacy(rows, available)
+      expect(next.outstandingQuantity).toBeLessThanOrEqual(old.outstandingQuantity)
+      expect(next.suggestedPurchaseQuantity).toBeLessThanOrEqual(old.suggestedPurchaseQuantity)
+      expect(next.outstandingQuantity).toBeGreaterThanOrEqual(0)
+      expect(coverage(rows, 0, available)).toEqual(old)
+    }
+  })
+
+  it('只会调低不会调高：陈旧未配需求让未送达很大时，退回逐行口径', () => {
+    expect(storeReplenishmentCoverage({ rowOutstanding: 6, undelivered: 100, inTransit: 10, available: 2 }))
+      .toEqual({ outstandingQuantity: 6, suggestedPurchaseQuantity: 4 })
+    expect(storeReplenishmentCoverage({ rowOutstanding: 6, undelivered: 3, inTransit: 10, available: 0 }))
+      .toEqual({ outstandingQuantity: 0, suggestedPurchaseQuantity: 0 })
+  })
+
+  function mockSummary(options: { coverageRows: unknown[]; outstanding?: number; stores?: Array<{ storeId: string; storeName: string; quantity: string }> }) {
+    const coverageQueries: unknown[] = []
+    const executor = vi.fn(async (query: unknown) => {
+      const rendered = renderSql(query)
+      if (rendered.includes('FROM inventory_locations')) {
+        return [{ location_id: 'M1', org_node_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ', is_active: true }]
+      }
+      if (rendered.includes('WITH demand AS')) {
+        coverageQueries.push(query)
+        return options.coverageRows
+      }
+      if (rendered.includes("d.doc_type = '门店报货'")) {
+        return [{
+          sku_id: 'SKU-1', sku_name: '测试 SKU', spec_name: null,
+          requested_quantity: '16', fulfilled_quantity: '6', outstanding_quantity: String(options.outstanding ?? 6), request_item_ids: '{1,2}',
+          store_quantities: options.stores ?? [{ storeId: 'S1', storeName: '门店 A', quantity: '4' }, { storeId: 'S2', storeName: '门店 B', quantity: '2' }],
+        }]
+      }
+      if (rendered.includes('FROM inventory_stock_lots')) return [{ quantity: '0' }]
+      if (rendered.includes('FROM inventory_stock_reservations')) return [{ quantity: '0' }]
+      return []
+    })
+    mockSyncLocationsShortCircuit()
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({ execute: executor } as never))
+    return { coverageQueries }
+  }
+
+  it('#363 两店 A 10 / B 6 的 JSON 聚合反序列化为门店分量，合计等于无在途待配', async () => {
+    mockSummary({
+      coverageRows: [{ sku_id: 'SKU-1', undelivered_quantity: '16', in_transit_quantity: '0' }],
+      outstanding: 16,
+      stores: [{ storeId: 'S1', storeName: '门店 A', quantity: '10' }, { storeId: 'S2', storeName: '门店 B', quantity: '6' }],
+    })
+    const [item] = (await summarizeStoreReplenishmentRequests(SESSION, { marketId: 'M1' })).items
+    expect(item.storeQuantities).toEqual([{ storeId: 'S1', storeName: '门店 A', quantity: 10 }, { storeId: 'S2', storeName: '门店 B', quantity: 6 }])
+    expect(item.storeQuantities.reduce((sum, store) => sum + store.quantity, 0)).toBe(item.outstandingQuantity)
+  })
+
+  it('summarize 接上覆盖查询：在途 10 把 B 的待配 / 建议采购压到 0，并回传在途量', async () => {
+    const { coverageQueries } = mockSummary({
+      coverageRows: [{ sku_id: 'SKU-1', undelivered_quantity: '10', in_transit_quantity: '10' }],
+    })
+    const summary = await summarizeStoreReplenishmentRequests(SESSION, { marketId: 'M1' })
+    expect(summary.items).toEqual([expect.objectContaining({
+      skuId: 'SKU-1', outstandingQuantity: 0, availableQuantity: 0, inTransitQuantity: 10,
+      inTransitCoveredQuantity: 6, suggestedPurchaseQuantity: 0, requestItemIds: [1, 2],
+      storeQuantities: [{ storeId: 'S1', storeName: '门店 A', quantity: 4 }, { storeId: 'S2', storeName: '门店 B', quantity: 2 }],
+    })])
+    // 一次查全部 SKU；SKU 列表经 sql.join 展开成独立参数（裸数组会被摊成非法 SQL）
+    expect(coverageQueries).toHaveLength(1)
+    // sql.join 产出嵌套 SQL 片段，逐层展开后 SKU 应是独立的标量参数
+    const flatParams = (query: unknown): unknown[] => sqlParams(query).flatMap((param) => (
+      typeof param === 'object' && param !== null && 'queryChunks' in param ? flatParams(param) : [param]
+    ))
+    expect(flatParams(coverageQueries[0])).toEqual(expect.arrayContaining(['M1', 'SKU-1']))
+    expect(flatParams(coverageQueries[0]).some((param) => Array.isArray(param))).toBe(false)
+    const rendered = renderSql(coverageQueries[0])
+    // 在途只认已完成市场报货 + 正常发货血缘 + 已完成收货（与 engine 报货履约的 normal_received 同口径）
+    expect(rendered).toContain("report_doc.status = '已完成'")
+    // 自采 / 转让店商品走不了供应链采购与发货收货，不计在途（否则永远核销不掉）
+    expect(rendered).toContain("report_sku.source_type = '供应链'")
+    expect(rendered).toContain("shipment_link.relation_type = '市场报货发货'")
+    expect(rendered).toContain("receipt_doc.status = '已完成'")
+    expect(rendered).toContain("shipment_doc.status <> '已取消'")
+    expect(rendered).not.toContain('市场报货赠送发货')
+  })
+
+  it('summarize：无在途时结果与改造前相同（待配 6、建议采购 6、在途 0）', async () => {
+    mockSummary({ coverageRows: [{ sku_id: 'SKU-1', undelivered_quantity: '10', in_transit_quantity: '0' }] })
+    const summary = await summarizeStoreReplenishmentRequests(SESSION, { marketId: 'M1' })
+    expect(summary.items).toEqual([expect.objectContaining({
+      outstandingQuantity: 6, inTransitQuantity: 0, inTransitCoveredQuantity: 0, suggestedPurchaseQuantity: 6,
+      storeQuantities: [{ storeId: 'S1', storeName: '门店 A', quantity: 4 }, { storeId: 'S2', storeName: '门店 B', quantity: 2 }],
+    })])
+  })
+})
+
+/**
+ * 市场报货草稿（#348）。草稿只存明细与预览价，不写血缘；编辑 / 提交 / 删除都只认本市场的草稿。
+ * 按 SQL 文本路由 mock（不按调用顺序），断言落在「写了什么 / 没写什么」上。
+ */
+const DRAFT_VERSION = '2026-09-26T01:02:03.456Z'
+
+describe('市场报货草稿（#348）', () => {
+  const DRAFT = {
+    id: 'MBH-D1', doc_type: '市场报货', status: '草稿',
+    source_org_node_id: 'M1', target_org_node_id: 'HQ', market_id: 'M1',
+    supplier_id: null, supplier_name: null,
+    cancellation_request_reason: null, cancellation_requested_by: null, cancellation_requested_at: null,
+  }
+
+  function mockDraftTx(draft: Record<string, unknown> | null, { linked = false }: { linked?: boolean } = {}) {
+    const calls: unknown[] = []
+    const execute = initializedCutoverExecutor(async (query) => {
+      calls.push(query)
+      const rendered = renderSql(query)
+      const params = sqlParams(query)
+      if (rendered.includes('FROM inventory_locations')) {
+        const id = String(params[0])
+        return id === 'HQ'
+          ? [{ location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null, is_active: true }]
+          : [{ location_id: id, org_node_id: id, location_type: '市场', name: `市场 ${id}`, parent_location_id: 'HQ', is_active: true }]
+      }
+      if (rendered.includes('SELECT market_id FROM inventory_docs')) return draft ? [{ market_id: draft.market_id }] : []
+      if (rendered.includes('FROM inventory_doc_links WHERE from_doc_id')) return [{ linked }]
+      if (rendered.includes('to_char(updated_at')) return [{ updated_at: DRAFT_VERSION }]
+      if (rendered.includes('FROM inventory_docs') && rendered.includes('FOR UPDATE')) return draft ? [draft] : []
+      if (rendered.includes('FROM inventory_skus')) return [marketSkuRow(String(params[0]))]
+      if (rendered.includes('INSERT INTO inventory_doc_items')) return [{ id: '11' }]
+      return []
+    })
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementation(async (callback) => callback({ execute } as never))
+    const rendered = () => calls.map(renderSql)
+    return { calls, rendered }
+  }
+
+  beforeEach(() => {
+    vi.resetAllMocks()
+  })
+
+  it('新建草稿：单头状态为草稿、明细带预览价，不写任何血缘', async () => {
+    const { calls, rendered } = mockDraftTx(null)
+    const result = await saveMarketReplenishmentDraft(SESSION, {
+      marketId: 'M1', supplyChainLocationId: 'HQ',
+      items: [{ skuId: 'SKU-1', purchaseQuantity: 3 }],
+    })
+    expect(result.id).toMatch(/^MBH-/)
+    const header = calls.find((query) => renderSql(query).includes('INSERT INTO inventory_docs'))
+    expect(sqlParams(header)).toContain('草稿')
+    const item = calls.find((query) => renderSql(query).includes('INSERT INTO inventory_doc_items'))
+    // 市场进货价 100、无福利：实际单价 100、金额 300
+    expect(sqlParams(item)).toEqual(expect.arrayContaining(['SKU-1', '3', '100', '300']))
+    expect(rendered().some((text) => text.includes('INSERT INTO inventory_doc_links'))).toBe(false)
+    // 门店报货明细一行都不碰（不引用、不锁）
+    expect(rendered().some((text) => text.includes('FROM inventory_doc_items') && text.includes('FOR UPDATE'))).toBe(false)
+  })
+
+  it('覆盖草稿：只重写明细与单头可改字段，状态保持草稿', async () => {
+    const { rendered } = mockDraftTx(DRAFT)
+    await saveMarketReplenishmentDraft(SESSION, {
+      draftId: 'MBH-D1', expectedUpdatedAt: DRAFT_VERSION, marketId: 'M1', supplyChainLocationId: 'HQ',
+      items: [{ skuId: 'SKU-1', purchaseQuantity: 2 }],
+    })
+    const texts = rendered()
+    expect(texts.some((text) => text.includes('DELETE FROM inventory_doc_items'))).toBe(true)
+    const update = texts.find((text) => text.includes('UPDATE inventory_docs'))!
+    expect(update).not.toContain('status')
+    expect(texts.some((text) => text.includes('INSERT INTO inventory_docs'))).toBe(false)
+    expect(texts.some((text) => text.includes('INSERT INTO inventory_doc_links'))).toBe(false)
+  })
+
+  it('已提交的市场报货不能再改：存草稿 / 提交 / 删除都 INVALID_STATE，且不动明细', async () => {
+    const submitted = { ...DRAFT, status: '已完成' }
+    const save = mockDraftTx(submitted)
+    await expect(saveMarketReplenishmentDraft(SESSION, {
+      draftId: 'MBH-D1', expectedUpdatedAt: DRAFT_VERSION, marketId: 'M1', supplyChainLocationId: 'HQ',
+      items: [{ skuId: 'SKU-1', purchaseQuantity: 2 }],
+    })).rejects.toThrow(/^INVALID_STATE: /)
+    expect(save.rendered().some((text) => text.includes('DELETE FROM inventory_doc_items'))).toBe(false)
+
+    const submit = mockDraftTx(submitted)
+    await expect(createMarketReplenishment(SESSION, {
+      draftId: 'MBH-D1', expectedUpdatedAt: DRAFT_VERSION, marketId: 'M1', supplyChainLocationId: 'HQ',
+      items: [{ skuId: 'SKU-1', sourceRequestItemIds: [1], purchaseQuantity: 2 }],
+    })).rejects.toThrow(/^INVALID_STATE: /)
+    // 草稿锁在引用门店报货明细之前：已提交单不会再去锁 / 占用任何来源
+    expect(submit.rendered().some((text) => text.includes('FROM inventory_doc_items'))).toBe(false)
+
+    const remove = mockDraftTx(submitted)
+    await expect(deleteMarketReplenishmentDraft(SESSION, { draftId: 'MBH-D1' })).rejects.toThrow(/^INVALID_STATE: /)
+    expect(remove.rendered().some((text) => text.includes('UPDATE inventory_docs'))).toBe(false)
+  })
+
+  it('乐观锁必填：覆盖 / 提交市场报货草稿不带版本 → INVALID_PARAMS；版本不一致 → CONFLICT', async () => {
+    let tx = mockDraftTx(DRAFT)
+    await expect(saveMarketReplenishmentDraft(SESSION, {
+      draftId: 'MBH-D1', marketId: 'M1', supplyChainLocationId: 'HQ', items: [{ skuId: 'SKU-1', purchaseQuantity: 1 }],
+    })).rejects.toThrow('INVALID_PARAMS: 缺少草稿版本')
+    expect(tx.rendered().some((text) => text.includes('DELETE FROM inventory_doc_items'))).toBe(false)
+    tx = mockDraftTx(DRAFT)
+    await expect(createMarketReplenishment(SESSION, {
+      draftId: 'MBH-D1', expectedUpdatedAt: '2020-01-01T00:00:00.000Z', marketId: 'M1', supplyChainLocationId: 'HQ',
+      items: [{ skuId: 'SKU-1', sourceRequestItemIds: [1], purchaseQuantity: 1 }],
+    })).rejects.toThrow('CONFLICT: 草稿已被他人修改')
+    expect(tx.rendered().some((text) => text.includes('FROM inventory_doc_items') && text.includes('FOR UPDATE'))).toBe(false)
+  })
+
+  it('非市场报货单不能当草稿改（NOT_FOUND，不泄露别的单据类型）', async () => {
+    mockDraftTx({ ...DRAFT, doc_type: '门店报货' })
+    await expect(saveMarketReplenishmentDraft(SESSION, {
+      draftId: 'MBH-D1', expectedUpdatedAt: DRAFT_VERSION, marketId: 'M1', supplyChainLocationId: 'HQ',
+      items: [{ skuId: 'SKU-1', purchaseQuantity: 2 }],
+    })).rejects.toThrow('NOT_FOUND: 市场报货草稿不存在')
+  })
+
+  it('草稿的报货市场不能改（按别的市场提交 / 覆盖都拒）', async () => {
+    mockDraftTx({ ...DRAFT, market_id: 'M2', source_org_node_id: 'M2' })
+    await expect(saveMarketReplenishmentDraft(SESSION, {
+      draftId: 'MBH-D1', expectedUpdatedAt: DRAFT_VERSION, marketId: 'M1', supplyChainLocationId: 'HQ',
+      items: [{ skuId: 'SKU-1', purchaseQuantity: 2 }],
+    })).rejects.toThrow('INVALID_PARAMS: 草稿的报货市场不能修改')
+    mockDraftTx({ ...DRAFT, market_id: 'M2', source_org_node_id: 'M2' })
+    await expect(createMarketReplenishment(SESSION, {
+      draftId: 'MBH-D1', expectedUpdatedAt: DRAFT_VERSION, marketId: 'M1', supplyChainLocationId: 'HQ',
+      items: [{ skuId: 'SKU-1', sourceRequestItemIds: [1], purchaseQuantity: 2 }],
+    })).rejects.toThrow('INVALID_PARAMS: 草稿的报货市场不能修改')
+  })
+
+  it('删除草稿 = 草稿 → 已取消，记删除人与原因，不物理删除', async () => {
+    const { rendered, calls } = mockDraftTx(DRAFT)
+    await deleteMarketReplenishmentDraft(SESSION, { draftId: 'MBH-D1', reason: '报错了' })
+    const texts = rendered()
+    expect(texts.some((text) => text.includes('DELETE FROM'))).toBe(false)
+    const update = calls.find((query) => renderSql(query).includes('UPDATE inventory_docs'))!
+    expect(renderSql(update)).toContain("status = '已取消'")
+    expect(sqlParams(update)).toEqual(expect.arrayContaining(['报错了', 'E001', 'MBH-D1']))
+  })
+
+  it('带上下游血缘的存量「草稿」不能按草稿改 / 提交 / 删除（覆盖明细会撞外键、删除会释放占用）', async () => {
+    const save = mockDraftTx(DRAFT, { linked: true })
+    await expect(saveMarketReplenishmentDraft(SESSION, {
+      draftId: 'MBH-D1', expectedUpdatedAt: DRAFT_VERSION, marketId: 'M1', supplyChainLocationId: 'HQ',
+      items: [{ skuId: 'SKU-1', purchaseQuantity: 2 }],
+    })).rejects.toThrow('INVALID_STATE: 该草稿已有上下游关联')
+    expect(save.rendered().some((text) => text.includes('DELETE FROM inventory_doc_items'))).toBe(false)
+    const remove = mockDraftTx(DRAFT, { linked: true })
+    await expect(deleteMarketReplenishmentDraft(SESSION, { draftId: 'MBH-D1' })).rejects.toThrow('INVALID_STATE: 该草稿已有上下游关联')
+    expect(remove.rendered().some((text) => text.includes('UPDATE inventory_docs'))).toBe(false)
+  })
+
+  it('已删除的草稿再改：提示「已删除」而不是「已提交」', async () => {
+    mockDraftTx({ ...DRAFT, status: '已取消' })
+    await expect(saveMarketReplenishmentDraft(SESSION, {
+      draftId: 'MBH-D1', expectedUpdatedAt: DRAFT_VERSION, marketId: 'M1', supplyChainLocationId: 'HQ',
+      items: [{ skuId: 'SKU-1', purchaseQuantity: 2 }],
+    })).rejects.toThrow('INVALID_STATE: 该市场报货草稿已删除')
+  })
+
+  it('删除草稿不校验市场是否启用（停用市场的草稿也要清得掉），但照断 scope 并写 updated_at', async () => {
+    const { calls } = mockDraftTx(DRAFT)
+    await deleteMarketReplenishmentDraft(SESSION, { draftId: 'MBH-D1' })
+    const marketQuery = calls.map(renderSql).find((text) => text.includes('FROM inventory_locations'))!
+    expect(marketQuery).not.toContain('is_active')
+    const update = calls.map(renderSql).find((text) => text.includes('UPDATE inventory_docs'))!
+    expect(update).toContain('updated_at = NOW()')
+    mockDraftTx(DRAFT)
+    await expect(deleteMarketReplenishmentDraft(NO_PRICE_SESSION, { draftId: 'MBH-D1' })).rejects.toThrow(/^PERMISSION_DENIED: /)
+  })
+
+  it('删除不存在的草稿 NOT_FOUND；原因留空时记「删除草稿」', async () => {
+    mockDraftTx(null)
+    await expect(deleteMarketReplenishmentDraft(SESSION, { draftId: 'MBH-X' })).rejects.toThrow(/^NOT_FOUND: /)
+    const { calls } = mockDraftTx(DRAFT)
+    await deleteMarketReplenishmentDraft(SESSION, { draftId: 'MBH-D1', reason: '  ' })
+    const update = calls.find((query) => renderSql(query).includes('UPDATE inventory_docs'))!
+    expect(sqlParams(update)).toContain('删除草稿')
+  })
+
+  it('改选福利须「办理权 + 市场价格权」同一条绑定覆盖本市场：A 市场办理 + B 市场价格权不能在 A 改选', async () => {
+    const MIXED = {
+      employeeId: 'E-MIX', name: '混合绑定', phone: '13800000011',
+      roles: [
+        { role: 'inventory_market_operator', scopeId: 'M1', scopeType: '市场', actions: ['inventory:market_operate'], scopeStoreIds: [], scopeOrgNodeIds: ['M1'] },
+        { role: 'inventory_market_finance', scopeId: 'M2', scopeType: '市场', actions: ['inventory:market_operate', 'inventory:market_price_view'], scopeStoreIds: [], scopeOrgNodeIds: ['M2'] },
+      ],
+      permissions: { actions: ['inventory:market_operate', 'inventory:market_price_view'], scopeStoreIds: [], scopeOrgNodeIds: ['M1', 'M2'] },
+    } as never
+    const input = {
+      marketId: 'M1', supplyChainLocationId: 'HQ', items: [{ skuId: 'SKU-1', purchaseQuantity: 1 }],
+      promotionSelections: [{ skuId: 'SKU-1', promotionPlanId: 'P1' }],
+    }
+    const save = mockDraftTx(null)
+    await expect(saveMarketReplenishmentDraft(MIXED, input)).rejects.toThrow('PERMISSION_DENIED: 无权切换市场报货福利方案')
+    expect(save.rendered().some((text) => text.includes('INSERT INTO inventory_docs'))).toBe(false)
+    mockDraftTx(null)
+    await expect(createMarketReplenishment(MIXED, {
+      ...input, items: [{ skuId: 'SKU-1', sourceRequestItemIds: [1], purchaseQuantity: 1 }],
+    })).rejects.toThrow('PERMISSION_DENIED: 无权切换市场报货福利方案')
+    // 不改选福利（系统推荐）时照常可存 —— 前端只回传人工改选的行，系统推荐不传（见办理台用例「只回传人工改选的福利」）
+    mockDraftTx(null)
+    await expect(saveMarketReplenishmentDraft(MIXED, { ...input, promotionSelections: undefined })).resolves.toMatchObject({ id: expect.stringMatching(/^MBH-/) })
+  })
+
+  it('入参守卫：空明细、重复商品、非正数量、无价格权限改选福利', async () => {
+    await expect(saveMarketReplenishmentDraft(SESSION, {
+      marketId: 'M1', supplyChainLocationId: 'HQ', items: [],
+    })).rejects.toThrow('市场报货至少需要一条明细')
+    await expect(saveMarketReplenishmentDraft(SESSION, {
+      marketId: 'M1', supplyChainLocationId: 'HQ',
+      items: [{ skuId: 'SKU-1', purchaseQuantity: 1 }, { skuId: 'SKU-1', purchaseQuantity: 2 }],
+    })).rejects.toThrow('INVALID_PARAMS: 市场报货草稿的商品不能重复')
+    await expect(saveMarketReplenishmentDraft(SESSION, {
+      marketId: 'M1', supplyChainLocationId: 'HQ', items: [{ skuId: 'SKU-1', purchaseQuantity: 0 }],
+    })).rejects.toThrow(/^INVALID_PARAMS: /)
+    await expect(saveMarketReplenishmentDraft(NO_PRICE_SESSION, {
+      marketId: 'M1', supplyChainLocationId: 'HQ', items: [{ skuId: 'SKU-1', purchaseQuantity: 1 }],
+      promotionSelections: [{ skuId: 'SKU-1', promotionPlanId: 'P1' }],
+    })).rejects.toThrow(/^PERMISSION_DENIED: /)
+  })
+})
+
+/**
+ * 门店报货草稿（#348 · 348a）。新建 / 存草稿 / 提交共用 createStoreReplenishmentRequest，删除单独一个入口。
+ * 下游（市场报货引用 / 分院配货引用 / 汇总）只认已完成，草稿进不去。
+ */
+describe('门店报货草稿（#348）', () => {
+  const STORE_DRAFT = {
+    id: 'DBH-D1', doc_type: '门店报货', status: '草稿',
+    source_org_node_id: 'S1', target_org_node_id: 'M1', market_id: 'M1',
+    supplier_id: null, supplier_name: null,
+    cancellation_request_reason: null, cancellation_requested_by: null, cancellation_requested_at: null,
+  }
+
+  function mockStoreDraftTx(draft: Record<string, unknown> | null, { linked = false }: { linked?: boolean } = {}) {
+    const calls: unknown[] = []
+    const execute = initializedCutoverExecutor(async (query) => {
+      calls.push(query)
+      const rendered = renderSql(query)
+      const params = sqlParams(query)
+      if (rendered.includes('FROM inventory_locations')) {
+        const id = String(params[0])
+        if (id === 'M1') return [{ location_id: 'M1', org_node_id: 'M1', location_type: '市场', name: '市场', parent_location_id: 'HQ', is_active: true }]
+        return [{ location_id: id, org_node_id: id, location_type: '门店', name: `门店 ${id}`, parent_location_id: 'M1', is_active: true }]
+      }
+      if (rendered.includes('SELECT source_org_node_id FROM inventory_docs')) return draft ? [{ source_org_node_id: draft.source_org_node_id }] : []
+      if (rendered.includes('to_char(updated_at')) return [{ updated_at: DRAFT_VERSION }]
+      if (rendered.includes('FROM inventory_doc_links WHERE from_doc_id')) return [{ linked }]
+      if (rendered.includes('FROM inventory_docs') && rendered.includes('FOR UPDATE')) return draft ? [draft] : []
+      if (rendered.includes('FROM inventory_skus')) return [marketSkuRow(String(params[0]))]
+      if (rendered.includes('INSERT INTO inventory_doc_items')) return [{ id: '21' }]
+      return []
+    })
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementation(async (callback) => callback({ execute } as never))
+    return { calls, rendered: () => calls.map(renderSql) }
+  }
+  const input = { storeId: 'S1', marketId: 'M1', items: [{ skuId: 'SKU-1', quantity: 2 }] }
+
+  beforeEach(() => {
+    vi.resetAllMocks()
+  })
+
+  it('新建草稿：单头状态草稿、不确认；与正式单同一套明细校验', async () => {
+    const { calls } = mockStoreDraftTx(null)
+    const result = await saveStoreReplenishmentDraft(SESSION, input)
+    expect(result.id).toMatch(/^DBH-/)
+    const header = calls.find((query) => renderSql(query).includes('INSERT INTO inventory_docs'))!
+    expect(sqlParams(header)).toContain('草稿')
+    // confirmed_by / confirmed_at 都是 NULL（insertDocHeader 的 confirmed=false）
+    expect(renderSql(header)).not.toContain('NOW()')
+  })
+
+  it('覆盖草稿仍是草稿；提交草稿在原单号上转已完成并确认', async () => {
+    const save = mockStoreDraftTx(STORE_DRAFT)
+    await saveStoreReplenishmentDraft(SESSION, { ...input, draftId: 'DBH-D1', expectedUpdatedAt: DRAFT_VERSION })
+    const saveUpdate = save.calls.find((query) => renderSql(query).includes('UPDATE inventory_docs'))!
+    expect(sqlParams(saveUpdate)).toContain('草稿')
+    expect(save.rendered().some((text) => text.includes('DELETE FROM inventory_doc_items'))).toBe(true)
+    expect(save.rendered().some((text) => text.includes('INSERT INTO inventory_docs'))).toBe(false)
+
+    const submit = mockStoreDraftTx(STORE_DRAFT)
+    const result = await createStoreReplenishmentRequest(SESSION, { ...input, draftId: 'DBH-D1', expectedUpdatedAt: DRAFT_VERSION })
+    expect(result.id).toBe('DBH-D1')
+    const submitUpdate = submit.calls.find((query) => renderSql(query).includes('UPDATE inventory_docs'))!
+    expect(sqlParams(submitUpdate)).toEqual(expect.arrayContaining(['已完成', 'E001', 'DBH-D1']))
+    // confirmed_at = NOW()：嵌套的 sql 片段（存草稿时是 null）
+    expect(sqlParams(submitUpdate).some((param) => typeof param === 'object' && param !== null)).toBe(true)
+    expect(sqlParams(saveUpdate).some((param) => typeof param === 'object' && param !== null)).toBe(false)
+  })
+
+  it('已提交 / 已删除 / 非门店报货 / 换门店 / 带关联：分别拒绝，且不动明细', async () => {
+    const cases: Array<[Record<string, unknown>, RegExp, { linked?: boolean }?]> = [
+      [{ ...STORE_DRAFT, status: '已完成' }, /^INVALID_STATE: 门店报货已提交/],
+      [{ ...STORE_DRAFT, status: '已取消' }, /^INVALID_STATE: 该门店报货草稿已删除/],
+      [{ ...STORE_DRAFT, doc_type: '市场报货' }, /^NOT_FOUND: 门店报货草稿不存在/],
+      [{ ...STORE_DRAFT, source_org_node_id: 'S2' }, /^INVALID_PARAMS: 草稿的报货门店不能修改/],
+      [STORE_DRAFT, /^INVALID_STATE: 该草稿已有上下游关联/, { linked: true }],
+    ]
+    for (const [draft, error, options] of cases) {
+      const { rendered } = mockStoreDraftTx(draft, options)
+      await expect(saveStoreReplenishmentDraft(SESSION, { ...input, draftId: 'DBH-D1', expectedUpdatedAt: DRAFT_VERSION })).rejects.toThrow(error)
+      expect(rendered().some((text) => text.includes('DELETE FROM inventory_doc_items')), String(error)).toBe(false)
+    }
+  })
+
+  it('乐观锁必填：存草稿 / 提交带 draftId 却不带版本 → INVALID_PARAMS（不能退化成不校验）', async () => {
+    for (const run of [
+      () => saveStoreReplenishmentDraft(SESSION, { ...input, draftId: 'DBH-D1' }),
+      () => createStoreReplenishmentRequest(SESSION, { ...input, draftId: 'DBH-D1', expectedUpdatedAt: '' }),
+    ]) {
+      const { rendered } = mockStoreDraftTx(STORE_DRAFT)
+      await expect(run()).rejects.toThrow('INVALID_PARAMS: 缺少草稿版本，请重新打开草稿后再保存')
+      expect(rendered().some((text) => text.includes('DELETE FROM inventory_doc_items'))).toBe(false)
+    }
+  })
+
+  it('乐观锁：打开草稿后别人改过（updatedAt 不一致）→ CONFLICT 且不动明细；一致放行并回传新版本', async () => {
+    const stale = mockStoreDraftTx(STORE_DRAFT)
+    await expect(saveStoreReplenishmentDraft(SESSION, { ...input, draftId: 'DBH-D1', expectedUpdatedAt: '2026-09-26T01:00:00.000Z' }))
+      .rejects.toThrow('CONFLICT: 草稿已被他人修改')
+    expect(stale.rendered().some((text) => text.includes('DELETE FROM inventory_doc_items'))).toBe(false)
+    mockStoreDraftTx(STORE_DRAFT)
+    await expect(createStoreReplenishmentRequest(SESSION, { ...input, draftId: 'DBH-D1', expectedUpdatedAt: '2026-09-26T01:00:00.000Z' }))
+      .rejects.toThrow('CONFLICT: 草稿已被他人修改')
+    mockStoreDraftTx(STORE_DRAFT)
+    // 同一时刻的不同写法（+08:00）按时刻比较
+    await expect(saveStoreReplenishmentDraft(SESSION, { ...input, draftId: 'DBH-D1', expectedUpdatedAt: '2026-09-26T09:02:03.456+08:00' }))
+      .resolves.toEqual({ id: 'DBH-D1', updatedAt: '2026-09-26T01:02:03.456Z' })
+    mockStoreDraftTx(STORE_DRAFT)
+    await expect(saveStoreReplenishmentDraft(SESSION, { ...input, draftId: 'DBH-D1', expectedUpdatedAt: 'abc' }))
+      .rejects.toThrow(/^INVALID_PARAMS: /)
+  })
+
+  it('草稿存续期间门店改挂了别的市场 → INVALID_STATE（提交会把单挂在旧市场）', async () => {
+    const { rendered } = mockStoreDraftTx({ ...STORE_DRAFT, market_id: 'M-OLD', target_org_node_id: 'M-OLD' })
+    await expect(createStoreReplenishmentRequest(SESSION, { ...input, draftId: 'DBH-D1', expectedUpdatedAt: DRAFT_VERSION }))
+      .rejects.toThrow('INVALID_STATE: 门店已更换所属市场，请删除该草稿后重新报货')
+    expect(rendered().some((text) => text.includes('UPDATE inventory_docs'))).toBe(false)
+    // 删除不受此限（旧市场的草稿要能清掉）
+    mockStoreDraftTx({ ...STORE_DRAFT, market_id: 'M-OLD', target_org_node_id: 'M-OLD' })
+    await expect(deleteStoreReplenishmentDraft(SESSION, { draftId: 'DBH-D1' })).resolves.toEqual({ id: 'DBH-D1' })
+  })
+
+  it('删除草稿 = 已取消（原因、删除人、updated_at），不校验门店是否启用；越权门店拒绝', async () => {
+    const { calls } = mockStoreDraftTx(STORE_DRAFT)
+    await deleteStoreReplenishmentDraft(SESSION, { draftId: 'DBH-D1', reason: '报错了' })
+    const update = calls.find((query) => renderSql(query).includes('UPDATE inventory_docs'))!
+    expect(renderSql(update)).toContain("status = '已取消'")
+    expect(renderSql(update)).toContain('updated_at = NOW()')
+    expect(sqlParams(update)).toEqual(expect.arrayContaining(['报错了', 'E001', 'DBH-D1']))
+    expect(calls.map(renderSql).find((text) => text.includes('FROM inventory_locations'))).not.toContain('is_active')
+
+    mockStoreDraftTx({ ...STORE_DRAFT, source_org_node_id: 'S9' })
+    await expect(deleteStoreReplenishmentDraft(NO_PRICE_SESSION, { draftId: 'DBH-D1' })).rejects.toThrow(/^PERMISSION_DENIED: /)
+    mockStoreDraftTx(null)
+    await expect(deleteStoreReplenishmentDraft(SESSION, { draftId: 'DBH-X' })).rejects.toThrow(/^NOT_FOUND: /)
+  })
+
+  it('市场报货不能引用门店报货草稿（INVALID_STATE），在锁定 / 占用来源之前就拒', async () => {
+    const execute = initializedCutoverExecutor(async (query) => {
+      const rendered = renderSql(query)
+      const params = sqlParams(query)
+      if (rendered.includes('FROM inventory_locations')) {
+        const id = String(params[0])
+        return id === 'HQ'
+          ? [{ location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null, is_active: true }]
+          : [{ location_id: id, org_node_id: id, location_type: '市场', name: '市场', parent_location_id: 'HQ', is_active: true }]
+      }
+      if (rendered.includes('FROM inventory_doc_items') && rendered.includes('FOR UPDATE')) return [storeRequestItemRow()]
+      if (rendered.includes('FROM inventory_docs') && rendered.includes('FOR UPDATE')) return [{ ...STORE_DRAFT, id: 'DBH-1' }]
+      return []
+    })
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementation(async (callback) => callback({ execute } as never))
+    await expect(createMarketReplenishment(SESSION, {
+      marketId: 'M1', supplyChainLocationId: 'HQ',
+      items: [{ skuId: 'SKU-1', sourceRequestItemIds: [1], purchaseQuantity: 1 }],
+    })).rejects.toThrow('INVALID_STATE: 所选明细不是当前市场可汇总的门店报货')
+  })
+
+  it('分院配货不能引用门店报货草稿（INVALID_STATE）', async () => {
+    const execute = initializedCutoverExecutor(async (query) => {
+      const rendered = renderSql(query)
+      if (rendered.includes('FROM inventory_docs') && rendered.includes('FOR UPDATE')) return [{ ...STORE_DRAFT, id: 'DBH-1' }]
+      return []
+    })
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementation(async (callback) => callback({ execute } as never))
+    await expect(createStoreAllocation(SESSION, {
+      storeRequestId: 'DBH-1', sourceMarketId: 'M1',
+      items: [{ requestItemId: 1, lotId: 1, quantity: 1 }],
+    })).rejects.toThrow('INVALID_STATE: 分院配货必须引用有效门店报货单')
+  })
+
+  it('市场汇总与在途只认已完成的门店报货（草稿不进待配）', () => {
+    const source = readFileSync(resolve(__dirname, 'business.ts'), 'utf-8')
+    const summarize = source.slice(source.indexOf('export async function summarizeStoreReplenishmentRequests('))
+    expect(summarize.slice(0, 4000)).toMatch(/WHERE d\.doc_type = '门店报货'\s+AND d\.status = '已完成'/)
+    const coverage = source.slice(source.indexOf('async function loadStoreReplenishmentCoverage('))
+    expect(coverage.slice(0, 2000)).toContain(`WHERE request_doc.doc_type = '门店报货'
+         AND request_doc.status = '已完成'`)
+  })
+})
+
+
+describe('#453 库存日期服务端拦截', () => {
+  beforeEach(() => vi.clearAllMocks())
+  it.each(['2026-02-30', '2026-13-01', '0000-01-01', 20260101, {}])('采购订单拒绝非法 docDate %s，未执行 SQL', async (docDate) => {
+    await expect(createPurchaseOrder(SESSION, { supplyChainLocationId: 'HQ', docDate, items: [{ sourceItemId: 1, quantity: 1 }] } as never)).rejects.toMatchObject({ prefix: 'INVALID_PARAMS' })
+    expect(db.execute).not.toHaveBeenCalled()
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+  it.each(['2026-02-30', '2026-13-01', '0000-01-01', 20260101, {}])('自采入库拒绝非法 expiryDate %s，未执行 SQL', async (expiryDate) => {
+    await expect(createSelfPurchasedReceipt(SELF_PURCHASE_SESSION, { marketId: 'M1', supplierId: 'SUP', items: [{ skuId: 'SKU', quantity: 1, expiryDate }] } as never)).rejects.toMatchObject({ prefix: 'INVALID_PARAMS' })
+    expect(db.execute).not.toHaveBeenCalled()
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+})
+
+
+describe('#453 供应链采购入库日期', () => {
+  beforeEach(() => vi.clearAllMocks())
+  it.each(['2026-02-30', '2026-13-01', '0000-01-01'])('拒绝非法 docDate %s，不执行 SQL', async (docDate) => {
+    await expect(receiveSupplyChainPurchaseOrder(SESSION, { supplyChainLocationId: 'HQ', purchaseOrderId: 'CG', docDate, items: [{ purchaseOrderItemId: 1, quantity: 1 }] } as never)).rejects.toThrow('INVALID_PARAMS: 单据日期格式应为 YYYY-MM-DD')
+    expect(db.execute).not.toHaveBeenCalled()
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+  it('拒绝非法效期，不执行 SQL', async () => {
+    await expect(receiveSupplyChainPurchaseOrder(SESSION, { supplyChainLocationId: 'HQ', purchaseOrderId: 'CG', items: [{ purchaseOrderItemId: 1, quantity: 1, expiryDate: '2026-13-01' }] } as never)).rejects.toThrow('INVALID_PARAMS: 效期格式应为 YYYY-MM-DD')
+    expect(db.execute).not.toHaveBeenCalled()
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+})
+
+
+describe('#453 前置日期校验不绕过明细形状守卫', () => {
+  beforeEach(() => vi.clearAllMocks())
+  it.each([null, undefined, 1, 'bad'])('采购入库非法明细 %s 保持 INVALID_PARAMS，不执行 SQL', async (item) => {
+    await expect(receiveSupplyChainPurchaseOrder(SESSION, { supplyChainLocationId: 'HQ', purchaseOrderId: 'CG', items: [item] } as never)).rejects.toThrow('INVALID_PARAMS: 供应链采购入库明细格式不正确')
+    expect(db.execute).not.toHaveBeenCalled()
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+})
+
+describe('#270 business 同步和空映射', () => {
+  it('business 热路径无漂移也拒绝撞值，且不进入业务事务', async () => {
+    vi.clearAllMocks()
+    vi.mocked(db.execute).mockResolvedValue([{ drifted: false, collided_id: 'COLLIDED-HQ' }] as never)
+    await expect(createReturnForRestock(SESSION, {
+      sourceOrgNodeId: 'S1', targetOrgNodeId: 'M1', items: [{ lotId: 1, quantity: 1 }],
+    } as never)).rejects.toThrow('LOCATION_ID_AMBIGUOUS: 库存主体标识 COLLIDED-HQ')
+    expect(db.execute).toHaveBeenCalledTimes(1)
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+  it('原始行的空组织映射不能作为成功 Location 返回', async () => {
+    vi.clearAllMocks()
+    vi.mocked(db.execute).mockResolvedValue([{ drifted: false, collided_id: null }] as never)
+    const txExecute = vi.fn().mockResolvedValue([{
+      location_id: 'S1', org_node_id: null, location_type: '门店', name: '门店', is_active: true,
+    }])
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
+      execute: initializedCutoverExecutor(txExecute),
+    } as never))
+    await expect(createReturnForRestock(SESSION, {
+      sourceOrgNodeId: 'S1', targetOrgNodeId: 'M1', items: [{ lotId: 1, quantity: 1 }],
+    } as never)).rejects.toThrow('LOCATION_MAPPING_MISSING')
+    expect(txExecute.mock.calls.map(([q]) => renderSql(q)).join('\n')).not.toContain('inventory_stock_lots')
+  })
+})
+
+describe('退货预留消费加固（#260）', () => {
+  beforeEach(() => vi.resetAllMocks())
+  const reservation = (quantity = '2', fulfilled_quantity = '0', released_quantity = '0') =>
+    ({ id: '77', quantity, fulfilled_quantity, released_quantity })
+
+  function mockApproval(reservations: ReturnType<typeof reservation>[], quantity = '2', updated = 1, docType = '院退货') {
+    vi.mocked(db.execute).mockResolvedValue([{ drifted: false }] as never)
+    const execute = vi.fn(initializedCutoverExecutor(async (query) => {
+      const sql = renderSql(query)
+      const params = sqlParams(query)
+      if (sql.includes('FROM inventory_docs') && sql.includes('FOR UPDATE')) return [{
+        id: 'RETURN-1', doc_type: docType, status: '待审批',
+        source_org_node_id: 'S1', target_org_node_id: 'M1', market_id: 'M1',
+      }]
+      if (sql.includes('FROM inventory_locations')) return [{
+        location_id: params[0], org_node_id: params[0], name: params[0],
+        location_type: params[0] === 'S1' ? '门店' : '市场', parent_location_id: 'HQ', is_active: true,
+      }]
+      if (sql.includes('FROM inventory_doc_items')) return [{
+        ...storeRequestItemRow(), id: '101', doc_id: 'RETURN-1', lot_id: '10', quantity,
+      }]
+      if (sql.includes('FROM inventory_stock_reservations')) return reservations
+      if (sql.includes('UPDATE inventory_stock_reservations')) return Array.from({ length: updated }, () => ({ id: '77' }))
+      if (sql.includes('FROM inventory_stock_lots')) return [{
+        ...shipmentSourceLotRow(), id: params[0], location_id: params[1], quantity_on_hand: '10',
+      }]
+      if (sql.includes('FROM inventory_skus')) return [marketSkuRow('SKU-1')]
+      if (sql.includes('INSERT INTO inventory_stock_lots')) return [{ id: '20' }]
+      if (sql.includes('INSERT INTO inventory_doc_items')) return [{ id: '201' }]
+      if (sql.includes('COUNT(')) return [{ count: '0' }]
+      return []
+    }))
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({ execute } as never))
+    return execute
+  }
+
+  it.each([
+    ['少扣', [reservation('3')], '不一致'],
+    ['超扣', [reservation('1')], '不一致'],
+    ['零条', [], '已失效'],
+    ['多条', [reservation(), { ...reservation(), id: '78' }], '不唯一'],
+  ])('%s fail-closed，不消费预留/库存', async (_, reservations, message) => {
+    const execute = mockApproval(reservations)
+    await expect(approveReturnForRestock(SESSION, { returnDocId: 'RETURN-1' })).rejects.toThrow(message)
+    const calls = execute.mock.calls.map(([query]) => renderSql(query))
+    expect(calls.some((sql) => sql.includes('UPDATE inventory_stock_reservations'))).toBe(false)
+    expect(calls.some((sql) => sql.includes('INSERT INTO inventory_movements'))).toBe(false)
+  })
+
+  it.each([
+    ['正常', reservation(), '2'],
+    ['保留历史履约和释放', reservation('5', '1', '2'), '2'],
+    ['小数剩余量', reservation('0.30', '0.10', '0.10'), '0.10'],
+  ])('%s：累加履约且只消费唯一主键', async (_, row, quantity) => {
+    const execute = mockApproval([row], quantity)
+    await approveReturnForRestock(SESSION, { returnDocId: 'RETURN-1' })
+    const update = execute.mock.calls.find(([query]) => renderSql(query).includes('UPDATE inventory_stock_reservations'))![0]
+    const sql = renderSql(update)
+    expect(sql).toContain('fulfilled_quantity = fulfilled_quantity +')
+    expect(sql).toContain('WHERE id =')
+    expect(sql).toContain('RETURNING id')
+    expect(sql).not.toContain('released_quantity =')
+    expect(sqlParams(update)).toEqual([quantity === '0.10' ? '0.1' : '2', 77])
+  })
+
+  it.each([0, 2])('更新返回 %s 行必须冲突并回滚事务', async (updated) => {
+    mockApproval([reservation()], '2', updated)
+    await expect(approveReturnForRestock(SESSION, { returnDocId: 'RETURN-1' })).rejects.toThrow('CONFLICT: 退货库存预留已被其他操作处理')
+  })
+
+  it('同型市场退货也拒少扣', async () => {
+    mockApproval([reservation('3')], '2', 1, '市场退货')
+    await expect(approveReturnForRestock(SESSION, { returnDocId: 'RETURN-1' })).rejects.toThrow('不一致')
   })
 })

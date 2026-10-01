@@ -4,6 +4,7 @@
 //   - 移除：客户分配 / 备注保存 / 储值卡余额 / 持卡勾选 + 创建服务单
 //   - 保留：订单详情跳转（只读浏览）
 import { callStaffApi } from '../../utils/cloud';
+import { isInactiveScopeQuery } from '../../utils/mgmt-scope';
 import { isManagementMode } from '../../utils/role';
 import { formatAmount, formatCount } from '../../utils/number';
 import { formatDateTime, formatDate, ORDER_TYPE_LABEL } from '../../utils/formatters';
@@ -272,6 +273,8 @@ Page({
     scopeType: 'all' as ScopeType,
     scopeId: null as string | null,
     scopeName: '' as string,
+    // 门店组织节点已停用（#400）：本页接口不滤停用门店、照常出数，只在范围标签上标注
+    scopeInactive: false,
     // Tab 1: 日历
     calendarYear: 0,
     calendarMonth: 0,
@@ -332,6 +335,7 @@ Page({
       scopeType,
       scopeId,
       scopeName,
+      scopeInactive: isInactiveScopeQuery(options),
       calendarYear: now.getFullYear(),
       calendarMonth: now.getMonth() + 1,
     });

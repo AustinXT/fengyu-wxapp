@@ -181,8 +181,11 @@
 | `amount_tier_min` | numeric(10,2) | 金额阶段下限（含） |
 | `amount_tier_max` | numeric(10,2) \| null | 金额阶段上限（不含；null 表示无上限） |
 | `commission_rate` | numeric(5,4) | 提成比例（如 0.08 = 8%） |
+| `price_threshold` | numeric(10,2) \| null | 划卡单价阈值（#379，2026-09-18 会议拍板）：仅服务单的自销自耗 / 他销自耗行可配，默认 100、按市场逐行改；null = 不启用 |
 
 > UNIQUE 约束：`(org_id, order_type, role_type, sales_category, amount_tier_min)`
+>
+> **划卡单价阈值（#379）**：服务提成的消耗部分 = max(单次实价, 阈值) × 次数 × 分配比例 × 提成比例；赠送（单价 0）同样按阈值计；手工费照常叠加；金额阶段仍按真实「单价 × 次数」匹配；阈值作用于单价，多人按比例拆分时合计等于单人保底额。只对上线后计算/保存的提成生效，不回溯已落库提成。
 
 ### 2.8 sale_orders（订单主表）
 
@@ -438,6 +441,12 @@
 > **约束**: `UNIQUE(sale_item_id, employee_id) WHERE is_void = false`
 >
 > **索引**: `INDEX(employee_id)`
+
+### 2.10.1 sale_payment_item_allocations（现行回款级营业额分配）
+
+> **人数规则（#475，2026-09-30）**：每笔回款按 `(sale_item_id, role_type)` 建立独立分配池，池内可分配给任意数量的不同员工，不设固定人数上限；同一员工在同池只能出现一次，池内分配比例合计不得超过 100%。同 SKU 的多个销售明细实例须逐项保存和回显。员工端、管理后台及各自保存接口遵循同一规则。2026-03-24 会议纪要与早期适配计划中的「最多 3 人」已由 #475 取代；服务提成人数规则不受此变更影响。
+>
+> 本表以 `sale_payment_item_receipt_id` 关联逐项实收记录，活动行唯一键为 `(sale_payment_item_receipt_id, employee_id, role_type) WHERE is_void = false`；上节 `sale_allocations` 是旧订单级表，其 `(sale_item_id, employee_id)` 唯一约束不适用于本表。
 
 ### 2.11 service_orders（服务单主表）
 

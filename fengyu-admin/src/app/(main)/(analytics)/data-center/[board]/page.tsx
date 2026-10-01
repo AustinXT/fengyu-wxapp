@@ -1,47 +1,34 @@
 import type { ComponentType } from "react"
 import { notFound, redirect } from "next/navigation"
 import { getDataCenterScopeOptions } from "@/actions/data-center/shared"
-import {
-  DATA_CENTER_BOARD_LABELS,
-  firstQueryValue,
-  hasRepeatedQueryKey,
-  parseBoard,
-  parseScope,
-  singleValueQuery,
-  type DataCenterTab,
-} from "@/lib/data-center/params"
-import { resolveDefaultDataCenterScope } from "@/lib/data-center/scope-options"
-import type { DataCenterScope } from "@/lib/data-center/types"
-import { Card, CardContent } from "@/components/ui/card"
+import { DATA_CENTER_BOARD_LABELS, parseBoard, type DataCenterTab } from "@/lib/data-center/params"
+import { resolveDataCenterEntry } from "@/lib/data-center/entry"
 import { ScopeTimeFilter } from "../_components/scope-time-filter"
+import { ScopeEmptyState } from "../_components/scope-empty-state"
 import { SalesBoard } from "../_components/sales/sales-board"
 import { CustomerBoard } from "../_components/customer/customer-board"
 import { EfficiencyBoard } from "../_components/efficiency/efficiency-board"
 import { ProductBoard } from "../_components/product/product-board"
+import { loadDataStartsSafely } from "../_components/load-data-starts"
+import type { BoardPageProps } from "../_components/board-props"
 
 export const dynamic = "force-dynamic"
+
+/**
+ * 需要数据起点提示的板块（#289）。客量板的指标分子来自交易（款项最早 2026-07-03、服务单 07-08）、
+ * 分母来自会员档案（回溯到 2022-08），跨割点的区间整块失真，按整块板提示。
+ */
+const DATA_START_BOARDS: ReadonlySet<DataCenterTab> = new Set<DataCenterTab>(["customer"])
 
 /**
  * 查表而非三元：`Record<DataCenterTab, …>` 让新增板块时漏配在 tsc 就报错。
  * 三元写法的 default 分支会把漏配的板块静默渲染成销售，和 parseBoard 想堵的是同一类洞。
  */
-const BOARD_COMPONENTS: Record<DataCenterTab, ComponentType> = {
+const BOARD_COMPONENTS: Record<DataCenterTab, ComponentType<BoardPageProps>> = {
   sales: SalesBoard,
   customer: CustomerBoard,
   efficiency: EfficiencyBoard,
   product: ProductBoard,
-}
-
-/**
- * 默认 scope 必须是「redirect 后 parseScope 还认得出」的具体值，否则下一跳又回落 'all'、
- * needsDefaultScope 再次为真 —— 无限重定向，浏览器直接转死。
- *
- * `resolveDefaultDataCenterScope` 的契约本就保证非总部只会给 authorized/store（storeId 是 DB uuid），
- * 这里显式校验一次，把「依赖另一个文件的隐式契约」变成「不满足就降级成空态」。
- */
-function isUsableDefaultScope(scope: DataCenterScope | null): scope is Exclude<DataCenterScope, { type: 'all' }> {
-  if (scope === null || scope.type === "all") return false
-  return scope.type === "authorized" || Boolean(scope.id)
 }
 
 /**
@@ -69,46 +56,25 @@ export default async function Page({
   const query = await searchParams
   const scopeOptions = await getDataCenterScopeOptions()
 
-  // 非总部账号 + URL 无有效 scope → 落到默认 scope（redirect 一次，板块挂载时 URL 已具体）
-  const rawScope = parseScope({
-    scope: firstQueryValue(query.scope),
-    scopeId: firstQueryValue(query.scopeId),
-  })
-  const needsDefaultScope = rawScope.type === "all" && scopeOptions.topLevel !== "all"
-  const defaultScope = resolveDefaultDataCenterScope(scopeOptions)
-  const usableDefaultScope = isUsableDefaultScope(defaultScope) ? defaultScope : null
-  const noViewableScope = scopeOptions.topLevel !== "all" && usableDefaultScope === null
-  if (needsDefaultScope && usableDefaultScope) {
-    const next = singleValueQuery(query, ["scope", "scopeId"])
-    next.set("scope", usableDefaultScope.type)
-    if (usableDefaultScope.type === "market" || usableDefaultScope.type === "store") {
-      next.set("scopeId", usableDefaultScope.id)
-    }
-    redirect(`/data-center/${board}?${next.toString()}`)
-  }
-
-  // 走到这里说明 URL 的 scope 已可用，但重复 key（?scope=store&scope=all）会让服务端按首值放行、
-  // 板块组件按末值取数被 validateScope 拒成「数据加载失败」。先规范化成单值，让两边看同一份 query。
-  // 规范化后不再有数组，不会二次进入本分支。
-  if (hasRepeatedQueryKey(query)) {
-    const qs = singleValueQuery(query).toString()
-    redirect(`/data-center/${board}${qs ? `?${qs}` : ""}`)
-  }
+  // 默认 scope 补齐 + 重复 key 规范化（入口控制流与经营明细报表页共用，见 lib/data-center/entry.ts）。
+  // 遗留的 `tab` 参数一并剔除：板块已由路径承载。
+  const entry = resolveDataCenterEntry(`/data-center/${board}`, query, scopeOptions, ["tab"])
+  if (entry.kind === "redirect") redirect(entry.url)
+  // 无可查看范围 / 选中已停用门店（#293）：渲染空态、不挂板块，板块内的取数与导出都不会发生。
+  const { noViewableScope, inactiveStore, defaultScopeHref } = entry
 
   const Board = BOARD_COMPONENTS[board]
+  const showBoard = !(noViewableScope || inactiveStore)
+  const dataStarts = showBoard && DATA_START_BOARDS.has(board) ? await loadDataStartsSafely() : null
 
   return (
     <div className="flex flex-col gap-4">
       <h1 className="text-xl font-semibold text-[var(--foreground)]">{DATA_CENTER_BOARD_LABELS[board]}</h1>
       <ScopeTimeFilter scopeOptions={scopeOptions} />
-      {noViewableScope ? (
-        <Card>
-          <CardContent className="p-8 text-center text-sm text-[var(--muted-foreground)]">
-            当前账号暂无可查看的数据范围
-          </CardContent>
-        </Card>
+      {showBoard ? (
+        <Board scopeOptions={scopeOptions} dataStarts={dataStarts} />
       ) : (
-        <Board />
+        <ScopeEmptyState inactiveStore={inactiveStore} defaultScopeHref={defaultScopeHref} />
       )}
     </div>
   )

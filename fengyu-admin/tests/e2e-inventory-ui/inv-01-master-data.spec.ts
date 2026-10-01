@@ -34,6 +34,7 @@ const STAMP = Date.now().toString().slice(-8)
 const SUPPLIER_NAME = `${NS}-供应商-${STAMP}`
 const SKU_SUPPLY_NAME = `${NS}-供应链品-${STAMP}`
 const SKU_SELF_NAME = `${NS}-自采品-${STAMP}`
+const SKU_MK_DEFAULT_NAME = `${NS}-市场默认来源品-${STAMP}`
 
 /** 说明.md §1.5 算例：核算价 4000 × 市场折扣 25% = 市场进货价 1000 */
 const ACCOUNTING_PRICE = 4000
@@ -348,4 +349,57 @@ test('INV-01：基础档案建档 + 六价体系 + 公式价校验', async ({ br
     console.log(JSON.stringify(uxFindings, null, 2))
   }
   expect(functional, `INV-01 功能失败项:\n${JSON.stringify(functional, null, 2)}`).toHaveLength(0)
+})
+
+/**
+ * #355：只有 `market_sku_manage` 的市场库存财务**不切来源**直接新建，必须成功。
+ * 改前 `emptyForm` 把来源写死「供应链」：下拉里没有这一项、原生 select 显示「市场自采」，
+ * 表单 state 却是「供应链」—— 归属市场被隐藏，提交被服务端以缺供应链资料权限拒绝。
+ * 与上面那条 ADM 主链互不依赖，也不写 ctx（后续 spec 不消费这条 SKU）。
+ */
+test('INV-01b：市场财务不切来源直接新建，默认市场自采 + 本市场（#355）', async ({ browser }) => {
+  const verdicts: Verdict[] = []
+  const ctx = await browser.newContext()
+  const page = await ctx.newPage()
+  page.on('console', (m) => { if (m.type() === 'error') console.log(`[browser-err] ${m.text()}`) })
+
+  try {
+    await login(page, INVT_ACCOUNTS.MK.phone, INVT_PASS)
+    await page.goto(`${BASE}/inventory/skus`)
+    await page.waitForLoadState('networkidle')
+    await page.getByRole('button', { name: /新建/ }).first().click()
+    const dialog = page.getByRole('dialog')
+    await expect(dialog.getByText('新建库存商品')).toBeVisible({ timeout: 10_000 })
+    const field = (labelRe: RegExp) => dialog.locator('label').filter({ hasText: labelRe }).first()
+
+    // 显示值必须与表单 state 一致：只读下拉当前值，不去 selectOption。
+    // ⚠️ 这两条改前也会通过（原生 select 显示首项），锁住 #355 的是后面的归属市场落定与落库断言。
+    const sourceValue = await field(/^来源/).locator('select').inputValue()
+    recordVerdict(verdicts, '#355: 来源初值 = 市场自采（不含供应链选项）', sourceValue === '市场自采', sourceValue)
+    const hasSupplyOption = await field(/^来源/).locator('option[value="供应链"]').count()
+    recordVerdict(verdicts, '#355: 来源下拉不含「供应链」', hasSupplyOption === 0, `count=${hasSupplyOption}`)
+
+    // 市场财务的 scope 只有本市场 → 唯一候选自动落定（#189），不做任何选择
+    const owner = field(/^归属市场/).locator('[data-fixed-subject]')
+    await expect(owner).toBeVisible({ timeout: 20_000 })
+    await expect(owner).toContainText(TOPO.MARKET_NAME)
+
+    await field(/^产品名称/).locator('input').fill(SKU_MK_DEFAULT_NAME)
+    await dialog.getByRole('button', { name: /^保存|创建|确定$/ }).last().click()
+    await expect(page.getByText(/库存商品已创建/)).toBeVisible({ timeout: 15_000 })
+
+    const created = psql(
+      `SELECT source_type || '|' || COALESCE(owner_market_id,'')
+         FROM inventory_skus WHERE product_name = ${sqlStr(SKU_MK_DEFAULT_NAME)}`,
+    )
+    const [source, ownerMarket] = created.split('|')
+    recordVerdict(verdicts, '#355: 落库 source_type = 市场自采', source === '市场自采', created)
+    recordVerdict(verdicts, `#355: 落库归属市场 = ${TOPO.MARKET_NAME}`, ownerMarket === TOPO.MARKET, ownerMarket)
+  } finally {
+    await ctx.close()
+    summarize(1, verdicts)
+  }
+
+  const failed = verdicts.filter((v) => v.verdict === 'FAIL')
+  expect(failed, `INV-01b 失败项:\n${JSON.stringify(failed, null, 2)}`).toHaveLength(0)
 })

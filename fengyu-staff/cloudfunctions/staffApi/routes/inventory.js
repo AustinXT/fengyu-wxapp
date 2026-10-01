@@ -68,12 +68,17 @@ const STAFF_VISIBLE_DOC_TYPES = new Set([
   '分院库存盘点',
   '期初库存',
 ])
+/**
+ * #350：`院顾客产品出库` 已移出 —— 顾客出库必须绑定销售单，只能由提货服务产生
+ * （本端 `order.createPickup`、admin `createPickupRecord`，两者直写 GCK，不经本白名单）。
+ * 通用入口建出的 GCK 不回写 picked_up_quantity、不写 pickup_records，会与提货重复扣库存。
+ * admin `INVENTORY_GENERIC_DOC_TYPES` 同步移除，两端取舍由 cross-end-inventory-snapshot 钉住。
+ */
 const STAFF_CREATE_DOC_TYPES = new Set([
   '门店报货',
   '分院调货出库',
   '院顾客退货',
   '院退货',
-  '院顾客产品出库',
   '院产品报损',
   '分院库存盘点',
 ])
@@ -173,6 +178,36 @@ function assertQty(quantity) {
   const n = Number(quantity)
   if (!Number.isFinite(n) || n <= 0) throw new Error('INVALID_PARAMS: 明细数量必须大于0')
   return n
+}
+
+/**
+ * 建单明细数量规则（#351）：盘点单的数量是**实盘数**，0 = 账上有货、货架上一件没有，
+ * 正是最该记下的盘亏，必须能录；其余类型仍要求 > 0。
+ *
+ * 留空（null / undefined / 空串）一律不合法：`Number(null)`、`Number('')` 都是 0，
+ * 不先拦就会把「没填」当成「实盘 0」入库，凭空多出一笔盘亏。同理只收 number / string
+ * （`false`、`[0]` 经 Number() 也是 0），且最多两位小数、不超过 numeric(12,2) 上限：
+ * 列是 numeric(12,2)，0.004 落库会被舍成 0.00 —— 盘点单上就是一笔凭空的「实盘 0」。
+ *
+ * ⚠️ 函数体与 admin `lib/inventory/engine.ts` 的同名函数**逐字一致**，由
+ * `cross-end-inventory-snapshot.test.js` §7 整段比对；DB 侧兜底是 trigger
+ * `inventory_assert_doc_item_quantity`（非盘点类型 quantity <= 0 拒绝）。
+ * `assertQty` 仍用于读库里已有的非盘点明细（院退货审批），不受本规则影响。
+ */
+function isValidDocItemQuantity(docType, quantity) {
+  if (typeof quantity !== 'number' && typeof quantity !== 'string') return false
+  if (typeof quantity === 'string' && quantity.trim() === '') return false
+  const n = Number(quantity)
+  if (!Number.isFinite(n) || n > 9999999999.99 || Number(n.toFixed(2)) !== n) return false
+  return n > 0 || (n === 0 && STOCKTAKE_DOC_TYPES.has(docType))
+}
+
+function assertDocItemQty(docType, quantity) {
+  if (isValidDocItemQuantity(docType, quantity)) return Number(quantity)
+  if (STOCKTAKE_DOC_TYPES.has(docType)) {
+    throw new Error('INVALID_PARAMS: 请填写实盘数（0 或正数，最多两位小数；货架上没有就填 0）')
+  }
+  throw new Error('INVALID_PARAMS: 明细数量必须大于0')
 }
 
 function assertNoStaffMoneyFields(payload) {
@@ -357,6 +392,7 @@ async function syncInventoryLocations(client = null) {
            OR loc.location_type IS DISTINCT FROM o.type::text
            OR loc.name IS DISTINCT FROM o.name
            OR loc.org_node_id IS DISTINCT FROM o.id
+           OR loc.store_id IS NOT NULL
            OR loc.parent_location_id IS DISTINCT FROM o.parent_id
            OR loc.is_active IS DISTINCT FROM o.is_active)
       UNION ALL
@@ -371,37 +407,48 @@ async function syncInventoryLocations(client = null) {
          OR loc.store_id IS DISTINCT FROM s.store_id
          OR loc.parent_location_id IS DISTINCT FROM o.parent_id
          OR loc.is_active IS DISTINCT FROM (COALESCE(o.is_active, false) AND NOT s.is_closed)
-    ) AS drifted
+    ) AS drifted,
+    (SELECT s.store_id
+       FROM stores s
+       JOIN org_nodes o ON o.id = s.store_id
+      WHERE o.type IN ('总部','市场')
+      ORDER BY s.store_id
+      LIMIT 1) AS collided_id
   `, [])
+  const collidedId = probeRows?.[0]?.collided_id
+  if (collidedId != null) {
+    throw new Error(`CONFLICT: LOCATION_ID_AMBIGUOUS: 库存主体标识 ${collidedId} 与总部/市场组织节点冲突`)
+  }
   if (probeRows?.[0]?.drifted === false) return
   await q.query(`
-    INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, parent_location_id, is_active)
-    SELECT id, type, name, id, parent_id, is_active
-      FROM org_nodes
-     WHERE type IN ('总部','市场')
-    ON CONFLICT (location_id) DO UPDATE
-      SET location_type = EXCLUDED.location_type,
-          name = EXCLUDED.name,
-          org_node_id = EXCLUDED.org_node_id,
-          parent_location_id = EXCLUDED.parent_location_id,
-          is_active = EXCLUDED.is_active,
-          updated_at = NOW()
-  `)
+      INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, parent_location_id, is_active)
+      SELECT id, type, name, id, parent_id, is_active
+        FROM org_nodes
+       WHERE type IN ('总部','市场')
+      ON CONFLICT (location_id) DO UPDATE
+        SET location_type = EXCLUDED.location_type,
+            name = EXCLUDED.name,
+            org_node_id = EXCLUDED.org_node_id,
+            store_id = NULL,
+            parent_location_id = EXCLUDED.parent_location_id,
+            is_active = EXCLUDED.is_active,
+            updated_at = NOW()
+    `)
   await q.query(`
-    INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, store_id, parent_location_id, is_active)
-    SELECT s.store_id, '门店', s.store_name, s.org_node_id, s.store_id, o.parent_id,
-           COALESCE(o.is_active, false) AND NOT s.is_closed
-      FROM stores s
-      LEFT JOIN org_nodes o ON o.id = s.org_node_id
-    ON CONFLICT (location_id) DO UPDATE
-      SET location_type = EXCLUDED.location_type,
-          name = EXCLUDED.name,
-          org_node_id = EXCLUDED.org_node_id,
-          store_id = EXCLUDED.store_id,
-          parent_location_id = EXCLUDED.parent_location_id,
-          is_active = EXCLUDED.is_active,
-          updated_at = NOW()
-  `)
+      INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, store_id, parent_location_id, is_active)
+      SELECT s.store_id, '门店', s.store_name, s.org_node_id, s.store_id, o.parent_id,
+             COALESCE(o.is_active, false) AND NOT s.is_closed
+        FROM stores s
+        LEFT JOIN org_nodes o ON o.id = s.org_node_id
+      ON CONFLICT (location_id) DO UPDATE
+        SET location_type = EXCLUDED.location_type,
+            name = EXCLUDED.name,
+            org_node_id = EXCLUDED.org_node_id,
+            store_id = EXCLUDED.store_id,
+            parent_location_id = EXCLUDED.parent_location_id,
+            is_active = EXCLUDED.is_active,
+            updated_at = NOW()
+    `)
 }
 
 function scopedInventoryLocationIds(auth) {
@@ -542,31 +589,10 @@ async function ensureInventoryLocation(locationId, requiredType = null, client =
   if (requiredType && row.location_type !== requiredType) {
     throw new Error(`INVALID_PARAMS: 库存主体必须是${requiredType}`)
   }
-  /**
-   * ⚠️ 已知缺陷，**本次刻意不改**（#251 评审提出，范围外）：
-   *
-   * `org_node_id` 可空（`db/schema/inventory.ts` 无 `.notNull()`，来源 `stores.org_node_id`
-   * 同样可空）。这类行只能靠 `location_id = $1` 入选，而下面的 `|| locationId` 会把
-   * **入参的 store_id 当组织节点 id 返回**；返回值被 `resolveStaffCreateLocations`
-   * 取作 `sourceOrgNodeId` / `targetOrgNodeId` 写进 `inventory_docs` —— 那两列对
-   * `inventory_locations.org_node_id` 有 FK（`0039` 迁移），落库会被 FK 挡下、
-   * 报一条指不到真正病根的约束错。正解是 fail-loud。
-   *
-   *（补了撞值守卫之后，「把错误主体钉进单据」那一支已**不可达**：FK 要放行就得存在另一行
-   * `org_node_id = $1`，而那恰好就是 `rows.length === 2` → CONFLICT 的条件。
-   * 所以本函数现在只会走出「FK 挡下」这一支。）
-   *
-   * 不在本 PR 改的原因：现网 dev/prod 实测 `org_node_id` 为空的主体行均为 **0**，
-   * 属理论缺陷；而改成抛错会打红 13 个既有用例（它们的 mock 行压根不带 `org_node_id`，
-   * 一直靠这个兜底跑过）。修它应当连同那批 mock 的保真度一起做，另开 issue。
-   *
-   * （`location_id` 那侧的兜底则是纯死代码：它是主键，不可能为空 —— 一并留待该 issue 清理。）
-   */
-  return {
-    ...row,
-    location_id: row.location_id || locationId,
-    org_node_id: row.org_node_id || locationId,
+  if (!row.org_node_id) {
+    throw new Error('INVALID_STATE: LOCATION_MAPPING_MISSING: 库存主体缺少组织映射，请联系管理员')
   }
+  return row
 }
 
 async function ensureStoreLocation(locationId, client = null) {
@@ -631,7 +657,6 @@ async function resolveStaffCreateLocations(ctx, payload) {
       targetEndpointId = targetEndpointId || fallbackStoreId
       break
     case '院退货':
-    case '院顾客产品出库':
     case '院产品报损':
       sourceEndpointId = sourceEndpointId || fallbackStoreId
       targetEndpointId = null
@@ -654,10 +679,10 @@ async function resolveStaffCreateLocations(ctx, payload) {
    * 一旦 `STAFF_CREATE_DOC_TYPES` 加进一个两端都非空、方向为入库的类型，
    * 就会拿 source 鉴权却往无权的 target 加库存 —— 正是 #200 在 admin 修掉的那个洞。
    *
-   * 7 个可建类型里只有「院顾客退货」是入库类（已逐一核对 INBOUND/OUTBOUND 归属）。
+   * 6 个可建类型（#350 起）里只有「院顾客退货」是入库类（已逐一核对 INBOUND/OUTBOUND 归属）。
    */
   /**
-   * ⚠️ 这里隐式依赖「非 INBOUND 即由出库方发起」。对 staff 的 7 个可建类型成立
+   * ⚠️ 这里隐式依赖「非 INBOUND 即由出库方发起」。对 staff 的 6 个可建类型成立
    * （只有「院顾客退货」是 INBOUND），但**不要**把它当成通用的方向判据推广出去：
    * `OUTBOUND_DOC_TYPES` 并非全量方向枚举（例如「分院调货出库/入库」两者都不在里面），
    * 它实际扮演的是「审批方向分类器」。新增可建类型时必须回来核对这条三元。
@@ -768,16 +793,30 @@ async function lockInventoryLotById(client, lotId, locationId) {
   }
 }
 
-async function inventorySkuSnapshot(client, skuId) {
+/**
+ * 不带批次的明细（门店报货 / 门店盘点）取 SKU 快照，并校验 SKU 归属——非供应链 SKU 只能在
+ * 归属市场（及其门店）使用，与 admin `createDoc` 的 `assertSkuIdAvailableAtLocation` 同一道闸。
+ * 两个候选接口（reportableSkuOptions / stocktakeSkuOptions）与这道闸同谓词
+ * （供应链 OR 归属本店所属市场），候选能选到的建单一定收；抓包直传别的市场自采 SKU 时建单拦下。
+ * `locationId` 契约同 `assertSkuAvailableAtLocation`：必须是 inventory_locations.location_id。
+ * `reportableOnly`（门店报货）：同时要求 is_reportable，与 admin 门店报货 `loadSku(tx, skuId, true)`
+ * 同口径——候选只出可报货 SKU，直调接口也不能把不可报货的 SKU 写进报货单（下游市场汇总会拒）。
+ */
+async function inventorySkuSnapshot(client, skuId, locationId, { reportableOnly = false } = {}) {
   const res = await client.query(
-    `SELECT sku_id, product_name, spec_name, supplier, product_series
+    `SELECT sku_id, product_name, spec_name, supplier, product_series, source_type, owner_market_id
        FROM inventory_skus
-      WHERE sku_id = $1 AND is_active = true
+      WHERE sku_id = $1 AND is_active = true${reportableOnly ? ' AND is_reportable = true' : ''}
       LIMIT 1`,
     [skuId],
   )
   const r = res.rows[0]
-  if (!r) throw new Error('NOT_FOUND: 库存 SKU 不存在或已停用')
+  if (!r) {
+    throw new Error(reportableOnly
+      ? 'NOT_FOUND: 库存 SKU 不存在、已停用或不可报货'
+      : 'NOT_FOUND: 库存 SKU 不存在或已停用')
+  }
+  await assertSkuAvailableAtLocation(client, r, locationId)
   return {
     skuId: r.sku_id,
     skuName: r.product_name,
@@ -800,6 +839,7 @@ async function inventorySkuSnapshot(client, skuId) {
  * 契约成立；新增调用点时务必沿用。
  */
 async function assertSkuAvailableAtLocation(client, sku, locationId) {
+  // source_type 是 NOT NULL（默认 供应链），`||` 兜底不可达，只为防御旧数据；判定与 admin 同义
   const sourceType = sku.source_type || '供应链'
   if (sourceType === '供应链') return
   const locationRes = await client.query(
@@ -875,7 +915,7 @@ async function ensureInventoryLotFromSku(client, locationId, item, trace, priceS
        market_actual_unit_price, store_standard_unit_price, store_unit_discount,
        store_actual_unit_price, source_doc_id
      )
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,0,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,0,$13,$14,$15,$16,$17,$18,$19,$20)
      ON CONFLICT (location_id, lot_key)
      DO UPDATE SET
        sku_name = EXCLUDED.sku_name,
@@ -1077,7 +1117,7 @@ async function stockList(ctx) {
     conditions.push('st.quantity_on_hand > 0')
   }
   if (keyword) {
-    const escaped = String(keyword).replace(/[%_]/g, '\\$&')
+    const escaped = String(keyword).replace(/[\\%_]/g, '\\$&')
     conditions.push(`(st.sku_id ILIKE $${idx} OR st.sku_name ILIKE $${idx} OR st.batch_no ILIKE $${idx} OR loc.name ILIKE $${idx})`)
     params.push(`%${escaped}%`)
     idx++
@@ -1153,12 +1193,13 @@ async function reportableSkuOptions(ctx) {
   const conditions = [
     'sku.is_active = true',
     'sku.is_reportable = true',
-    '(sku.owner_market_id IS NULL OR sku.owner_market_id = $2)',
+    // 与建单闸门 assertSkuAvailableAtLocation、admin listInventorySkus({ availableToMarketId }) 同义
+    "(sku.source_type = '供应链' OR sku.owner_market_id = $2)",
   ]
   const params = [sourceOrgNodeId, source.parent_location_id]
   let idx = 3
   if (keyword) {
-    const escaped = String(keyword).replace(/[%_]/g, '\\$&')
+    const escaped = String(keyword).replace(/[\\%_]/g, '\\$&')
     conditions.push(`(sku.sku_id ILIKE $${idx} OR sku.product_code ILIKE $${idx} OR sku.product_name ILIKE $${idx} OR sku.spec_name ILIKE $${idx})`)
     params.push(`%${escaped}%`)
     idx++
@@ -1167,11 +1208,11 @@ async function reportableSkuOptions(ctx) {
   const countConditions = [
     'sku.is_active = true',
     'sku.is_reportable = true',
-    '(sku.owner_market_id IS NULL OR sku.owner_market_id = $1)',
+    "(sku.source_type = '供应链' OR sku.owner_market_id = $1)",
   ]
   const countParams = [source.parent_location_id]
   if (keyword) {
-    const escaped = String(keyword).replace(/[%_]/g, '\\$&')
+    const escaped = String(keyword).replace(/[\\%_]/g, '\\$&')
     countConditions.push('(sku.sku_id ILIKE $2 OR sku.product_code ILIKE $2 OR sku.product_name ILIKE $2 OR sku.spec_name ILIKE $2)')
     countParams.push(`%${escaped}%`)
   }
@@ -1207,6 +1248,90 @@ async function reportableSkuOptions(ctx) {
       supplier: row.supplier || null,
       productSeries: row.product_series || null,
       stockReference: Number(row.stock_reference || 0),
+    })),
+    total: Number(countRows[0]?.cnt || 0),
+    page: Math.max(1, parseInt(page, 10) || 1),
+    pageSize: limit,
+  }
+  return ctx.result
+}
+
+/**
+ * 门店盘点可选 SKU（#352）。
+ *
+ * 与 reportableSkuOptions 的差别在口径：盘点要能盘到本店手上的任何货，不限 is_reportable
+ * （admin 盘点同样用全量 SKU 检索）。归属谓词与建单闸门 `assertSkuAvailableAtLocation`、
+ * admin `listInventorySkus({ availableToMarketId })` 逐字同义：供应链 SKU 或归属本店所属市场——
+ * 候选能选到的，createDoc 一定收；候选选不到的，createDoc 一定拒。
+ *
+ * 刻意**不下发账面数**：盘点是盲盘，录入时看到账面数就会照抄；账面数由 createDoc 在提交时记入
+ * stock_snapshot。本店有货的 SKU 排在前面，免得在全量目录里翻找。
+ */
+async function stocktakeSkuOptions(ctx) {
+  await requireStaffBound()(ctx, async () => {})
+  const {
+    locationId,
+    keyword,
+    page = 1,
+    pageSize = 50,
+  } = ctx.event.payload || {}
+
+  await syncInventoryLocations()
+  const sourceOrgNodeId = locationId || ctx.auth.effectiveStoreId
+  await assertInventoryWriteStoreScope(pg, ctx.auth, sourceOrgNodeId)
+  const source = await ensureStoreLocation(sourceOrgNodeId)
+  if (!source.parent_location_id) {
+    throw new Error('INVALID_STATE: 当前门店未关联市场，无法查询盘点 SKU')
+  }
+
+  const limit = Math.max(1, Math.min(100, parseInt(pageSize, 10) || 50))
+  const offset = (Math.max(1, parseInt(page, 10) || 1) - 1) * limit
+  // 主查询与 count 共用同一组条件与参数（$1 = 市场，$2 = 关键词），口径不会漂；
+  // 本店主体只在排序里用，放在最后一个参数。
+  const conditions = [
+    'sku.is_active = true',
+    "(sku.source_type = '供应链' OR sku.owner_market_id = $1)",
+  ]
+  const params = [source.parent_location_id]
+  if (keyword) {
+    // 反斜杠也要转义：ILIKE 默认转义符就是 \，结尾单个 \ 会让 PG 直接报错
+    const escaped = String(keyword).replace(/[\\%_]/g, '\\$&')
+    conditions.push('(sku.sku_id ILIKE $2 OR sku.product_code ILIKE $2 OR sku.product_name ILIKE $2 OR sku.spec_name ILIKE $2)')
+    params.push(`%${escaped}%`)
+  }
+  const whereSql = `WHERE ${conditions.join(' AND ')}`
+  const storeParamIndex = params.length + 1
+  const rows = await pg.query(
+    `SELECT sku.sku_id, sku.product_code, sku.product_name, sku.spec_name,
+            sku.supplier, sku.product_series,
+            EXISTS (
+              SELECT 1 FROM inventory_stock_lots lot
+               WHERE lot.sku_id = sku.sku_id
+                 AND lot.location_id = $${storeParamIndex}
+                 AND lot.quantity_on_hand > 0
+            ) AS in_stock
+       FROM inventory_skus sku
+       ${whereSql}
+   ORDER BY in_stock DESC, sku.product_name, sku.spec_name NULLS LAST, sku.sku_id
+      LIMIT ${limit} OFFSET ${offset}`,
+    [...params, source.location_id],
+  )
+  const countRows = await pg.query(
+    `SELECT COUNT(*)::int AS cnt
+       FROM inventory_skus sku
+       ${whereSql}`,
+    params,
+  )
+
+  ctx.result = {
+    items: rows.map((row) => ({
+      skuId: row.sku_id,
+      productCode: row.product_code,
+      skuName: row.product_name,
+      specName: row.spec_name || null,
+      supplier: row.supplier || null,
+      productSeries: row.product_series || null,
+      inStock: Boolean(row.in_stock),
     })),
     total: Number(countRows[0]?.cnt || 0),
     page: Math.max(1, parseInt(page, 10) || 1),
@@ -1366,7 +1491,7 @@ async function docList(ctx) {
     idx++
   }
   if (keyword) {
-    const escaped = String(keyword).replace(/[%_]/g, '\\$&')
+    const escaped = String(keyword).replace(/[\\%_]/g, '\\$&')
     conditions.push(`(d.id ILIKE $${idx} OR d.customer_name ILIKE $${idx} OR d.employee_name ILIKE $${idx} OR d.remark ILIKE $${idx})`)
     params.push(`%${escaped}%`)
     idx++
@@ -1435,6 +1560,7 @@ async function docDetail(ctx) {
             d.tracking_no, d.total_quantity, d.remark, d.audit_remark,
             d.confirmed_at, d.approved_at, d.rejected_at, d.created_at, d.updated_at,
             source_loc.name AS source_location_name, source_loc.location_type AS source_location_type,
+            source_loc.location_id AS source_store_loc_id,
             target_loc.name AS target_location_name, target_loc.location_type AS target_location_type
        FROM inventory_docs d
   LEFT JOIN inventory_locations source_loc ON source_loc.org_node_id = d.source_org_node_id
@@ -1467,6 +1593,8 @@ async function docDetail(ctx) {
     sourceOrgNodeId: r.source_org_node_id || null,
     sourceOrgNodeName: r.source_location_name || null,
     sourceOrgNodeType: r.source_location_type || null,
+    // 门店报货草稿（#348）：小程序据此判断「是不是当前门店的草稿」再给继续编辑 / 删除入口
+    sourceLocationId: r.source_store_loc_id || null,
     targetOrgNodeId: r.target_org_node_id || null,
     targetOrgNodeName: r.target_location_name || null,
     targetOrgNodeType: r.target_location_type || null,
@@ -1511,12 +1639,91 @@ async function docDetail(ctx) {
   return ctx.result
 }
 
+/**
+ * 门店报货草稿（#348）：锁住并校验一张本门店的门店报货草稿。与 admin `lockStoreReplenishmentDraft` 同口径：
+ * 非门店报货 NOT_FOUND；非草稿 INVALID_STATE（已删除 / 已提交分开提示）；换门店 INVALID_PARAMS；
+ * 带血缘 / 预留的只可能是存量异常单，一律 INVALID_STATE 交人工处理。
+ * `check` = 存草稿 / 提交时的额外校验（当前市场 + 打开草稿时的版本，版本**必填**）；删除不传（不比市场、不比版本）。
+ */
+async function lockStoreRequestDraft(client, draftId, sourceOrgNodeId, check = null) {
+  const { rows } = await client.query(
+    `SELECT id, doc_type, status, source_org_node_id, market_id,
+            to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS updated_at_iso
+       FROM inventory_docs
+      WHERE id = $1
+        AND doc_type = '门店报货'
+      FOR UPDATE`,
+    [draftId],
+  )
+  const draft = rows[0]
+  if (!draft || draft.doc_type !== '门店报货') throw new Error('NOT_FOUND: 门店报货草稿不存在')
+  if (draft.status !== '草稿') {
+    throw new Error(draft.status === '已取消'
+      ? 'INVALID_STATE: 该门店报货草稿已删除'
+      : 'INVALID_STATE: 门店报货已提交，不能再修改或删除')
+  }
+  if (sourceOrgNodeId !== undefined && draft.source_org_node_id !== sourceOrgNodeId) {
+    throw new Error('INVALID_PARAMS: 草稿的报货门店不能修改')
+  }
+  // 草稿存续期间门店改挂了别的市场：单头市场归属不会随状态更新重算（与 admin 同口径）；删除不受此限
+  if (check && draft.market_id !== check.marketId) {
+    throw new Error('INVALID_STATE: 门店已更换所属市场，请删除该草稿后重新报货')
+  }
+  // 草稿乐观锁（与 admin assertDraftUnchanged 同口径）：版本必填，缺了不能退化成「不校验」
+  if (check) {
+    const expectedUpdatedAt = check.expectedUpdatedAt
+    if (expectedUpdatedAt == null || expectedUpdatedAt === '') {
+      throw new Error('INVALID_PARAMS: 缺少草稿版本，请重新打开草稿后再保存')
+    }
+    const expected = Date.parse(expectedUpdatedAt)
+    if (Number.isNaN(expected)) throw new Error('INVALID_PARAMS: 草稿版本格式不正确')
+    if (!draft.updated_at_iso || Date.parse(draft.updated_at_iso) !== expected) {
+      throw new Error('CONFLICT: 草稿已被他人修改，请重新打开后再保存')
+    }
+  }
+  const linked = await client.query(
+    `SELECT (EXISTS (SELECT 1 FROM inventory_doc_links WHERE from_doc_id = $1 OR to_doc_id = $1)
+          OR EXISTS (SELECT 1 FROM inventory_stock_reservations WHERE request_doc_id = $1)) AS linked`,
+    [draftId],
+  )
+  if (linked.rows[0]?.linked) {
+    throw new Error('INVALID_STATE: 该草稿已有上下游关联，不能按草稿修改或删除，请联系管理员处理')
+  }
+  return draft
+}
+
+/**
+ * 建单 + 门店报货草稿（#348）共用一条写路径，明细校验只有一份：
+ * - `draft: true` → 单头状态「草稿」、不确认（仅门店报货）；草稿不进任何下游（admin 汇总 / 市场报货 / 分院配货只认已完成）
+ * - `draftId` → 在该草稿上原单号写入：明细整体重写；`draft: true` 仍是草稿，否则转「已完成」（提交，之后锁定）
+ * `updateDraft` / `submitDraft` 只是固定这两个参数的入口。
+ */
 async function createDoc(ctx) {
   await requireStaffBound()(ctx, async () => {})
   const payload = ctx.event.payload || {}
   const { docType, items = [] } = payload
   if (!isValidDocType(docType) || !isStaffCreateDocType(docType)) {
     throw new Error('INVALID_PARAMS: staff 端不支持创建该库存单据')
+  }
+  // draft 只收布尔：'true' / 1 这类真值若按 false 处理会静默落成不可逆的「已完成」
+  if (payload.draft !== undefined && payload.draft !== null && typeof payload.draft !== 'boolean') {
+    throw new Error('INVALID_PARAMS: 草稿参数格式不正确')
+  }
+  const asDraft = payload.draft === true
+  const draftId = payload.draftId == null ? null : String(payload.draftId).trim()
+  if (payload.draftId != null && !draftId) throw new Error('INVALID_PARAMS: 缺少草稿单号')
+  if ((asDraft || draftId) && docType !== '门店报货') {
+    throw new Error('INVALID_PARAMS: 只有门店报货支持草稿')
+  }
+  // 门店报货同一 SKU 只能一行（与 admin createStoreReplenishmentRequest 同文案）：两行同 SKU 的单
+  // 会让市场汇总 / 分院配货各算一遍，admin 继续编辑时也会被拒
+  if (docType === '门店报货' && Array.isArray(items)) {
+    const seenReportSkus = new Set()
+    for (const item of items) {
+      const skuId = String(item?.skuId || '').trim()
+      if (skuId && seenReportSkus.has(skuId)) throw new Error('INVALID_PARAMS: 同一 SKU 请合并为一条报货明细')
+      seenReportSkus.add(skuId)
+    }
   }
   if (!Array.isArray(items) || items.length === 0) throw new Error('INVALID_PARAMS: 至少需要一条明细')
   assertNoStaffMoneyFields(payload)
@@ -1545,12 +1752,12 @@ async function createDoc(ctx) {
       stocktakeSkuIds.push(skuId)
     }
   }
-  const status = defaultDocStatus(docType)
+  const status = asDraft ? '草稿' : defaultDocStatus(docType)
   // 同一批次的待审批退货需按稳定顺序锁库存，降低多明细并发提交的死锁概率。
   const orderedItems = docType === '院退货'
     ? [...items].sort((left, right) => Number(left.lotId) - Number(right.lotId))
     : items
-  const totalQuantity = orderedItems.reduce((acc, item) => acc + assertQty(item.quantity), 0)
+  const totalQuantity = orderedItems.reduce((acc, item) => acc + assertDocItemQty(docType, item.quantity), 0)
   const plan = movementPlan(docType, status)
   if (RECEIVE_REQUIRED_DOC_TYPES.has(docType) && !targetOrgNodeId) {
     throw new Error('INVALID_PARAMS: 待收货单据缺少接收主体')
@@ -1559,8 +1766,67 @@ async function createDoc(ctx) {
   if (plan?.role === 'target' && !targetOrgNodeId) throw new Error('INVALID_PARAMS: 入库类单据缺少入库主体')
   let docId
 
+  let updatedAt = null
   await pg.transaction(async (client) => {
     await assertWorkfineInventoryInitialized(client)
+    if (docType === '门店报货') {
+      // 市场归属在事务外按门店父级解析；这里在事务内对市场、门店两行取共享锁并复核（类型 / 启用 / 父级）：
+      // 解析与写入之间门店被闭店、市场被停用或门店被改挂都拒，且在本事务结束前挡住这些改动。
+      // 锁序固定「先市场、后门店」—— 与 0009 的 inventory_sync_location_from_store（门店增改时先 UPSERT
+      // 上级市场行、再 UPSERT 门店行）同向；按主键字典序取锁会在 store_id < market_id 时与它反向成环
+      // （关店 / 改名与报货并发即死锁）。inventory_sync_location_from_org_node 的多行写入都是「上级 → 自身」
+      // （如总部 → 市场），门店节点只写门店一行，从不「先门店后市场」地持有，不构成反向。
+      // ⚠️ 与 admin 库存写事务之间不成环靠的是事务首句 cutover 行锁（staff FOR KEY SHARE × admin FOR UPDATE 互斥，
+      // 两端库存写事务整体串行）：别把 assertWorkfineInventoryInitialized 改成无锁读取。
+      const lockEndpoint = async (locationId) => (await client.query(
+        `SELECT location_id, location_type, is_active, parent_location_id
+           FROM inventory_locations
+          WHERE location_id = $1
+          FOR SHARE`,
+        [locationId],
+      )).rows[0]
+      const marketRow = marketId ? await lockEndpoint(marketId) : null
+      const storeRow = await lockEndpoint(sourceLocationId)
+      if (!storeRow || !marketRow || storeRow.location_type !== '门店' || marketRow.location_type !== '市场') {
+        throw new Error('CONFLICT: 门店所属市场刚发生变化，请刷新后重试')
+      }
+      if (storeRow.is_active === false || marketRow.is_active === false) {
+        throw new Error('INVALID_STATE: 库存主体已停用')
+      }
+      if ((storeRow.parent_location_id || null) !== marketId) {
+        throw new Error('CONFLICT: 门店所属市场刚发生变化，请刷新后重试')
+      }
+    }
+    if (draftId) {
+      // 草稿没有血缘 / 预留 / 流水（lockStoreRequestDraft 已核对），明细整体重写；合计由明细 trigger 回填
+      // `|| null`：解析不出门店节点时按 null 比对（fail-closed），不能退化成「跳过门店核对」
+      await lockStoreRequestDraft(client, draftId, sourceOrgNodeId || null, {
+        marketId: marketId || null,
+        expectedUpdatedAt: payload.expectedUpdatedAt,
+      })
+      docId = draftId
+      await client.query('DELETE FROM inventory_doc_items WHERE doc_id = $1', [draftId])
+      await client.query(
+        `UPDATE inventory_docs
+            SET status = $2,
+                doc_date = $3,
+                total_quantity = $4,
+                remark = $5,
+                confirmed_by = $6,
+                confirmed_at = CASE WHEN $7::boolean THEN NOW() ELSE NULL END,
+                updated_at = NOW()
+          WHERE id = $1`,
+        [
+          draftId,
+          status,
+          payload.docDate || shanghaiToday(),
+          totalQuantity,
+          payload.remark || null,
+          status === '已完成' ? ctx.auth.staffWfId : null,
+          status === '已完成',
+        ],
+      )
+    } else {
     docId = await generateDocNo(client, docType)
     await client.query(
       `INSERT INTO inventory_docs (
@@ -1595,6 +1861,7 @@ async function createDoc(ctx) {
         marketId,
       ],
     )
+    }
     // 盘点单账面数：**一次 GROUP BY 取齐**，不逐行查。
     // 两个理由：① 少 N 次事务内往返，事务持有时间短；② 同一张单所有行的账面数取自
     // **同一个语句快照**（逐条 SELECT 在 READ COMMITTED 下各取各的快照，一张「账面 vs 实盘」
@@ -1617,7 +1884,7 @@ async function createDoc(ctx) {
     }
 
     for (const item of orderedItems) {
-      const qty = assertQty(item.quantity)
+      const qty = assertDocItemQty(docType, item.quantity)
       let lot = null
       let snapshot
       const shouldCaptureSourceLot =
@@ -1637,7 +1904,9 @@ async function createDoc(ctx) {
         snapshot = lot
       } else {
         if (!item.skuId) throw new Error('INVALID_PARAMS: 明细缺少库存 SKU')
-        snapshot = await inventorySkuSnapshot(client, item.skuId)
+        snapshot = await inventorySkuSnapshot(client, item.skuId, actingLocationId, {
+          reportableOnly: docType === '门店报货',
+        })
       }
       // 盘点单没有批次选择器，lot 恒为 null —— 账面数只能来自上面的汇总。
       // 一个批次都没有时 GROUP BY 不出行，落 0（不是 NULL）：账上就是 0，实盘有货即盘盈。
@@ -1673,8 +1942,11 @@ async function createDoc(ctx) {
           lot?.isGift ?? Boolean(item.isGift),
           qty,
           lot ? lot.quantityOnHand : bookQuantity,
-          item.requestQuantity || null,
-          item.fulfilledQuantity || null,
+          // 门店报货的需求量与 admin 同口径（= 数量），不收客户端值 —— 它参与市场汇总与分院配货的可配量（#348）
+          docType === '门店报货' ? qty : item.requestQuantity || null,
+          // 已收 / 已履约量只由服务端收货路径回写（#358：收货量 = 发货量 − fulfilled），建单不收客户端值；
+          // 门店报货与 admin 一样落 0（#348，已配量从 0 起算）
+          docType === '门店报货' ? 0 : null,
           standardUnitPrice,
           unitDiscount,
           actualUnitPrice,
@@ -1722,9 +1994,75 @@ async function createDoc(ctx) {
         })
       }
     }
+    // 草稿回传新版本号（事务内、持草稿行锁读取，拿到的一定是本次写入的版本）：
+    // 留在编辑态的页面下一次保存拿它做乐观锁。提交后是终态，不需要版本
+    if (asDraft) {
+      const { rows: versionRows } = await client.query(
+        `SELECT to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS updated_at_iso
+           FROM inventory_docs WHERE id = $1`,
+        [docId],
+      )
+      updatedAt = versionRows[0]?.updated_at_iso || null
+    }
   })
 
-  ctx.result = { id: docId, message: '提交成功' }
+  ctx.result = { id: docId, draft: asDraft, updatedAt, message: asDraft ? '草稿已保存' : '提交成功' }
+  return ctx.result
+}
+
+/** 更新门店报货草稿（#348）：payload 与 createDoc 相同，另带 `draftId`；仍是草稿。 */
+async function updateDraft(ctx) {
+  const payload = ctx.event.payload || {}
+  if (!payload.draftId) throw new Error('INVALID_PARAMS: 缺少草稿单号')
+  ctx.event.payload = { ...payload, draft: true }
+  return createDoc(ctx)
+}
+
+/** 提交门店报货草稿（#348）：按当前明细重写并转「已完成」，之后锁定（提交即终态）。 */
+async function submitDraft(ctx) {
+  const payload = ctx.event.payload || {}
+  if (!payload.draftId) throw new Error('INVALID_PARAMS: 缺少草稿单号')
+  ctx.event.payload = { ...payload, draft: false }
+  return createDoc(ctx)
+}
+
+/**
+ * 删除门店报货草稿（#348）= 草稿 → 已取消（不物理删除：单号按当天最大号 +1 生成，删了会被复用；且保留审计）。
+ * 只能删本人有门店库存写权限的门店的草稿；不校验门店是否启用。
+ */
+async function deleteDraft(ctx) {
+  await requireStaffBound()(ctx, async () => {})
+  const payload = ctx.event.payload || {}
+  const draftId = String(payload.id || payload.draftId || '').trim()
+  if (!draftId) throw new Error('INVALID_PARAMS: 缺少草稿单号')
+  const reason = String(payload.reason || '').trim() || '删除草稿'
+  await pg.transaction(async (client) => {
+    await assertWorkfineInventoryInitialized(client)
+    // 先无锁取门店做 scope 断言，再锁单判状态：越权的人拿不到别店单据的锁，也探不出它的状态
+    const { rows } = await client.query(
+      `SELECT loc.location_id
+         FROM inventory_docs d
+         JOIN inventory_locations loc ON loc.org_node_id = d.source_org_node_id AND loc.location_type = '门店'
+        WHERE d.id = $1 AND d.doc_type = '门店报货'
+        ORDER BY loc.location_id
+        LIMIT 1`,
+      [draftId],
+    )
+    if (!rows[0]) throw new Error('NOT_FOUND: 门店报货草稿不存在')
+    await assertInventoryWriteStoreScope(client, ctx.auth, rows[0].location_id)
+    await lockStoreRequestDraft(client, draftId, undefined)
+    await client.query(
+      `UPDATE inventory_docs
+          SET status = '已取消',
+              cancellation_reason = $2,
+              cancelled_by = $3,
+              cancelled_at = NOW(),
+              updated_at = NOW()
+        WHERE id = $1`,
+      [draftId, reason, ctx.auth.staffWfId],
+    )
+  })
+  ctx.result = { id: draftId, message: '草稿已删除' }
   return ctx.result
 }
 
@@ -1806,26 +2144,32 @@ async function approveStoreReturnForRestock(client, head, ctx, auditRemark, acti
           AND request_item_id = $2
           AND lot_id = $3
           AND status = '已预留'
+        ORDER BY id
         FOR UPDATE`,
       [head.id, Number(item.id), sourceLot.id],
     )
+    if (reservationRes.rows.length > 1) throw new Error('CONFLICT: 退货库存预留不唯一，请核对后重试')
     const reservation = reservationRes.rows[0]
     if (!reservation) throw new Error('CONFLICT: 退货库存预留已失效，请刷新后重试')
     const reservedAvailable =
       Number(reservation.quantity) - Number(reservation.fulfilled_quantity) - Number(reservation.released_quantity)
-    if (quantity > reservedAvailable) throw new Error('CONFLICT: 退货库存预留数量不足')
+    // #260：退货明细与预留正常为 1:1，整单原子审批；异常部分履约仍保留历史。
+    // PG 数量为 numeric(12,2)，按百分位比较，避免小数减法误差。
+    if (Math.round(quantity * 100) !== Math.round(reservedAvailable * 100)) {
+      throw new Error('CONFLICT: 退货数量与库存预留剩余量不一致')
+    }
 
     // 先完成本单预留，出库校验只会扣除其他未完成预留。
     const reservationUpdated = await client.query(
       `UPDATE inventory_stock_reservations
-          SET fulfilled_quantity = $2,
+          SET fulfilled_quantity = fulfilled_quantity + $2,
               status = '已完成',
               updated_at = NOW()
         WHERE id = $1
           AND status = '已预留'`,
       [Number(reservation.id), quantity],
     )
-    if (reservationUpdated.rowCount === 0) {
+    if (reservationUpdated.rowCount !== 1) {
       throw new Error('CONFLICT: 退货库存预留已被其他操作处理')
     }
 
@@ -2125,6 +2469,34 @@ async function confirmReceive(ctx) {
     await assertInventoryWriteStoreScope(client, ctx.auth, targetLocation.location_id)
     const inboundType = RECEIVE_INBOUND_TYPE[head.doc_type]
     if (!inboundType) throw new Error('INVALID_STATE: 该单据不支持收货')
+    // #358：只收「发货数量 − 已收」的剩余量。已收口径是来源明细 fulfilled_quantity，与 admin
+    // receivePhysicalShipment / getShipmentReceiptProgress 同源；admin 早先放行过部分收货，
+    // 按 quantity 全量再收一次会被 0043 累计关联守卫 RAISE，整单回滚、门店收不了剩余的货。
+    // FOR UPDATE 与 admin 收货路径互斥（表头已锁，这里再锁明细防别的写入方改 fulfilled）。
+    const itemRes = await client.query(
+      `SELECT id AS source_item_id, lot_id, sku_id, sale_item_id, sku_name, spec_name, supplier, product_series,
+              batch_no, expiry_date, is_gift, quantity, request_quantity,
+              fulfilled_quantity, standard_unit_price, unit_discount, actual_unit_price,
+              supply_chain_unit_cost, market_standard_unit_price,
+              market_unit_discount, market_actual_unit_price, store_standard_unit_price,
+              store_unit_discount, store_actual_unit_price, reason, remark
+         FROM inventory_doc_items
+        WHERE doc_id = $1
+     ORDER BY id
+          FOR UPDATE`,
+      [id],
+    )
+    const receiveItems = itemRes.rows
+      .map((item) => ({
+        item,
+        // numeric(12,2)：按分取整，吸收浮点误差
+        quantity: Math.round((Number(item.quantity) - Number(item.fulfilled_quantity || 0)) * 100) / 100,
+      }))
+      .filter((line) => line.quantity > 0)
+    if (receiveItems.length === 0) throw new Error('INVALID_STATE: 该单据没有待收数量，请刷新后重试')
+    const receiveTotalQuantity = Math.round(
+      receiveItems.reduce((sum, line) => sum + line.quantity, 0) * 100,
+    ) / 100
     inboundDocId = await generateDocNo(client, inboundType)
     await client.query(
       `INSERT INTO inventory_docs (
@@ -2138,26 +2510,16 @@ async function confirmReceive(ctx) {
         head.source_org_node_id,
         head.target_org_node_id,
         shanghaiToday(),
-        head.total_quantity,
-        head.total_amount,
+        receiveTotalQuantity,
+        // 金额由明细触发器（0039 inventory_set_doc_item_amount → inventory_refresh_doc_totals）
+        // 按本次实收数量重算回写表头；这里不再照抄发货单的全量金额。
+        null,
         head.market_id,
         remark || head.remark || null,
         ctx.auth.staffWfId,
       ],
     )
-    const itemRes = await client.query(
-      `SELECT id AS source_item_id, lot_id, sku_id, sale_item_id, sku_name, spec_name, supplier, product_series,
-              batch_no, expiry_date, is_gift, quantity, request_quantity,
-              fulfilled_quantity, standard_unit_price, unit_discount, actual_unit_price,
-              amount, supply_chain_unit_cost, market_standard_unit_price,
-              market_unit_discount, market_actual_unit_price, store_standard_unit_price,
-              store_unit_discount, store_actual_unit_price, reason, remark
-         FROM inventory_doc_items
-        WHERE doc_id = $1
-     ORDER BY id`,
-      [id],
-    )
-    for (const item of itemRes.rows) {
+    for (const { item, quantity: receiveQuantity } of receiveItems) {
       const sourceLot = item.lot_id == null
         ? null
         : await lockInventoryLotById(client, Number(item.lot_id), sourceLocation.location_id)
@@ -2166,7 +2528,7 @@ async function confirmReceive(ctx) {
         batchNo: item.batch_no,
         expiryDate: item.expiry_date,
         isGift: item.is_gift,
-        quantity: item.quantity,
+        quantity: receiveQuantity,
       }, {
         // 有来源批次时保留其真实供应链路；采购订单首入库以订单为来源。
         sourceDocId: sourceLot?.sourceDocId || id,
@@ -2204,14 +2566,16 @@ async function confirmReceive(ctx) {
           lot.batchNo,
           lot.expiryDate,
           lot.isGift,
-          Number(item.quantity),
+          receiveQuantity,
           lot.quantityOnHand,
           item.request_quantity == null ? null : Number(item.request_quantity),
-          item.fulfilled_quantity == null ? null : Number(item.fulfilled_quantity),
+          // 入库明细自身没有下游履约；照抄来源行的已收量没有意义（与 admin 收货路径一致留空）
+          null,
           item.standard_unit_price ?? null,
           item.unit_discount ?? null,
           item.actual_unit_price ?? null,
-          item.amount ?? null,
+          // amount 由 BEFORE INSERT 触发器按 quantity × 价基重算
+          null,
           item.supply_chain_unit_cost ?? lot.supplyChainUnitCost ?? null,
           item.market_standard_unit_price ?? lot.marketStandardUnitPrice ?? null,
           item.market_unit_discount ?? lot.marketUnitDiscount ?? null,
@@ -2228,7 +2592,7 @@ async function confirmReceive(ctx) {
         docId: inboundDocId,
         docItemId: Number(inserted.rows[0].id),
         direction: '入库',
-        quantity: Number(item.quantity),
+        quantity: receiveQuantity,
         createdBy: ctx.auth.staffWfId,
         movementKey: `receive:${id}:item:${inserted.rows[0].id}:入库`,
         remark: remark || null,
@@ -2237,7 +2601,14 @@ async function confirmReceive(ctx) {
         `INSERT INTO inventory_doc_links (
            from_doc_id, to_doc_id, relation_type, from_item_id, to_item_id, quantity
          ) VALUES ($1,$2,'发货收货',$3,$4,$5)`,
-        [id, inboundDocId, Number(item.source_item_id), Number(inserted.rows[0].id), Number(item.quantity)],
+        [id, inboundDocId, Number(item.source_item_id), Number(inserted.rows[0].id), receiveQuantity],
+      )
+      // 回写来源明细已收量，与 admin receivePhysicalShipment 同写法（已收口径单源）
+      await client.query(
+        `UPDATE inventory_doc_items
+            SET fulfilled_quantity = COALESCE(fulfilled_quantity, 0) + $2
+          WHERE id = $1`,
+        [Number(item.source_item_id), receiveQuantity],
       )
     }
     const completed = await client.query(
@@ -2301,11 +2672,15 @@ async function uploadReceipt(ctx) {
 module.exports = {
   stockList,
   reportableSkuOptions,
+  stocktakeSkuOptions,
   storeOptions,
   docOrgOptions,
   docList,
   docDetail,
   createDoc,
+  updateDraft,
+  submitDraft,
+  deleteDraft,
   confirmReceive,
   approveDoc,
   rejectDoc,

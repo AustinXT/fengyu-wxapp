@@ -1740,9 +1740,11 @@ export const createServiceOrder = withPermission(
         unitRealPrice: saleItems.unitRealPrice,
         saleOrderType: saleOrders.saleOrderType,
         orderStatus: saleOrders.status,
-        // service_items 快照源：优先 sale_items 行级值，NULL 时回查 product_skus / product_categories
-        // （对齐 staff service.js 的 COALESCE 兜底，避免 admin 自建服务单两列为 NULL）
-        isShengmei: sql<boolean | null>`COALESCE(${saleItems.isShengmei}, ${productSkus.isShengmei})`,
+        // service_items 快照源（与 staff service.js create 同源，改一端必同步另一端）：
+        // - isShengmei：取 product_skus 当前值，SKU 为 NULL 时回退 sale_items 开单快照（#378，
+        //   生美实耗按服务单创建时的 SKU 配置计；sale_items 快照仍服务生美业绩）
+        // - salesCategory：优先 sale_items 行级值，NULL 时回查 product_categories
+        isShengmei: sql<boolean | null>`COALESCE(${productSkus.isShengmei}, ${saleItems.isShengmei})`,
         salesCategory: sql<(typeof saleItems.$inferInsert)['salesCategory']>`COALESCE(${saleItems.salesCategory}, ${productCategories.salesCategory})`,
         hasPendingRefund: sql<boolean>`EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleOrders.saleOrderId} AND sop.change_type = '退款' AND sop.status = '待审批')`,
         hasApprovedRefund: sql<boolean>`EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleOrders.saleOrderId} AND sop.change_type = '退款' AND sop.status = '已支付')`,
@@ -1833,7 +1835,7 @@ export const createServiceOrder = withPermission(
           sessionUsed: item.sessionUsed,
           unitRealPrice: snapshot.unitRealPrice || '0',
           employeeId: data.assignedEmployeeId,
-          // 生美 / 销售分类快照（COALESCE sale_items → product_skus/product_categories）
+          // 生美快照（SKU 当前值优先）/ 销售分类快照（sale_items 优先）
           isShengmei: snapshot.isShengmei,
           salesCategory: snapshot.salesCategory,
         })

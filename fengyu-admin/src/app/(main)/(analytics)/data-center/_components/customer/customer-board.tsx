@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { Card } from "@/components/ui/card"
 import { actionErrorMessage } from "@/lib/action-error"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
@@ -9,14 +9,27 @@ import { getCustomerBoard } from "@/actions/data-center/customer"
 import { KpiGrid, type KpiGridItem } from "../kpi-card"
 import { BreakdownTable } from "../breakdown-table"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
-import type { CustomerBoardResult } from "@/lib/data-center/types"
+import type { CustomerBoardResult, DataCenterScope } from "@/lib/data-center/types"
+import { boardNoticeRanges, evaluateDataStart, type DataStartAxis } from "@/lib/data-center/data-start"
+import { scopeStores } from "@/lib/data-center/scope-options"
+import { DataStartNotice } from "../data-start-notice"
+import type { BoardPageProps } from "../board-props"
+
+/**
+ * 数据起点提示的时间轴（#289）：业绩（款项归属日期）+ 服务（service_date）。
+ * 客量板的会员经营人数 / 会员客单 / 成交率 / 客活等跨割点都会失真，提示按整块板显示，不针对单张卡。
+ */
+const DATA_START_AXES: readonly DataStartAxis[] = ["performance", "service"]
 
 // ── KPI 分组（按语义：注册/会员状态 + 客活 / 经营）────────────────
 const KPI_REGISTER: KpiGridItem[] = [
   { key: "registeredMembers", label: "会员注册人数" },
   { key: "retainedMembers", label: "有效保有会员" },
-  { key: "visitOnce", label: "当月一次人数" },
-  { key: "visitTwice", label: "当月二次人数" },
+  // #298：按到店天数分档（同一天多张服务单只算 1 天），与顾客列表「月度客活」同口径
+  // #414：追加「截至区间终点已入会」—— customer_status 是当前截面，不随区间回溯，
+  // 缺这层守卫时入会晚于区间终点的人也会被计入（选历史区间时可见）。
+  { key: "visitOnce", label: "当月一次人数", hint: "所选区间内到店 1 天、且截至区间终点已入会的保有会员（同日多单算 1 天）" },
+  { key: "visitTwice", label: "当月二次人数", hint: "所选区间内到店 ≥2 天、且截至区间终点已入会的保有会员（同日多单算 1 天）" },
 ]
 
 // #294：左三格读 cron 每日重算的 customer_status 截面，**不随所选区间变化**；
@@ -45,15 +58,23 @@ const KPI_OPERATION: KpiGridItem[] = [
   { key: "trafficCustomers", label: "成交率分母", hint: "期初未达会员的到店活跃池 ∪ 本期全部新增会员" },
   { key: "convRate", label: "成交率", hint: "会员新增 ÷ 成交率分母" },
   { key: "memberAvgTicket", label: "会员客单" },
-  { key: "newCustomerAvgTicket", label: "新客客单" },
+  // #289：分子补上 WorkFine 历史单（款项流水里没有这部分），跨 2026-07-03 割点不再低报
+  { key: "newCustomerAvgTicket", label: "新客客单", hint: "含 WorkFine 历史单（订单级实收）" },
   { key: "serviceCount", label: "服务人次" },
   { key: "projectCount", label: "服务项目数" },
   { key: "consumePerVisit", label: "单次客耗", hint: "生美实耗 ÷ 频率" },
 ]
 
-export function CustomerBoard() {
+export function CustomerBoard({ scopeOptions, dataStarts }: BoardPageProps) {
   const { searchParams } = useUrlFilters()
-  const [data, setData] = useState<CustomerBoardResult | null>(null)
+  // 连同取数用的 scope / 同比环比开关一起存：数据起点提示必须和页面数字是同一次取数，
+  // 不能用 URL 已切换、数据还没回来的新参数
+  const [loaded, setLoaded] = useState<{
+    result: CustomerBoardResult
+    scope: DataCenterScope
+    withComparison: boolean
+  } | null>(null)
+  const data = loaded?.result ?? null
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -68,7 +89,7 @@ export function CustomerBoard() {
     setError(null)
     getCustomerBoard(params)
       .then((res) => {
-        if (!cancelled) setData(res)
+        if (!cancelled) setLoaded({ result: res, scope: params.scope, withComparison: params.withComparison !== false })
       })
       .catch((e: unknown) => {
         // 生产构建会脱敏 message，必须走 actionErrorMessage 取 digest（issue #133）；
@@ -83,6 +104,20 @@ export function CustomerBoard() {
     }
   }, [qs])
 
+  // ⚠ hook 必须在下面的 error 早退之前（早退后再调 hook 会让 hook 数量随 error 变化）
+  const notice = useMemo(() => {
+    if (!loaded || !dataStarts) return []
+    return evaluateDataStart({
+      // 关掉同比环比时页面不出环比徽章，基期不参与提示（timeRange.previous 仍会下发）
+      ranges: boardNoticeRanges(
+        loaded.withComparison ? loaded.result.timeRange : { ...loaded.result.timeRange, previous: null },
+      ),
+      axes: DATA_START_AXES,
+      stores: scopeStores(scopeOptions, loaded.scope),
+      starts: dataStarts,
+    })
+  }, [loaded, dataStarts, scopeOptions])
+
   if (error) {
     return (
       <Card className="p-6 text-sm text-[#D94040]">加载失败：{error}</Card>
@@ -94,6 +129,9 @@ export function CustomerBoard() {
 
   return (
     <div className="flex flex-col gap-6">
+      {/* 数据起点提示（#289）：取数中不显示，避免新旧区间错配 */}
+      {!loading && <DataStartNotice results={notice} />}
+
       {/* 客活/激活随每日重算更新提示 */}
       <div className="text-xs text-[var(--muted-foreground)]">
         客活 / 激活随每日重算更新，上线初期可能为 0。

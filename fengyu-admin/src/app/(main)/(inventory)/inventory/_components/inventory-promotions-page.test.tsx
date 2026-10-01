@@ -24,6 +24,7 @@ vi.mock('@/actions/inventory/promotions', () => ({
 }))
 
 vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn() } }))
+vi.mock('./inventory-sku-search-select', () => import('./__stubs__/inventory-sku-search-select.stub'))
 
 import InventoryPromotionsPage from './inventory-promotions-page'
 
@@ -51,11 +52,9 @@ function renderPage(rows: InventoryPromotionPlanRow[]) {
     <InventoryPromotionsPage
       rows={rows}
       marketOptions={[]}
-      skuOptions={[]}
       canCreate={false}
       canUpdate={false}
       canViewPrice
-      canManageGlobal
     />,
   )
 }

@@ -5,8 +5,8 @@ import { getAllocationEmployeeCandidates } from '@/actions/employees'
 import { getRates } from '@/actions/commission'
 import { getSkillTags } from '@/actions/skill-tags'
 import { getSession } from '@/lib/auth'
-import { hasUiCapability } from '@/lib/permission-contract'
 import { requireUiPageCapability } from '@/lib/page-capability'
+import { canSaveAllocation } from '@/lib/allocation-freeze'
 import PaymentAllocationDetailPageClient from '../../_components/payment-allocation-detail-page'
 
 export const dynamic = 'force-dynamic'
@@ -39,7 +39,9 @@ export default async function Page({ params }: { params: Promise<{ paymentId: st
       employees={employees}
       commissionRates={commissionRates}
       skillTags={skillTags}
-      canSave={hasUiCapability(session.permissions.actions, 'allocation:save')}
+      canSave={['待分配', '已分配'].includes(payment.allocationStatus ?? '')
+        && payment.changeType !== '退款'
+        && canSaveAllocation(session, order.storeId, payment.frozen)}
     />
   )
 }

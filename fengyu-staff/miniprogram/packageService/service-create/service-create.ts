@@ -147,6 +147,8 @@ Page({
     // 订单选择
     paidItems: [] as PaidOrderItem[],
     paidItemsLoaded: false,
+    paidItemsError: '',
+    paidItemsCanRetry: false,
     paidItemProductKind: '',
     paidItemCategoryId: '',
     paidItemNameQuery: '',
@@ -314,6 +316,8 @@ Page({
       customerResults: [],
       paidItems: [],
       paidItemsLoaded: false,
+      paidItemsError: '',
+      paidItemsCanRetry: false,
       paidItemProductKind: '',
       paidItemCategoryId: '',
       paidItemNameQuery: '',
@@ -333,6 +337,8 @@ Page({
     this.setData({
       paidItems: [],
       paidItemsLoaded: false,
+      paidItemsError: '',
+      paidItemsCanRetry: false,
       paidItemProductKind: '',
       paidItemCategoryId: '',
       paidItemNameQuery: '',
@@ -455,9 +461,20 @@ Page({
         this._pendingPreloadedItems = [];
       }
       this.setData({ paidItemsLoaded: true });
-    } catch (_) {
-      this.setData({ paidItemsLoaded: true });
+    } catch (err: unknown) {
+      console.error('服务单疗程项目加载失败', err);
+      const errorType = err instanceof Error && 'errorType' in err
+        ? (err as Error & { errorType?: string }).errorType : undefined;
+      const message = errorType && err instanceof Error
+        ? err.message : '网络或服务异常，请重试';
+      this.setData({ paidItemsLoaded: true, paidItemsError: message, paidItemsCanRetry: !errorType });
     }
+  },
+
+  onRetryPaidOrders() {
+    const customer = this.data.selectedCustomer;
+    const userId = customer?.clientUserId || customer?.id;
+    if (userId) return this.loadPaidOrders(userId);
   },
 
   applyPaidItemFilters(

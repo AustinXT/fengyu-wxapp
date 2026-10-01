@@ -6,6 +6,7 @@ import { getSession } from '@/lib/auth'
 import { hasPermission, isAdminScope, isDepositOrderApprover } from '@/lib/permissions'
 import { hasUiCapability } from '@/lib/permission-contract'
 import { requireUiPageCapability } from '@/lib/page-capability'
+import { ORDER_DETAIL_PAGE_CAPABILITIES } from '@/lib/order-detail-access'
 import { db } from '@/db'
 import { cardTransactions, prepaidCards } from '@db/prepaid-card'
 import { and, eq } from 'drizzle-orm'
@@ -16,7 +17,7 @@ export const dynamic = 'force-dynamic'
 export default async function Page({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
   const session = await getSession()
-  requireUiPageCapability(session, ['sale_order:list', 'sale_order:refund_create', 'sale_order:refund_approve'])
+  requireUiPageCapability(session, ORDER_DETAIL_PAGE_CAPABILITIES)
   const actions = session.permissions.actions
   const canListAllocations = !!(session && hasPermission(session, 'allocation:list'))
   // 支付流水 + 审计日志：订单查看者、退款提单/审批人、操作日志查看者任一即可看

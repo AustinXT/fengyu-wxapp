@@ -94,7 +94,7 @@ export const getSalesBoard = withPermission(
           JOIN sale_orders so ON so.sale_order_id = sipe.sale_order_id
           WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
             AND so.sale_order_type IN ('销售单', '转换单')
-            AND so.status = '已支付'
+            AND (NOT sipe.is_legacy_residual OR so.status <> '已关闭')
             AND si.is_shengmei = TRUE
             AND sipe.performance_date BETWEEN ${range.start} AND ${range.end}
         `),
@@ -274,8 +274,23 @@ export const getSalesBoard = withPermission(
       shengmeiConsume: number | null
     }
 
+    // 区间末在营门店：与 KPI runStoreCount 同口径，骨架仅负责保留零业绩行。
+    const openStoresByStoreSql = sql`
+      SELECT s.store_id, COUNT(*)::int AS v
+      FROM stores s
+      JOIN org_nodes o ON s.org_node_id = o.id
+      WHERE o.type = '门店'
+        AND o.is_active = TRUE
+        AND ${scopeFilterSql(session, scope, 's.store_id')}
+        AND s.opening_date IS NOT NULL
+        AND s.opening_date::date <= ${cur.end}
+        AND (s.closed_at IS NULL OR s.closed_at::date > ${cur.end})
+      GROUP BY s.store_id
+    `
+
     const [
       skelRows,
+      openStoreRows,
       techRows,
       techDirectByMarketRows,
       revRows,
@@ -286,6 +301,7 @@ export const getSalesBoard = withPermission(
       shengmeiConsRows,
     ] = await Promise.all([
       db.execute(skeleton),
+      db.execute(openStoresByStoreSql),
       // 技师人数 by store（有门店归属的部分）—— 与 KPI 同一份 technician-sql 单源
       db.execute(technicianByStoreSql(session, scope, cur.end)),
       // 技师人数 by market（直挂市场/部门、无门店归属的部分），详见 technician-sql 注释
@@ -310,7 +326,7 @@ export const getSalesBoard = withPermission(
         JOIN sale_orders so ON so.sale_order_id = sipe.sale_order_id
         WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
           AND so.sale_order_type IN ('销售单', '转换单')
-          AND so.status = '已支付'
+          AND (NOT sipe.is_legacy_residual OR so.status <> '已关闭')
           AND si.is_shengmei = TRUE
           AND sipe.performance_date BETWEEN ${cur.start} AND ${cur.end}
         GROUP BY so.store_id
@@ -382,6 +398,7 @@ export const getSalesBoard = withPermission(
       }
       return m
     }
+    const openMap = toMap(openStoreRows)
     const techMap = toMap(techRows)
     const revMap = toMap(revRows)
     const shengmeiRevMap = toMap(shengmeiRevRows)
@@ -424,7 +441,7 @@ export const getSalesBoard = withPermission(
       },
     }))
 
-    // 按市场明细（在 JS 内按 marketId 聚合，门店数=骨架行计数，技师人数/各业绩求和）
+    // 按市场明细（在 JS 内按 marketId 聚合，门店数=区间末在营计数，技师人数/各业绩求和）
     type MarketAgg = {
       marketId: string
       marketName: string
@@ -460,7 +477,7 @@ export const getSalesBoard = withPermission(
 
     for (const s of storeAggs) {
       const m = marketRowOf(s.marketId, s.marketName)
-      m.storeCount += 1
+      m.storeCount += openMap.get(s.storeId) ?? 0
       m.technicianCount += s.technicianCount ?? 0
       m.storeRevenue += s.storeRevenue ?? 0
       m.shengmeiRevenue += s.shengmeiRevenue ?? 0

@@ -178,6 +178,69 @@ try {
     num(hqReturnLots[0]?.market_actual_unit_price) === 950
       && num(hqReturnLots[0]?.supply_chain_unit_cost) === 800,
     JSON.stringify({ act: hqReturnLots[0]?.market_actual_unit_price, cost: hqReturnLots[0]?.supply_chain_unit_cost }))
+
+  // #260：仅一次性私有库执行的异常形态，实际 Server Action + PG 事务。
+  for (const shape of ['少扣', '超扣', '零条', '多条', '历史履约释放', '小数', '末行异常']) {
+    const quantity = shape === '小数' ? 0.1 : 2
+    const lot = await insertSeedLot({
+      locationId: STA1_ID, skuId: SKU_SUPPLY, skuName: 'TE2AI_供应链产品',
+      quantity: 20, batchNo: 'R260-' + shape,
+      supplyChainUnitCost: 800, marketActualUnitPrice: 950, storeActualUnitPrice: 1100,
+    })
+    const secondLot = shape === '末行异常' ? await insertSeedLot({
+      locationId: STA1_ID, skuId: SKU_SUPPLY, skuName: 'TE2AI_供应链产品',
+      quantity: 20, batchNo: 'R260-LAST',
+      supplyChainUnitCost: 800, marketActualUnitPrice: 950, storeActualUnitPrice: 1100,
+    }) : null
+    setSession(storeA1Session())
+    const { id } = await biz.createReturnForRestock({
+      sourceOrgNodeId: STA1_ID, targetOrgNodeId: MKA_ORG,
+      items: shape === '末行异常'
+        ? [{ lotId: lot, quantity: 1 }, { lotId: secondLot, quantity: 2 }]
+        : [{ lotId: lot, quantity }],
+    })
+    const [last] = await pgQuery('SELECT id FROM inventory_stock_reservations WHERE request_doc_id = $1 ORDER BY request_item_id DESC LIMIT 1', [id])
+    if (shape === '多条') {
+      await pgQuery('INSERT INTO inventory_stock_reservations (request_doc_id, request_item_id, location_id, lot_id, sku_id, quantity, created_by) SELECT request_doc_id, request_item_id, location_id, lot_id, sku_id, quantity, created_by FROM inventory_stock_reservations WHERE id = $1', [last.id])
+    } else if (shape === '零条') {
+      await pgQuery("UPDATE inventory_stock_reservations SET released_quantity = quantity, status = '已释放' WHERE id = $1", [last.id])
+    } else {
+      const values = {
+        '少扣': [3, 0, 0], '超扣': [1, 0, 0], '末行异常': [3, 0, 0],
+        '历史履约释放': [5, 1, 2], '小数': [0.3, 0.1, 0.1],
+      }[shape]
+      await pgQuery('UPDATE inventory_stock_reservations SET quantity = $2, fulfilled_quantity = $3, released_quantity = $4 WHERE id = $1', [last.id, ...values])
+    }
+    const snapshot = async () => ({
+      reservations: await reservations(id),
+      balance: await lotQuantity(lot),
+      secondBalance: secondLot ? await lotQuantity(secondLot) : null,
+      docs: (await pgQuery('SELECT count(*) AS n FROM inventory_docs'))[0].n,
+      movements: (await pgQuery('SELECT count(*) AS n FROM inventory_movements'))[0].n,
+      links: (await pgQuery('SELECT count(*) AS n FROM inventory_doc_links'))[0].n,
+      items: (await docItems(id)).map((i) => i.fulfilled_quantity),
+      status: (await docHeader(id)).status,
+    })
+    const before = await snapshot()
+    setSession(marketASession())
+    if (['历史履约释放', '小数'].includes(shape)) {
+      await biz.approveReturnForRestock({ returnDocId: id })
+      const [r] = await reservations(id)
+      check('#260 ' + shape + '：累加历史，账目守恒且出库只扣本次量',
+        r.status === '已完成' && Math.round((num(r.fulfilled_quantity) + num(r.released_quantity)) * 100) === Math.round(num(r.quantity) * 100)
+          && (await lotQuantity(lot)) === 20 - quantity,
+        JSON.stringify(r))
+      const after = await snapshot()
+      await expectThrow('#260 重复审批拒绝', /INVALID_STATE/, () => biz.approveReturnForRestock({ returnDocId: id }))
+      check('#260 重复审批无副作用', JSON.stringify(after) === JSON.stringify(await snapshot()))
+    } else {
+      await expectThrow('#260 ' + shape + '拒绝', /CONFLICT/, () => biz.approveReturnForRestock({ returnDocId: id }))
+      check('#260 ' + shape + '整单回滚（含末行之前的库存和预留）',
+        JSON.stringify(before) === JSON.stringify(await snapshot()))
+      // 修复夹具后释放，避免干扰其后的用例
+      await pgQuery("UPDATE inventory_stock_reservations SET status = '已释放', released_quantity = quantity - fulfilled_quantity WHERE request_doc_id = $1", [id])
+    }
+  }
 } catch (e) {
   check('冒烟整体', false, '致命错误：' + (e?.stack || e?.message || String(e)))
 } finally {

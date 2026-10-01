@@ -630,6 +630,8 @@ export interface CommissionRate {
   amountTierMin: string
   amountTierMax: string | null
   commissionRate: string
+  /** 划卡单价阈值（#379）：仅服务单自销自耗 / 他销自耗行可配；null = 不启用 */
+  priceThreshold: string | null
   createdAt: string
   updatedAt: string
   // joined

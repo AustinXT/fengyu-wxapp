@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { resolveTimeRange, shanghaiToday, addDays, addYears } from './time-range'
+import { toCustomRange } from './params'
 
 // 锚点：Shanghai = 2024-01-03（周三）。2024-01-01 是周一，便于断言周/月/年边界。
 const NOW = new Date('2024-01-03T04:00:00Z') // UTC+8 → 2024-01-03 12:00 上海
@@ -153,7 +154,7 @@ describe('resolveTimeRange', () => {
 
     // custom 同源（区间跨 2 月底）
     const c = resolveTimeRange(
-      { preset: 'custom', start: '2025-02-24', end: '2025-03-02' },
+      toCustomRange('2025-02-24', '2025-03-02')!,
       new Date('2026-09-22T04:00:00Z'),
     )
     expect(days(c.lastYear!)).toBe(days(c.current) + 1)
@@ -226,11 +227,31 @@ describe('resolveTimeRange', () => {
   })
 
   it('custom：紧邻前一等长区间 / 各减一年', () => {
-    const r = resolveTimeRange({ preset: 'custom', start: '2026-03-01', end: '2026-03-31' }, NOW)
+    const r = resolveTimeRange(toCustomRange('2026-03-01', '2026-03-31')!, NOW)
     expect(r.current).toEqual({ start: '2026-03-01', end: '2026-03-31' })
     // 31 天窗口的紧邻前一段：[2026-01-29, 2026-02-28]
     expect(r.previous).toEqual({ start: '2026-01-29', end: '2026-02-28' })
     expect(r.lastYear).toEqual({ start: '2025-03-01', end: '2025-03-31' })
     expect(r.presetLabel).toBe('2026-03-01 ~ 2026-03-31')
+  })
+})
+
+describe('custom · 通过 #308 校验的输入不产出 NaN / 倒挂 / 非 4 位年份', () => {
+  // A：月末 / 闰日；B：年份上下界（1900–2100，环比会往前推一个区间长度）；C：单日（最短区间）
+  it.each([
+    ['A 月末', '2026-01-31', '2026-02-28'],
+    ['A 闰日', '2028-02-29', '2028-02-29'],
+    ['B 下界', '1900-01-01', '1900-01-31'],
+    ['B 上界', '2100-12-31', '2100-12-31'],
+    ['B 全范围', '1900-01-01', '2100-12-31'],
+    ['C 单日', '2026-09-01', '2026-09-01'],
+  ])('%s', (_, start, end) => {
+    const r = resolveTimeRange(toCustomRange(start, end)!, NOW)
+    for (const range of [r.current, r.previous!, r.lastYear!]) {
+      expect(range.start).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+      expect(range.end).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+      expect(range.start <= range.end).toBe(true)
+    }
+    expect(r.previous!.end < r.current.start).toBe(true)
   })
 })

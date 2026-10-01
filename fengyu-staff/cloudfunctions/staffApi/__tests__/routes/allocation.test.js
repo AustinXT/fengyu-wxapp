@@ -1,9 +1,7 @@
 /**
  * 营业额分配路由测试
  * 覆盖：getCommissionRates（提成比例矩阵 pivot）
- * 注：旧订单级 save / deleteAllocation / pendingList / suggest 已随「按回款逐笔分配」
- *     迁移移除（回款级 pendingPayments/suggestPayment/savePayment/deletePaymentAllocation
- *     由 e2e + 跨端 snapshot 守护）。
+ * 注：旧订单级 save / deleteAllocation / pendingList / suggest 已随「按回款逐笔分配」迁移移除。
  */
 
 
@@ -89,5 +87,73 @@ describe('allocation.getCommissionRates', () => {
     const wellness = ctx.result.rates.find(r => r.department === '养生师')
     expect(beauty.orderRates['自销自耗']).toBe(0.3)
     expect(wellness.orderRates['自销自耗']).toBe(0.2)
+  })
+})
+
+describe('allocation.savePayment — 同池不限人数', () => {
+  const receipts = [
+    { receipt_id: '101', sale_item_id: 'item-1', amount: '100.00', sales_category: '自销自耗' },
+    { receipt_id: '102', sale_item_id: 'item-2', amount: '80.00', sales_category: '自销自耗' },
+  ]
+  const fourEmployees = ['EMP-1', 'EMP-2', 'EMP-3', 'EMP-4']
+  const lines = (ratio = 0.25, roleType = '养生师') =>
+    receipts.flatMap((item) => fourEmployees.map((employeeId) => ({
+      saleItemId: item.sale_item_id, employeeId, roleType, allocationRatio: ratio,
+    })))
+
+  let clientQuery
+  beforeEach(() => {
+    pg.query.mockImplementation(async (statement, params) => {
+      if (statement.includes('SELECT p.id, p.sale_order_id')) {
+        return [{ sale_order_id: 'order-1', allocation_status: '待分配', store_id: 'store-001', market_name: 'M', sale_order_type: '销售单', legacy_source: null, change_type: '回款', paid_at: null }]
+      }
+      if (statement.includes('SELECT u.employee_id') && statement.includes('ANY($1::text[])')) {
+        return params[0].map((employee_id) => ({ employee_id }))
+      }
+      if (statement.includes('SELECT id AS receipt_id, sale_item_id')) return receipts
+      return []
+    })
+    clientQuery = vi.fn(async (statement) => {
+      if (statement.includes('FOR NO KEY UPDATE') || statement.includes("UPDATE sale_order_payments SET allocation_status")) {
+        return { rows: [{}], rowCount: 1 }
+      }
+      return { rows: [], rowCount: 1 }
+    })
+    pg.transaction.mockImplementation(async (callback) => callback({ query: clientQuery }))
+  })
+
+  test('同 SKU 两个实例每池 4 人各 25%，逐 receipt 写入并重算金额', async () => {
+    const ctx = createManagerCtx({ salePaymentId: 7, allocations: lines() })
+    await allocationRoutes.savePayment(ctx)
+
+    expect(ctx.result.allocationCount).toBe(8)
+    const inserted = clientQuery.mock.calls
+      .filter(([statement]) => statement.includes('INSERT INTO sale_payment_item_allocations'))
+      .map(([, params]) => params)
+    expect(inserted).toHaveLength(8)
+    expect(inserted.filter((params) => params[0] === 101).map((params) => [params[1], params[4], params[5]])).toEqual([
+      ['EMP-1', '0.250', 25], ['EMP-2', '0.250', 25], ['EMP-3', '0.250', 25], ['EMP-4', '0.250', 25],
+    ])
+    expect(inserted.filter((params) => params[0] === 102).map((params) => params[5])).toEqual([20, 20, 20, 20])
+  })
+
+  test.each([
+    ['比例超 100%', lines(0.3), /合计不能超过 100%/],
+    ['同池重复员工', [...lines(0.2), { saleItemId: 'item-1', employeeId: 'EMP-1', roleType: '养生师', allocationRatio: 0.1 }], /不能重复分配同一员工/],
+    ['单行无效比例', [{ saleItemId: 'item-1', employeeId: 'EMP-1', roleType: '养生师', allocationRatio: 0 }], /allocationRatio 必须/],
+  ])('%s 仍被拒绝，事务未开始', async (_name, allocations, error) => {
+    const ctx = createManagerCtx({ salePaymentId: 7, allocations })
+    await expect(allocationRoutes.savePayment(ctx)).rejects.toThrow(error)
+    expect(pg.transaction).not.toHaveBeenCalled()
+  })
+
+  test('不同技能标签各自独立计算比例', async () => {
+    const allocations = [
+      ...fourEmployees.map((employeeId) => ({ saleItemId: 'item-1', employeeId, roleType: '养生师', allocationRatio: 0.25 })),
+      { saleItemId: 'item-1', employeeId: 'EMP-1', roleType: '美容师', allocationRatio: 1 },
+    ]
+    const ctx = createManagerCtx({ salePaymentId: 7, allocations })
+    await allocationRoutes.savePayment(ctx)
+    expect(ctx.result.allocationCount).toBe(5)
   })
 })

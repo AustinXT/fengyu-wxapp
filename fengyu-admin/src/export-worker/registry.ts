@@ -20,18 +20,38 @@ import { exportEmployees } from '@/actions/employees'
 import { exportPointTransactions } from '@/actions/points'
 import { exportCards } from '@/actions/cards'
 import { exportInventoryLots } from '@/actions/inventory/stocks'
+import { exportInventoryMovements } from '@/actions/inventory/movements'
+import { exportPendingReceipts } from '@/actions/inventory/pending-receipts'
+import { exportPickupRecords } from '@/actions/pickup-records'
 import { getSalesBoard } from '@/actions/data-center/sales'
 import { getCustomerBoard } from '@/actions/data-center/customer'
 import { getProductBoard } from '@/actions/data-center/product'
 import { getEfficiencyBoard } from '@/actions/data-center/efficiency'
+import { getOperatingMaster } from '@/actions/data-center/operating-master'
+import { getDailyOverview } from '@/actions/data-center/daily-overview'
+import {
+  DAILY_OVERVIEW_TAB_LABELS,
+  buildDailyOverviewColumns,
+  parseDailyOverviewTab,
+} from '@/lib/data-center/daily-overview'
 import {
   getDataCenterBreakdownConfig,
   getDataCenterRankingConfig,
   type DataCenterMetricColumn,
 } from '@/lib/data-center/columns'
-import { parseBoardParams } from '@/lib/data-center/params'
+import { isValidCustomRange, parseBoardParams, parseScope } from '@/lib/data-center/params'
+import { countLeftFrozen, toWorkerExportColumns } from '@/lib/data-center/matrix-export'
+import {
+  OPERATING_MASTER_COLUMNS,
+  isOperatingMasterSubtotal,
+  operatingMasterExportGroup,
+  operatingMasterTotalsLabel,
+  parseOperatingMasterExportScope,
+  type OperatingMasterRow,
+} from '@/lib/data-center/operating-master'
+import { isValidMonth, parseReportRange } from '@/lib/data-center/report-period'
 import { headerWithUnit, metricCell } from '@/lib/data-center/export'
-import type { BreakdownRow, RankingRow } from '@/lib/data-center/types'
+import type { BoardMeta, BreakdownRow, DataCenterScope, RankingRow } from '@/lib/data-center/types'
 import { fmtDate, fmtDateTime } from '@/lib/datetime'
 import { formatCurrency } from '@/lib/utils'
 import {
@@ -46,17 +66,34 @@ import {
   aggregateOrderExportRows,
 } from '@/lib/export-row-aggregation'
 import {
+  DATA_CENTER_REPORT_VIEW_PREFIX,
   exportJobLabel,
+  isDataCenterReportExportView,
+  type DataCenterBoardExportView,
   type DataCenterExportPayload,
+  type DataCenterReportExportView,
   type ExportJobPayload,
   type ExportJobType,
 } from '@/lib/export-job-types'
 import type { WorkerExportColumn, ExportCell } from './xlsx-writer'
+import { customerFrequencyContent, remainingCardsContent } from './report-views'
+import { commissionDailyExport, commissionDetailExport } from './report-commission'
+import { scopeExportMeta } from './scope-meta'
+import { STAFF_OUTPUT_SCOPE_NOTE } from '@/lib/data-center/staff-output-note'
+import type { ExportMetaEntry } from './xlsx-writer'
+import type { ExportContextMeta } from './export-meta'
 
 export interface ExportContent {
   sheetName: string
   columns: WorkerExportColumn<Record<string, unknown>>[]
   rows: AsyncIterable<Record<string, unknown>>
+  /** 以下为矩阵报表（#368）可选项，旧导出类型不填即保持原样 */
+  frozenColumns?: number
+  /** 给出即写合计行（各列合计值放在 column.total，见 lib/data-center/matrix-export.ts） */
+  totalsLabel?: string
+  isEmphasisRow?: (row: Record<string, unknown>) => boolean
+  /** 业务元信息（时间区间 / scope / 基期）；导出时间与导出人由 worker 追加 */
+  meta?: ExportContextMeta
 }
 
 type Row = Record<string, unknown>
@@ -455,6 +492,18 @@ const cardColumns = mapColumns([
   { header: '付款时间', width: 20, key: 'paidAt', map: (row) => fmtDateTime(value(row, 'paidAt') as string | Date | null) },
 ])
 
+// #341：出库金额是提货时冻结的「数量 × 顾客实际单价」；上线前的历史记录两列留空（不回填）
+const pickupRecordColumns = mapColumns([
+  { header: '提货时间', width: 20, key: 'createdAt', map: (row) => fmtDateTime(value(row, 'createdAt') as string | Date | null) },
+  { header: '门店', width: 18, key: 'storeName' },
+  { header: '顾客', width: 14, key: 'clientName' },
+  { header: '销售单号', width: 24, key: 'saleOrderId' },
+  { header: '商品', width: 28, key: 'productName' },
+  { header: '数量', width: 8, key: 'pickupQuantity', map: (row) => numberOrEmpty(row, 'pickupQuantity') },
+  { header: '顾客实际单价', width: 14, key: 'pickupUnitPrice', map: (row) => numberOrEmpty(row, 'pickupUnitPrice') },
+  { header: '出库金额', width: 14, key: 'pickupAmount', map: (row) => numberOrEmpty(row, 'pickupAmount') },
+])
+
 const inventoryColumns = (canViewPrice: boolean) => mapColumns([
   { header: '库存主体类型', width: 12, key: 'locationType' },
   { header: '库存主体', width: 20, key: 'locationName', map: (row) => String(value(row, 'locationName') ?? value(row, 'locationId') ?? '') },
@@ -478,9 +527,59 @@ const inventoryColumns = (canViewPrice: boolean) => mapColumns([
   { header: '更新时间', width: 20, key: 'updatedAt', map: (row) => fmtDateTime(value(row, 'updatedAt') as string | Date | null) },
 ])
 
+// 进出明细（#360）：结存是批次结存（流水自带 before/after），不是主体合计。
+// 导出始终带「批号」「批次 ID」列（Excel 里可自行筛选）；页面只在按商品编号查询时显示批号列
+function pendingReceiptColumns(kind: string | undefined) {
+  return mapColumns([
+    { header: kind === 'market' ? '市场' : '门店', width: 20, key: 'recipientName' },
+    { header: kind === 'market' ? '发货日期' : '配货日期', width: 14, key: 'docDate' },
+    { header: '单号', width: 26, key: 'docId' },
+    { header: '商品', width: 24, key: 'skuName' },
+    { header: '批号', width: 24, key: 'batchNo' },
+    { header: '已发', width: 10, key: 'sentQuantity', map: row => numberOrEmpty(row, 'sentQuantity') },
+    { header: '已收', width: 10, key: 'receivedQuantity', map: row => numberOrEmpty(row, 'receivedQuantity') },
+    { header: '未收', width: 10, key: 'pendingQuantity', map: row => numberOrEmpty(row, 'pendingQuantity') },
+    { header: '在途天数', width: 12, key: 'transitDays', map: row => numberOrEmpty(row, 'transitDays') },
+  ])
+}
+
+const inventoryMovementColumns = mapColumns([
+  { header: '时间', width: 20, key: 'createdAt' },
+  { header: '单据类型', width: 16, key: 'docType' },
+  { header: '单号', width: 26, key: 'docId' },
+  { header: 'SKU', width: 24, key: 'skuId' },
+  { header: '产品', width: 32, key: 'skuName' },
+  { header: '规格', width: 16, key: 'specName' },
+  { header: '批号', width: 16, key: 'batchNo' },
+  { header: '批次 ID', width: 10, key: 'lotId', map: (row) => numberOrEmpty(row, 'lotId') },
+  { header: '方向', width: 8, key: 'direction' },
+  { header: '数量', width: 10, key: 'quantityDelta', map: (row) => numberOrEmpty(row, 'quantityDelta') },
+  { header: '变动前结存', width: 12, key: 'quantityBefore', map: (row) => numberOrEmpty(row, 'quantityBefore') },
+  { header: '变动后结存', width: 12, key: 'quantityAfter', map: (row) => numberOrEmpty(row, 'quantityAfter') },
+  { header: '对方主体', width: 20, key: 'counterpartyName' },
+  { header: '经办人', width: 12, key: 'operatorName', map: (row) => String(value(row, 'operatorName') ?? value(row, 'operatorId') ?? '') },
+  { header: '备注', width: 24, key: 'remark' },
+])
+
+async function boardExportMeta(
+  board: BoardMeta,
+  scope: DataCenterScope,
+  extra: ExportMetaEntry[] = [],
+): Promise<ExportContextMeta> {
+  const scopeMeta = await scopeExportMeta(scope, board.scope.name)
+  const period = `${board.timeRange.start} ~ ${board.timeRange.end}`
+  const presetLabel = board.timeRange.presetLabel === period ? '自定义' : board.timeRange.presetLabel
+  return {
+    period: `${period}（${presetLabel}）`,
+    ...scopeMeta,
+    extra: [...(scopeMeta.extra ?? []), ...extra],
+  }
+}
+
 function breakdownContent(
-  view: DataCenterExportPayload['view'],
+  view: DataCenterBoardExportView,
   rows: BreakdownRow[],
+  meta: ExportContextMeta,
 ): ExportContent {
   const config = getDataCenterBreakdownConfig(view)
   const columns: WorkerExportColumn<Row>[] = [
@@ -505,12 +604,14 @@ function breakdownContent(
     sheetName: exportJobLabel('data-center', { view, params: {} }).replace(/.*-/, '').slice(0, 31),
     columns,
     rows: fromRows(rows as unknown as Row[]),
+    meta,
   }
 }
 
 function rankingContent(
   rows: RankingRow[],
   metric: DataCenterMetricColumn,
+  meta: ExportContextMeta,
 ): ExportContent {
   const columns: WorkerExportColumn<Row>[] = [
     { header: '排名', width: 8, value: (row) => numberOrEmpty(row, 'rank') },
@@ -522,6 +623,93 @@ function rankingContent(
     sheetName: metric.label,
     columns,
     rows: fromRows(rows as unknown as Row[]),
+    meta,
+  }
+}
+
+/** 经营数据主表（#372）：列定义与页面同源，合计 / 小计由 action 按全量门店算好 */
+async function operatingMasterContent(raw: Record<string, string>): Promise<ExportContent> {
+  // 导出参数来自页面生效值（非法 URL 已在页面回落），这里再拒一次：拿不到月份宁可失败，也不按某个默认月出数
+  if (!isValidMonth(raw.month)) throw new Error('INVALID_PARAMS: 导出缺少统计月份')
+  const scope = parseOperatingMasterExportScope({ scope: raw.scope, scopeId: raw.scopeId })
+  const result = await getOperatingMaster({ scope, month: raw.month })
+  const scopeMeta = await scopeExportMeta(scope, result.scopeName)
+  const columns = toWorkerExportColumns(OPERATING_MASTER_COLUMNS, result.totals).map((column, index) => {
+    const spec = OPERATING_MASTER_COLUMNS[index]
+    const group = operatingMasterExportGroup(spec)
+    return {
+      ...column,
+      group: group ? { key: group.key, header: group.header } : undefined,
+      // 目标占位列在合计行同样显示「—」（#374 拍板），不是空白
+      ...(spec.pending ? { total: '—' } : {}),
+    }
+  })
+  return {
+    sheetName: '经营数据主表',
+    columns: columns as unknown as WorkerExportColumn<Row>[],
+    rows: fromRows(result.rows as unknown as Row[]),
+    frozenColumns: countLeftFrozen(OPERATING_MASTER_COLUMNS),
+    totalsLabel: operatingMasterTotalsLabel(result.multiMarket),
+    isEmphasisRow: (row) => isOperatingMasterSubtotal(row as unknown as OperatingMasterRow),
+    meta: {
+      period: `${result.range.start} ~ ${result.range.end}`,
+      ...scopeMeta,
+      extra: [
+        ...(scopeMeta.extra ?? []),
+        { label: '统计时点', value: `${result.asOf}（保有会员截至这一天近 90 天到店）` },
+        { label: '年度累计区间', value: `${result.ytd.start} ~ ${result.ytd.end}（R、K 列；不含 WorkFine 历史单）` },
+        { label: '说明', value: '显示「—」的是目标列（J、N、O、Q），本期未设目标、不取数' },
+      ],
+    },
+  }
+}
+
+/** 日常数据一览表（#369）：只导 `tab` 指定的视角（☆ 默认只导当前页签），视角③带两行合并表头。 */
+async function queryDailyOverview(raw: Record<string, string>): Promise<ExportContent> {
+  // 页面允许回落；导出必须拒绝会让解析器回落的自定义区间。
+  if (raw.period === 'custom' && parseReportRange(raw).preset !== 'custom') {
+    throw new Error('INVALID_PARAMS: 导出的时间范围无效（须为合法日期、开始不晚于结束及今天，且不超过 366 天）')
+  }
+  const tab = parseDailyOverviewTab(raw.tab)
+  const result = await getDailyOverview(raw)
+  const scopeMeta = await scopeExportMeta(parseScope(raw), result.scope.name)
+  const columns = buildDailyOverviewColumns(tab, result.data)
+  return {
+    sheetName: DAILY_OVERVIEW_TAB_LABELS[tab],
+    columns: toWorkerExportColumns(columns, result.data.totals) as unknown as WorkerExportColumn<Row>[],
+    rows: fromRows(result.data.rows as unknown as Row[]),
+    frozenColumns: countLeftFrozen(columns),
+    totalsLabel: '合计',
+    meta: {
+      period: `${result.period.current.start} ~ ${result.period.current.end}`,
+      ...scopeMeta,
+      extra: [...(scopeMeta.extra ?? []), { label: '视角', value: DAILY_OVERVIEW_TAB_LABELS[tab] }],
+    },
+  }
+}
+
+/**
+ * 经营明细报表视图（#367 起，`report-` 前缀）。按视图名**精确**分发，不用前缀判断；
+ * 新登记的报表视图漏了这里 tsc 就报错（switch 穷尽）。
+ */
+async function queryReport(view: DataCenterReportExportView, raw: Record<string, string>): Promise<ExportContent> {
+  switch (view) {
+    case 'report-operating-master':
+      return operatingMasterContent(raw)
+    case 'report-remaining-cards':
+      return remainingCardsContent(raw)
+    case 'report-daily-overview':
+      return queryDailyOverview(raw)
+    case 'report-customer-frequency':
+      return customerFrequencyContent(raw)
+    case 'report-commission-daily':
+      return commissionDailyExport(raw)
+    case 'report-commission-detail':
+      return commissionDetailExport(raw)
+    default: {
+      const unhandled: never = view
+      throw new Error(`INVALID_PARAMS: 未知的报表导出视图 ${String(unhandled)}`)
+    }
   }
 }
 
@@ -529,19 +717,26 @@ async function queryDataCenter(
   payload: DataCenterExportPayload,
 ): Promise<ExportContent> {
   const raw = payload.params
+  // ⚠ 报表视图必须最先分发：下面的旧板块按视图名前缀判断，报表视图若撞上 `sales-` 等前缀会被派给
+  // 板块取数、静默导错内容（registry.test 守护「报表视图不走板块取数」+「视图名 report- 前缀」）
+  if (isDataCenterReportExportView(payload.view)) return queryReport(payload.view, raw)
+  // 导出参数在服务端解析：自定义区间非法报 INVALID_PARAMS，不像 URL 层那样回落本月（#308）
+  if (raw.preset === 'custom' && !isValidCustomRange(raw.start, raw.end)) {
+    throw new Error('INVALID_PARAMS: 导出的时间范围无效（须为合法日期且开始不晚于结束）')
+  }
   const base = parseBoardParams(raw)
-  const view = payload.view
+  const view: DataCenterBoardExportView = payload.view
   if (view.startsWith('sales-')) {
     const board = await getSalesBoard(base)
     const rows = view === 'sales-market' ? board.byMarket : board.byStore
-    return breakdownContent(view, rows)
+    return breakdownContent(view, rows, await boardExportMeta(board, base.scope))
   }
   if (view.startsWith('customer-')) {
     const board = await getCustomerBoard(base)
     const rows = view.endsWith('-reg')
       ? (view.startsWith('customer-market') ? board.byMarket : board.byStore)
       : (view.startsWith('customer-market') ? board.byMarket : board.byStore)
-    return breakdownContent(view, rows)
+    return breakdownContent(view, rows, await boardExportMeta(board, base.scope))
   }
   if (view.startsWith('product-')) {
     const board = await getProductBoard({
@@ -550,17 +745,25 @@ async function queryDataCenter(
       categoryName: raw.category || undefined,
     })
     const rows = view === 'product-market' ? board.byMarket : board.byStore
-    return breakdownContent(view, rows)
+    return breakdownContent(view, rows, await boardExportMeta(board, base.scope, [
+      ...(raw.kind?.trim() ? [{ label: '品项分类', value: raw.kind.trim() }] : []),
+      ...(raw.category?.trim() ? [{ label: '二级品项', value: raw.category.trim() }] : []),
+    ]))
   }
 
+  // 人效是最后一个板块：显式判前缀，未知视图抛错而不是兜底派给人效板（旧写法对任何新视图都 fail-open）
+  if (!view.startsWith('efficiency-')) throw new Error(`INVALID_PARAMS: 未知的数据中心导出视图 ${view}`)
   const board = await getEfficiencyBoard(base)
-  if (view === 'efficiency-market') return breakdownContent(view, board.byMarket)
-  if (view === 'efficiency-staff') return breakdownContent(view, board.byStaff)
+  if (view === 'efficiency-market') return breakdownContent(view, board.byMarket, await boardExportMeta(board, base.scope))
+  if (view === 'efficiency-staff') return breakdownContent(view, board.byStaff, await boardExportMeta(board, base.scope, [{ label: '口径', value: STAFF_OUTPUT_SCOPE_NOTE }]))
   const config = getDataCenterRankingConfig(view)
   const metric = config.metrics.find((item) => item.key === payload.metric)
   if (!metric) throw new Error('INVALID_PARAMS: 排名指标无效')
   const source = view === 'efficiency-store-ranking' ? board.storeRankings : board.staffRankings
-  return rankingContent(source[metric.key] ?? [], metric)
+  return rankingContent(source[metric.key] ?? [], metric, await boardExportMeta(board, base.scope, [
+    { label: '排名指标', value: metric.label },
+    ...(view === 'efficiency-staff-ranking' ? [{ label: '口径', value: STAFF_OUTPUT_SCOPE_NOTE }] : []),
+  ]))
 }
 
 function queryProducts(payload: Record<string, string>): ExportContent {
@@ -728,6 +931,24 @@ export async function createExportContent(
         rows: pagedRows((options: ExportBatchOptions<number>) => exportInventoryLots(params, options), firstPage),
       }
     }
+    case 'inventory-pending-receipts':
+      return {
+        sheetName: params.kind === 'market' ? '市场入库情况' : '分院未入库明细',
+        columns: pendingReceiptColumns(params.kind),
+        rows: pagedRows((options: ExportBatchOptions<string>) => exportPendingReceipts(params, options)),
+      }
+    case 'inventory-movements':
+      return {
+        sheetName: '进出明细',
+        columns: inventoryMovementColumns,
+        rows: pagedRows((options: ExportBatchOptions<number>) => exportInventoryMovements(params, options)),
+      }
+    case 'pickup-records':
+      return {
+        sheetName: '提货记录',
+        columns: pickupRecordColumns,
+        rows: pagedRows((options: ExportBatchOptions<number>) => exportPickupRecords(params, options)),
+      }
     case 'products':
       return queryProducts(params)
     case 'mall-products':

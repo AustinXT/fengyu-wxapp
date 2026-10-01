@@ -57,7 +57,10 @@ const FILES = {
   adminHomeProductTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/home-product.ts'),
   staffMgmtCustomerJs: path.resolve(__dirname, '../../routes/mgmt-customer.js'),
   adminCardsTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/cards.ts'),
+  adminCardEntitlementTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/card-entitlement.ts'),
+  adminRemainingCardsQueryTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/data-center/remaining-cards-query.ts'),
   adminPickupRecordsTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/pickup-records.ts'),
+  adminPickupAmountTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/pickup-amount.ts'),
   staffPaymentAllocatableJs: path.resolve(__dirname, '../../utils/payment-allocatable.js'),
   clientPaymentAllocatableJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/clientApi/utils/payment-allocatable.js'),
   payNotifyPaymentAllocatableJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/payNotify/payment-allocatable.js'),
@@ -112,6 +115,9 @@ const FILES = {
   // M1（2026-07-14）：admin confirmServiceOrder 经 lib/service-commission-settle.ts 镜像同口径
   adminServiceCommissionSettleTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/service-commission-settle.ts'),
   adminServicesTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/services.ts'),
+  // #379 服务提成手动保存两端（staff save / admin batchSave）：与 finalize 同算阈值保底
+  staffServiceCommissionJs: path.resolve(__dirname, '../../routes/serviceCommission.js'),
+  adminServiceCommissionsTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/service-commissions.ts'),
   staffVisitPointsJs: path.resolve(__dirname, '../../utils/visit-points.js'),
   clientVisitPointsJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/clientApi/utils/visit-points.js'),
   adminVisitPointsTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/visit-points.ts'),
@@ -1683,7 +1689,7 @@ describe("STEP 1.5 逐项退款净额 SQL 四端字节同义守护", () => {
 // operation_logs 缺率告警 INSERT 因 operator/source 字面不同（staffApi vs clientApi），不纳入比对。
 describe('服务单 finalize 跨端 SQL 一致性守护（staff / client / admin 三端）', () => {
   const MARKER_SVC_DEDUCT = 'remaining_sessions = remaining_sessions - $1'
-  const MARKER_SVC_RATE = 'commission_rate FROM commission_rate_matrix'
+  const MARKER_SVC_RATE = 'commission_rate, price_threshold FROM commission_rate_matrix'
   const MARKER_SVC_COMM_INSERT = 'INSERT INTO service_commissions'
 
   let deduct, rate, commInsert
@@ -1728,6 +1734,10 @@ describe('服务单 finalize 跨端 SQL 一致性守护（staff / client / admin
       expect(rate.staff).toContain("order_type = '服务单'")
       expect(rate.admin).toContain("order_type = '服务单'")
     })
+    test('#379 staff serviceCommission.save 查率 SELECT 与 finalize 归一化后一致（阈值取自同一命中行）', () => {
+      const saveRate = normalizeSql(extractBacktickStringContaining(readFile(FILES.staffServiceCommissionJs), MARKER_SVC_RATE))
+      expect(saveRate).toBe(rate.staff)
+    })
     test('按服务单所属市场过滤（org_id = store→org 树解析市场节点，防跨市场费率行碰撞）', () => {
       expect(rate.staff).toContain('org_id =')
       expect(rate.staff).toContain('JOIN org_nodes m ON son.parent_id = m.id')
@@ -1735,6 +1745,60 @@ describe('服务单 finalize 跨端 SQL 一致性守护（staff / client / admin
       expect(rate.admin).toContain('org_id =')
       expect(rate.admin).toContain('JOIN org_nodes m ON son.parent_id = m.id')
     })
+  })
+
+  // #379 划卡单价阈值：五个写入副本（finalize ×3 + 手动保存 ×2）的消耗提成计算段**整行等值**守护。
+  // 各副本变量名不同，先按副本登记「单价 P / 次数 N / 命中行 R」三个别名，把 Math.round(x * 100) / 100
+  // 归一成 round2(x)、drizzle 驼峰字段归一成列名，再与标准形态逐字比较——次数、舍入、ratio、选档参数
+  // 任何一处被改（如 × (N + 1)、选档改用 effConsumeBase）都会失败。先剥注释，防「注释掉新行留旧行」。
+  describe('#379 消耗提成阈值保底五端整段等值', () => {
+    const COPIES = [
+      { name: 'staff finalize', file: () => FILES.staffServiceJs, P: 'perSession', N: 'row.session_used', R: 'rateRows.rows[0]', split: false,
+        perSession: 'Number(row.unit_real_price || 0)', tier: /\[roleType, row\.sales_category, consumeBase, serviceOrderId\]/ },
+      { name: 'client finalize', file: () => FILES.clientServiceFinalizeJs, P: 'perSession', N: 'row.session_used', R: 'rateRows.rows[0]', split: false,
+        perSession: 'Number(row.unit_real_price || 0)', tier: /\[roleType, row\.sales_category, consumeBase, serviceOrderId\]/ },
+      { name: 'admin settle', file: () => FILES.adminServiceCommissionSettleTs, P: 'perSession', N: 'sessionUsed', R: 'rateRows[0]', split: false,
+        perSession: 'Number(row.unit_real_price || 0)', tier: /amount_tier_min <= \$\{consumeBase\}\s+AND \(amount_tier_max IS NULL OR amount_tier_max >= \$\{consumeBase\}\)/ },
+      { name: 'staff save', file: () => FILES.staffServiceCommissionJs, P: 'Number(p.unit_real_price || 0)', N: 'sessionUsed', R: 'rateRows.rows[0]', split: true,
+        perSession: null, tier: /\[c\.roleType, p\.sales_category, consumeBase, serviceOrderId\]/ },
+      { name: 'admin batchSave', file: () => FILES.adminServiceCommissionsTs, P: 'perSession', N: 'pricing.sessionUsed', R: 'rateRows[0]', split: true,
+        perSession: 'Number(pricing.unitRealPrice)', tier: /amountTierMin\} <= \$\{consumeBase\}`,\s+sql`\(\$\{commissionRateMatrix\.amountTierMax\} IS NULL OR \$\{commissionRateMatrix\.amountTierMax\} >= \$\{consumeBase\}\)/ },
+    ]
+    const EXPECTED = {
+      consumeBase: 'round2(P * N)',
+      rate: 'Number(R?.commission_rate || 0)',
+      effConsumeBase: 'round2(Math.max(P, Number(R?.price_threshold || 0)) * N)',
+    }
+
+    /** 取 `const <name> = <rhs>` 的 rhs（须恰好一处），归一舍入写法与别名 */
+    function canon(src, name, copy) {
+      const hits = [...src.matchAll(new RegExp(`const ${name} = ([^\\n]+)`, 'g'))].map((m) => m[1].trim())
+      expect(hits, `${copy.name}: const ${name} 应恰好一处`).toHaveLength(1)
+      let rhs = hits[0]
+      const mr = rhs.match(/^Math\.round\((.*) \* 100\) \/ 100$/)
+      if (mr) rhs = `round2(${mr[1]})`
+      return rhs
+        .split(copy.R).join('R')
+        .split(copy.P).join('P')
+        .split(copy.N).join('N')
+        .replace(/\bpriceThreshold\b/g, 'price_threshold')
+        .replace(/\bcommissionRate\b/g, 'commission_rate')
+    }
+
+    for (const copy of COPIES) {
+      test(`${copy.name}：consumeBase / rate / effConsumeBase / consumeAmount 整行等值 + 选档用原始 consumeBase`, () => {
+        const src = stripJsComments(readFile(copy.file()))
+        if (copy.perSession) {
+          const ps = [...src.matchAll(/const perSession = ([^\n]+)/g)].map((m) => m[1].trim())
+          expect(ps).toEqual([copy.perSession])
+        }
+        expect(canon(src, 'consumeBase', copy)).toBe(EXPECTED.consumeBase)
+        expect(canon(src, 'rate', copy)).toBe(EXPECTED.rate)
+        expect(canon(src, 'effConsumeBase', copy)).toBe(EXPECTED.effConsumeBase)
+        expect(canon(src, 'consumeAmount', copy)).toBe(copy.split ? 'round2(effConsumeBase * ratio * rate)' : 'round2(effConsumeBase * rate)')
+        expect(src).toMatch(copy.tier)
+      })
+    }
   })
 
   describe('service_commissions 写入 INSERT 镜像比对', () => {
@@ -2834,6 +2898,18 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
     ['admin 提货', FILES.adminPickupRecordsTs],
   ]
 
+  // #350：提货候选按销售单分组，组头「下单日期」两端同口径 —— 取 sale_order_datetime（真实下单时间；
+  // 历史导入 / 补录单的 created_at 是导入当天），在 SQL 里按上海日历日截成 YYYY-MM-DD。
+  // 一端改字段或时区、另一端没跟，两个提货页的组头日期就会对不上。
+  test.each(PICKUP_QUERY_FILES)('%s 下单日期两端字面同源（#350）', (_name, file) => {
+    const src = normalizeSql(stripComments(readFile(file)))
+    expect(src).toContain("to_char(o.sale_order_datetime AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD') AS order_date")
+    expect(src).toContain('MIN(order_date) AS order_date')
+    expect(src, '组头日期不得回退到 created_at（历史单会显示导入当天）').not.toContain('to_char(o.created_at')
+    // 组头「开单门店」取订单快照 sale_orders.store_name，缺快照才回退实时门店名（门店改名后历史单不漂）
+    expect(src).toContain("COALESCE(NULLIF(o.store_name, ''), s.store_name) AS store_name")
+  })
+
   // 可提件数与折抵额度必须共用「剩余已付 = 行实收 − 已提货金额 − 已转走金额」口径。
   // 曾经折抵按金额扣、提货按件数扣，两者在折抵金额含余数时对不上：折 4 件带走 ¥450 后
   // 再回款 ¥50，提货侧按件数会多放出 1 件，累计兑现 ¥550 > 累计实收 ¥500（对抗审查实证）。
@@ -3294,9 +3370,13 @@ describe('#125 家居转换折抵跨端守护', () => {
       expect(src).toContain("row.order_status !== '已支付' && row.order_status !== '部分支付' && row.order_status !== '已完成'")
     })
     test('admin getCustomerHeldCards 复用 CARD_ENTITLEMENT_ORDER_STATUSES，createConversionOrder 同步放开', () => {
-      const cardsSrc = readFile(path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/cards.ts'))
-      // 与卡包列表共用同一组状态常量，避免两处硬编码漂移
-      expect(cardsSrc).toContain("const CARD_ENTITLEMENT_ORDER_STATUSES = ['已支付', '部分支付', '已完成']")
+      const cardsSrc = readFile(FILES.adminCardsTs)
+      // 与卡包列表共用同一组状态常量（#371 起单源在 lib/card-entitlement.ts），避免两处硬编码漂移
+      expect(readFile(FILES.adminCardEntitlementTs)).toContain("export const CARD_ENTITLEMENT_ORDER_STATUSES = ['已支付', '部分支付', '已完成']")
+      expect(cardsSrc, 'cards.ts 须从 lib/card-entitlement 引用状态常量，不得本地再写一份').toMatch(
+        /import \{[^}]*\bCARD_ENTITLEMENT_ORDER_STATUSES\b[^}]*\} from '@\/lib\/card-entitlement'/,
+      )
+      expect(cardsSrc).not.toMatch(/const CARD_ENTITLEMENT_ORDER_STATUSES\s*=/)
       expect(cardsSrc).toMatch(/inArray\(saleOrders\.status, \[\.\.\.CARD_ENTITLEMENT_ORDER_STATUSES\]\)[\s\S]{0,600}疗程卡/)
       const ordersSrc = readFile(FILES.adminOrdersTs)
       expect(ordersSrc).toContain("row.order_status !== '已支付' && row.order_status !== '部分支付' && row.order_status !== '已完成'")
@@ -3413,13 +3493,17 @@ describe('疗程卡可用次数为 0 时仍展示的跨端守护（issue #122）
   })
 
   test('admin 卡包列表按剩余次数展示，不再按已付次数硬过滤', () => {
-    const src = readFile(FILES.adminCardsTs)
-    // 断言必须锁在 buildCardBaseConditions 函数体内：同文件别处也有
-    // `remainingSessions > 0`，文件级 toContain 会被兄弟代码兜底而测不出回退。
-    const body = src.match(
+    // #371 起基础集单源在 lib/card-entitlement.ts 的 cardBaseConditions()，卡包列表与数据中心剩余卡项清单共用。
+    // 断言必须锁在函数体内：同一批文件别处也有 `remainingSessions > 0`，文件级 toContain 会被兄弟代码兜底而测不出回退。
+    const cardsBody = readFile(FILES.adminCardsTs).match(
       /function buildCardBaseConditions\b[\s\S]*?\n\}/,
     )?.[0]
-    expect(body, '未能定位 buildCardBaseConditions 函数体').toBeTruthy()
+    expect(cardsBody, '未能定位 buildCardBaseConditions 函数体').toBeTruthy()
+    expect(cardsBody, 'buildCardBaseConditions 须展开共用基础集').toContain('...cardBaseConditions()')
+    const body = readFile(FILES.adminCardEntitlementTs).match(
+      /export function cardBaseConditions\b[\s\S]*?\n\}/,
+    )?.[0]
+    expect(body, '未能定位 cardBaseConditions 函数体').toBeTruthy()
     expect(body, '不得回退到 paid_sessions > 0 硬过滤').not.toContain(
       'sql`${saleItems.paidSessions} > 0`',
     )
@@ -3428,6 +3512,21 @@ describe('疗程卡可用次数为 0 时仍展示的跨端守护（issue #122）
     expect(body, '基础集不得按次数过滤').not.toContain(
       'sql`${saleItems.remainingSessions} > 0`',
     )
+  })
+
+  // #371：admin「已退完」守卫从 getCustomerHeldCards 内联抽到 lib/card-entitlement.ts，持卡折抵候选与
+  // 数据中心剩余卡项清单共用。它一漂，已退款的卡会在两处复活（见 staff customer.js 同款守卫注释）。
+  test('admin 已退完守卫单源锁住，且折抵候选与剩余卡项清单都走它', () => {
+    const body = readFile(FILES.adminCardEntitlementTs).match(
+      /export function cardNotFullyRefundedCondition\b[\s\S]*?\n\}/,
+    )?.[0]
+    expect(body, '未能定位 cardNotFullyRefundedCondition 函数体').toBeTruthy()
+    expect(body).toContain("sop.change_type = '退款' AND sop.status = '已支付'")
+    expect(body).toContain('${saleItems.paidSessions} IS NULL OR ${saleItems.paidSessions} > (${saleItems.sessionCount} - ${saleItems.remainingSessions})')
+    const heldCards = readFile(FILES.adminCardsTs).match(/export const getCustomerHeldCards\b[\s\S]*?\n\)\n/)?.[0]
+    expect(heldCards, '未能定位 getCustomerHeldCards').toBeTruthy()
+    expect(heldCards).toContain('cardNotFullyRefundedCondition()')
+    expect(readFile(FILES.adminRemainingCardsQueryTs)).toContain('cardNotFullyRefundedCondition()')
   })
 
   // 核销限额与展示解耦：service 侧三处校验必须原样保留，放宽展示不得放宽核销。
@@ -3657,4 +3756,229 @@ describe('#224 服务单门店门：counts 与 todoList 店长分支同口径', 
     const mgmtGuards = (serviceSrc.match(/管理层模式仅支持只读操作/g) || []).length
     expect(mgmtGuards).toBe(2) // start + complete
   })
+})
+
+/**
+ * #341 提货冻结出库金额：staffApi `routes/order.js` 与 admin `actions/pickup-records.ts`（helper 在
+ * `lib/pickup-amount.ts`）两个副本。守护按闭集写：helper 函数体整段等值；写入点逐一登记（每端恰好两处），
+ * 多一处 / 少一处 / 列清单或取值换了任何一端都会红。
+ */
+describe('#341 提货冻结出库金额：两端副本一致', () => {
+  const staffSrc = () => stripJsComments(readFile(FILES.staffOrderJs))
+  const adminSrc = () => stripJsComments(readFile(FILES.adminPickupRecordsTs))
+
+  /** 取 `function <name>(` 的参数表与函数体（花括号配平）；参数去掉 TS 类型标注 */
+  function extractSyncFunction(src, name) {
+    const start = src.indexOf(`function ${name}(`)
+    expect(start, `未找到 function ${name}`).toBeGreaterThanOrEqual(0)
+    const paramsStart = src.indexOf('(', start)
+    const paramsEnd = src.indexOf(')', paramsStart)
+    const params = src.slice(paramsStart + 1, paramsEnd)
+      .split(',')
+      .map((param) => param.split(':')[0].trim())
+      .filter(Boolean)
+    const bodyStart = src.indexOf('{', paramsEnd)
+    let depth = 0
+    for (let i = bodyStart; i < src.length; i++) {
+      if (src[i] === '{') depth++
+      if (src[i] === '}') depth--
+      if (depth === 0) return { params, body: src.slice(bodyStart + 1, i) }
+    }
+    throw new Error(`function ${name} 花括号不配平`)
+  }
+
+  test('pickupAmountSnapshot 两端参数与函数体整段等值（仅 throw 语句允许 Error / ApiError 之差）', () => {
+    const staff = extractSyncFunction(staffSrc(), 'pickupAmountSnapshot')
+    const admin = extractSyncFunction(stripJsComments(readFile(FILES.adminPickupAmountTs)), 'pickupAmountSnapshot')
+    expect(admin.params).toEqual(staff.params)
+    const compute = (body) => body.split('\n').filter((line) => !/^\s*throw /.test(line)).join('\n').replace(/\s+/g, ' ').trim()
+    expect(compute(admin.body)).toBe(compute(staff.body))
+    // 两端都必须真的抛（去掉 throw 的整段等值测不到这一点），且报错文案一致
+    const throwLine = (body) => (body.match(/^\s*throw .*$/m) || [''])[0]
+    expect(throwLine(staff.body)).toContain("new Error('INVALID_STATE: 销售明细缺少顾客实际单价，无法计算出库金额')")
+    expect(throwLine(admin.body)).toContain("new ApiError('INVALID_STATE', '销售明细缺少顾客实际单价，无法计算出库金额')")
+  })
+
+  test('冻结调用闭集：每端恰好两处，单价都取已加锁 sale_items 行的 unit_real_price', () => {
+    const calls = (src) => [...src.matchAll(/const frozen = pickupAmountSnapshot\(([^)]*)\)/g)].map((m) => m[1].replace(/\s+/g, ' '))
+    expect(calls(staffSrc())).toEqual(['item.unit_real_price, 1', 'row.unit_real_price, requestedQuantity'])
+    expect(calls(adminSrc())).toEqual(['item.unit_real_price, 1', 'lockedItem.unit_real_price, data.pickupQuantity'])
+    // 除定义与这两处外不得再有别的调用（绕开冻结口径另算金额）
+    expect(staffSrc().match(/pickupAmountSnapshot\(/g)).toHaveLength(3)
+    expect(adminSrc().match(/pickupAmountSnapshot\(/g)).toHaveLength(2)
+  })
+
+  test('staffApi 两处 pickup_records INSERT：列清单整段等值，数量与冻结调用一致，末两位参数是冻结值', () => {
+    const src = staffSrc()
+    const EXPECTED_COLUMNS = '(sale_item_id, inventory_sku_id, pickup_quantity, store_id, client_user_id, confirmed_by, remark, idempotency_key, pickup_unit_price, pickup_amount)'
+    const sites = [...src.matchAll(/const frozen = pickupAmountSnapshot\([\s\S]*?frozen\.amount\]/g)].map((m) => m[0])
+    expect(sites).toHaveLength(2)
+    expect(src.match(/INSERT INTO pickup_records/g)).toHaveLength(2)
+    const expected = [
+      { values: 'VALUES (?, NULL, 1, ?, ?, ?, ?, ?, ?, ?)', paramsHead: '[item.sale_item_id, ctx.auth.effectiveStoreId,' },
+      { values: 'VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)', paramsHead: '[saleItemId, requestedQuantity,' },
+    ]
+    sites.forEach((site, index) => {
+      expect(site.match(/INSERT INTO pickup_records/g), `第 ${index + 1} 处冻结与 INSERT 之间夹了别的写入`).toHaveLength(1)
+      const insert = normalizeSql(extractBacktickStringContaining(site, 'INSERT INTO pickup_records'))
+      expect(insert).toBe(`INSERT INTO pickup_records ${EXPECTED_COLUMNS} ${expected[index].values}`)
+      const params = site.slice(site.lastIndexOf('`,') + 2).replace(/\s+/g, ' ').trim()
+      expect(params.startsWith(expected[index].paramsHead), params).toBe(true)
+      expect(params.endsWith('frozen.unitPrice, frozen.amount]'), params).toBe(true)
+    })
+  })
+
+  test('admin 两处 insert(pickupRecords)：数量与冻结调用一致，写入冻结值', () => {
+    const src = adminSrc()
+    const sites = [...src.matchAll(/const frozen = pickupAmountSnapshot\([\s\S]*?\.returning\(\{ id: pickupRecords\.id \}\)/g)].map((m) => m[0])
+    expect(sites).toHaveLength(2)
+    expect(src.match(/insert\(pickupRecords\)/g)).toHaveLength(2)
+    const quantities = ['1', 'data.pickupQuantity']
+    sites.forEach((site, index) => {
+      expect(site.match(/insert\(pickupRecords\)/g)).toHaveLength(1)
+      const values = site.slice(site.indexOf('.values({')).replace(/\s+/g, ' ')
+      expect(values).toContain(`pickupQuantity: ${quantities[index]},`)
+      expect(values).toContain('pickupUnitPrice: frozen.unitPrice, pickupAmount: frozen.amount, })')
+    })
+  })
+
+  test('GCK 明细带锁定批次价格快照：两端列清单整段等值、取值同序，且不写 actual_unit_price', () => {
+    const SNAPSHOT_COLUMNS = [
+      'supply_chain_unit_cost', 'market_standard_unit_price', 'market_unit_discount',
+      'market_actual_unit_price', 'store_standard_unit_price', 'store_unit_discount',
+      'store_actual_unit_price',
+    ]
+    const staffGck = extractFunctionSection(staffSrc(), 'createPickupInventoryDoc')
+    const adminGck = extractFunctionSection(adminSrc(), 'createPickupInventoryDoc')
+    const insertColumns = (section) => {
+      const insert = normalizeSql(extractBacktickStringContaining(section, 'INSERT INTO inventory_doc_items'))
+      return insert.slice(insert.indexOf('('), insert.indexOf(')') + 1)
+    }
+    expect(insertColumns(adminGck)).toBe(insertColumns(staffGck))
+    expect(insertColumns(staffGck).endsWith(`remark, ${SNAPSHOT_COLUMNS.join(', ')})`)).toBe(true)
+    for (const section of [staffGck, adminGck]) {
+      expect(insertColumns(section)).not.toMatch(/\bactual_unit_price\b/)
+      expect(insertColumns(section)).not.toMatch(/\bamount\b/)
+      const lotSelect = normalizeSql(extractBacktickStringContaining(section, 'FROM inventory_stock_lots lot'))
+      for (const column of SNAPSHOT_COLUMNS) expect(lotSelect).toContain(`lot.${column}`)
+      const valueOrder = [...section.matchAll(/lot\.([a-z_]+) \?\? null/g)].map((m) => m[1])
+      expect(valueOrder).toEqual(SNAPSHOT_COLUMNS)
+    }
+  })
+
+  /** 扫非测试源码（不含 migrations / 归档 / 产物），返回命中 pattern 的仓库相对路径（已剥注释） */
+  function repoFilesMatching(pattern, roots = ['fengyu-admin/src', 'fengyu-staff/cloudfunctions', 'fengyu-client/cloudfunctions', 'db/scripts']) {
+    const repoRoot = path.resolve(__dirname, '../../../../..')
+    const SKIP_DIRS = new Set(['node_modules', '__tests__', 'dist', '.next'])
+    const hits = []
+    const walk = (dir) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+          if (!SKIP_DIRS.has(entry.name) && !entry.name.startsWith('_archive')) walk(path.join(dir, entry.name))
+          continue
+        }
+        if (!/\.(js|mjs|cjs|ts|tsx|sql)$/.test(entry.name) || /\.test\.|\.spec\./.test(entry.name)) continue
+        const file = path.join(dir, entry.name)
+        if (pattern.test(stripJsComments(readFile(file)))) hits.push(path.relative(repoRoot, file))
+      }
+    }
+    for (const root of roots) walk(path.join(repoRoot, root))
+    return hits.sort()
+  }
+
+  test('全仓写入闭集 · INSERT：非测试代码里新增 pickup_records 行的只有这两个文件（新写入口必须先接入冻结金额再登记）', () => {
+    // 容忍空白 / 换行 / schema 限定名 / 大小写：`tx.insert (pickupRecords)`、`INSERT INTO public.pickup_records`
+    const INSERT_WRITER = /INSERT\s+INTO\s+(?:"?public"?\s*\.\s*)?"?pickup_records"?|\binsert\s*\(\s*pickupRecords\s*\)/i
+    expect(repoFilesMatching(INSERT_WRITER)).toEqual([
+      'fengyu-admin/src/actions/pickup-records.ts',
+      'fengyu-staff/cloudfunctions/staffApi/routes/order.js',
+    ])
+  })
+
+  test('全仓写入闭集 · UPDATE：只有顾客合并改写 client_user_id，且不碰数量与冻结金额', () => {
+    // 容忍 ONLY / schema / `AS pr` 与裸别名 `pickup_records pr SET`（#341 评审 round-3）
+    const UPDATE_WRITER = /UPDATE\s+(?:ONLY\s+)?(?:"?public"?\s*\.\s*)?"?pickup_records"?(?:\s+(?:AS\s+)?(?!SET\b)\w+)?\s+SET\b|\bupdate\s*\(\s*pickupRecords\s*\)|reassignCol\s*\(\s*pickupRecords\b/i
+    expect(repoFilesMatching(UPDATE_WRITER)).toEqual([
+      // 豁免：2026-04 销售单领域重构的一次性脚本，改的是早已删除的 pickup_records.picked_up_quantity 列
+      'db/scripts/migrate-sale-order-domain.sql',
+      'db/scripts/migration-2026-04-26-domain-refactor/04_step_d_5channel_rollback.sql',
+      'fengyu-admin/src/actions/customers.ts',
+    ])
+    const customers = stripJsComments(readFile(path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/customers.ts')))
+    const calls = customers.match(/reassignCol\s*\(\s*pickupRecords\b[^)]*\)/g) || []
+    expect(calls.map((call) => call.replace(/\s+/g, ' '))).toEqual([
+      'reassignCol(pickupRecords, pickupRecords.clientUserId, { clientUserId: sourceUserId })',
+    ])
+  })
+
+  test('冻结列标识符闭集：引用 pickup_unit_price / pickup_amount 的非测试源码只有已登记的这些', () => {
+    const FROZEN_COLUMN = /\b(?:pickup_unit_price|pickup_amount|pickupUnitPrice|pickupAmount)\b/
+    expect(repoFilesMatching(FROZEN_COLUMN, [
+      'fengyu-admin/src', 'fengyu-staff/cloudfunctions', 'fengyu-client/cloudfunctions', 'db/scripts', 'db/schema',
+    ])).toEqual([
+      'db/schema/pickup.ts',
+      'fengyu-admin/src/actions/pickup-records.ts',
+      'fengyu-admin/src/app/(main)/(operations)/pickup-records/_components/pickup-records-page.tsx',
+      'fengyu-admin/src/export-worker/registry.ts',
+      'fengyu-staff/cloudfunctions/staffApi/routes/order.js',
+    ])
+  })
+
+  test('GCK 单头 INSERT 两端整段等值，类型固定「院顾客产品出库」（类型决定金额触发器取哪档成本）', () => {
+    const header = (src) => normalizeSql(extractBacktickStringContaining(
+      extractFunctionSection(src, 'createPickupInventoryDoc'), 'INSERT INTO inventory_docs (',
+    ))
+    const staff = header(staffSrc())
+    expect(header(adminSrc())).toBe(staff)
+    expect(staff).toContain("VALUES (?, '院顾客产品出库', '已完成', ?")
+  })
+
+  /** 按起止锚点切段（admin 的 createPickupRecord 是 `export const … = withPermission(`，不是 function 声明） */
+  function sectionBetween(src, startMarker, endMarker) {
+    const start = src.indexOf(startMarker)
+    expect(start, `未找到 ${startMarker}`).toBeGreaterThanOrEqual(0)
+    const end = src.indexOf(endMarker, start + startMarker.length)
+    expect(end, `未找到 ${endMarker}`).toBeGreaterThan(start)
+    return src.slice(start, end)
+  }
+
+  const PICKUP_SITES = [
+    { name: 'staff createGroupedPickup', file: () => staffSrc(), start: 'async function createGroupedPickup(', end: 'async function createPickup(' },
+    { name: 'staff createPickup', file: () => staffSrc(), start: 'async function createPickup(', end: 'async function availablePickupItems(' },
+    { name: 'admin createGroupedPickupRecord', file: () => adminSrc(), start: 'async function createGroupedPickupRecord(', end: 'export const createPickupRecord' },
+    { name: 'admin createPickupRecord', file: () => adminSrc(), start: 'export const createPickupRecord', end: 'export const deletePickupRecord' },
+  ]
+
+  test.each(PICKUP_SITES)('$name：冻结单价的来源是锁行 SQL 的 si.unit_real_price（不许别名顶替）', ({ file, start, end }) => {
+    const section = sectionBetween(file(), start, end)
+    const lockSql = normalizeSql(extractBacktickStringContaining(section, 'FOR UPDATE OF si'))
+    expect(lockSql).toMatch(/[\s,]si\.unit_real_price[\s,]/)
+    // `si.unit_price AS unit_real_price` 之类的别名会让 helper 读到错价，而其它断言全绿（#341 评审 round-1）
+    expect(lockSql).not.toMatch(/\bAS\s+unit_real_price\b/i)
+    expect(section).toMatch(/const frozen = pickupAmountSnapshot\(\w+\.unit_real_price,/)
+  })
+
+  test.each(PICKUP_SITES)('$name：联动开启时生成 GCK —— 恰好一处 createPickupInventoryDoc 调用，且在开关门控内', ({ file, start, end }) => {
+    const section = sectionBetween(file(), start, end)
+    expect(section.match(/createPickupInventoryDoc\(/g)).toHaveLength(1)
+    const call = section.indexOf('inventoryDocId = await createPickupInventoryDoc(')
+    expect(call).toBeGreaterThan(0)
+    // 调用必须落在 `if (INVENTORY_LINKAGE_ENABLED) {` 块内（花括号配平找块尾，块内有对象字面量）
+    const gate = section.lastIndexOf('if (INVENTORY_LINKAGE_ENABLED) {', call)
+    expect(gate, '调用点前没有联动开关门控').toBeGreaterThanOrEqual(0)
+    let depth = 0
+    let blockEnd = -1
+    for (let i = section.indexOf('{', gate); i < section.length; i++) {
+      if (section[i] === '{') depth++
+      if (section[i] === '}' && --depth === 0) { blockEnd = i; break }
+    }
+    expect(call).toBeLessThan(blockEnd)
+  })
+
+  function extractFunctionSection(src, functionName) {
+    const start = src.indexOf(`async function ${functionName}(`)
+    expect(start, `未找到 ${functionName}`).toBeGreaterThanOrEqual(0)
+    const next = src.indexOf('\nasync function ', start + functionName.length)
+    return src.slice(start, next === -1 ? src.length : next)
+  }
 })

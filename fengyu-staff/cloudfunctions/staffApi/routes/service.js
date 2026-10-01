@@ -82,6 +82,9 @@ async function create(ctx) {
     }
   }
 
+  // 每张卡必须属于所选顾客；来源门店可不同，权益仍只能由当前归属门店的顾客使用。
+  const itemOwners = new Set()
+  const unownedItems = []
   // 验证订单行
   for (const item of normalizedItems) {
     if (!item.saleItemId) {
@@ -119,6 +122,8 @@ async function create(ctx) {
     }
 
     const si = saleItemRows[0]
+    if (si.client_user_id) itemOwners.add(si.client_user_id)
+    else unownedItems.push(si.client_phone)
 
     // 订单状态门槛（ticket 2026-05-19 D2=A）：允许 已支付 / 部分支付 两种状态消费
     if (!['已支付', '部分支付'].includes(si.order_status)) {
@@ -169,16 +174,14 @@ async function create(ctx) {
     }
   }
 
-  if (!resolvedClientUserId && normalizedItems.length > 0) {
-    const orderRow = await pg.query(
-      'SELECT o.client_user_id FROM sale_items si INNER JOIN sale_orders o ON si.sale_order_id = o.sale_order_id WHERE si.sale_item_id = $1',
-      [normalizedItems[0].saleItemId]
-    )
-    if (orderRow.length > 0 && orderRow[0].client_user_id) {
-      resolvedClientUserId = orderRow[0].client_user_id
-    }
+  // 首行可能没有顾客 ID；只要其他来源行给出唯一 owner，就以其做绑定店校验。
+  if (!resolvedClientUserId && itemOwners.size === 1) {
+    resolvedClientUserId = itemOwners.values().next().value
   }
 
+  if (itemOwners.size > 1 || (resolvedClientUserId && itemOwners.size > 0 && !itemOwners.has(resolvedClientUserId))) {
+    throw new Error('PERMISSION_DENIED: 所选疗程项目不属于当前顾客')
+  }
   // 校验：同一顾客只能有一个进行中的服务单（含待客户确认，与 uq_so_client_active 索引谓词一致）
   if (resolvedClientUserId) {
     const activeSo = await pg.query(
@@ -195,9 +198,15 @@ async function create(ctx) {
   let serviceOrderType = '售前'
   if (resolvedClientUserId) {
     const cuRows = await pg.query(
-      'SELECT became_member_at, bound_store_id FROM client_wechat_users WHERE user_id = $1',
+      'SELECT became_member_at, bound_store_id, phone FROM client_wechat_users WHERE user_id = $1',
       [resolvedClientUserId]
     )
+    // 历史单没有 client_user_id 时，以订单手机号和已解析顾客的手机号逐行比对；
+    // 无手机号或不一致均不能借外店卡开单。
+    if (unownedItems.length > 0 && (!cuRows[0]?.phone
+      || !unownedItems.every((phone) => phone && phone === cuRows[0].phone))) {
+      throw new Error('PERMISSION_DENIED: 所选疗程项目缺少可核对的顾客归属')
+    }
     // 疗程卡使用限当前绑定门店：开单门店必须 == 顾客绑定门店（卡跟顾客走、只能用在绑定门店）
     if (cuRows[0]?.bound_store_id !== ctx.auth.effectiveStoreId) {
       throw new Error('INVALID_PARAMS: 顾客当前绑定门店非本门店，疗程卡只能在其绑定门店核销/开单')
@@ -282,12 +291,15 @@ async function create(ctx) {
     for (const item of normalizedItems) {
       const serviceItemId = generateServiceItemId()
 
-      // sale_items → product_skus + product_categories fallback：
-      // 历史 sale_items（WorkFine migration 进入）这两列常为 NULL，导致看板"项目数 / 生美实耗"为 0。
-      // 优先取 sale_items 上已快照值；为 NULL 时回退到 product_skus + product_categories。
+      // 快照来源：
+      // - is_shengmei：服务单创建时取 product_skus 当前值，SKU 为 NULL 时回退 sale_items 开单快照（#378）。
+      //   生美实耗按服务单创建时的 SKU 配置计；sale_items 的开单快照仍服务生美业绩，两者口径不同。
+      //   admin services.ts createServiceOrder 同源，改一端必同步另一端。
+      // - sales_category：优先 sale_items 快照，NULL 时回退 product_categories
+      //   （历史 WorkFine 迁入的 sale_items 常为 NULL）。
       const siRows = await client.query(
         `SELECT si.unit_real_price,
-                COALESCE(si.is_shengmei, ps.is_shengmei) AS is_shengmei,
+                COALESCE(ps.is_shengmei, si.is_shengmei) AS is_shengmei,
                 COALESCE(si.sales_category, pc.sales_category) AS sales_category
          FROM sale_items si
          LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
@@ -647,7 +659,7 @@ async function finalizeServiceOrder(client, so, items, ctx, now) {
 
   // ========== 计算并写入服务提成（service_commissions）==========
   // 双字段模型：fixed_fee = service_fee × session_used
-  //            consume_amount = unit_real_price × session_used × commission_rate
+  //            consume_amount = max(unit_real_price, price_threshold) × session_used × commission_rate（#379 阈值保底）
   //            commission_amount = fixed_fee + consume_amount
   // 说明：sale_items/service_items.unit_real_price 已是 per-session 单次价（如 5次卡 3500/5=700），
   //       直接作为每次消耗基准，无需再 ÷session_count。
@@ -665,7 +677,7 @@ async function finalizeServiceOrder(client, so, items, ctx, now) {
     const consumeBase = Math.round(perSession * row.session_used * 100) / 100
 
     const rateRows = await client.query(
-      `SELECT commission_rate FROM commission_rate_matrix
+      `SELECT commission_rate, price_threshold FROM commission_rate_matrix
        WHERE order_type = '服务单'
          AND role_type = $1
          AND sales_category = $2
@@ -683,7 +695,9 @@ async function finalizeServiceOrder(client, so, items, ctx, now) {
       [roleType, row.sales_category, consumeBase, serviceOrderId]
     )
     const rate = Number(rateRows.rows[0]?.commission_rate || 0)
-    const consumeAmount = Math.round(consumeBase * rate * 100) / 100
+    // #379 划卡单价阈值：单次实价低于命中行 price_threshold 时按阈值计消耗提成（NULL=不启用；选档仍用原始 consumeBase）
+    const effConsumeBase = Math.round(Math.max(perSession, Number(rateRows.rows[0]?.price_threshold || 0)) * row.session_used * 100) / 100
+    const consumeAmount = Math.round(effConsumeBase * rate * 100) / 100
     const commissionAmount = Math.round((fixedFee + consumeAmount) * 100) / 100
 
     // rate=0 且有消耗金额时，提示运维补齐矩阵规则

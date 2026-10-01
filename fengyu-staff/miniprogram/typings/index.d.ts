@@ -20,6 +20,8 @@ interface RoleBinding {
 interface ScopedStore {
   storeId: string
   storeName: string
+  /** 门店组织节点是否在营（#400）。旧缓存无此字段，按在营处理，由 scope-picker 以服务端数据纠正 */
+  isActive?: boolean
 }
 
 interface IAppOption {
@@ -43,6 +45,8 @@ interface IAppOption {
     /** manager 角色管辖门店的 id 列表；兼容部分 auth 缓存/响应。 */
     managerStoreIds: string[];
     inventoryStoreIds: string[];
+    /** 仅由 inventory:store_operate 绑定展开的门店（#352）；null = 云端未下发，回退 inventoryStoreIds */
+    inventoryOperateStoreIds: string[] | null;
     // 运行时
     loginLevel: LoginLevel | null;
     currentStoreId: string;
@@ -72,6 +76,7 @@ interface IAppOption {
     managerStores?: ScopedStore[];
     managerStoreIds?: string[];
     inventoryStoreIds?: string[];
+    inventoryOperateStoreIds?: string[] | null;
   }): void;
   setLoginLevel(level: LoginLevel): void;
   setCurrentStoreId(storeId: string): void;

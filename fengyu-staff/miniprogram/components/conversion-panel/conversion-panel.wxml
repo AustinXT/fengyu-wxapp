@@ -97,6 +97,7 @@
         </view>
         <view class="conv-card-info">
           <text class="conv-card-name">{{item.productName}}</text>
+          <text class="conv-card-source">购买门店：{{item.storeName || item.storeId}}</text>
           <view class="conv-card-meta">
             <!-- #182：折抵 = 整行退出，展示「注销多少权益」而非「剩余多少」；
                  remainingQuantity 为 0 的纯余数行（次数已用完 / 件已全提，只剩不足一整次(件)

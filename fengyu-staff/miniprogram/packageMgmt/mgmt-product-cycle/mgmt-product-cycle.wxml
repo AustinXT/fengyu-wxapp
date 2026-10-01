@@ -7,7 +7,7 @@
   />
   <view class="mgmt-scope-tag">
     <text>范围：</text>
-    <text class="mgmt-scope-tag-value">{{scopeName || (scopeType === 'all' ? '全部市场' : '')}}</text>
+    <text class="mgmt-scope-tag-value">{{scopeName || (scopeType === 'all' ? '全部市场' : '')}}{{scopeInactive ? '（已停用）' : ''}}</text>
   </view>
 </view>
 

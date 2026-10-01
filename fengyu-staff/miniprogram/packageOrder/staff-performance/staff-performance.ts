@@ -42,6 +42,7 @@ interface PerformanceItem {
   consumeAmount?: number | string;   // 消耗提成部分
   commissionRate?: number;  // 提成比例（0.12 = 12%）
   servicePrice?: number | string;  // 单次划卡价（消耗业绩口径，仅展示用）
+  thresholdApplied?: boolean;  // #379 消耗提成按划卡单价阈值保底计（后端按落库值判定）
   sessionUsed?: number;
   unit?: string;
   customerName: string;

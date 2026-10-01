@@ -10,16 +10,19 @@ import type {
   InventoryDocType,
   InventoryLocationRow,
   InventoryLotRow,
-  InventorySkuRow,
+  InventoryMarketTransferTarget,
 } from '@/lib/inventory/types'
 import { INVENTORY_GENERIC_DOC_TYPES } from '@/lib/inventory/types'
+import { isStocktakeDocType } from '@/lib/inventory/stocktake'
 import { docActionErrorMessage, isStaleStateError } from '@/lib/inventory/doc-action-error'
 import { actionErrorMessage } from '@/lib/action-error'
 import { Button } from '@/components/ui/button'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Input } from '@/components/ui/input'
+import { InventoryNumberInput } from './inventory-number-input'
 import { Select } from '@/components/ui/select'
 import InventorySubjectSelect from '@/components/inventory-subject-select'
+import { InventorySkuSearchSelect } from './inventory-sku-search-select'
 import { Textarea } from '@/components/ui/textarea'
 
 /**
@@ -76,7 +79,6 @@ const GENERIC_DOC_ENDPOINT_MODE = {
   分院调货出库: 'both',
   市场间调货出库: 'both',
   内部领用: 'same-node',
-  院顾客产品出库: 'source-only',
   院顾客退货: 'target-only',
   市场产品报损: 'same-node',
   院产品报损: 'same-node',
@@ -128,14 +130,22 @@ interface DraftItem {
   remark: string
 }
 
-function defaultItem(): DraftItem {
+/**
+ * 盘点单（#351）的数量是实盘数，**默认留空**：默认 '1' 的话用户不改数就按「实盘 1」入库，
+ * 留空拦截也抓不到，凭空多出一笔盘亏/盘盈。其余类型维持默认 1。
+ */
+function defaultQuantity(docType: InventoryDocType): string {
+  return isStocktakeDocType(docType) ? '' : '1'
+}
+
+function defaultItem(docType: InventoryDocType): DraftItem {
   return {
     lotId: '',
     skuId: '',
     batchNo: '',
     expiryDate: '',
     isGift: false,
-    quantity: '1',
+    quantity: defaultQuantity(docType),
     reason: '',
     remark: '',
   }
@@ -157,6 +167,9 @@ type LotCache = Map<string, { promise: Promise<InventoryLotRow[]>; settled: bool
 
 type LotLoadState = { key: string; lots: InventoryLotRow[]; failed?: boolean }
 
+/** 缺省值用模块常量：内联 `= []` 每次渲染都是新数组，会让 targetOptions 的 useMemo 形同虚设。 */
+const NO_MARKET_TRANSFER_TARGETS: readonly InventoryMarketTransferTarget[] = []
+
 /** 字段名 + 控件。用 `<label>` 包裹而不是并列，控件（含只读 `<output>`）才能被正确关联。 */
 function FieldLabel({ text, children }: { text: string; children: ReactNode }) {
   return (
@@ -170,7 +183,7 @@ function FieldLabel({ text, children }: { text: string; children: ReactNode }) {
 export function InventoryDocCreateForm({
   visible,
   locations,
-  skuOptions,
+  marketTransferTargets = NO_MARKET_TRANSFER_TARGETS,
   initialDocType,
   allowedDocTypes,
   onSuccess,
@@ -189,7 +202,12 @@ export function InventoryDocCreateForm({
    */
   visible: boolean
   locations: InventoryLocationRow[]
-  skuOptions: InventorySkuRow[]
+  /**
+   * 「市场间调货出库」的接收主体候选（#340）：全部启用市场，**不按 scope**。
+   * 只在这一种类型上替换 target 下拉，其余类型仍用 `locations`。调用方没有建这张单的
+   * 权限时不必取，传空（缺省）即可 —— 那样选到这个类型也只是接收主体为空、无法提交。
+   */
+  marketTransferTargets?: readonly InventoryMarketTransferTarget[]
   initialDocType?: InventoryDocType
   allowedDocTypes?: readonly InventoryDocType[]
   /** 建单成功。`docId` 是刚建出来的单号，调用方拿去做可核对的反馈。 */
@@ -216,7 +234,7 @@ export function InventoryDocCreateForm({
   const [targetOrgNodeId, setTargetOrgNodeId] = useState('')
   const [docDate, setDocDate] = useState(shanghaiToday)
   const [remark, setRemark] = useState('')
-  const [items, setItems] = useState<DraftItem[]>([defaultItem()])
+  const [items, setItems] = useState<DraftItem[]>(() => [defaultItem(docType)])
   const requiresSourceLot = SOURCE_LOT_DOC_TYPES.has(docType)
   /** 当前类型允许哪些端点（#200 S6）：决定两个主体下拉的禁用/镜像与 payload 的置空 */
   const endpointMode = genericDocEndpointMode(docType)
@@ -278,6 +296,31 @@ export function InventoryDocCreateForm({
       })),
     [locations],
   )
+  /*
+   * 市场间调货出库（#340）的两端候选与其他类型分叉：
+   * - 发起端仍走 scope（`locations`），但只留市场 —— 服务端要求两端均为市场，给门店/总部
+   *   只会让用户选完再被拒；收窄后单市场账号的发起端也能按 #189 唯一候选自动带出。
+   * - 接收端改用 `marketTransferTargets`（不按 scope），并排除当前选中的发起市场 ——
+   *   自己调给自己服务端同样会拒。
+   * 其余类型两端都原样用 `subjectOptions`，与改前一致。
+   */
+  const isMarketTransfer = docType === '市场间调货出库'
+  const sourceOptions = useMemo(
+    () => (isMarketTransfer
+      ? locations
+        .filter((location) => location.orgNodeId && location.locationType === '市场')
+        .map((location) => ({ value: location.orgNodeId!, label: `市场 · ${location.name}` }))
+      : subjectOptions),
+    [isMarketTransfer, locations, subjectOptions],
+  )
+  const targetOptions = useMemo(
+    () => (isMarketTransfer
+      ? marketTransferTargets
+        .filter((market) => market.orgNodeId !== sourceOrgNodeId)
+        .map((market) => ({ value: market.orgNodeId, label: `市场 · ${market.name}` }))
+      : subjectOptions),
+    [isMarketTransfer, marketTransferTargets, sourceOrgNodeId, subjectOptions],
+  )
   const isDocTypeLocked = Boolean(initialDocType && availableDocTypes.includes(initialDocType))
   const sourceLocationId = locations.find((location) => location.orgNodeId === sourceOrgNodeId)?.locationId ?? ''
 
@@ -285,8 +328,33 @@ export function InventoryDocCreateForm({
     setItems((prev) => prev.map((item, i) => (i === index ? { ...item, ...patch } : item)))
   }
 
+  const isStocktake = isStocktakeDocType(docType)
+
   async function submit() {
     if (submitting) return
+    /*
+     * 盘点单（#351）：数量是实盘数，0 是合法值（货架上一件没有 = 盘亏），所以「没填」与
+     * 「填了 0」必须分开。下面 payload 的 `Number(item.quantity || 0)` 会把空串变成 0，
+     * 不在这里拦，漏填的行就会以「实盘 0」落库，凭空多出一笔盘亏。服务端同样拒空值，这里先给行号。
+     */
+    if (isStocktake) {
+      const blankIndex = items.findIndex((item) => item.quantity.trim() === '')
+      if (blankIndex >= 0) {
+        toast.error(`明细 ${blankIndex + 1} 请填写实盘数（货架上没有就填 0）`)
+        return
+      }
+    }
+    // 按钮由办理台/单据中心外部渲染为 button，必须在提交前校验原始值。
+    const invalidQuantityIndex = items.findIndex((item) => {
+      const raw = item.quantity.trim()
+      const quantity = Number(raw)
+      return raw !== '' && (!Number.isFinite(quantity) || quantity < 0 || quantity > 9999999999.99
+        || Number(quantity.toFixed(2)) !== quantity)
+    })
+    if (invalidQuantityIndex >= 0) {
+      toast.error(`明细 ${invalidQuantityIndex + 1} 数量须为 0 至 9999999999.99，且最多两位小数`)
+      return
+    }
     setSubmitting(true)
     try {
       const payload: CreateInventoryDocInput = {
@@ -320,7 +388,7 @@ export function InventoryDocCreateForm({
        * 办理台的工作区提交完还开着（只 toast + router.refresh()，后者不重挂客户端组件），
        * 表单原样留在屏幕上、按钮解禁 —— 用户没看见 toast 再点一次，就建出第二张一模一样的单。
        * 而 `createInventoryCoreDoc` 没有幂等键，10 种通用类型里有 6 种**建单当刻就落库存流水**
-       * （内部领用 / 顾客产品出库 / 顾客退货 / 盘溢 / 两种调货出库），重复提交 = 重复扣减或重复入库，
+       * （内部领用 / 顾客退货 / 盘溢 / 两种调货出库；#350 前还有顾客产品出库），重复提交 = 重复扣减或重复入库，
        * 事后只能红冲。同页的内置表单成功后都会 `setLines([初始行])`，这里对齐它们。
        *
        * **主体与日期也要清**，别为了「连续建单少选一次」把它们留着：明细已经清空、
@@ -341,7 +409,7 @@ export function InventoryDocCreateForm({
        * 会被 `InventorySubjectSelect` 立刻填回那个唯一候选 —— 这是预期，不是没清掉。
        * 那种环境里一张单也只可能是它，上面说的残留风险根本无从发生。
        */
-      setItems([defaultItem()])
+      setItems([defaultItem(docType)])
       setRemark('')
       setSourceOrgNodeId('')
       setTargetOrgNodeId('')
@@ -389,21 +457,37 @@ export function InventoryDocCreateForm({
         <FieldLabel text="单据类型">
           <Select
             value={docType}
-            disabled={isDocTypeLocked}
+            /*
+             * 提交在途时锁住类型（#351 评审）：成功清场按提交那一刻闭包里的 docType 取默认数量，
+             * 在途中切成盘点的话，清场会把盘点行重置成旧类型的「1」—— 不填就是一笔「实盘 1」。
+             */
+            disabled={isDocTypeLocked || submitting}
             onChange={(e) => {
-              setDocType(e.target.value as InventoryDocType)
+              if (submitting) return
+              const nextDocType = e.target.value as InventoryDocType
+              setDocType(nextDocType)
               /*
                * 换类型必须清两端主体与各行批次（#200 S6-b）：新类型的合法端点可能不同。
-               * 不清的话，先选「院顾客产品出库」填了出库主体、再切「院顾客退货」，
+               * 不清的话，先选「院产品报损」填了出库主体、再切「院顾客退货」，
                * 用户对着一个看起来空的表单收到「只能指定入库主体」。
                * 批次同理：批次是按出库主体的库位取的，主体一清旧 lotId 就不属于这张单了。
                *
                * ⚠️ 用 onChange 而不是 `useEffect([docType])` —— 这条链路有过 useEffect
                * 自循环把批次下拉卡死的 P0（#129，见 DocLotSelect 的注释），不再往里加 effect。
+               *
+               * 跨越「盘点 / 非盘点」时数量回到新类型的默认值（#351）：从报损切到盘点，旧行的 '1'
+               * 会被当成实盘 1 提交；反过来盘点的空行切到报损又会被当成 0 拒掉。
                */
+              const crossesStocktake = isStocktakeDocType(nextDocType) !== isStocktake
               setSourceOrgNodeId('')
               setTargetOrgNodeId('')
-              setItems((prev) => (prev.some((item) => item.lotId) ? prev.map((item) => ({ ...item, lotId: '' })) : prev))
+              setItems((prev) => (prev.some((item) => item.lotId) || crossesStocktake
+                ? prev.map((item) => ({
+                  ...item,
+                  lotId: '',
+                  quantity: crossesStocktake ? defaultQuantity(nextDocType) : item.quantity,
+                }))
+                : prev))
             }}
           >
             {availableDocTypes.map((type) => (
@@ -416,7 +500,7 @@ export function InventoryDocCreateForm({
         </FieldLabel>
         <FieldLabel text="出库/发起主体">
           <InventorySubjectSelect
-            options={subjectOptions}
+            options={sourceOptions}
             value={sourceOrgNodeId}
             placeholder="出库/发起主体"
             // 只禁非法端点：入库类（院顾客退货）没有出库主体这一说（#200 S6-c）
@@ -426,6 +510,9 @@ export function InventoryDocCreateForm({
               // same-node：两端指同一个主体，服务端两端不一致直接拒单（#200 AC4）。
               // 镜像而不是把 target 禁掉 —— 既有 e2e（inv-02 / inv-06）会直接操作 target 下拉。
               if (endpointMode === 'same-node') setTargetOrgNodeId(value)
+              // 市场间调货：发起市场改成了当前的接收市场，接收端就不再合法（它已从候选里被排除），
+              // 清掉让用户重选，别留一个「当前主体（不在可选范围）」的自己调给自己。
+              if (isMarketTransfer && value && value === targetOrgNodeId) setTargetOrgNodeId('')
               // 换主体必须清批次：批次是按 (库位, SKU) 取的，换了库位旧的 lotId 就不属于这张单了。
               // 自动选中（唯一候选）同样走这条 onChange，联动不会被绕过。
               // 条件重建：mount 自动选中与清场后回填时 lotId 本就是空的，没必要多一次渲染。
@@ -435,12 +522,21 @@ export function InventoryDocCreateForm({
         </FieldLabel>
         <FieldLabel text="入库/接收主体">
           <InventorySubjectSelect
-            options={subjectOptions}
+            options={targetOptions}
             value={targetOrgNodeId}
             placeholder="入库/接收主体"
-            // 只禁非法端点：纯出库类（院顾客产品出库）没有入库主体这一说（#200 S6-d）
+            /*
+             * 市场间调货：发起端未落定前接收端不自动选中。两端的唯一候选自动选中在同一次提交里
+             * 各自回调，此刻 targetOptions 还没排除发起市场 —— 全局只有一个启用市场时两端会被
+             * 同时填成它（自己调给自己，服务端必拒）。等发起端落定、候选按它收窄后再自动带出。
+             */
+            autoSelect={!isMarketTransfer || Boolean(sourceOrgNodeId)}
+            // 只禁非法端点：纯出库类没有入库主体这一说（#200 S6-d）。#350 起通用类型里已无此类
+            // （院顾客产品出库改由提货服务产生），保留分支与服务端按 locationRole 推导的单边规则同构
             disabled={endpointMode === 'source-only'}
             onChange={(value) => {
+              // 与发起端的清空逻辑对称：市场间调货不接受「接收市场 = 发起市场」
+              if (isMarketTransfer && value && value === sourceOrgNodeId) return
               setTargetOrgNodeId(value)
               if (endpointMode === 'same-node') {
                 // 同主体类型下 target 也决定了 source，而批次是按 source 的库位取的，一并清
@@ -469,22 +565,19 @@ export function InventoryDocCreateForm({
                 epoch={lotEpoch}
                 active={visible}
                 label={`明细 ${index + 1} 来源批次`}
+                // 市场间调货（§2.17）：告诉区域主管这批货进来时花了多少钱（#359）
+                showReferencePrice={docType === '市场间调货出库'}
               />
             )}
-            <Select
+            <InventorySkuSearchSelect
               value={item.skuId}
-              onChange={(e) => updateItem(index, { skuId: e.target.value, lotId: '' })}
-            >
-              <option value="">库存 SKU</option>
-              {skuOptions.map((sku) => (
-                <option key={sku.skuId} value={sku.skuId}>
-                  {sku.productCode} · {sku.productName}
-                </option>
-              ))}
-            </Select>
+              onChange={(skuId) => updateItem(index, { skuId, lotId: '' })}
+              placeholder="库存 SKU"
+              ariaLabel={`明细 ${index + 1} 库存 SKU`}
+            />
             <Input placeholder="批号" value={item.batchNo} onChange={(e) => updateItem(index, { batchNo: e.target.value })} />
             <DatePicker value={item.expiryDate} onValueChange={(value) => updateItem(index, { expiryDate: value })} aria-label={`明细 ${index + 1} 效期`} />
-            <Input type="number" min="0" step="0.01" max="9999999999.99" placeholder="数量" value={item.quantity} onChange={(e) => updateItem(index, { quantity: e.target.value })} />
+            <InventoryNumberInput type="number" min="0" step="0.01" max="9999999999.99" placeholder="数量" value={item.quantity} onChange={(e) => updateItem(index, { quantity: e.target.value })} />
             <Input placeholder="原因" value={item.reason} onChange={(e) => updateItem(index, { reason: e.target.value })} />
             <Button
               variant="outline"
@@ -494,7 +587,7 @@ export function InventoryDocCreateForm({
             </Button>
           </div>
         ))}
-        <Button variant="outline" onClick={() => setItems((prev) => [...prev, defaultItem()])}>
+        <Button variant="outline" onClick={() => setItems((prev) => [...prev, defaultItem(docType)])}>
           添加明细
         </Button>
       </div>
@@ -525,6 +618,7 @@ function DocLotSelect({
   epoch,
   active,
   label,
+  showReferencePrice = false,
 }: {
   locationId: string
   skuId: string
@@ -537,6 +631,11 @@ function DocLotSelect({
   /** 表单是否在用户眼前。不可见时绝不能取数（见 InventoryDocCreateForm 的 visible） */
   active: boolean
   label: string
+  /**
+   * 选中批次后在下拉下方显示黄底「参考进价」（#359）：只读、只作参考，不进提交。
+   * 可见范围沿用 lotRow 的价格档 —— 无档账号拿到 undefined，不渲染。
+   */
+  showReferencePrice?: boolean
 }) {
   // 用 JSON 数组当 key，避免 ('a:b','c') 与 ('a','b:c') 这类分隔符歧义撞进同一个缓存槽。
   // 组件自己的新鲜度 key 含代次（换代即判定过期）；查缓存用的 key 不含代次（在途请求跨代可复用）。
@@ -595,8 +694,9 @@ function DocLotSelect({
   const lots = isCurrent ? loaded.lots : []
   const failed = isCurrent && loaded.failed === true
   const isLoadingLots = Boolean(cacheKey) && !isCurrent
+  const selectedLot = showReferencePrice ? lots.find((lot) => String(lot.id) === value) ?? null : null
 
-  return (
+  const select = (
     <Select
       aria-label={label}
       value={value}
@@ -629,9 +729,21 @@ function DocLotSelect({
             服务端扣减时校验的就是可用量，显示在手量会出现「界面写着可用 30、提交却报库存不足」
             的自相矛盾。接口本来就把这个字段算好返回了，之前只是没用上。
           */}
-          {`${lot.batchNo || '无批号'} · 可用 ${lot.availableQuantity}${lot.expiryDate ? ` · ${formatDate(lot.expiryDate)}` : ''}`}
+          {`${lot.batchNo || '无批号'}${lot.isGift ? '（赠送）' : ''} · 可用 ${lot.availableQuantity}${lot.expiryDate ? ` · ${formatDate(lot.expiryDate)}` : ''}`}
         </option>
       ))}
     </Select>
+  )
+  if (!showReferencePrice) return select
+  // 开了参考价就恒定包一层：若只在选中后才包，select 会换挂载位置被重建，刚选完就丢焦点
+  return (
+    <div className="space-y-1">
+      {select}
+      {selectedLot && selectedLot.marketActualUnitPrice !== undefined && (
+        <div role="note" aria-label={`${label}参考进价`} className="rounded-md bg-[#FFF4C2] px-2 py-1 text-xs text-[#7B5E2B]">
+          参考进价 {selectedLot.marketActualUnitPrice === null || !Number.isFinite(selectedLot.marketActualUnitPrice) ? '—' : selectedLot.marketActualUnitPrice.toFixed(2)}{selectedLot.isGift ? '（赠送批次）' : ''}
+        </div>
+      )}
+    </div>
   )
 }

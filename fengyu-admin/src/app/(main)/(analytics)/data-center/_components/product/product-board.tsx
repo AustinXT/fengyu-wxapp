@@ -38,9 +38,11 @@ import type { ProductBoardParams, ProductBoardResult } from "@/lib/data-center/t
 //      一个品类名都不提。
 // ② 不说「不限商品类型」——紧邻的筛选器就叫「一级/二级品项」，用户会读成
 //    「不受本页筛选影响」，而事实相反（resolveGrouping 的 filter 真会收窄卡片数字）。
-// ③ 占比不写「两者均为截面快照」——那是**正向保证**不是中立描述：用户看到
-//    集团恒 253%（issue #287）时的第一怀疑是「有时差」，这句恰好堵死该路径却不给真因，
-//    等于替 bug 背书。只点出分母口径，让异常自己暴露。
+// ③ 占比不写「两者均为截面快照」——那是**正向保证**不是中立描述。
+//    原论证是「用户看到集团恒 253%（#287）时第一怀疑是时差，这句堵死该路径却不给真因」。
+//    #287 已修（分子分母同源，占比恒 ≤ 100%），但这条守则**继续有效**且理由更一般：
+//    任何「正向保证」写在卡片上都会替未来的 bug 背书 —— 读数人看到异常时，
+//    界面已经先替实现打过包票了。只点出口径，让异常自己暴露。
 // ④ 守则 ③ 的执行范围**包括下方 section**：section 若写「持卡人数 / 占比为截面快照…
 //    不随时间区间变化」，等于把同一句时差保证放回卡片正上方 3px 处、架空守则 ③。
 //    section 只讲持卡人数，占比的口径交给 hint。
@@ -48,9 +50,15 @@ const KPI_CARD: KpiGridItem[] = [
   {
     key: "cardHolders",
     label: "持卡人数",
-    hint: "已支付的销售/转换/寄存单中，已付次数 > 0 即计入；不扣已核销；随上方品项筛选变化",
+    hint: "会员中，已支付的销售/转换/寄存单存在「已付次数 > 0」品项的人数；不扣已核销；随上方品项筛选变化",
   },
-  { key: "cardHolderRate", label: "持卡占比", hint: "持卡人数 ÷ 会员数（分母 = 全部会员）" },
+  {
+    key: "cardHolderRate",
+    label: "持卡占比",
+    // 分子分母同源后各店都在 95.83%~100% 之间（#287）——该列已失去区分度，
+    // 明细表正是拿来排名的，必须在此点明，否则读数人会继续按它排。
+    hint: "持卡会员 ÷ 会员数（分子分母同源：都只算会员、都按顾客绑定门店归店）；各店差异极小，不宜用于门店排名",
+  },
 ]
 const KPI_CYCLE: KpiGridItem[] = [
   { key: "trialCount", label: "体验人数", hint: "区间内有购买但全历史未达标" },
@@ -154,8 +162,9 @@ export function ProductBoard() {
       <section className="flex flex-col gap-3">
         <h2 className="text-sm font-semibold text-[var(--foreground)]">持卡情况</h2>
         <div className="text-xs text-[var(--muted-foreground)]">
-          持卡人数为截面快照（已支付的销售单/转换单/寄存单中，存在「已付次数 &gt; 0」品项的顾客
-          去重计 1 人；不扣已核销），不随时间区间变化。
+          持卡人数为截面快照（<strong>会员</strong>中，已支付的销售单/转换单/寄存单存在
+          「已付次数 &gt; 0」品项的人去重计 1 人；不扣已核销），不随时间区间变化。
+          按门店看时，归入该顾客的<strong>绑定门店</strong>，不是买卡那一单的门店。
         </div>
         <KpiGrid items={KPI_CARD} kpis={kpis} columns={2} baseRanges={loading ? undefined : data?.timeRange} />
       </section>

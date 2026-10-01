@@ -2,6 +2,7 @@
 // scope 由 hub（mgmt-dashboard）通过路由参数透传，本页不再出 scope-picker
 // 搜索框为空 = scope 内全部顾客分页（50/页），有 keyword = 关键字分页（50/页）
 import { callStaffApi } from '../../utils/cloud';
+import { SCOPE_INACTIVE_QUERY_KEY, isInactiveScopeQuery } from '../../utils/mgmt-scope';
 import { isManagementMode } from '../../utils/role';
 import { MemberLevelBadgeData, withMemberLevelBadgeClasses } from '../../utils/member-level-badge';
 
@@ -47,6 +48,8 @@ Page({
     scopeType: 'all' as ScopeType,
     scopeId: null as string | null,
     scopeName: '',
+    // 门店组织节点已停用（#400）：本页接口不滤停用门店、照常出数，只在范围标签上标注
+    scopeInactive: false,
     scopeTypeLabel: '全部市场',
 
     searchKeyword: '',
@@ -58,7 +61,7 @@ Page({
     listError: false,
   },
 
-  onLoad(query: { scopeType?: string; scopeId?: string; scopeName?: string }) {
+  onLoad(query: { scopeType?: string; scopeId?: string; scopeName?: string; scopeInactive?: string }) {
     if (!isManagementMode()) {
       wx.reLaunch({ url: '/pages/workbench/workbench' });
       return;
@@ -70,6 +73,7 @@ Page({
       scopeType,
       scopeId,
       scopeName,
+      scopeInactive: isInactiveScopeQuery(query),
       scopeTypeLabel: SCOPE_TYPE_LABELS[scopeType] || '全部市场',
     });
   },
@@ -150,13 +154,15 @@ Page({
   onItemTap(e: WechatMiniprogram.TouchEvent) {
     const { clientUserId } = e.currentTarget.dataset as { clientUserId?: string };
     if (!clientUserId) return;
-    const { scopeType, scopeId, scopeName } = this.data;
+    const { scopeType, scopeId, scopeName, scopeInactive } = this.data;
     const params = [
       `clientUserId=${encodeURIComponent(clientUserId)}`,
       `scopeType=${encodeURIComponent(scopeType)}`,
       `scopeId=${encodeURIComponent(scopeId || '')}`,
       `scopeName=${encodeURIComponent(scopeName || '')}`,
-    ].join('&');
+      // 停用门店标记继续透传到详情页范围标签（#400）
+      scopeInactive ? `${SCOPE_INACTIVE_QUERY_KEY}=1` : '',
+    ].filter(Boolean).join('&');
     wx.navigateTo({ url: `/packageMgmt/mgmt-customer-detail/mgmt-customer-detail?${params}` });
   },
 });

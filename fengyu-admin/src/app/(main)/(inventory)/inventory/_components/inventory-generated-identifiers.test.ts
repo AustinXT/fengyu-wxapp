@@ -37,7 +37,10 @@ describe('进销存编号与实体引用表单守卫', () => {
   it('员工小程序库存业务继续使用产品、批次和门店选择器', () => {
     const staffForm = source('../fengyu-staff/miniprogram/packageMy/inventory/form.wxml')
 
-    expect(staffForm).toContain('bindchange="onSkuChange"')
+    // 门店报货选品从原生 picker 换成检索弹层（#339）：仍是「从候选里选」，不是手输编号
+    expect(staffForm).toContain('bindtap="onOpenSkuPicker"')
+    expect(staffForm).toContain('bindtap="onSelectSku"')
+    expect(staffForm).toContain('<van-search')
     expect(staffForm).toContain('bindchange="onLotChange"')
     expect(staffForm).toContain('bindchange="onStoreChange"')
     expect(staffForm).not.toMatch(/<input[^>]+(?:sku|编号|ID)/i)

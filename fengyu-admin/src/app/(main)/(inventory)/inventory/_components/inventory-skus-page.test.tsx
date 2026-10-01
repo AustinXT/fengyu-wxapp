@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
+  InventoryLocationRow,
   InventoryPriceVisibility,
   InventorySkuRow,
   InventorySupplierOption,
@@ -95,23 +96,35 @@ function renderPage(overrides: {
   supplierOptions?: InventorySupplierOption[]
   canCreateSupplier?: boolean
   priceVisibility?: InventoryPriceVisibility
+  markets?: InventoryLocationRow[]
+  canManageMarketSkus?: boolean
+  canManageSupplySkus?: boolean
 } = {}) {
   const priceVisibility = overrides.priceVisibility ?? 'all'
   return render(
     <InventorySkusPage
       rows={overrides.rows ?? [row]}
       total={1}
-      markets={[]}
+      markets={overrides.markets ?? []}
       supplierOptions={overrides.supplierOptions ?? SUPPLIER_OPTIONS}
       canCreate
       canUpdate
       canCreateSupplier={overrides.canCreateSupplier ?? true}
       canViewPrice={priceVisibility !== 'none'}
       priceVisibility={priceVisibility}
-      canManageMarketSkus
-      canManageSupplySkus
+      canManageMarketSkus={overrides.canManageMarketSkus ?? true}
+      canManageSupplySkus={overrides.canManageSupplySkus ?? true}
     />,
   )
+}
+
+function market(locationId: string, name: string): InventoryLocationRow {
+  return { locationId, locationType: '市场', name, orgNodeId: locationId, storeId: null, parentLocationId: null, isActive: true }
+}
+
+/** 表单里的「来源」下拉。 */
+function sourceSelect() {
+  return screen.getByLabelText(/^来源/) as HTMLSelectElement
 }
 
 /** 表单里的「供货商」下拉。label 只裹 Select，按钮与提示都在 label 外。 */
@@ -467,6 +480,62 @@ describe('InventorySkusPage', () => {
       }
       // 非价格列不受影响
       expect(header('来源')).toBeInTheDocument()
+    })
+  })
+  describe('#355 新建的来源初值按权限决定', () => {
+    it('只有市场权限：初值为「市场自采」，归属市场可见且唯一市场已预选，不切来源直接提交成功', async () => {
+      renderPage({ canManageSupplySkus: false, markets: [market('MKT-1', '南昌市场')] })
+      fireEvent.click(screen.getByRole('button', { name: /新建/ }))
+
+      // 显示值与表单 state 必须一致：下拉只剩「市场自采 / 转让店」，选中的是第一项。
+      // ⚠️ 这两条在改前代码下也是绿的（value 不在 option 里时原生 select 显示首项），
+      // 真正锁住 #355 的是下面的「归属市场已落定」与提交参数断言，别删。
+      const select = sourceSelect()
+      expect(Array.from(select.options, (option) => option.value)).toEqual(['市场自采', '转让店'])
+      expect(select.value).toBe('市场自采')
+      // 归属市场只在来源不是供应链时渲染；唯一候选由 InventorySubjectSelect 落进表单（#189）
+      const owner = screen.getByText('南昌市场')
+      await waitFor(() => expect(owner).toHaveAttribute('data-fixed-subject', 'MKT-1'))
+
+      fireEvent.change(screen.getAllByLabelText(/^产品名称/).find((element) => element.tagName === 'INPUT')!, { target: { value: '市场自采面膜' } })
+      fireEvent.click(screen.getByRole('button', { name: '保存' }))
+
+      await waitFor(() => expect(mockCreateInventorySku).toHaveBeenCalledTimes(1))
+      expect(mockCreateInventorySku.mock.calls[0][0]).toMatchObject({
+        productName: '市场自采面膜',
+        sourceType: '市场自采',
+        ownerMarketId: 'MKT-1',
+        marketPurchasePriceMode: null,
+      })
+    })
+
+    it('只有市场权限且可选市场不止一个：归属市场留空待选，不替用户挑', () => {
+      renderPage({ canManageSupplySkus: false, markets: [market('MKT-1', '南昌市场'), market('MKT-2', '赣州市场')] })
+      fireEvent.click(screen.getByRole('button', { name: /新建/ }))
+
+      expect(sourceSelect().value).toBe('市场自采')
+      const owner = screen.getByLabelText(/^归属市场/) as HTMLSelectElement
+      expect(owner.value).toBe('')
+      expect(mockCreateInventorySku).not.toHaveBeenCalled()
+    })
+
+    it('两把权限都有：初值仍为「供应链」，不渲染归属市场（回归）', () => {
+      renderPage({ markets: [market('MKT-1', '南昌市场')] })
+      fireEvent.click(screen.getByRole('button', { name: /新建/ }))
+
+      const select = sourceSelect()
+      expect(Array.from(select.options, (option) => option.value)).toEqual(['供应链', '市场自采', '转让店'])
+      expect(select.value).toBe('供应链')
+      expect(screen.queryByLabelText(/^归属市场/)).not.toBeInTheDocument()
+    })
+
+    it('只有供应链权限：初值为「供应链」，下拉只有这一项', () => {
+      renderPage({ canManageMarketSkus: false })
+      fireEvent.click(screen.getByRole('button', { name: /新建/ }))
+
+      const select = sourceSelect()
+      expect(Array.from(select.options, (option) => option.value)).toEqual(['供应链'])
+      expect(select.value).toBe('供应链')
     })
   })
 })

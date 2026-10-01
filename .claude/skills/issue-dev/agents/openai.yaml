@@ -1,0 +1,4 @@
+interface:
+  display_name: "单项交付开发"
+  short_description: "Codex 隔离开发、三层验证与 GLM-5.3[1M] 和 DeepSeek 独立评审"
+  default_prompt: "请使用 $issue-dev 按本项目流程处理当前任务。"

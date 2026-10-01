@@ -111,23 +111,23 @@ describe('DEFAULT_PERMISSION_MATRIX', () => {
     expect(actions).toContain('merchant:list')
   })
 
-  it('finance 对账只读 + 商户/提成矩阵维护（2026-06-24 对齐生产）', () => {
+  it('finance 可调整分配 + 商户/提成矩阵维护', () => {
     const actions = DEFAULT_PERMISSION_MATRIX.finance
     expect(actions).toContain('sale_order:deposit_approve')
     expect(actions).toContain('sale_order:list')
     expect(actions).toContain('allocation:list')
+    expect(actions).toContain('allocation:save')
     expect(actions).toContain('sale_item:list')
     expect(actions).toContain('card_transaction:list')
-    // service:list：营业额分配页只读对账需看服务提成（2026-05-21 修 menu/page 不一致）
+    // service:list：营业额分配页需查看服务提成
     expect(actions).toContain('service:list')
     // 生产扩权：提成矩阵 CRUD + 历史订单核对 + 商户档案 CRUD
     expect(actions).toContain('commission:list')
     expect(actions).toContain('commission:create')
     expect(actions).toContain('legacy_order:approve')
     expect(actions).toContain('merchant:create')
-    // 仍不可开单 / 改分配 / 改服务单（无写权）
+    // 仍不可开单 / 改服务单
     expect(actions).not.toContain('sale_order:create')
-    expect(actions).not.toContain('allocation:save')
     expect(actions).not.toContain('service:create')
   })
 

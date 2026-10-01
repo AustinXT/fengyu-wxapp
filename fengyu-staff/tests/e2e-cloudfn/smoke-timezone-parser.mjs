@@ -3,8 +3,7 @@
  * 时区回归守护（staff 域）：staffApi pg `timestamp with time zone` (OID 1184) 读取必须 TZ 无关
  *
  * 范式背景（migration 0076 / commit 70f1a584，v1.3.3~v1.3.7）：业务时间列已从 `timestamp without
- * time zone` (1114) 统一改为 `timestamptz` (1184)。PG 在 server TZ=Asia/Shanghai（migration 0028
- * 锁定）下把 timestamptz 以带 +08 偏移的文本字面发到线上（如 "2026-06-16 08:00:00+08"），pg 内置
+ * time zone` (1114) 统一改为 `timestamptz` (1184)。PG 在会话 TimeZone=Asia/Shanghai（#291 连接层设置与断言，非已归档的 0028）下把 timestamptz 以带 +08 偏移的文本字面发到线上（如 "2026-06-16 08:00:00+08"），pg 内置
  * 1184 parser 按字面偏移 `new Date(value)` 正确解析为绝对 UTC 瞬时，与进程 TZ 解耦。
  *
  * 旧 1114 时代的显式 setTypeParser(1114, '+08:00') 补偿层已随范式转换彻底拆除（库已无 1114 列，

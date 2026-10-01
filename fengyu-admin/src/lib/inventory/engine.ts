@@ -1,8 +1,10 @@
+import { isValidInventoryCalendarDate } from '@/lib/calendar-date'
 import { db } from '@/db'
 import 'server-only'
 import { ApiError } from '@/lib/api-error'
 import { pgErrorCode } from '@/lib/pg-error'
 import { rowsAffected } from '@/lib/pg-rows'
+import { cancelledMarketReportRetainedSql } from './retained-sql'
 import { fmtDate, shanghaiToday, shanghaiYmd } from '@/lib/datetime'
 import { logOperation } from '@/lib/operation-log'
 import { hasPermission, isAdminScope } from '@/lib/permissions'
@@ -29,18 +31,21 @@ import {
 } from '@db/inventory'
 import { orgNodes, stores } from '@db/org'
 import { productSkus } from '@db/product'
-import { and, asc, desc, eq, gte, ilike, inArray, isNotNull, isNull, lte, or, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, gte, ilike, inArray, isNotNull, isNull, lte, ne, or, sql } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import type { SQL } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { AuthSession } from '@/lib/types'
 import { assertInventoryBusinessWritable } from './cutover'
 import {
+  INVENTORY_CORE_RECEIVE_ACTIONS,
   genericDocBusinessLevel,
   inventoryDelegatableOperateActions,
   inventoryLevelOperateDeniedMessage,
 } from './business-level'
 import { scopeSessionToActions } from '@/lib/action-scope'
+import { INVENTORY_OPERATION_IDS, genericOperationId, resolveOperationDocQuery } from './operation-doc-types'
+import type { InventoryOperationDocFilter } from './operation-doc-types'
 // 账面数按**主体 + SKU 汇总**记录 —— 口径由甲方 2026-09-16 拍板（issue #131 Q1）：
 // 现场就是按商品数总盘、不区分批次，按批次记会造成假精确。类型清单与详情页共用单源。
 import { STOCKTAKE_DOC_TYPES } from './stocktake'
@@ -57,6 +62,7 @@ import {
   type InventoryDocRow,
   type InventoryDocType,
   type InventoryLocationRow,
+  type InventoryMarketTransferTarget,
   type InventoryLocationFilterOptions,
   type InventoryLocationType,
   type InventoryLotRow,
@@ -65,6 +71,8 @@ import {
   type InventoryPromotionPlanRow,
   type InventoryPromotionRuleType,
   type InventorySkuInput,
+  type InventorySkuListFilters,
+  type InventorySkuOptionFilters,
   type InventoryCompositionInput,
   type InventoryCompositionOptions,
   type InventoryCompositionRow,
@@ -76,11 +84,24 @@ import {
 } from './types'
 import { buildInventoryLocationFilterOptions } from './location-filter'
 import {
+  INVENTORY_DOC_CANDIDATE_BULK_LIMIT,
+  INVENTORY_DOC_CANDIDATES,
+  resolveInventoryDocCandidate,
+  type InventoryDocCandidateDefinition,
+  type InventoryDocCandidateFilters,
+  type InventoryDocCandidateProgressKind,
+  type InventoryDocCandidateRow,
+  type StoreUnallocatedRequestSku,
+} from './doc-candidates'
+import {
+  INVENTORY_PROMOTION_MAINTAIN_ACTION,
+  assertInventoryPromotionMaintainer,
   inventoryPriceScopeByTier,
   inventoryPriceVisibility,
   inventoryPriceVisibilityForOrgNodes,
   inventoryScopedLocationIds,
   inventoryScopedOrgNodeIds,
+  isInventoryPromotionMaintainer,
 } from './access'
 
 const sourceLocation = alias(inventoryLocations, 'source_loc')
@@ -224,7 +245,7 @@ const RECEIVE_INBOUND_TYPE: Partial<Record<InventoryDocType, InventoryDocType>> 
 
 /**
  * 这些单据必须由专用业务服务创建，才能保留需求、优惠、批次与履约关系。
- * 通用建单只负责盘点、领用、报损、转换等没有上游业务血缘的库存动作。
+ * 通用建单只负责盘点、领用、报损等没有上游业务血缘的库存动作（库存转换走专用的 createInventoryConversion）。
  */
 const SPECIALIZED_DOC_TYPES = new Set<InventoryDocType>([
   '门店报货',
@@ -247,6 +268,8 @@ const SPECIALIZED_DOC_TYPES = new Set<InventoryDocType>([
   '院退货',
   '库存转换出库',
   '库存转换入库',
+  // #350：顾客出库只能由提货服务（createPickupRecord / staffApi order.createPickup）产生
+  '院顾客产品出库',
 ])
 
 /**
@@ -280,6 +303,7 @@ function isValidDocType(docType: string): docType is InventoryDocType {
 }
 
 function normalizeText(v: string | null | undefined): string | null {
+  if (v != null && typeof v !== 'string') throw new ApiError('INVALID_PARAMS', '文本参数格式不正确')
   const s = v?.trim()
   return s ? s : null
 }
@@ -292,7 +316,7 @@ function normalizeRequired(v: string | null | undefined, label: string): string 
 
 function normalizeYmd(v: string | null | undefined, label: string): string {
   const value = normalizeRequired(v, label)
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+  if (!isValidInventoryCalendarDate(value)) {
     throw new ApiError('INVALID_PARAMS', `${label}格式应为 YYYY-MM-DD`)
   }
   return value
@@ -315,12 +339,33 @@ function calculateAmount(unitPrice: number | null, quantity: number): number | n
   return unitPrice === null ? null : Number((unitPrice * quantity).toFixed(2))
 }
 
-function assertPositiveQuantity(quantity: number): number {
+/**
+ * 明细数量规则（#351）：盘点单的数量是**实盘数**，0 = 账上有货、货架上一件没有，
+ * 正是最该记下的盘亏，必须能录；其余类型仍要求 > 0。
+ *
+ * 留空（null / undefined / 空串）一律不合法：`Number(null)`、`Number('')` 都是 0，
+ * 不先拦就会把「没填」当成「实盘 0」入库，凭空多出一笔盘亏。同理只收 number / string
+ * （`false`、`[0]` 经 Number() 也是 0），且最多两位小数、不超过 numeric(12,2) 上限：
+ * 列是 numeric(12,2)，0.004 落库会被舍成 0.00 —— 盘点单上就是一笔凭空的「实盘 0」。
+ *
+ * ⚠️ 函数体与 staffApi `routes/inventory.js` 的同名函数**逐字一致**，由
+ * `cross-end-inventory-snapshot.test.js` §7 整段比对；DB 侧兜底是 trigger
+ * `inventory_assert_doc_item_quantity`（非盘点类型 quantity <= 0 拒绝）。
+ */
+function isValidDocItemQuantity(docType: InventoryDocType, quantity: unknown): boolean {
+  if (typeof quantity !== 'number' && typeof quantity !== 'string') return false
+  if (typeof quantity === 'string' && quantity.trim() === '') return false
   const n = Number(quantity)
-  if (!Number.isFinite(n) || n <= 0) {
-    throw new ApiError('INVALID_PARAMS', '明细数量必须大于 0')
+  if (!Number.isFinite(n) || n > 9999999999.99 || Number(n.toFixed(2)) !== n) return false
+  return n > 0 || (n === 0 && STOCKTAKE_DOC_TYPES.has(docType))
+}
+
+function assertDocItemQuantity(docType: InventoryDocType, quantity: unknown): number {
+  if (isValidDocItemQuantity(docType, quantity)) return Number(quantity)
+  if (STOCKTAKE_DOC_TYPES.has(docType)) {
+    throw new ApiError('INVALID_PARAMS', '请填写实盘数（0 或正数，最多两位小数；货架上没有就填 0）')
   }
-  return n
+  throw new ApiError('INVALID_PARAMS', '明细数量必须大于 0')
 }
 
 function defaultStatusForDoc(docType: InventoryDocType): InventoryCoreDocStatus {
@@ -536,6 +581,7 @@ export async function syncInventoryLocations(): Promise<void> {
            OR loc.location_type IS DISTINCT FROM o.type::text
            OR loc.name IS DISTINCT FROM o.name
            OR loc.org_node_id IS DISTINCT FROM o.id
+           OR loc.store_id IS NOT NULL
            OR loc.parent_location_id IS DISTINCT FROM o.parent_id
            OR loc.is_active IS DISTINCT FROM o.is_active)
       UNION ALL
@@ -550,38 +596,59 @@ export async function syncInventoryLocations(): Promise<void> {
          OR loc.store_id IS DISTINCT FROM s.store_id
          OR loc.parent_location_id IS DISTINCT FROM o.parent_id
          OR loc.is_active IS DISTINCT FROM (COALESCE(o.is_active, false) AND NOT s.is_closed)
-    ) AS drifted
+    ) AS drifted,
+    (SELECT s.store_id
+       FROM stores s
+       JOIN org_nodes o ON o.id = s.store_id
+      WHERE o.type IN ('总部','市场')
+      ORDER BY s.store_id
+      LIMIT 1) AS collided_id
   `)
+  const collidedId = (probe as unknown as Array<{ collided_id: string | null }> | undefined)?.[0]?.collided_id
+  if (collidedId != null) {
+    throw new ApiError('CONFLICT', `LOCATION_ID_AMBIGUOUS: 库存主体标识 ${collidedId} 与总部/市场组织节点冲突`)
+  }
   const drifted = (probe as unknown as Array<{ drifted: boolean | null }> | undefined)?.[0]?.drifted
   if (drifted === false) return
-  await db.execute(sql`
-    INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, parent_location_id, is_active)
-    SELECT id, type, name, id, parent_id, is_active
-      FROM org_nodes
-     WHERE type IN ('总部','市场')
-    ON CONFLICT (location_id) DO UPDATE
-      SET location_type = EXCLUDED.location_type,
-          name = EXCLUDED.name,
-          org_node_id = EXCLUDED.org_node_id,
-          parent_location_id = EXCLUDED.parent_location_id,
-          is_active = EXCLUDED.is_active,
-          updated_at = NOW()
-  `)
-  await db.execute(sql`
-    INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, store_id, parent_location_id, is_active)
-    SELECT s.store_id, '门店', s.store_name, s.org_node_id, s.store_id, o.parent_id,
-           COALESCE(o.is_active, false) AND NOT s.is_closed
-      FROM stores s
-      LEFT JOIN org_nodes o ON o.id = s.org_node_id
-    ON CONFLICT (location_id) DO UPDATE
-      SET location_type = EXCLUDED.location_type,
-          name = EXCLUDED.name,
-          org_node_id = EXCLUDED.org_node_id,
-          store_id = EXCLUDED.store_id,
-          parent_location_id = EXCLUDED.parent_location_id,
-          is_active = EXCLUDED.is_active,
-          updated_at = NOW()
-  `)
+  try {
+    await db.execute(sql`
+      INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, parent_location_id, is_active)
+      SELECT id, type, name, id, parent_id, is_active
+        FROM org_nodes
+       WHERE type IN ('总部','市场')
+      ON CONFLICT (location_id) DO UPDATE
+        SET location_type = EXCLUDED.location_type,
+            name = EXCLUDED.name,
+            org_node_id = EXCLUDED.org_node_id,
+            store_id = NULL,
+            parent_location_id = EXCLUDED.parent_location_id,
+            is_active = EXCLUDED.is_active,
+            updated_at = NOW()
+    `)
+    await db.execute(sql`
+      INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, store_id, parent_location_id, is_active)
+      SELECT s.store_id, '门店', s.store_name, s.org_node_id, s.store_id, o.parent_id,
+             COALESCE(o.is_active, false) AND NOT s.is_closed
+        FROM stores s
+        LEFT JOIN org_nodes o ON o.id = s.org_node_id
+      ON CONFLICT (location_id) DO UPDATE
+        SET location_type = EXCLUDED.location_type,
+            name = EXCLUDED.name,
+            org_node_id = EXCLUDED.org_node_id,
+            store_id = EXCLUDED.store_id,
+            parent_location_id = EXCLUDED.parent_location_id,
+            is_active = EXCLUDED.is_active,
+            updated_at = NOW()
+    `)
+  } catch (error) {
+    // Drizzle wraps PostgreSQL exceptions in cause. Keep this guard's business
+    // prefix so the API/error boundary reports CONFLICT instead of a generic SQL error.
+    const pgError = (error as { cause?: unknown } | null)?.cause ?? error
+    if (pgError instanceof Error && pgError.message.startsWith('CONFLICT: LOCATION_ID_AMBIGUOUS:')) {
+      throw new ApiError('CONFLICT', pgError.message.slice('CONFLICT: '.length))
+    }
+    throw error
+  }
 }
 
 async function scopedLocationIds(session: AuthSession): Promise<string[] | null> {
@@ -687,7 +754,7 @@ async function assertGenericDocLocationRules(
   actingOrgNodeId: string,
 ): Promise<void> {
   /**
-   * 这里的 case 集合必须与 `INVENTORY_GENERIC_DOC_TYPES`（types.ts，10 个）一一对应 ——
+   * 这里的 case 集合必须与 `INVENTORY_GENERIC_DOC_TYPES`（types.ts，#350 起 9 个）一一对应 ——
    * 本函数只有一个调用点（`createInventoryCoreDoc`），而那里在更靠前的位置就把
    * `SPECIALIZED_DOC_TYPES` 整体拒了（「该库存单据必须从对应的专用业务流程创建」），
    * 所以任何专用类型的 case 写在这里都是**不可达**的。
@@ -712,7 +779,6 @@ async function assertGenericDocLocationRules(
       if (!sourceOrgNodeId) throw new ApiError('INVALID_PARAMS', '内部领用缺少出库主体')
       await assertLocationType(sourceOrgNodeId, '总部', '内部领用出库主体')
       return
-    case '院顾客产品出库':
     case '院产品报损':
       if (!sourceOrgNodeId) throw new ApiError('INVALID_PARAMS', `${input.docType}缺少出库主体`)
       await assertLocationType(sourceOrgNodeId, '门店', `${input.docType}出库主体`)
@@ -1035,7 +1101,7 @@ async function ensureLotFromSku(
   }, locationId)
 
   const batchNo = normalizeText(item.batchNo) ?? ''
-  const expiryDate = normalizeText(item.expiryDate)
+  const expiryDate = candidateDate(item.expiryDate, '有效期') ?? null
   const isGift = Boolean(item.isGift)
   const supplyChainUnitCost =
     item.supplyChainUnitCost ?? numberOrNull(sku.supply_chain_purchase_price)
@@ -1275,12 +1341,27 @@ function skuRow(row: {
  */
 const AMOUNTLESS_DOC_TYPES = new Set<InventoryDocType>(['品项公司发货'])
 
+/**
+ * 价格全是供应链成本的单据类型（#346）：供应链采购入库的标准进价 / 单价优惠 / 实际进价 / 金额
+ * 都能直接还原批次成本，市场价格档不该看到 —— 只认 all / supply_chain 档，market 档按 none 处理。
+ */
+const SUPPLY_CHAIN_COST_DOC_TYPES = new Set<InventoryDocType>(['供应链采购入库'])
+
+function docTypePriceVisibility(
+  docType: string,
+  visibility: import('./types').InventoryPriceVisibility,
+): import('./types').InventoryPriceVisibility {
+  return SUPPLY_CHAIN_COST_DOC_TYPES.has(docType as InventoryDocType) && visibility === 'market' ? 'none' : visibility
+}
+
 function docRow(row: {
   doc: typeof inventoryDocs.$inferSelect
   sourceOrgNodeName: string | null
   sourceOrgNodeType: string | null
   targetOrgNodeName: string | null
   targetOrgNodeType: string | null
+  partiallyReceived?: boolean | null
+  processProgress?: import('./types').InventoryDocProcessProgress | null
   includePrice: boolean
 }): InventoryDocRow {
   const doc = row.doc
@@ -1321,8 +1402,25 @@ function docRow(row: {
     cancelledAt: doc.cancelledAt?.toISOString() ?? null,
     createdAt: doc.createdAt.toISOString(),
     updatedAt: doc.updatedAt.toISOString(),
+    partiallyReceived: row.partiallyReceived === true,
+    processProgress: row.processProgress ?? null,
   }
 }
+
+/**
+ * 采购订单「部分入库」派生标签（#335）：只是「待收货」下的进度标签，不是单据状态，
+ * 不进 CHECK / lifecycle / staffApi。条件 = 采购订单 ∧ 待收货 ∧ 任一行已入库量 > 0
+ * （采购行 fulfilled_quantity 只记入库量）。EXISTS 走 idx_inventory_doc_items_doc(doc_id)。
+ */
+const partiallyReceivedSql = sql<boolean>`(
+  ${inventoryDocs.docType} = '采购订单'
+  AND ${inventoryDocs.status} = '待收货'
+  AND EXISTS (
+    SELECT 1 FROM ${inventoryDocItems} received_item
+     WHERE received_item.doc_id = ${inventoryDocs.id}
+       AND COALESCE(received_item.fulfilled_quantity, 0) > 0
+  )
+)`
 
 /**
  * 未完成预留（提货预约等）标量子查询：与 activeReservedQuantity / pickup-records
@@ -1373,6 +1471,101 @@ function lotRow(
   }
 }
 
+/**
+ * 「市场间调货出库」的接收主体候选（#340）：全部启用的市场，**不按操作人 scope 过滤**。
+ *
+ * 调货的接收方是对方市场，只管一个市场的账号（如「市场库存财务」）按 scope 本就看不见它 ——
+ * 继续用 `listInventoryLocations` 当候选源，下拉里永远只有自己，流程第一步就走不下去。
+ * 服务端建单对 RECEIVE_REQUIRED 类型的 target 同样刻意不做 scope 鉴权（见
+ * `createInventoryCoreDoc` 端点校验段的注释），两边口径一致。
+ *
+ * 因为越过了 scope，返回字段收到最少：只有名称与 orgNodeId —— 不带 locationId / storeId /
+ * parentLocationId，也不带门店与总部。「排除调出市场自己」依赖用户在表单里选的发起主体，
+ * 由表单按当前 source 过滤，这里不做。
+ *
+ * 权限与「谁能建这张单」同源：`inventoryDelegatableOperateActions(市场间调货出库 所在层级)`。
+ * 市场层只有 `market_operate` —— 总部 scope 不向下展开，供应链**不能**代建市场层单据，
+ * `createInventoryCoreDoc` 的层级闸同样只认它。别放宽成 stock_list 或加上 supply_chain_operate，
+ * 否则建不了单的账号也能直调拿到本不在自己 scope 内的全部市场名单。
+ */
+export const listInventoryMarketTransferTargets = withAnyPermission(
+  [...inventoryDelegatableOperateActions('market')],
+  async (): Promise<InventoryMarketTransferTarget[]> => activeMarketTargets(),
+)
+
+/** 全部启用市场，只取名称与 orgNodeId（越过 scope 的两个候选源共用，见各自注释）。 */
+async function activeMarketTargets(): Promise<InventoryMarketTransferTarget[]> {
+  await syncInventoryLocations()
+  const rows = await db
+    .select({ orgNodeId: inventoryLocations.orgNodeId, name: inventoryLocations.name })
+    .from(inventoryLocations)
+    .where(and(
+      eq(inventoryLocations.isActive, true),
+      eq(inventoryLocations.locationType, '市场'),
+      isNotNull(inventoryLocations.orgNodeId),
+    ))
+    .orderBy(asc(inventoryLocations.name))
+  return rows.flatMap((row) => (row.orgNodeId ? [{ orgNodeId: row.orgNodeId, name: row.name }] : []))
+}
+
+/**
+ * 品项公司发货的「收货市场」候选（#336b）：全部启用的市场，**不按操作人 scope 过滤**。
+ *
+ * 总部库存 scope 不向下展开市场，供应链操作员按 `listInventoryLocations` 只拿得到总部 ——
+ * 发货表单第一步「选收货市场」就是空的。服务端 `createItemCompanyShipment` 对收货市场
+ * 同样不做 scope 鉴权（只断发货总部可写，市场由所引报货单的发起方钉死），两边口径一致。
+ *
+ * 权限与发货 action 同源：只认 `inventory:supply_chain_operate`。别放宽成 stock_list ——
+ * 否则发不了货的账号也能直调拿到本不在自己 scope 内的全部市场名单。字段同样收到最少。
+ */
+export const listInventoryShipmentMarketTargets = withPermission(
+  'inventory:supply_chain_operate',
+  async (): Promise<InventoryMarketTransferTarget[]> => activeMarketTargets(),
+)
+
+/**
+ * 福利方案「适用市场」候选（#354）。维护方是总部供应链，而总部库存 scope 不展开市场，
+ * 沿用 listInventoryLocations 会让它的下拉只剩「全部市场」、建不了市场专属方案；
+ * 所以维护方取全部启用市场，其余（市场只读账号的列表筛选）仍按库存 scope。
+ */
+/**
+ * 福利方案读路径的角色收紧集合（#354）：入口仍只要 stock_list，但收紧时一并保留授予维护动作的绑定，
+ * 否则 MANAGE 与 stock_list 落在两条绑定上时，维护方判定会随 stock_list 收紧丢掉，
+ * 与写路径（按 MANAGE 收紧）判据分叉 —— 能建方案却看不到。
+ */
+const PROMOTION_READ_SCOPE = { scopeActions: ['inventory:stock_list', INVENTORY_PROMOTION_MAINTAIN_ACTION] } as const
+
+/**
+ * 福利方案读路径的库存主体范围：维护方（按并集收紧后的会话判定）不过滤；其余一律**重新按
+ * stock_list 收紧**再算 scope —— 并集里那条只授维护动作的绑定（如市场 B 误授）不能把
+ * 市场 B 的方案带进市场 A 账号的可见范围。
+ */
+async function promotionVisibleLocationIds(session: AuthSession): Promise<string[] | null> {
+  if (isInventoryPromotionMaintainer(session)) return null
+  return scopedLocationIds(scopeSessionToActions(session, ['inventory:stock_list']))
+}
+
+export const listInventoryPromotionMarketOptions = withPermission(
+  'inventory:stock_list',
+  async (session): Promise<Array<{ locationId: string; name: string }>> => {
+    await syncInventoryLocations()
+    const conditions: (SQL | undefined)[] = [
+      eq(inventoryLocations.isActive, true),
+      eq(inventoryLocations.locationType, '市场'),
+    ]
+    const scoped = await promotionVisibleLocationIds(session)
+    if (scoped !== null) {
+      conditions.push(scoped.length > 0 ? inArray(inventoryLocations.locationId, scoped) : sql`FALSE`)
+    }
+    return db
+      .select({ locationId: inventoryLocations.locationId, name: inventoryLocations.name })
+      .from(inventoryLocations)
+      .where(and(...conditions))
+      .orderBy(asc(inventoryLocations.name))
+  },
+  PROMOTION_READ_SCOPE,
+)
+
 export const listInventoryLocations = withPermission(
   'inventory:stock_list',
   async (session): Promise<InventoryLocationRow[]> => {
@@ -1401,26 +1594,34 @@ export const listInventoryLocations = withPermission(
 
 async function inventoryLocationFilterOptions(
   session: AuthSession,
+  { includeInactive = false }: { includeInactive?: boolean } = {},
 ): Promise<InventoryLocationFilterOptions> {
   await syncInventoryLocations()
   const scoped = await scopedLocationIds(session)
   const rows = await db
     .select()
     .from(inventoryLocations)
-    .where(eq(inventoryLocations.isActive, true))
+    .where(includeInactive ? undefined : eq(inventoryLocations.isActive, true))
     .orderBy(asc(inventoryLocations.locationType), asc(inventoryLocations.name))
-  return buildInventoryLocationFilterOptions(
-    rows.map((row) => ({
-      locationId: row.locationId,
-      locationType: row.locationType as InventoryLocationType,
-      name: row.name,
-      orgNodeId: row.orgNodeId,
-      storeId: row.storeId,
-      parentLocationId: row.parentLocationId,
-      isActive: row.isActive,
-    })),
-    scoped,
-  )
+  const toRow = (row: typeof rows[number]) => ({
+    locationId: row.locationId,
+    locationType: row.locationType as InventoryLocationType,
+    // 与单据中心同一标注：停用主体只为查历史保留
+    name: row.isActive ? row.name : `${row.name}（已停用）`,
+    orgNodeId: row.orgNodeId,
+    storeId: row.storeId,
+    parentLocationId: row.parentLocationId,
+    isActive: row.isActive,
+  })
+  const options = buildInventoryLocationFilterOptions(rows.map(toRow), scoped)
+  if (!includeInactive) return options
+  // 含停用主体时，默认主体仍取在营的（按名称排序可能先排到停用主体）；全都停用才退回任一可选主体。
+  // 行集保持完整、只把「可选」收窄到在营主体：停用市场下仍有在营门店时，门店要靠这行市场做分组，
+  // 把停用行删掉会让门店掉出选项、默认退回停用市场（codex round-2 P2）
+  const activeIds = new Set(rows.filter((row) => row.isActive).map((row) => row.locationId))
+  const activeScoped = (scoped ?? rows.map((row) => row.locationId)).filter((id) => activeIds.has(id))
+  const activeDefault = buildInventoryLocationFilterOptions(rows.map(toRow), activeScoped).defaultLocationId
+  return { ...options, defaultLocationId: activeDefault ?? options.defaultLocationId }
 }
 
 async function inventoryDocLocationFilterOptions(
@@ -1450,7 +1651,17 @@ async function inventoryDocLocationFilterOptions(
 
 export const listInventoryLocationFilterOptions = withPermission(
   'inventory:stock_list',
-  inventoryLocationFilterOptions,
+  // 显式包一层：别把 includeInactive 暴露成 Server Action 入参
+  (session: AuthSession) => inventoryLocationFilterOptions(session),
+)
+
+/**
+ * 进出明细（#360）的主体选项：查的是「从头到尾全部流水」，已停用市场 / 关闭门店的历史也要能查，
+ * 所以在库存查询同一 scope（stock_list，总部不展开）基础上保留停用主体。
+ */
+export const listInventoryMovementLocationFilterOptions = withPermission(
+  'inventory:stock_list',
+  (session: AuthSession) => inventoryLocationFilterOptions(session, { includeInactive: true }),
 )
 
 export const listInventoryDocLocationFilterOptions = withPermission(
@@ -1501,12 +1712,78 @@ async function resolveSkuSupplier(
   return { supplierId: id, supplier: supplier.name, onlyIfCurrent: !supplier.isActive }
 }
 
+const SKU_ID_FILTER_MAX = 100
+
+function normalizeSkuIdFilter(value: unknown): string[] | undefined {
+  if (value === undefined || value === null) return undefined
+  if (!Array.isArray(value) || value.some((id) => typeof id !== 'string')) {
+    throw new ApiError('INVALID_PARAMS', 'skuIds 必须是字符串数组')
+  }
+  const ids = Array.from(new Set(value.map((id) => id.trim()).filter(Boolean)))
+  if (ids.length > SKU_ID_FILTER_MAX) {
+    throw new ApiError('INVALID_PARAMS', `skuIds 一次最多 ${SKU_ID_FILTER_MAX} 个`)
+  }
+  return ids
+}
+
+function optionalFilterId(value: unknown, label: string): string | undefined {
+  if (value === undefined || value === null || value === '') return undefined
+  if (typeof value !== 'string' || !value.trim()) throw new ApiError('INVALID_PARAMS', `${label}无效`)
+  return value.trim()
+}
+
+/**
+ * SKU 候选的业务过滤条件（#339），口径见 `InventorySkuOptionFilters` 的注释。
+ * 独立成纯函数是为了能在单测里把 SQL 渲染出来逐条断言 —— 组件测试都 mock 掉了 action，
+ * 这里的 OR / AND 写反（比如自采入库漏了「非供应链」）只有在这一层才测得出来。
+ */
+export function inventorySkuOptionConditions(filters: InventorySkuOptionFilters): SQL[] {
+  const conditions: SQL[] = []
+  if (filters.sourceType) {
+    if (!INVENTORY_SKU_SOURCE_TYPES.includes(filters.sourceType)) {
+      throw new ApiError('INVALID_PARAMS', '无效库存商品来源')
+    }
+    conditions.push(eq(inventorySkus.sourceType, filters.sourceType))
+  }
+  if (filters.reportable) conditions.push(eq(inventorySkus.isReportable, true))
+  const availableToMarketId = optionalFilterId(filters.availableToMarketId, '可用市场')
+  if (availableToMarketId) {
+    conditions.push(or(
+      eq(inventorySkus.sourceType, '供应链'),
+      eq(inventorySkus.ownerMarketId, availableToMarketId),
+    )!)
+  }
+  const ownedByMarketId = optionalFilterId(filters.ownedByMarketId, '归属市场')
+  if (ownedByMarketId) {
+    conditions.push(and(
+      ne(inventorySkus.sourceType, '供应链'),
+      eq(inventorySkus.ownerMarketId, ownedByMarketId),
+    )!)
+  }
+  const keyword = typeof filters.keyword === 'string' ? filters.keyword.trim() : ''
+  if (keyword) {
+    const pattern = `%${keyword.replace(/[%_\\]/g, '\\$&')}%`
+    conditions.push(or(
+      ilike(inventorySkus.skuId, pattern),
+      ilike(inventorySkus.productCode, pattern),
+      ilike(inventorySkus.productName, pattern),
+      ilike(inventorySkus.specName, pattern),
+      ilike(inventorySkus.productSeries, pattern),
+    )!)
+  }
+  return conditions
+}
+
 export const listInventorySkus = withPermission(
   'inventory:stock_list',
   async (
     session,
-    filters: { keyword?: string; sourceType?: InventorySkuSourceType; onlyActive?: boolean; page?: number; pageSize?: number } = {},
+    rawFilters: InventorySkuListFilters | null = {},
   ): Promise<{ data: InventorySkuRow[]; total: number }> => {
+    // Server Action 可被直调：显式传 null 时默认参数不生效
+    const filters = rawFilters ?? {}
+    const skuIds = normalizeSkuIdFilter(filters.skuIds)
+    if (skuIds !== undefined && skuIds.length === 0) return { data: [], total: 0 }
     await syncInventoryLocations()
     const { page, pageSize, offset } = resolvePaging({
       page: filters.page,
@@ -1534,19 +1811,8 @@ export const listInventorySkus = withPermission(
       )
     }
     if (filters.onlyActive ?? true) conditions.push(eq(inventorySkus.isActive, true))
-    if (filters.sourceType) conditions.push(eq(inventorySkus.sourceType, filters.sourceType))
-    if (filters.keyword) {
-      const pattern = `%${filters.keyword.replace(/[%_]/g, '\\$&')}%`
-      conditions.push(
-        or(
-          ilike(inventorySkus.skuId, pattern),
-          ilike(inventorySkus.productCode, pattern),
-          ilike(inventorySkus.productName, pattern),
-          ilike(inventorySkus.specName, pattern),
-          ilike(inventorySkus.productSeries, pattern),
-        ),
-      )
-    }
+    if (skuIds !== undefined) conditions.push(inArray(inventorySkus.skuId, skuIds))
+    conditions.push(...inventorySkuOptionConditions(filters))
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined
     const [countRow] = await db
       .select({ count: sql<number>`cast(count(*) as int)` })
@@ -2116,6 +2382,67 @@ export const exportInventoryLots = withPermission(
   },
 )
 
+/** 报货进度只读派生。每个子查询按当前单据关联，不写回 status。 */
+function progressLinkQuantitySql(relationTypes: readonly string[]): SQL {
+  return sql`(
+    SELECT COALESCE(SUM(progress_link.quantity), 0)
+      FROM inventory_doc_links progress_link
+      JOIN inventory_docs progress_target ON progress_target.id = progress_link.to_doc_id
+     WHERE progress_link.from_doc_id = ${inventoryDocs.id}
+       AND progress_link.relation_type IN (${sql.join(relationTypes.map((value) => sql`${value}`), sql`, `)})
+       AND progress_target.status <> '已取消'
+  )`
+}
+
+const progressOrderedQuantitySql = sql`(
+  SELECT COALESCE(SUM(COALESCE(progress_item.fulfilled_quantity, 0)), 0)
+    FROM inventory_doc_items progress_item
+   WHERE progress_item.doc_id = ${inventoryDocs.id}
+)`
+const progressSummarizedQuantitySql = progressLinkQuantitySql(['市场报货汇总'])
+const progressStoreSummarizedQuantitySql = progressLinkQuantitySql(['门店报货汇总'])
+const progressAllocatedQuantitySql = progressLinkQuantitySql(['门店报货配货'])
+const progressPurchasedQuantitySql = progressLinkQuantitySql(['市场报货采购订单'])
+const progressShippedQuantitySql = progressLinkQuantitySql(['市场报货发货'])
+const progressReceivedQuantitySql = sql`(
+  SELECT COALESCE(SUM(receipt_link.quantity), 0)
+    FROM inventory_doc_links shipment_link
+    JOIN inventory_docs shipment_doc ON shipment_doc.id = shipment_link.to_doc_id
+    JOIN inventory_doc_links receipt_link ON receipt_link.from_item_id = shipment_link.to_item_id
+    JOIN inventory_docs receipt_doc ON receipt_doc.id = receipt_link.to_doc_id
+   WHERE shipment_link.from_doc_id = ${inventoryDocs.id}
+     AND shipment_link.relation_type = '市场报货发货'
+     AND shipment_doc.status <> '已取消'
+     AND receipt_link.relation_type = '发货收货'
+     AND receipt_doc.status = '已完成'
+)`
+
+const inventoryDocProcessProgressSql = sql<import('./types').InventoryDocProcessProgress | null>`(
+  CASE
+    WHEN ${inventoryDocs.status} = '已取消' THEN NULL
+    WHEN ${inventoryDocs.docType} IN ('市场报货汇总', '品项公司报货需求') THEN
+      CASE WHEN ${progressOrderedQuantitySql} >= ${inventoryDocs.totalQuantity} AND ${progressOrderedQuantitySql} > 0 THEN '已采购'
+           WHEN ${progressOrderedQuantitySql} > 0 THEN '部分采购' ELSE '未采购' END
+    WHEN ${inventoryDocs.docType} = '门店报货' THEN
+      CASE WHEN ${inventoryDocs.status} <> '已完成' THEN '未提交'
+           WHEN ${progressAllocatedQuantitySql} >= ${inventoryDocs.totalQuantity} AND ${progressAllocatedQuantitySql} > 0 THEN '已配货'
+           WHEN ${progressAllocatedQuantitySql} > 0 THEN '部分配货'
+           WHEN ${progressStoreSummarizedQuantitySql} >= ${inventoryDocs.totalQuantity} AND ${progressStoreSummarizedQuantitySql} > 0 THEN '已汇总'
+           WHEN ${progressStoreSummarizedQuantitySql} > 0 THEN '部分汇总' ELSE '未汇总' END
+    WHEN ${inventoryDocs.docType} = '市场报货' THEN
+      CASE WHEN ${inventoryDocs.status} <> '已完成' THEN '未提交'
+           WHEN ${progressReceivedQuantitySql} >= ${inventoryDocs.totalQuantity} AND ${progressReceivedQuantitySql} > 0 THEN '已入库'
+           WHEN ${progressReceivedQuantitySql} > 0 THEN '部分入库'
+           WHEN ${progressShippedQuantitySql} >= ${inventoryDocs.totalQuantity} AND ${progressShippedQuantitySql} > 0 THEN '已发货'
+           WHEN ${progressShippedQuantitySql} > 0 THEN '部分发货'
+           WHEN ${progressPurchasedQuantitySql} >= ${inventoryDocs.totalQuantity} AND ${progressPurchasedQuantitySql} > 0 THEN '已采购'
+           WHEN ${progressPurchasedQuantitySql} > 0 THEN '部分采购'
+           WHEN ${progressSummarizedQuantitySql} >= ${inventoryDocs.totalQuantity} AND ${progressSummarizedQuantitySql} > 0 THEN '已汇总'
+           WHEN ${progressSummarizedQuantitySql} > 0 THEN '部分汇总' ELSE '未汇总' END
+    ELSE NULL
+  END
+)`
+
 export const listInventoryCoreDocs = withPermission(
   'inventory:list',
   async (
@@ -2159,19 +2486,21 @@ export const listInventoryCoreDocs = withPermission(
        */
       cancellationRequested?: true
       /**
-       * 只保留**还有未履约明细**的单据，并按明细的市场归属分流（#192）：
-       * `'supply-chain'` → 存在 `market_id IS NULL` 且未履约的明细；
-       * `'market'` → 存在 `market_id IS NOT NULL` 且未履约的明细。
+       * 只保留**还有未入库明细**的采购订单（#192）：存在 `fulfilled_quantity < quantity` 的明细。
        *
-       * 用途：#194 把供应链采购订单并进「采购订单」后，一张单可同时含两类行，
-       * 且只在**所有**行履约满时才转「已完成」。供应链收货待办若只按
-       * 「采购订单 + 待收货」取，就会长期挂着一批「供应链行已收完、只差市场行发货」的单，
-       * 点一次报一次 INVALID_STATE。
+       * #335 起采购订单的所有行都经供应链采购入库，完结只由入库推动，正常数据下
+       * 「待收货」必有未入库行，这条条件不再改变结果集；保留它作防御：
+       * #335 之前的存量混合单里，市场行的 fulfilled_quantity 记的是发货量。
        *
-       * 与 `cancellationRequested` 同样「只收窄不放宽」：类型是两个字面量而不是
+       * 与 `cancellationRequested` 同样「只收窄不放宽」：类型是字面量而不是
        * boolean / 开放字符串，省得传进来一个 falsy 值就静默退化成不过滤。
+       *
+       * `company-shipment`（#336）：只保留还有**正常未发量**的市场报货单 —— 存在明细
+       * 「市场报货发货」血缘（目标单未取消）合计 < 报货数量，与 createItemCompanyShipment 的封顶同口径。
+       * 只管剩余量；「报货单须已完成」由调用方的 statuses 表达（inbox 配置里带 `statuses: ['已完成']`）。
        */
-      pendingItemScope?: 'supply-chain' | 'market'
+      pendingItemScope?: 'supply-chain' | 'company-shipment'
+      processProgress?: import('./types').InventoryDocProcessProgress
       startDate?: string
       endDate?: string
       keyword?: string
@@ -2179,6 +2508,9 @@ export const listInventoryCoreDocs = withPermission(
       pageSize?: number
     } = {},
   ): Promise<{ data: InventoryDocRow[]; total: number; pageSize: number; canViewPrice: boolean; priceVisibility: import('./types').InventoryPriceVisibility }> => {
+    const startDate = filters.startDate == null || filters.startDate === '' ? undefined : normalizeYmd(filters.startDate, '开始日期')
+    const endDate = filters.endDate == null || filters.endDate === '' ? undefined : normalizeYmd(filters.endDate, '结束日期')
+    if (startDate && endDate && startDate > endDate) throw new ApiError('INVALID_PARAMS', '开始日期不能晚于结束日期')
     await syncInventoryLocations()
     const scoped = inventoryScopedOrgNodeIds(session)
     const { page, pageSize, offset } = resolvePaging({
@@ -2273,18 +2605,37 @@ export const listInventoryCoreDocs = withPermission(
        * 待办区的分页器必须按能操作的单数算页数）。
        * EXISTS 走 idx_inventory_doc_items_doc(doc_id)。
        */
-      const marketCondition = filters.pendingItemScope === 'supply-chain'
-        ? sql`pending_item.market_id IS NULL`
-        : sql`pending_item.market_id IS NOT NULL`
-      conditions.push(sql`EXISTS (
-        SELECT 1 FROM ${inventoryDocItems} pending_item
-         WHERE pending_item.doc_id = ${inventoryDocs.id}
-           AND ${marketCondition}
-           AND COALESCE(pending_item.fulfilled_quantity, 0) < pending_item.quantity
-      )`)
+      conditions.push(filters.pendingItemScope === 'company-shipment'
+        ? sql`EXISTS (
+          SELECT 1 FROM ${inventoryDocItems} pending_item
+           WHERE pending_item.doc_id = ${inventoryDocs.id}
+             AND ${reportItemShippedSql(sql`pending_item.id`)} < pending_item.quantity
+        )`
+        // 采购订单的所有行都经供应链采购入库（#335），fulfilled_quantity 即已入库量，
+        // 不再按 market_id 分流。
+        : sql`EXISTS (
+          SELECT 1 FROM ${inventoryDocItems} pending_item
+           WHERE pending_item.doc_id = ${inventoryDocs.id}
+             AND COALESCE(pending_item.fulfilled_quantity, 0) < pending_item.quantity
+        )`)
     }
-    if (filters.startDate) conditions.push(gte(inventoryDocs.docDate, filters.startDate))
-    if (filters.endDate) conditions.push(lte(inventoryDocs.docDate, filters.endDate))
+    if (filters.processProgress) {
+      const allowed = new Set<import('./types').InventoryDocProcessProgress>([
+        '未提交', '未汇总', '部分汇总', '已汇总', '未采购', '部分采购', '已采购',
+        '部分配货', '已配货', '部分发货', '已发货', '部分入库', '已入库',
+      ])
+      if (!allowed.has(filters.processProgress)) throw new ApiError('INVALID_PARAMS', '未知的流程进度')
+      // 「未采购」用于找仍有未下单量的汇总/需求单，部分采购也应命中。
+      conditions.push(filters.processProgress === '未采购'
+        ? sql`${inventoryDocs.docType} IN ('市场报货汇总', '品项公司报货需求')
+          AND ${inventoryDocs.status} <> '已取消'
+          AND EXISTS (SELECT 1 FROM inventory_doc_items progress_pending_item
+                       WHERE progress_pending_item.doc_id = ${inventoryDocs.id}
+                         AND COALESCE(progress_pending_item.fulfilled_quantity, 0) < progress_pending_item.quantity)`
+        : sql`${inventoryDocProcessProgressSql} = ${filters.processProgress}`)
+    }
+    if (startDate) conditions.push(gte(inventoryDocs.docDate, startDate))
+    if (endDate) conditions.push(lte(inventoryDocs.docDate, endDate))
     if (filters.keyword) {
       const pattern = `%${filters.keyword.replace(/[%_]/g, '\\$&')}%`
       conditions.push(
@@ -2308,6 +2659,8 @@ export const listInventoryCoreDocs = withPermission(
         sourceOrgNodeType: sourceLocation.locationType,
         targetOrgNodeName: targetLocation.name,
         targetOrgNodeType: targetLocation.locationType,
+        partiallyReceived: partiallyReceivedSql,
+        processProgress: inventoryDocProcessProgressSql,
       })
       .from(inventoryDocs)
       .leftJoin(sourceLocation, eq(sourceLocation.orgNodeId, inventoryDocs.sourceOrgNodeId))
@@ -2330,10 +2683,10 @@ export const listInventoryCoreDocs = withPermission(
     return {
       data: rows.map((row) => docRow({
         ...row,
-        includePrice: inventoryPriceVisibilityForOrgNodes(
+        includePrice: docTypePriceVisibility(row.doc.docType, inventoryPriceVisibilityForOrgNodes(
           priceTiers,
           [row.doc.sourceOrgNodeId, row.doc.targetOrgNodeId],
-        ) !== 'none',
+        )) !== 'none',
       })),
       total: countRow?.count ?? 0,
       // 回传**夹过白名单后**的实际页长：调用方若传了非白名单值（如 30），这里按 20 取数，
@@ -2342,6 +2695,377 @@ export const listInventoryCoreDocs = withPermission(
       canViewPrice: priceVisibility !== 'none',
       priceVisibility,
     }
+  },
+)
+
+/** 办理台卡片角标：一条聚合 SQL 为所有 inbox 算数，与单据 Tab 使用同一张业务映射表。 */
+export const listInventoryOperationInboxTotals = withPermission(
+  'inventory:list',
+  async (session): Promise<Record<string, number>> => {
+    await syncInventoryLocations()
+    const scoped = inventoryScopedOrgNodeIds(session)
+    const operationIds = [
+      ...INVENTORY_OPERATION_IDS,
+      ...INVENTORY_GENERIC_DOC_TYPES.map(genericOperationId),
+    ]
+    const inboxes = operationIds.flatMap((operationId) => {
+      const inbox = resolveOperationDocQuery(operationId)?.inbox
+      return inbox ? [{ operationId, inbox }] : []
+    })
+    if (inboxes.length === 0) return {}
+    const locationTypes = [...new Set(inboxes.flatMap(({ inbox }) => inbox.locationType ? [inbox.locationType] : []))]
+    const typedIds = new Map<InventoryLocationType, string[]>()
+    for (const locationType of locationTypes) {
+      const rows = await db.select({ orgNodeId: inventoryLocations.orgNodeId })
+        .from(inventoryLocations).where(eq(inventoryLocations.locationType, locationType))
+      typedIds.set(locationType, rows.flatMap((row) => row.orgNodeId ? [row.orgNodeId] : []))
+    }
+    const conditionFor = (filter: InventoryOperationDocFilter): SQL => {
+      const conditions: SQL[] = [inArray(inventoryDocs.docType, [...filter.docTypes])]
+      if (scoped !== null) {
+        conditions.push(scoped.length > 0
+          ? or(inArray(inventoryDocs.sourceOrgNodeId, scoped), inArray(inventoryDocs.targetOrgNodeId, scoped))!
+          : sql`FALSE`)
+      }
+      if (filter.scopeRole && scoped !== null) {
+        const endpoint = filter.scopeRole === 'source' ? inventoryDocs.sourceOrgNodeId : inventoryDocs.targetOrgNodeId
+        conditions.push(scoped.length > 0 ? inArray(endpoint, scoped) : sql`FALSE`)
+      }
+      if (filter.statuses) conditions.push(inArray(inventoryDocs.status, [...filter.statuses]))
+      if (filter.locationType) {
+        const ids = typedIds.get(filter.locationType) ?? []
+        conditions.push(ids.length > 0
+          ? or(inArray(inventoryDocs.sourceOrgNodeId, ids), inArray(inventoryDocs.targetOrgNodeId, ids))!
+          : sql`FALSE`)
+      }
+      if (filter.cancellationRequested) conditions.push(isNotNull(inventoryDocs.cancellationRequestReason))
+      if (filter.pendingItemScope === 'company-shipment') {
+        conditions.push(sql`EXISTS (
+          SELECT 1 FROM inventory_doc_items pending_item
+           WHERE pending_item.doc_id = ${inventoryDocs.id}
+             AND ${reportItemShippedSql(sql`pending_item.id`)} < pending_item.quantity
+        )`)
+      } else if (filter.pendingItemScope === 'supply-chain') {
+        conditions.push(sql`EXISTS (
+          SELECT 1 FROM inventory_doc_items pending_item
+           WHERE pending_item.doc_id = ${inventoryDocs.id}
+             AND COALESCE(pending_item.fulfilled_quantity, 0) < pending_item.quantity
+        )`)
+      }
+      return and(...conditions)!
+    }
+    const projections = inboxes.map(({ inbox }, index) => sql`
+      COUNT(*) FILTER (WHERE ${conditionFor(inbox)})::int AS ${sql.identifier(`inbox_${index}`)}
+    `)
+    const [row] = await db.execute(sql`SELECT ${sql.join(projections, sql`, `)} FROM ${inventoryDocs}`) as unknown as Array<Record<string, number | string>>
+    return Object.fromEntries(inboxes.map(({ operationId }, index) => [operationId, Number(row?.[`inbox_${index}`] ?? 0)]))
+  },
+)
+
+/*
+ * ────────── 办理台来源单 / 待处理单候选（#338） ──────────
+ *
+ * 用途白名单与口径在 `./doc-candidates`；这里只负责把口径翻成 SQL。
+ * 子查询别名统一 `cand_*` 前缀（本文件已有 pending_item / received_item / visible_doc 等，新增前先 grep）。
+ */
+
+/**
+ * 市场报货行的正常已发量（#336）：「市场报货发货」直连血缘合计，目标单已取消的不算。
+ * 与 business.ts createItemCompanyShipment 的封顶（linkedQuantity）逐字同口径；
+ * 候选剩余量、待发货段、报货履约进度三处共用。别名 `shipped_link*` 在本文件唯一。
+ */
+function reportItemShippedSql(reportItemId: SQL): SQL {
+  return sql`(
+    SELECT COALESCE(SUM(shipped_link.quantity), 0)
+      FROM inventory_doc_links shipped_link
+      JOIN inventory_docs shipped_link_doc ON shipped_link_doc.id = shipped_link.to_doc_id
+     WHERE shipped_link.from_item_id = ${reportItemId}
+       AND shipped_link.relation_type = '市场报货发货'
+       AND shipped_link_doc.status <> '已取消'
+  )`
+}
+
+/** 单行「已完成量」：与各建单守卫逐字同口径，见 InventoryDocCandidateProgressKind 注释 */
+function candidateItemDoneSql(kind: InventoryDocCandidateProgressKind): SQL {
+  if (kind === 'shipped') return reportItemShippedSql(sql`cand_item.id`)
+  if (kind === 'allocated') {
+    const relationType = '门店报货配货'
+    // 同 business.ts linkedQuantity：目标单已取消的血缘不算
+    return sql`(
+      SELECT COALESCE(SUM(cand_link.quantity), 0)
+        FROM inventory_doc_links cand_link
+        JOIN inventory_docs cand_link_doc ON cand_link_doc.id = cand_link.to_doc_id
+       WHERE cand_link.from_item_id = cand_item.id
+         AND cand_link.relation_type = ${relationType}
+         AND cand_link_doc.status <> '已取消'
+    )`
+  }
+  return sql`COALESCE(cand_item.fulfilled_quantity, 0)`
+}
+
+function candidateRemainingSql(kind: InventoryDocCandidateProgressKind): SQL {
+  return sql`EXISTS (
+    SELECT 1 FROM inventory_doc_items cand_item
+     WHERE cand_item.doc_id = ${inventoryDocs.id}
+       AND ${candidateItemDoneSql(kind)} < cand_item.quantity
+  )`
+}
+
+function candidateProgressSql(kind: InventoryDocCandidateProgressKind) {
+  const total = sql<string | number>`(
+    SELECT COALESCE(SUM(cand_item.quantity), 0)
+      FROM inventory_doc_items cand_item
+     WHERE cand_item.doc_id = ${inventoryDocs.id}
+  )`
+  // LEAST：超量（历史数据 / 赠送并行）不让进度超过 100%
+  const done = kind === 'none'
+    ? sql<string | number | null>`NULL`
+    : sql<string | number | null>`(
+      SELECT COALESCE(SUM(LEAST(${candidateItemDoneSql(kind)}, cand_item.quantity)), 0)
+        FROM inventory_doc_items cand_item
+       WHERE cand_item.doc_id = ${inventoryDocs.id}
+    )`
+  return { total, done }
+}
+
+
+/** Server Action 入参原样到达：非字符串一律按参数错误处理，别让 `.trim` 抛 TypeError 变成 500 */
+function candidateText(value: unknown, label: string): string | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== 'string') throw new ApiError('INVALID_PARAMS', `${label}格式不正确`)
+  return value.trim() || undefined
+}
+
+function candidateDate(value: unknown, label: string): string | undefined {
+  const text = candidateText(value, label)
+  if (!text) return undefined
+  if (!isValidInventoryCalendarDate(text)) {
+    throw new ApiError('INVALID_PARAMS', `${label}格式不正确`)
+  }
+  return text
+}
+
+interface ParsedCandidateFilters {
+  keyword?: string
+  startDate?: string
+  endDate?: string
+  targetOrgNodeId?: string
+  sourceOrgNodeId?: string
+  includeExhausted: boolean
+}
+
+/**
+ * 候选检索条件的运行时校验与归一。必须在 scope 判定、syncInventoryLocations **之前**跑完 ——
+ * 否则空 scope 会话传非法入参拿到的是空结果而不是 INVALID_PARAMS，同一入参的对错取决于谁在调。
+ */
+function parseCandidateFilters(filters: Record<string, unknown>): ParsedCandidateFilters {
+  const includeExhausted = filters.includeExhausted
+  if (includeExhausted !== undefined && includeExhausted !== null && typeof includeExhausted !== 'boolean') {
+    // 'true' 之类的字符串若静默当 false，调用方以为放宽了、其实没有
+    throw new ApiError('INVALID_PARAMS', '显示全部参数格式不正确')
+  }
+  const startDate = candidateDate(filters.startDate, '开始日期')
+  const endDate = candidateDate(filters.endDate, '结束日期')
+  if (startDate && endDate && startDate > endDate) {
+    throw new ApiError('INVALID_PARAMS', '开始日期不能晚于结束日期')
+  }
+  return {
+    keyword: candidateText(filters.keyword, '检索关键字')?.slice(0, 64),
+    startDate,
+    endDate,
+    targetOrgNodeId: candidateText(filters.targetOrgNodeId, '接收主体'),
+    sourceOrgNodeId: candidateText(filters.sourceOrgNodeId, '发起主体'),
+    includeExhausted: includeExhausted === true,
+  }
+}
+
+/**
+ * 候选查询的 WHERE：scope 双端 OR（与 listInventoryCoreDocs 同一基础可见性闸）
+ * + 动作端单端收窄 + 用途的类型/状态规则 + 剩余量 + 检索条件。
+ */
+function candidateConditions(
+  session: AuthSession,
+  definition: InventoryDocCandidateDefinition,
+  filters: ParsedCandidateFilters,
+  { onlyRemaining }: { onlyRemaining: boolean },
+): SQL {
+  const scoped = inventoryScopedOrgNodeIds(session)
+  const conditions: (SQL | undefined)[] = []
+  if (scoped !== null) {
+    if (scoped.length === 0) return sql`FALSE`
+    conditions.push(or(inArray(inventoryDocs.sourceOrgNodeId, scoped), inArray(inventoryDocs.targetOrgNodeId, scoped)))
+    const endpointColumn = definition.scopeRole === 'source'
+      ? inventoryDocs.sourceOrgNodeId
+      : inventoryDocs.targetOrgNodeId
+    conditions.push(inArray(endpointColumn, scoped))
+  }
+  conditions.push(or(...definition.rules.map((rule) => and(
+    eq(inventoryDocs.docType, rule.docType),
+    rule.statuses
+      ? inArray(inventoryDocs.status, [...rule.statuses])
+      : ne(inventoryDocs.status, '已取消'),
+  ))))
+  if (definition.cancellationRequested) conditions.push(isNotNull(inventoryDocs.cancellationRequestReason))
+  if (definition.requireNoReceipt) {
+    conditions.push(sql`NOT EXISTS (
+      SELECT 1 FROM inventory_doc_items cand_received
+       WHERE cand_received.doc_id = ${inventoryDocs.id}
+         AND COALESCE(cand_received.fulfilled_quantity, 0) > 0
+    )`)
+  }
+  if (onlyRemaining || definition.requireRemaining) {
+    conditions.push(candidateRemainingSql(definition.progress))
+  }
+  const { targetOrgNodeId, sourceOrgNodeId, startDate, endDate, keyword } = filters
+  if (targetOrgNodeId) conditions.push(eq(inventoryDocs.targetOrgNodeId, targetOrgNodeId))
+  if (sourceOrgNodeId) conditions.push(eq(inventoryDocs.sourceOrgNodeId, sourceOrgNodeId))
+  if (startDate) conditions.push(gte(inventoryDocs.docDate, startDate))
+  if (endDate) conditions.push(lte(inventoryDocs.docDate, endDate))
+  if (keyword) {
+    // 反斜杠也要转义：ILIKE 默认转义符就是 `\`，漏了它 `a\` 这类输入会让模式非法或错配
+    const pattern = `%${keyword.replace(/[\\%_]/g, '\\$&')}%`
+    conditions.push(or(
+      ilike(inventoryDocs.id, pattern),
+      ilike(sourceLocation.name, pattern),
+      ilike(targetLocation.name, pattern),
+    ))
+  }
+  return and(...conditions) ?? sql`TRUE`
+}
+
+export const listInventoryDocCandidates = withPermission(
+  'inventory:list',
+  async (
+    session,
+    filters: InventoryDocCandidateFilters,
+  ): Promise<{ data: InventoryDocCandidateRow[]; total: number; pageSize: number }> => {
+    const definition = resolveInventoryDocCandidate(filters?.purpose)
+    if (!definition) throw new ApiError('INVALID_PARAMS', '未知的候选单据用途')
+    const parsed = parseCandidateFilters(filters as unknown as Record<string, unknown>)
+    await syncInventoryLocations()
+    const { pageSize, offset } = resolvePaging({
+      page: filters.page,
+      pageSize: filters.pageSize,
+      defaultPageSize: 20,
+      allowedPageSizes: PAGE_SIZE_WHITELIST,
+    })
+    // includeExhausted 只对建单类来源生效；状态类候选没有「显示全部」这回事
+    const onlyRemaining = definition.remainingToggle && !parsed.includeExhausted
+    const whereClause = candidateConditions(session, definition, parsed, { onlyRemaining })
+    // 检索条件里用到了两端主体名，COUNT 也必须带同样的 join，否则 total 与列表对不上
+    const [countRow] = await db
+      .select({ count: sql<number>`cast(count(*) as int)` })
+      .from(inventoryDocs)
+      .leftJoin(sourceLocation, eq(sourceLocation.orgNodeId, inventoryDocs.sourceOrgNodeId))
+      .leftJoin(targetLocation, eq(targetLocation.orgNodeId, inventoryDocs.targetOrgNodeId))
+      .where(whereClause)
+    const progress = candidateProgressSql(definition.progress)
+    const rows = await db
+      .select({
+        doc: inventoryDocs,
+        sourceOrgNodeName: sourceLocation.name,
+        sourceOrgNodeType: sourceLocation.locationType,
+        targetOrgNodeName: targetLocation.name,
+        targetOrgNodeType: targetLocation.locationType,
+        partiallyReceived: partiallyReceivedSql,
+        progressTotal: progress.total,
+        progressDone: progress.done,
+      })
+      .from(inventoryDocs)
+      .leftJoin(sourceLocation, eq(sourceLocation.orgNodeId, inventoryDocs.sourceOrgNodeId))
+      .leftJoin(targetLocation, eq(targetLocation.orgNodeId, inventoryDocs.targetOrgNodeId))
+      .where(whereClause)
+      // 末位 id 保证翻页不重不漏（同 listInventoryCoreDocs 的排序注释）
+      .orderBy(desc(inventoryDocs.docDate), desc(inventoryDocs.createdAt), desc(inventoryDocs.id))
+      .limit(pageSize)
+      .offset(offset)
+    return {
+      data: rows.map((row) => ({
+        // 候选只用于选单，不回金额
+        ...docRow({ ...row, includePrice: false }),
+        progress: {
+          done: row.progressDone === null ? null : Number(row.progressDone),
+          total: Number(row.progressTotal),
+        },
+      })),
+      total: countRow?.count ?? 0,
+      pageSize,
+    }
+  },
+)
+
+/**
+ * 一键带出（#338 / §2.5）：按检索条件取**全部仍有剩余量**的候选单号，不分页。
+ * 超过上限直接报错让人缩小日期区间，不静默截断 —— 截断等于少采购。
+ */
+export const listInventoryDocCandidateIds = withPermission(
+  'inventory:list',
+  async (
+    session,
+    filters: Omit<InventoryDocCandidateFilters, 'includeExhausted' | 'page' | 'pageSize'>,
+  ): Promise<{ ids: string[] }> => {
+    const definition = resolveInventoryDocCandidate(filters?.purpose)
+    // 「有剩余量」只对建单类来源有意义；审批 / 收货类没有一键带出
+    if (!definition || !definition.remainingToggle) throw new ApiError('INVALID_PARAMS', '未知的候选单据用途')
+    const parsed = parseCandidateFilters(filters as unknown as Record<string, unknown>)
+    await syncInventoryLocations()
+    const whereClause = candidateConditions(session, definition, parsed, { onlyRemaining: true })
+    const rows = await db
+      .select({ id: inventoryDocs.id })
+      .from(inventoryDocs)
+      .leftJoin(sourceLocation, eq(sourceLocation.orgNodeId, inventoryDocs.sourceOrgNodeId))
+      .leftJoin(targetLocation, eq(targetLocation.orgNodeId, inventoryDocs.targetOrgNodeId))
+      .where(whereClause)
+      .orderBy(asc(inventoryDocs.docDate), asc(inventoryDocs.createdAt), asc(inventoryDocs.id))
+      .limit(INVENTORY_DOC_CANDIDATE_BULK_LIMIT + 1)
+    if (rows.length > INVENTORY_DOC_CANDIDATE_BULK_LIMIT) {
+      throw new ApiError(
+        'INVALID_PARAMS',
+        `符合条件的单据超过 ${INVENTORY_DOC_CANDIDATE_BULK_LIMIT} 张，请缩小日期区间后再带出`,
+      )
+    }
+    return { ids: rows.map((row) => row.id) }
+  },
+)
+
+/**
+ * 门店仍有未配报货的 SKU（#337 拍板 A：自选行命中时提示「建议引用报货单」，不拦截）。
+ *
+ * 候选范围与 `store-allocation-source` 同一套 `candidateConditions`（scope / 类型 / 只认已完成（#348 草稿不提示）/ 门店收窄），
+ * 行级未配量与建单守卫 `requestItem.quantity - allocated` 逐字同口径（`candidateItemDoneSql('allocated')`）。
+ * 纯提示用途：结果不参与任何写入判定。
+ */
+export const listStoreUnallocatedRequestSkus = withPermission(
+  'inventory:list',
+  async (session, raw: { storeOrgNodeId: string; marketId: string }): Promise<StoreUnallocatedRequestSku[]> => {
+    const storeOrgNodeId = candidateText(raw?.storeOrgNodeId, '收货门店')
+    // 与候选选择器同样按配货市场（报货单接收端）收窄：门店换过市场时，旧市场的报货单本市场引用不了
+    const marketId = candidateText(raw?.marketId, '配货市场')
+    if (!storeOrgNodeId) throw new ApiError('INVALID_PARAMS', '缺少收货门店')
+    if (!marketId) throw new ApiError('INVALID_PARAMS', '缺少配货市场')
+    const definition = INVENTORY_DOC_CANDIDATES['store-allocation-source']
+    await syncInventoryLocations()
+    const whereClause = candidateConditions(session, definition, {
+      sourceOrgNodeId: storeOrgNodeId,
+      targetOrgNodeId: marketId,
+      includeExhausted: true,
+    }, { onlyRemaining: false })
+    const done = candidateItemDoneSql('allocated')
+    const rows = await db.execute(sql`
+      SELECT cand_item.sku_id,
+             SUM(cand_item.quantity - ${done}) AS remaining_quantity,
+             array_agg(DISTINCT ${inventoryDocs.id} ORDER BY ${inventoryDocs.id}) AS doc_ids
+        FROM ${inventoryDocs}
+        JOIN ${inventoryDocItems} cand_item ON cand_item.doc_id = ${inventoryDocs.id}
+       WHERE ${whereClause}
+         AND ${done} < cand_item.quantity
+       GROUP BY cand_item.sku_id
+    `) as unknown as Array<{ sku_id: string; remaining_quantity: string | number; doc_ids: string[] | null }>
+    return rows.map((row) => ({
+      skuId: row.sku_id,
+      remainingQuantity: Number(row.remaining_quantity),
+      docIds: row.doc_ids ?? [],
+    }))
   },
 )
 
@@ -2380,55 +3104,65 @@ async function loadInventoryDocLineage(
   docId: string,
   scoped: string[] | null,
 ): Promise<InventoryDocLineageRow[]> {
-  const linkedDocVisible = scoped === null
-    ? sql`TRUE`
-    : sql`(
-      (doc_link.from_doc_id = ${docId} AND ${inventoryDocScopeSql(
-        scoped,
-        sql`to_doc.source_org_node_id`,
-        sql`to_doc.target_org_node_id`,
-      )})
-      OR
-      (doc_link.to_doc_id = ${docId} AND ${inventoryDocScopeSql(
-        scoped,
-        sql`from_doc.source_org_node_id`,
-        sql`from_doc.target_org_node_id`,
-      )})
-    )`
   const rows = await db.execute(sql`
-    SELECT
-      CASE WHEN doc_link.from_doc_id = ${docId} THEN '下游' ELSE '上游' END AS direction,
-      doc_link.relation_type,
-      CASE WHEN doc_link.from_doc_id = ${docId} THEN to_doc.id ELSE from_doc.id END AS doc_id,
-      CASE WHEN doc_link.from_doc_id = ${docId} THEN to_doc.doc_type ELSE from_doc.doc_type END AS doc_type,
-      CASE WHEN doc_link.from_doc_id = ${docId} THEN to_doc.status ELSE from_doc.status END AS status,
-      CASE WHEN doc_link.from_doc_id = ${docId} THEN to_doc.doc_date ELSE from_doc.doc_date END AS doc_date,
-      CASE WHEN doc_link.from_doc_id = ${docId} THEN to_doc.total_quantity ELSE from_doc.total_quantity END AS total_quantity,
-      COALESCE(SUM(doc_link.quantity), 0) AS linked_quantity,
-      MAX(doc_link.created_at) AS linked_at
-    FROM inventory_doc_links doc_link
-    JOIN inventory_docs from_doc ON from_doc.id = doc_link.from_doc_id
-    JOIN inventory_docs to_doc ON to_doc.id = doc_link.to_doc_id
-    WHERE (doc_link.from_doc_id = ${docId} OR doc_link.to_doc_id = ${docId})
-      AND ${linkedDocVisible}
-    GROUP BY
-      doc_link.from_doc_id,
-      doc_link.to_doc_id,
-      doc_link.relation_type,
-      from_doc.id,
-      from_doc.doc_type,
-      from_doc.status,
-      from_doc.doc_date,
-      from_doc.total_quantity,
-      to_doc.id,
-      to_doc.doc_type,
-      to_doc.status,
-      to_doc.doc_date,
-      to_doc.total_quantity
-    ORDER BY linked_at DESC, doc_link.relation_type ASC
+    WITH RECURSIVE lineage_walk(direction, depth, doc_id, via_doc_id, relation_type, linked_quantity, path) AS (
+      SELECT seed.direction, 0, ${docId}::text, NULL::text, NULL::text, 0::numeric, ARRAY[${docId}::text]
+        FROM (VALUES ('上游'::text), ('下游'::text)) seed(direction)
+      UNION ALL
+      SELECT walk.direction, walk.depth + 1,
+             CASE WHEN walk.direction = '上游' THEN edge.from_doc_id ELSE edge.to_doc_id END,
+             walk.doc_id, edge.relation_type, edge.linked_quantity,
+             walk.path || (CASE WHEN walk.direction = '上游' THEN edge.from_doc_id ELSE edge.to_doc_id END)
+        FROM lineage_walk walk
+        JOIN LATERAL (
+          SELECT local_link.from_doc_id, local_link.to_doc_id, local_link.relation_type,
+                 COALESCE(SUM(local_link.quantity), 0) AS linked_quantity
+            FROM (
+              SELECT upstream.from_doc_id, upstream.to_doc_id, upstream.relation_type, upstream.quantity
+                FROM inventory_doc_links upstream
+               WHERE walk.direction = '上游' AND upstream.to_doc_id = walk.doc_id
+              UNION ALL
+              SELECT downstream.from_doc_id, downstream.to_doc_id, downstream.relation_type, downstream.quantity
+                FROM inventory_doc_links downstream
+               WHERE walk.direction = '下游' AND downstream.from_doc_id = walk.doc_id
+            ) local_link
+            JOIN inventory_docs from_doc ON from_doc.id = local_link.from_doc_id
+            JOIN inventory_docs to_doc ON to_doc.id = local_link.to_doc_id
+           WHERE ${inventoryDocScopeSql(scoped, sql`from_doc.source_org_node_id`, sql`from_doc.target_org_node_id`)}
+             AND ${inventoryDocScopeSql(scoped, sql`to_doc.source_org_node_id`, sql`to_doc.target_org_node_id`)}
+           GROUP BY local_link.from_doc_id, local_link.to_doc_id, local_link.relation_type
+        ) edge ON TRUE
+       WHERE (CASE WHEN walk.direction = '上游' THEN edge.from_doc_id ELSE edge.to_doc_id END) <> ALL(walk.path)
+    ),
+    ranked_lineage AS (
+      -- 同一条关系边可能经多条路径抵达；只去重该边，保留正常/赠送等不同关系的数量。
+      SELECT walk.direction, walk.depth, walk.doc_id, walk.via_doc_id,
+             walk.relation_type, walk.linked_quantity,
+             ROW_NUMBER() OVER (
+               PARTITION BY walk.direction, walk.doc_id, walk.via_doc_id, walk.relation_type
+               ORDER BY walk.depth DESC, walk.via_doc_id, walk.relation_type
+             ) AS row_rank
+        FROM lineage_walk walk
+       WHERE walk.depth > 0
+    )
+    SELECT walk.direction, walk.depth, walk.via_doc_id, walk.relation_type,
+           linked_doc.id AS doc_id, linked_doc.doc_type, linked_doc.status,
+           linked_doc.doc_date, linked_doc.total_quantity,
+           source_location.name AS source_org_node_name, walk.linked_quantity
+      FROM ranked_lineage walk
+      JOIN inventory_docs linked_doc ON linked_doc.id = walk.doc_id
+      LEFT JOIN inventory_locations source_location ON source_location.org_node_id = linked_doc.source_org_node_id
+     WHERE walk.row_rank = 1
+     ORDER BY walk.direction, walk.depth, linked_doc.doc_date, linked_doc.id, walk.relation_type
   `)
+  return mapLineageRows(rows)
+}
+
+function mapLineageRows(rows: unknown[]): InventoryDocLineageRow[] {
   return (rows as unknown as Array<{
     direction: '上游' | '下游'
+    depth: number
+    via_doc_id: string
     relation_type: string
     doc_id: string
     doc_type: string
@@ -2436,8 +3170,11 @@ async function loadInventoryDocLineage(
     doc_date: string | Date
     total_quantity: string | number | null
     linked_quantity: string | number | null
+    source_org_node_name: string | null
   }>).map((row) => ({
     direction: row.direction,
+    depth: Number(row.depth),
+    viaDocId: row.via_doc_id,
     relationType: row.relation_type,
     docId: row.doc_id,
     docType: row.doc_type as InventoryDocType,
@@ -2445,6 +3182,7 @@ async function loadInventoryDocLineage(
     docDate: asDocDate(row.doc_date),
     totalQuantity: numberOrNull(row.total_quantity) ?? 0,
     linkedQuantity: numberOrNull(row.linked_quantity) ?? 0,
+    sourceOrgNodeName: row.source_org_node_name ?? null,
   }))
 }
 
@@ -2489,67 +3227,69 @@ async function loadMarketReportFulfillmentProgress(
       -- 收敛前采购单 source=该市场、天然可见，是本次改动引入的可见性回归。
       -- 本 CTE 只把数量聚合回**已经过可见性校验的** root_items，不外泄采购单本身的任何内容
       -- （单号、其它市场的明细都不出现在返回值里），所以放开这层过滤是安全的。
+      --
+      -- 已取消的采购单也要带上（#335）：市场行可以部分入库后再关单，已入库的那部分
+      -- 仍占着需求额度，整张排除会让「已采购」归零（发货 / 收货自 #336 起按直连血缘另算，与采购单无关）。
+      -- 已下单量在下面 purchase_totals 里只计已入库的保留部分（cancelled_retained）。
       SELECT
         doc_link.from_item_id AS root_item_id,
         doc_link.to_item_id AS purchase_item_id,
-        COALESCE(doc_link.quantity, 0) AS quantity
+        COALESCE(doc_link.quantity, 0) AS quantity,
+        purchase_doc.status AS purchase_status
         FROM inventory_doc_links doc_link
         JOIN root_items root_item ON root_item.item_id = doc_link.from_item_id
         JOIN inventory_docs purchase_doc ON purchase_doc.id = doc_link.to_doc_id
        WHERE doc_link.from_doc_id = ${docId}
          AND doc_link.relation_type = '市场报货采购订单'
-         AND purchase_doc.status IN ('已完成', '待收货')
+         AND purchase_doc.status IN ('已完成', '待收货', '已取消')
+    ),
+    -- 已取消的采购单只剩已入库那部分仍算已采购：按分做最大余数分配，与建单容量
+    -- （business.ts allocateSummaryToMarketReportItems）共用同一片段，保证同源。
+    cancelled_retained AS (${cancelledMarketReportRetainedSql(sql`SELECT item_id FROM root_items`)}),
+    -- 有效采购单按血缘量、已取消采购单按保留量，两部分各自聚合后相加：
+    -- 同一对 (原始行, 采购行) 可能有多条血缘，逐行连接 cancelled_retained 会重复累计。
+    -- 各自一次 GROUP BY 再左连接，避免按 root_items 逐行跑相关子查询。
+    active_purchase_totals AS (
+      SELECT active_link.root_item_id, SUM(active_link.quantity) AS quantity
+        FROM purchase_links active_link
+       WHERE active_link.purchase_status <> '已取消'
+       GROUP BY active_link.root_item_id
+    ),
+    cancelled_purchase_totals AS (
+      SELECT retained_row.report_item_id, SUM(retained_row.retained_quantity) AS quantity
+        FROM cancelled_retained retained_row
+       GROUP BY retained_row.report_item_id
     ),
     purchase_totals AS (
-      SELECT root_item_id, SUM(quantity) AS ordered_quantity
-        FROM purchase_links
-       GROUP BY root_item_id
-    ),
-    -- 一条采购明细可以由**多个**来源行合并而来（#194），所以下游的发货/收货量必须
-    -- 按各来源在该采购行里的占比分摊，不能每个来源都记全量 ——
-    -- 来源 A 5 件、B 5 件合成采购行 10 件、实发 6 件时，不分摊会让 A 与 B 各显示 6，
-    -- 合计 12 件，凭空多出一倍。
-    --
-    -- ⚠️ 分母必须取该采购行的**全部**来源血缘，不能用 PARTITION BY 的窗口和：
-    -- purchase_links 已经被 from_doc_id 限定成「当前这张单」的血缘，
-    -- 窗口函数看不到同一采购行来自**其它来源单**的那部分，share 又会退回 1，
-    -- 跨单合并的场景照样重复计数。
-    purchase_share AS (
       SELECT
-        purchase_link.root_item_id,
-        purchase_link.purchase_item_id,
-        purchase_link.quantity,
-        purchase_link.quantity / NULLIF(source_total.total_quantity, 0) AS share
-        FROM purchase_links purchase_link
-        JOIN LATERAL (
-          SELECT COALESCE(SUM(COALESCE(all_link.quantity, 0)), 0) AS total_quantity
-            FROM inventory_doc_links all_link
-           WHERE all_link.to_item_id = purchase_link.purchase_item_id
-             AND all_link.relation_type = '市场报货采购订单'
-        ) source_total ON true
+        root_item.item_id AS root_item_id,
+        COALESCE(active_total.quantity, 0) + COALESCE(cancelled_total.quantity, 0) AS ordered_quantity
+        FROM root_items root_item
+        LEFT JOIN active_purchase_totals active_total ON active_total.root_item_id = root_item.item_id
+        LEFT JOIN cancelled_purchase_totals cancelled_total ON cancelled_total.report_item_id = root_item.item_id
     ),
+    -- 发货直连报货行（#336），按血缘原值累计、不再经采购行占比分摊 —— 已发 / 已收都是整数不出小数。
+    -- 存量「采购订单 → 发货」的旧单不再折算回报货单（拍板 C：只对新单生效）。
+    -- 正常已发与 business.ts createItemCompanyShipment 的封顶同口径：排除已取消，「待审批」的撤回申请仍占额度。
     shipment_links AS (
       SELECT
-        purchase_link.root_item_id,
+        doc_link.from_item_id AS root_item_id,
         doc_link.to_item_id AS shipment_item_id,
         doc_link.relation_type,
-        COALESCE(doc_link.quantity, 0) * COALESCE(purchase_link.share, 0) AS quantity,
-        -- 发货明细由采购行一对一产生，所以收货沿用采购层的占比即可。
-        -- 早先在这里按当前单据子集再归一化一次，等于把 share 重新拉回 1，白分摊了。
-        COALESCE(purchase_link.share, 0) AS share
-        FROM purchase_share purchase_link
-        JOIN inventory_doc_links doc_link
-          ON doc_link.from_item_id = purchase_link.purchase_item_id
+        COALESCE(doc_link.quantity, 0) AS quantity
+        FROM inventory_doc_links doc_link
+        JOIN root_items root_item ON root_item.item_id = doc_link.from_item_id
         JOIN inventory_docs shipment_doc ON shipment_doc.id = doc_link.to_doc_id
        JOIN visible_docs visible_shipment ON visible_shipment.id = shipment_doc.id
-       WHERE doc_link.relation_type IN ('采购订单发货', '采购订单赠送发货')
-         AND shipment_doc.status IN ('待收货', '已完成')
+       WHERE doc_link.from_doc_id = ${docId}
+         AND doc_link.relation_type IN ('市场报货发货', '市场报货赠送发货')
+         AND shipment_doc.status <> '已取消'
     ),
     shipment_totals AS (
       SELECT
         root_item_id,
-        SUM(CASE WHEN relation_type = '采购订单发货' THEN quantity ELSE 0 END) AS normal_fulfilled_quantity,
-        SUM(CASE WHEN relation_type = '采购订单赠送发货' THEN quantity ELSE 0 END) AS gift_fulfilled_quantity
+        SUM(CASE WHEN relation_type = '市场报货发货' THEN quantity ELSE 0 END) AS normal_fulfilled_quantity,
+        SUM(CASE WHEN relation_type = '市场报货赠送发货' THEN quantity ELSE 0 END) AS gift_fulfilled_quantity
         FROM shipment_links
        GROUP BY root_item_id
     ),
@@ -2557,7 +3297,7 @@ async function loadMarketReportFulfillmentProgress(
       SELECT
         shipment_link.root_item_id,
         shipment_link.relation_type AS shipment_relation_type,
-        COALESCE(doc_link.quantity, 0) * COALESCE(shipment_link.share, 0) AS quantity
+        COALESCE(doc_link.quantity, 0) AS quantity
         FROM shipment_links shipment_link
         JOIN inventory_doc_links doc_link
           ON doc_link.from_item_id = shipment_link.shipment_item_id
@@ -2569,8 +3309,8 @@ async function loadMarketReportFulfillmentProgress(
     receipt_totals AS (
       SELECT
         root_item_id,
-        SUM(CASE WHEN shipment_relation_type = '采购订单发货' THEN quantity ELSE 0 END) AS normal_received_quantity,
-        SUM(CASE WHEN shipment_relation_type = '采购订单赠送发货' THEN quantity ELSE 0 END) AS gift_received_quantity
+        SUM(CASE WHEN shipment_relation_type = '市场报货发货' THEN quantity ELSE 0 END) AS normal_received_quantity,
+        SUM(CASE WHEN shipment_relation_type = '市场报货赠送发货' THEN quantity ELSE 0 END) AS gift_received_quantity
         FROM receipt_links
        GROUP BY root_item_id
     )
@@ -2770,6 +3510,12 @@ async function loadItemCompanyRequestFulfillmentProgress(
   }
 }
 
+/** 取到分、.5 远离 0（与 PG numeric ROUND 一致；先 toFixed(4) 吸收浮点残差）。与 business.ts roundCents 同口径。 */
+function roundCentsHalfUp(value: number): number {
+  const scaled = Number(value.toFixed(4)) * 100
+  return Math.sign(scaled) * Math.round(Math.abs(scaled) + 1e-9) / 100
+}
+
 async function loadSupplyChainPurchaseReceiptProgress(
   docId: string,
   scoped: string[] | null,
@@ -2777,55 +3523,93 @@ async function loadSupplyChainPurchaseReceiptProgress(
   const rows = await db.execute(sql`
     WITH visible_docs AS (${visibleInventoryDocsSql(scoped)}),
     purchase_items AS (
-      SELECT item.id AS item_id, item.quantity, purchase_doc.status AS purchase_status
+      SELECT item.id AS item_id, item.quantity, item.fulfilled_quantity,
+             -- 未入库部分按供应链采购价（下单价快照）计，与入库侧优惠的基准同源
+             COALESCE(item.supply_chain_unit_cost, item.actual_unit_price) AS order_unit_price,
+             purchase_doc.status AS purchase_status
         FROM inventory_doc_items item
         JOIN inventory_docs purchase_doc ON purchase_doc.id = item.doc_id
         JOIN visible_docs visible_purchase ON visible_purchase.id = purchase_doc.id
        WHERE item.doc_id = ${docId}
-         AND item.market_id IS NULL
     ),
     receipt_totals AS (
+      -- 已入库金额取各入库明细的 amount（#346：入库时可填单价优惠，按实际进价计），不是按下单价推算
       SELECT
         doc_link.from_item_id AS purchase_item_id,
-        SUM(COALESCE(doc_link.quantity, 0)) AS received_quantity
+        SUM(COALESCE(doc_link.quantity, 0)) AS received_quantity,
+        SUM(COALESCE(receipt_item.amount, 0)) AS received_amount,
+        -- 入库明细金额为空的存量行：金额算不准，整行不给金额（别把 NULL 当 0 静默低估）
+        BOOL_OR(receipt_item.amount IS NULL) AS has_unpriced_receipt
         FROM inventory_doc_links doc_link
         JOIN purchase_items purchase_item ON purchase_item.item_id = doc_link.from_item_id
         JOIN inventory_docs receipt_doc ON receipt_doc.id = doc_link.to_doc_id
         JOIN visible_docs visible_receipt ON visible_receipt.id = receipt_doc.id
+        JOIN inventory_doc_items receipt_item ON receipt_item.id = doc_link.to_item_id
        WHERE doc_link.from_doc_id = ${docId}
          AND doc_link.relation_type = '采购订单供应链采购入库'
+         -- 「有效入库」口径：供应链采购入库只有「已完成」一种落库状态，与 business.ts linkedQuantity 的
+         -- status <> 已取消 当前等价；将来给入库单加草稿 / 作废态时两处必须一起改
          AND receipt_doc.status = '已完成'
        GROUP BY doc_link.from_item_id
     )
     SELECT
       purchase_item.item_id,
       purchase_item.quantity AS purchased_quantity,
+      purchase_item.order_unit_price,
+      purchase_item.fulfilled_quantity,
       COALESCE(receipt_total.received_quantity, 0) AS received_quantity,
+      COALESCE(receipt_total.received_amount, 0) AS received_amount,
+      COALESCE(receipt_total.has_unpriced_receipt, false) AS has_unpriced_receipt,
       purchase_item.purchase_status
       FROM purchase_items purchase_item
       LEFT JOIN receipt_totals receipt_total ON receipt_total.purchase_item_id = purchase_item.item_id
      ORDER BY purchase_item.item_id
   `)
-  // 纯市场行的采购单在上面被 `market_id IS NULL` 过滤成空集，这里返回 null 而不是空进度，
-  // 避免详情页渲染出一张「已收货 0」的空表把市场行误导成待收货。
+  // 采购单不可见（scope 外）时 purchase_items 为空集，返回 null 而不是空进度。
   if (rows.length === 0) return null
   return {
     kind: '供应链采购收货',
     items: (rows as unknown as Array<{
       item_id: number | string
       purchased_quantity: string | number | null
+      order_unit_price: string | number | null
+      fulfilled_quantity: string | number | null
       received_quantity: string | number | null
+      received_amount: string | number | null
+      has_unpriced_receipt: boolean | null
       purchase_status: InventoryCoreDocStatus
     }>).map((row) => {
       const purchasedQuantity = numberOrNull(row.purchased_quantity) ?? 0
       const receivedQuantity = numberOrNull(row.received_quantity) ?? 0
+      const outstandingQuantity = row.purchase_status === '待收货'
+        ? Math.max(0, Number((purchasedQuantity - receivedQuantity).toFixed(4)))
+        : 0
+      const receivedAmount = numberOrNull(row.received_amount) ?? 0
+      const orderUnitPrice = numberOrNull(row.order_unit_price)
+      // 算不准就不给（返回 undefined，详情页不展示），别给一个看似真实的错数：
+      //  · 历史单：#335 之前市场行按发货完结，fulfilled_quantity 记的是发货量、没有入库血缘 ——
+      //    非待收货状态下 fulfilled > 入库量即此类，入库后金额无从谈起；
+      //    fulfilled_quantity 为空也按历史单处理；已完成却没收满（新模型只有入库收满才完结）同理；
+      //  · 还有未入库量却没有下单价（成本快照为空的存量行）；
+      //  · 关联的入库明细金额为空。
+      const fulfilledQuantity = numberOrNull(row.fulfilled_quantity)
+      const legacy = row.purchase_status !== '待收货' && (
+        fulfilledQuantity === null
+        || fulfilledQuantity - receivedQuantity > 0.000001
+        || (row.purchase_status === '已完成' && purchasedQuantity - receivedQuantity > 0.000001)
+      )
+      const unpriced = (outstandingQuantity > 0 && orderUnitPrice === null) || row.has_unpriced_receipt === true
       return {
         itemId: Number(row.item_id),
         purchasedQuantity,
         receivedQuantity,
-        outstandingQuantity: row.purchase_status === '待收货'
-          ? Math.max(0, purchasedQuantity - receivedQuantity)
-          : 0,
+        outstandingQuantity,
+        receivedAmount: row.has_unpriced_receipt === true ? undefined : receivedAmount,
+        // 入库后实际金额（#346）：已入库部分按各次入库的实际进价；仍待收货时未入库部分按下单价；
+        // 已完成 / 已关闭（已取消）只算已入库部分（口径 A，outstanding 已是 0）。
+        actualAmount: legacy || unpriced
+          ? undefined
+          : Number((receivedAmount + roundCentsHalfUp(outstandingQuantity * (orderUnitPrice ?? 0))).toFixed(2)),
       }
     }),
   }
@@ -2900,9 +3684,27 @@ async function loadInventoryDocFulfillmentProgress(
   if (docType === '品项公司报货需求') {
     return loadItemCompanyRequestFulfillmentProgress(docId, scoped)
   }
-  // 收敛后只剩 `采购订单` 一种类型，但收货进度只对**供应链行**（market_id IS NULL）有意义：
-  // 市场行走的是品项公司发货，不经供应链采购入库。纯市场单在下面的函数里会得到空 items 并返回 null，
-  // 与收敛前「市场链路采购单无履约进度」的行为一致。
+  if (docType === '市场报货汇总') {
+    const rows = await db.execute(sql`
+      SELECT item.id AS item_id,
+             COALESCE(item.fulfilled_quantity, 0) AS ordered_quantity,
+             GREATEST(item.quantity - COALESCE(item.fulfilled_quantity, 0), 0) AS outstanding_quantity
+        FROM inventory_doc_items item
+        JOIN (${visibleInventoryDocsSql(scoped)}) visible_summary ON visible_summary.id = item.doc_id
+       WHERE item.doc_id = ${docId}
+       ORDER BY item.id
+    `) as unknown as Array<{ item_id: number | string; ordered_quantity: string | number; outstanding_quantity: string | number }>
+    return {
+      kind: '市场汇总采购',
+      items: rows.map((row) => ({
+        itemId: Number(row.item_id),
+        orderedQuantity: Number(row.ordered_quantity),
+        outstandingQuantity: Number(row.outstanding_quantity),
+      })),
+    }
+  }
+  // 采购订单的所有行（不论有无市场归属）都经供应链采购入库（#335），收货进度统计全部明细；
+  // 市场行另带正常发货量，供品项公司发货表单算剩余可发量。
   if (docType === '采购订单') {
     return loadSupplyChainPurchaseReceiptProgress(docId, scoped)
   }
@@ -2911,6 +3713,32 @@ async function loadInventoryDocFulfillmentProgress(
   }
   return null
 }
+
+/**
+ * 批量取单据详情（#338 一键带出后采购表单装载明细用）。
+ *
+ * Server Action 在客户端是全局串行队列，逐张调 getInventoryCoreDocById 带出 100 张就是 100 次串行往返，
+ * 期间检索 / 提交全被堵住。这里一次请求、服务端逐张复用 getInventoryCoreDocById（scope 与价格裁剪同一口径）。
+ * 查不到 / 越出 scope 的单直接略过，与单张接口返回 null 同义。
+ */
+export const getInventoryCoreDocsByIds = withPermission(
+  'inventory:list',
+  async (_session, ids: string[]): Promise<InventoryDocDetail[]> => {
+    if (!Array.isArray(ids) || ids.some((id) => typeof id !== 'string')) {
+      throw new ApiError('INVALID_PARAMS', '单据编号格式不正确')
+    }
+    const unique = Array.from(new Set(ids))
+    if (unique.length > INVENTORY_DOC_CANDIDATE_BULK_LIMIT) {
+      throw new ApiError('INVALID_PARAMS', `一次最多加载 ${INVENTORY_DOC_CANDIDATE_BULK_LIMIT} 张单据`)
+    }
+    const details: InventoryDocDetail[] = []
+    for (const id of unique) {
+      const detail = await getInventoryCoreDocById(id)
+      if (detail) details.push(detail)
+    }
+    return details
+  },
+)
 
 export const getInventoryCoreDocById = withPermission(
   'inventory:list',
@@ -2930,6 +3758,7 @@ export const getInventoryCoreDocById = withPermission(
         sourceOrgNodeType: sourceLocation.locationType,
         targetOrgNodeName: targetLocation.name,
         targetOrgNodeType: targetLocation.locationType,
+        partiallyReceived: partiallyReceivedSql,
       })
       .from(inventoryDocs)
       .leftJoin(sourceLocation, eq(sourceLocation.orgNodeId, inventoryDocs.sourceOrgNodeId))
@@ -2939,10 +3768,10 @@ export const getInventoryCoreDocById = withPermission(
     if (!headRow) return null
     // 行级档位（§9.3/§9.5）：金额可见性按单据 source/target 端点命中该档位绑定的
     // org 集合判定（与单据可见性同构），防混合绑定会话跨绑定借权看价。
-    const priceVisibility = inventoryPriceVisibilityForOrgNodes(
+    const priceVisibility = docTypePriceVisibility(headRow.doc.docType, inventoryPriceVisibilityForOrgNodes(
       priceTiers,
       [headRow.doc.sourceOrgNodeId, headRow.doc.targetOrgNodeId],
-    )
+    ))
     const head = docRow({ ...headRow, includePrice: priceVisibility !== 'none' })
     // 无金额单据类型（§5.3/§10.4）所有价格/折扣/成本/金额字段一律遮蔽（含 admin）：
     // 明细可能残留历史价格快照（DB 保留供入库/退货/审计追溯），业务响应统一不返回。
@@ -2999,6 +3828,9 @@ export const getInventoryCoreDocById = withPermission(
         actualUnitPrice: itemPriceVisibility !== 'none' ? numberOrNull(item.actualUnitPrice) : undefined,
         amount: includeItemAmount ? numberOrNull(item.amount) : undefined,
         supplyChainUnitCost: itemPriceVisibility === 'all' || itemPriceVisibility === 'supply_chain' ? numberOrNull(item.supplyChainUnitCost) : undefined,
+        marketStandardUnitPrice: head.docType === '市场报货' && itemPriceVisibility !== 'none' ? numberOrNull(item.marketStandardUnitPrice) : undefined,
+        marketUnitDiscount: head.docType === '市场报货' && itemPriceVisibility !== 'none' ? numberOrNull(item.marketUnitDiscount) : undefined,
+        storeStandardUnitPrice: head.docType === '市场报货' && (itemPriceVisibility === 'all' || itemPriceVisibility === 'market') ? numberOrNull(item.storeStandardUnitPrice) : undefined,
         marketActualUnitPrice: itemPriceVisibility !== 'none' ? numberOrNull(item.marketActualUnitPrice) : undefined,
         storeActualUnitPrice: itemPriceVisibility === 'all' || itemPriceVisibility === 'market' ? numberOrNull(item.storeActualUnitPrice) : undefined,
         promotionPlanId: item.promotionPlanId,
@@ -3011,7 +3843,15 @@ export const getInventoryCoreDocById = withPermission(
         createdAt: item.createdAt.toISOString(),
       })),
       lineage,
-      fulfillmentProgress,
+      // 采购收货进度里的金额（#346）是供应链成本口径（已入库金额 ÷ 数量 = 实际进价），按供应链价格档遮蔽，
+      // 与 supplyChainUnitCost、与写入侧「填优惠须有供应链价格权」同档 —— 不能借明细金额的宽档
+      fulfillmentProgress: fulfillmentProgress?.kind === '供应链采购收货'
+        && itemPriceVisibility !== 'all' && itemPriceVisibility !== 'supply_chain'
+        ? {
+            ...fulfillmentProgress,
+            items: fulfillmentProgress.items.map(({ receivedAmount: _received, actualAmount: _actual, ...item }) => item),
+          }
+        : fulfillmentProgress,
     }
   },
 )
@@ -3085,6 +3925,11 @@ export const createInventoryCoreDoc = withAnyPermission(
     const status = defaultStatusForDoc(input.docType)
     if (!Array.isArray(input.items) || input.items.length === 0) {
       throw new ApiError('INVALID_PARAMS', '库存单据至少需要一条明细')
+    }
+    candidateDate(input.docDate, '单据日期')
+    for (const item of input.items) {
+      if (typeof item !== 'object' || item === null) throw new ApiError('INVALID_PARAMS', '库存明细格式不正确')
+      candidateDate(item.expiryDate, '有效期')
     }
     /**
      * 盘点单：一个 SKU 只能一行。账面数按「主体 + SKU 汇总」记（#131 Q1），同 SKU 两行会
@@ -3199,7 +4044,7 @@ export const createInventoryCoreDoc = withAnyPermission(
 
     await assertGenericDocLocationRules(input, sourceOrgNodeId, targetOrgNodeId, actingOrgNodeId)
 
-    const totalQuantity = input.items.reduce((sum, item) => sum + assertPositiveQuantity(item.quantity), 0)
+    const totalQuantity = input.items.reduce((sum, item) => sum + assertDocItemQuantity(input.docType, item.quantity), 0)
 
     const id = await db.transaction(async (tx) => {
       await assertInventoryBusinessWritable(tx)
@@ -3213,7 +4058,7 @@ export const createInventoryCoreDoc = withAnyPermission(
         // 市场归属由数据库根据源/目标库存主体统一派生，禁止信任调用方传值。
         marketId: null,
         supplierId: normalizeText(input.supplierId),
-        docDate: normalizeText(input.docDate) ?? shanghaiToday(),
+        docDate: candidateDate(input.docDate, '单据日期') ?? shanghaiToday(),
         relatedSaleOrderId: normalizeText(input.relatedSaleOrderId),
         clientUserId: normalizeText(input.clientUserId),
         customerName: normalizeText(input.customerName),
@@ -3237,7 +4082,7 @@ export const createInventoryCoreDoc = withAnyPermission(
       // 盘点账面数：一次取齐（见 skuOnHandByLocation 的注释：串行点 + 单一时点语义）
       const bookQuantityBySkuId = await skuOnHandByLocation(tx, actingLocationId, stocktakeSkuIds)
       for (const item of input.items) {
-        const quantity = assertPositiveQuantity(item.quantity)
+        const quantity = assertDocItemQuantity(input.docType, item.quantity)
         // 通用入口只接收库存事实；所有价格与金额从 SKU/锁定批次快照派生。
         const serverItem = stripPriceInput(item)
         let lot: LockedLot | null = null
@@ -3309,12 +4154,13 @@ export const createInventoryCoreDoc = withAnyPermission(
             supplier: snapshot.supplier,
             productSeries: snapshot.productSeries,
             batchNo: lot?.batchNo ?? normalizeText(serverItem.batchNo) ?? '',
-            expiryDate: lot?.expiryDate ?? normalizeText(serverItem.expiryDate),
+            expiryDate: lot?.expiryDate ?? (candidateDate(serverItem.expiryDate, '有效期') ?? null),
             isGift: lot?.isGift ?? Boolean(serverItem.isGift),
             quantity: String(quantity),
             stockSnapshot: lot ? String(lot.quantityOnHand) : numString(bookQuantity),
             requestQuantity: numString(serverItem.requestQuantity),
-            fulfilledQuantity: numString(serverItem.fulfilledQuantity),
+            // 已收 / 已履约量只由服务端收货路径回写（#358），建单不收客户端值
+            fulfilledQuantity: null,
             standardUnitPrice: numString(standardUnitPrice),
             unitDiscount: numString(unitDiscount),
             actualUnitPrice: numString(actualUnitPrice),
@@ -3491,7 +4337,7 @@ export const rejectInventoryCoreDoc = withAnyPermission(
 )
 
 export const confirmInventoryCoreReceive = withAnyPermission(
-  ['inventory:market_operate', 'inventory:store_operate'],
+  [...INVENTORY_CORE_RECEIVE_ACTIONS],
   async (session, outboundDocId: string, remark?: string | null): Promise<{ success: true; inboundDocId: string }> => {
     const id = normalizeRequired(outboundDocId, '出库单号')
     let inboundDocId = ''
@@ -3544,7 +4390,7 @@ export const confirmInventoryCoreReceive = withAnyPermission(
 
       const itemRows = await tx.execute(sql`
         SELECT item.id AS source_item_id, item.sku_id, item.batch_no, item.expiry_date, item.is_gift, item.quantity,
-               item.standard_unit_price, item.unit_discount, item.actual_unit_price, item.amount,
+               item.fulfilled_quantity, item.standard_unit_price, item.unit_discount, item.actual_unit_price, item.amount,
                item.supply_chain_unit_cost, item.market_standard_unit_price, item.market_unit_discount,
                item.market_actual_unit_price, item.store_standard_unit_price, item.store_unit_discount,
                item.store_actual_unit_price, item.reason, item.remark,
@@ -3563,6 +4409,7 @@ export const confirmInventoryCoreReceive = withAnyPermission(
         expiry_date: string | null
         is_gift: boolean
         quantity: string | number
+        fulfilled_quantity: string | number | null
         standard_unit_price: string | number | null
         unit_discount: string | number | null
         actual_unit_price: string | number | null
@@ -3580,6 +4427,14 @@ export const confirmInventoryCoreReceive = withAnyPermission(
         source_doc_id: string | null
         source_supplier: string | null
       }>) {
+        // 本路径按发货量整行收（调货只能整单收）；来源已有已收量说明走过别的收货路径，
+        // 再按全量收会重复入库 —— fail-closed，与 staffApi confirmReceive 的剩余量口径不冲突（#358）
+        if (Number(item.fulfilled_quantity ?? 0) > 0) {
+          throw new ApiError('CONFLICT', head.doc_type === '分院调货出库'
+            ? '该调货单已有收货记录，剩余数量请在员工小程序确认收货'
+            // 小程序不收市场间调货（STAFF_RECEIVE_DOC_TYPES 只有分院配货 / 分院调货出库）
+            : '该调货单已有收货记录，不能再整单收货，请联系管理员核对')
+        }
         const lot = await ensureLotFromSku(tx, targetLocationId, {
           skuId: item.sku_id,
           batchNo: item.batch_no,
@@ -3652,6 +4507,14 @@ export const confirmInventoryCoreReceive = withAnyPermission(
           toItemId: createdItem.id,
           quantity: String(item.quantity),
         })
+        // 已收口径单源（#358）：来源明细 fulfilled_quantity 与 staffApi confirmReceive、
+        // business.ts receivePhysicalShipment 同写法。调货单只能整单收，且建单不接受客户端
+        // fulfilledQuantity（恒为空），所以这里进来时已收为 0、收后等于发货量。
+        await tx.execute(sql`
+          UPDATE inventory_doc_items
+             SET fulfilled_quantity = COALESCE(fulfilled_quantity, 0) + ${String(item.quantity)}
+           WHERE id = ${Number(item.source_item_id)}
+        `)
       }
 
       await tx
@@ -3909,17 +4772,16 @@ export const updateInventorySupplier = withPermission(
   },
 )
 
+/**
+ * 方案适用市场：留空 = 全局方案；指定时只校验主体类型是市场。
+ * 调用方已由 assertInventoryPromotionMaintainer 限定为总部供应链（#354），而总部库存 scope
+ * 不展开市场（access.ts），这里再走 assertLocationVisible 会让非超管供应链建不了市场专属方案。
+ */
 async function assertPromotionMarketScope(
-  session: AuthSession,
   marketId: string | null | undefined,
 ): Promise<string | null> {
   const normalized = normalizeText(marketId)
-  if (!normalized) {
-    if (!isAdminScope(session) && !session.roles.some((role) => role.scopeType === '总部')) {
-      throw new ApiError('PERMISSION_DENIED', '市场用户只能维护本市场的福利方案')
-    }
-    return null
-  }
+  if (!normalized) return null
   await syncInventoryLocations()
   const [location] = await db
     .select({ locationType: inventoryLocations.locationType })
@@ -3929,31 +4791,17 @@ async function assertPromotionMarketScope(
   if (!location || location.locationType !== '市场') {
     throw new ApiError('INVALID_PARAMS', '福利方案所属主体必须是市场')
   }
-  await assertLocationVisible(session, normalized)
   return normalized
 }
 
-async function assertPromotionPlanMutableScope(
-  session: AuthSession,
-  scopeMarketId: string | null,
-): Promise<void> {
-  if (scopeMarketId === null) {
-    if (isAdminScope(session) || session.roles.some((role) => role.scopeType === '总部')) return
-    throw new ApiError('PERMISSION_DENIED', '市场用户不能修改或停用全局福利方案')
-  }
-  await assertLocationVisible(session, scopeMarketId)
-}
-
-async function lockPromotionPlanScopeForMutation(tx: Tx, id: string): Promise<string | null> {
+async function lockPromotionPlanForMutation(tx: Tx, id: string): Promise<void> {
   const rows = await tx.execute(sql`
-    SELECT scope_market_id
+    SELECT id
       FROM inventory_promotion_plans
      WHERE id = ${id}
      FOR UPDATE
   `)
-  const row = (rows as unknown as Array<{ scope_market_id: string | null }>)[0]
-  if (!row) throw new ApiError('NOT_FOUND', '福利方案不存在或无权查看')
-  return row.scope_market_id ?? null
+  if (!(rows as unknown as unknown[])[0]) throw new ApiError('NOT_FOUND', '福利方案不存在或无权查看')
 }
 
 function normalizePromotionRuleType(value: unknown): InventoryPromotionRuleType {
@@ -4089,7 +4937,9 @@ async function promotionPlanRows(
   onlyId?: string,
 ): Promise<InventoryPromotionPlanRow[]> {
   const priceVisible = canViewPrice(session)
-  const scoped = await scopedLocationIds(session)
+  // 维护方（总部供应链）要能看到并维护各市场的专属方案；总部库存 scope 不展开市场，
+  // 按 scope 过滤会让它建完市场方案就看不到（#354）。市场仍只见全局 + 本市场方案。
+  const scoped = await promotionVisibleLocationIds(session)
   const conditions: (SQL | undefined)[] = []
   if (onlyId) conditions.push(eq(inventoryPromotionPlans.id, onlyId))
   if (scoped !== null) {
@@ -4170,6 +5020,7 @@ async function promotionPlanRows(
 export const listInventoryPromotionPlans = withPermission(
   'inventory:stock_list',
   async (session): Promise<InventoryPromotionPlanRow[]> => promotionPlanRows(session),
+  PROMOTION_READ_SCOPE,
 )
 
 export const getInventoryPromotionPlanById = withPermission(
@@ -4178,12 +5029,14 @@ export const getInventoryPromotionPlanById = withPermission(
     const id = normalizeRequired(idInput, '福利方案')
     return (await promotionPlanRows(session, id))[0] ?? null
   },
+  PROMOTION_READ_SCOPE,
 )
 
-export const createInventoryPromotionPlan = withAnyPermission(
-  ['inventory:supply_chain_master_data_manage', 'inventory:market_operate'],
+export const createInventoryPromotionPlan = withPermission(
+  INVENTORY_PROMOTION_MAINTAIN_ACTION,
   async (session, input: InventoryPromotionPlanInput): Promise<{ id: string }> => {
     assertPromotionPriceWritable(session)
+    assertInventoryPromotionMaintainer(session)
     const name = normalizeRequired(input.name, '方案名称')
     const startsAt = normalizeYmd(input.startsAt, '开始日期')
     const endsAt = normalizeYmd(input.endsAt, '结束日期')
@@ -4192,7 +5045,7 @@ export const createInventoryPromotionPlan = withAnyPermission(
     if (input.status && input.status !== '启用' && input.status !== '停用') {
       throw new ApiError('INVALID_PARAMS', '福利方案状态无效')
     }
-    const scopeMarketId = await assertPromotionMarketScope(session, input.scopeMarketId)
+    const scopeMarketId = await assertPromotionMarketScope(input.scopeMarketId)
     const items = normalizePromotionItems(input.items, ruleType)
     await assertPromotionSkus(items)
     const id = `INV-PROMO-${crypto.randomUUID()}`
@@ -4229,14 +5082,15 @@ export const createInventoryPromotionPlan = withAnyPermission(
   },
 )
 
-export const updateInventoryPromotionPlan = withAnyPermission(
-  ['inventory:supply_chain_master_data_manage', 'inventory:market_operate'],
+export const updateInventoryPromotionPlan = withPermission(
+  INVENTORY_PROMOTION_MAINTAIN_ACTION,
   async (
     session,
     idInput: string,
     input: InventoryPromotionPlanInput,
   ): Promise<{ success: true }> => {
     assertPromotionPriceWritable(session)
+    assertInventoryPromotionMaintainer(session)
     const id = normalizeRequired(idInput, '福利方案')
     const name = normalizeRequired(input.name, '方案名称')
     const startsAt = normalizeYmd(input.startsAt, '开始日期')
@@ -4248,11 +5102,10 @@ export const updateInventoryPromotionPlan = withAnyPermission(
     }
     const current = (await promotionPlanRows(session, id))[0]
     if (!current) throw new ApiError('NOT_FOUND', '福利方案不存在或无权查看')
-    const scopeMarketId = await assertPromotionMarketScope(session, input.scopeMarketId)
+    const scopeMarketId = await assertPromotionMarketScope(input.scopeMarketId)
     const items = normalizePromotionItems(input.items, ruleType)
     await db.transaction(async (tx) => {
-      const currentScopeMarketId = await lockPromotionPlanScopeForMutation(tx, id)
-      await assertPromotionPlanMutableScope(session, currentScopeMarketId)
+      await lockPromotionPlanForMutation(tx, id)
       await assertPromotionSkus(items)
       await tx
         .update(inventoryPromotionPlans)
@@ -4286,15 +5139,15 @@ export const updateInventoryPromotionPlan = withAnyPermission(
   },
 )
 
-export const disableInventoryPromotionPlan = withAnyPermission(
-  ['inventory:supply_chain_master_data_manage', 'inventory:market_operate'],
+export const disableInventoryPromotionPlan = withPermission(
+  INVENTORY_PROMOTION_MAINTAIN_ACTION,
   async (session, idInput: string): Promise<{ success: true }> => {
+    assertInventoryPromotionMaintainer(session)
     const id = normalizeRequired(idInput, '福利方案')
     const current = (await promotionPlanRows(session, id))[0]
     if (!current) throw new ApiError('NOT_FOUND', '福利方案不存在或无权查看')
     await db.transaction(async (tx) => {
-      const currentScopeMarketId = await lockPromotionPlanScopeForMutation(tx, id)
-      await assertPromotionPlanMutableScope(session, currentScopeMarketId)
+      await lockPromotionPlanForMutation(tx, id)
       await tx
         .update(inventoryPromotionPlans)
         .set({ status: '停用', updatedAt: new Date() })

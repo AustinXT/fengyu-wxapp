@@ -288,6 +288,15 @@
   font-size: 24rpx;
 }
 
+/* #299 员工排行榜口径说明，紧贴标题下方 */
+.ranking-table-note {
+  text-align: center;
+  margin-top: -8rpx;
+  padding: 0 24rpx 16rpx;
+  color: var(--color-text-hint);
+  font-size: 22rpx;
+}
+
 .ranking-table-header,
 .ranking-row {
   display: grid;

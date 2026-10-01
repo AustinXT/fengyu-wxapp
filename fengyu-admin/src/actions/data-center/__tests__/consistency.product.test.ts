@@ -15,6 +15,7 @@
  *   5. cycle 进入基线纳入寄存单；复购达标与区间业绩只统计销售单/转换单
  *   6. 业绩 = SUM(sale_item_performance_events.amount)（禁 paid_amount）
  *   7. 一级分组键 product_kind（admin 额外 category_name 二级，为 admin 独有扩展）
+ *   8. 区间业绩为净额（#288）：负数冲销日不整组丢弃；体验判定与人数归店只认正数购买日
  *
  * 任一端一级口径变更必须双端同步，否则数据中心品项板块与员工端 mgmtProduct 数字对不上。
  */
@@ -37,6 +38,164 @@ function stripComments(src: string): string {
   return src
     .replace(/\/\*[\s\S]*?\*\//g, ' ')
     .replace(/(^|[^:])\/\/[^\n]*/g, '$1 ')
+}
+
+/**
+ * ★ 轻量 TS 词法扫描：切出指定 `async function` 的**真实函数体**，
+ * 沿途剥掉 TS 注释，**字符串与模板字面量原样保留**。
+ *
+ * ⚠️ 为什么不能用正则 `/async function X\([\s\S]*?\n}/`（#286 闸门 2 连着打穿三次）：
+ * 它把**第一个顶格 `}`** 当函数结尾，而顶格 `}` 可以来自注释、`if (false) {…}` 块、
+ * 甚至正则字面量 `/}/`。切片一旦提前收尾，后面真正执行的 SQL 就落在守护视野之外。
+ *
+ * 做法：① 括号深度跳过参数列表 ② 尖括号深度跳过返回类型注解
+ * （`Promise<Map<string,{…}>>` 里有 `{}`）③ 花括号深度扫到函数体结尾，
+ * 沿途跳过 `//` `/* *\/` `'…'` `"…"` 与模板字面量（按 `${…}` 深度，不被里面的 `}` 提前结束）。
+ *
+ * #287 把它从 `queryCycleByStore` 专用**提为通用**，两个 describe 共用一份。
+ */
+function functionBody(src: string, name: string): string {
+    /**
+     * ⚠️ **声明定位也必须跳过注释与字符串**（#287 闸门 2 round-4 codex）。
+     *
+     * 原来直接在**原文**上 `new RegExp('async function <name>\\s*\\(').exec(src)` ——
+     * 于是在真函数之前放一段块注释里的伪声明（注释里写一份完全符合快照的安全壳与 SQL），
+     * 切片就取到诱饵：函数壳快照 / `db.execute` 计数 / scope 列 / 逐字派生**全在检查诱饵**。
+     * 而「注释里不得祈使 so.store_id」那条只看以 `*` 或 `//` 开头的行，单行块注释诱饵漏网。
+     *
+     * 所以从文件头做一次词法扫描，只在**注释外、字符串外**匹配声明。
+     */
+    const declRe = new RegExp(`^async function ${name}\\s*\\(`)
+    let scan = 0
+    let declIdx = -1
+    let declLen = 0
+    while (scan < src.length) {
+      if (src[scan] === '/' && src[scan + 1] === '/') {
+        while (scan < src.length && src[scan] !== '\n') scan++
+        continue
+      }
+      if (src[scan] === '/' && src[scan + 1] === '*') {
+        scan += 2
+        while (scan < src.length && !(src[scan] === '*' && src[scan + 1] === '/')) scan++
+        scan += 2
+        continue
+      }
+      if (src[scan] === "'" || src[scan] === '"' || src[scan] === '`') {
+        const q = src[scan]
+        scan++
+        while (scan < src.length) {
+          if (src[scan] === '\\') {
+            scan += 2
+            continue
+          }
+          if (src[scan] === q) {
+            scan++
+            break
+          }
+          scan++
+        }
+        continue
+      }
+      if (src[scan] === 'a') {
+        const m = declRe.exec(src.slice(scan, scan + 120))
+        if (m) {
+          declIdx = scan
+          declLen = m[0].length
+          break
+        }
+      }
+      scan++
+    }
+    if (declIdx < 0) return ''
+    let i = declIdx + declLen
+    for (let paren = 1; i < src.length && paren > 0; i++) {
+      if (src[i] === '(') paren++
+      else if (src[i] === ')') paren--
+    }
+    let angle = 0
+    while (i < src.length) {
+      const c = src[i]
+      if (c === '<') angle++
+      else if (c === '>') angle = Math.max(0, angle - 1)
+      else if (c === '{' && angle === 0) break
+      i++
+    }
+    let out = ''
+    let depth = 0
+    while (i < src.length) {
+      const c = src[i]
+      if (c === '/' && src[i + 1] === '/') {
+        while (i < src.length && src[i] !== '\n') i++
+        out += ' '
+        continue
+      }
+      if (c === '/' && src[i + 1] === '*') {
+        i += 2
+        while (i < src.length && !(src[i] === '*' && src[i + 1] === '/')) i++
+        i += 2
+        out += ' '
+        continue
+      }
+      if (c === "'" || c === '"') {
+        const quote = c
+        out += c
+        i++
+        while (i < src.length) {
+          if (src[i] === '\\') {
+            out += src.slice(i, i + 2)
+            i += 2
+            continue
+          }
+          out += src[i]
+          i++
+          if (src[i - 1] === quote) break
+        }
+        continue
+      }
+      if (c === '`') {
+        out += c
+        i++
+        let tplDepth = 0
+        while (i < src.length) {
+          if (src[i] === '\\') {
+            out += src.slice(i, i + 2)
+            i += 2
+            continue
+          }
+          if (src[i] === '$' && src[i + 1] === '{') {
+            tplDepth++
+            out += '${'
+            i += 2
+            continue
+          }
+          if (src[i] === '}' && tplDepth > 0) {
+            tplDepth--
+            out += '}'
+            i++
+            continue
+          }
+          if (src[i] === '`' && tplDepth === 0) {
+            out += '`'
+            i++
+            break
+          }
+          out += src[i]
+          i++
+        }
+        continue
+      }
+      if (c === '{') depth++
+      else if (c === '}') {
+        depth--
+        out += c
+        i++
+        if (depth === 0) break
+        continue
+      }
+      out += c
+      i++
+    }
+    return out
 }
 
 describe('品项板块两端口径一致性守护', () => {
@@ -69,9 +228,443 @@ describe('品项板块两端口径一致性守护', () => {
       expect(adminCode).not.toMatch(/'单品'/)
       expect(staffCode).not.toMatch(/'单品'/)
     })
-    it('两端持卡用 COUNT(DISTINCT so.client_user_id)', () => {
-      expect(adminCode).toMatch(/COUNT\(DISTINCT\s+so\.client_user_id\)/)
-      expect(staffCode).toMatch(/COUNT\(DISTINCT\s+so\.client_user_id\)/)
+    /**
+     * ★★ **持卡占比的分子必须与分母同源**（#287）—— 这一组是本文件最重要的守护。
+     *
+     * ⚠️ **此处原本钉死的是错误写法**：旧断言要求两端都出现
+     * `COUNT(DISTINCT so.client_user_id)`，而那正是缺陷本身 ——
+     * 以 `sale_orders` 为驱动表数人，既不限客型（分子含非会员）、又按 `so.store_id` 归店
+     * （与分母的 `c.bound_store_id` 不是一个键）。
+     * 2026-09-22 审计实测：集团占比恒 **253%**、单店最高 **2600%**、40 家在营门店 36 家 > 100%，
+     * 而这条守护全程绿灯 —— **守护钉住了错误口径，反倒让缺陷活得更久**。
+     * 同型教训见 `notes/research/data-center-accuracy-audit-2026-09-22.md`。
+     *
+     * 现在改为钉「同源」这件事本身，分两个维度：
+     *   ① **人群**：分子的驱动表是 `client_wechat_users` 且带 `became_member_at IS NOT NULL`
+     *   ② **归店**：分子的 scope / 分组键是 `bound_store_id`，**不是** `so.store_id`
+     *
+     * 两端写法不同但同源性等价：admin 用「分母的壳 + `EXISTS`」，
+     * staff 因分组键 `pc.product_kind` 在连接表上、写不进 `EXISTS`，改用
+     * 「会员表驱动 + `COUNT(DISTINCT c.user_id)`」。所以这里按端分别断言，不做字面量对齐。
+     */
+    describe('持卡占比分子分母同源（#287）', () => {
+      /**
+       * 切出 admin 某个查询函数的 **SQL 模板**。
+       *
+       * ⚠️ 必须**先用词法扫描器切出真实函数体、再从里面取模板**（round-5 codex）。
+       * 上一版直接在整份 `adminSrc` 上跑
+       * `new RegExp('async function <fn>\\(…db\\.execute…')` —— 于是「声明定位走词法扫描」
+       * 只对 `functionBody` 成立，这条核心 SQL 断言仍可被**注释或字符串里的伪声明**劫持。
+       *
+       * 并且对「零个或多个模板」**fail-closed**：函数体里恰好一条 `db.execute(sql\`…\`)`，
+       * 多一条（诱饵）或一条都没有（改成别名/计算属性调用）都直接红。
+       */
+      const adminCardSql = (fn: string): string => {
+        const body = functionBody(adminSrc, fn)
+        expect(body, `${fn} 的函数体未切出 —— 切片锚点需同步更新`).toBeTruthy()
+        const tpls = [...body.matchAll(/db\.execute\(sql`([\s\S]*?)`\)/g)]
+        expect(
+          tpls.length,
+          `${fn} 里的 db.execute(sql\`…\`) 不是恰好一条（实测 ${tpls.length} 条）—— ` +
+            '多一条可能是诱饵，零条说明改成了别名/计算属性调用',
+        ).toBe(1)
+        return normalize(tpls[0][1])
+      }
+      /**
+       * ★★ **守护检查的那段，必须就是数据库真正执行的那段**（round-2 DeepSeek）。
+       *
+       * `adminCardSql` 取的是「函数锚点后**第一个** `db.execute(sql\`…\`)`」。
+       * DeepSeek 实测打穿：在函数里塞一条**诱饵** `db.execute(sql\`<当前安全 SQL>\`)`，
+       * 把真正执行的那条改成计算属性 `db['execute'](sql\`<已回退成 so.store_id 归店>\`)` ——
+       * 切片取到诱饵、全文件 `db.execute(` 计数仍是 8（诱饵 +1、真查询 −1），
+       * **26 条断言全绿**，而 253%/2600% 的两处根因原样复活。
+       *
+       * 与 #286 round-9 是同一个攻击（那次是「未调用的箭头函数 + `db['execute']`」）。
+       * 两条一起堵：
+       *   ① 四个函数体内 `db.execute(` **恰好一条** —— 用词法扫描器切真实函数体，
+       *      不再用会被顶格 `}` 截断的正则（这同时关掉 DeepSeek 的 P3）
+       *   ② 全文件禁掉 `db[...]` 计算属性访问 —— 生产代码零处，这条让整类解耦失效
+       */
+      /**
+       * ★★★ **四个函数的壳字面快照** —— 终结「守护检查的那段 ≠ 真正执行的那段」这条攻击线。
+       *
+       * round-2/round-3 连着被打穿三种变形，全是同一件事：
+       *   · 诱饵 `db.execute` + 真查询走 `db['execute']` 计算属性（round-2 DeepSeek）
+       *   · 诱饵 + `const execute = db.execute.bind(db)` **别名调用**（round-3 codex）——
+       *     函数体内仍恰好一个 `db.execute(`、没有 `db[...]`，全部结构断言检查的都是诱饵
+       *   · 扫描器不识别正则字面量 `/}/`，函数体可被提前截断；而我把扫描器「提为通用」时
+       *     **没把 #286 的函数尾锚一起带过来**，四个函数因此缺了那层 fail-closed
+       *
+       * 逐条补词法分支走不到头 —— #286 在第 10 轮用**函数壳快照**终结过同一场拉锯。
+       * 这四个函数很短（130~290 字符），直接全钉：把 SQL 模板换成占位符
+       * （模板本身由上面的「逐字派生」等式守着），剥注释、压平空白后全等。
+       *
+       * 于是函数里多一条语句、多一个诱饵、换一种调用写法（计算属性 / 别名 / bind）、
+       * 或被截断，**全部会红**，不再依赖「扫描器认不认得某种词法」。
+       *
+       * ⚠️ 这是字面快照：改这四个函数（哪怕只是重命名局部变量）都会红。
+       * 看到红先确认**分子分母同源没变**，再同步更新快照 —— 别反过来把断言改宽。
+       */
+      it('四个查询的函数壳未变（除 SQL 模板外全等）', () => {
+        const shellOf = (fn: string): string =>
+          normalize(functionBody(adminSrc, fn).replace(/sql`[\s\S]*?`/, 'sql`<SQL>`'))
+
+        const SCOPE_LINE = "const sc = scopeFilterSql(session, scope, 'c.bound_store_id')"
+        const SCALAR_TAIL = 'return num(first(rows).v) }'
+        const MAP_TAIL =
+          'const m = new Map<string, number>() for (const raw of rows as unknown[]) ' +
+          "{ const r = raw as Record<string, unknown> const id = String(r.store_id ?? '') " +
+          'if (id) m.set(id, num(r.v)) } return m }'
+        const head = `{ ${SCOPE_LINE} const rows = await db.execute(sql\`<SQL>\`) `
+
+        const expected: Record<string, string> = {
+          queryCardHolders: head + SCALAR_TAIL,
+          queryMemberCount: head + SCALAR_TAIL,
+          queryCardHoldersByStore: head + MAP_TAIL,
+          queryMemberCountByStore: head + MAP_TAIL,
+        }
+        for (const [fn, want] of Object.entries(expected)) {
+          expect(
+            shellOf(fn),
+            `${fn} 的函数壳变了 —— 先确认分子分母同源没变（尤其 db.execute 的调用写法、` +
+              '有没有多出诱饵查询、scope 是怎么构造的），再同步本快照',
+          ).toBe(want)
+        }
+      })
+
+      it('四个查询各自只有一条 db.execute，且全文件禁用计算属性访问', () => {
+        for (const fn of [
+          'queryCardHolders',
+          'queryCardHoldersByStore',
+          'queryMemberCount',
+          'queryMemberCountByStore',
+        ]) {
+          const body = functionBody(adminSrc, fn)
+          expect(body, `${fn} 的函数体未切出 —— 切片锚点需同步更新`).toBeTruthy()
+          expect(
+            (body.match(/db\.execute\(/g) ?? []).length,
+            `${fn} 里的 db.execute 不止一条 —— 可能有一条是诱饵，守护会检查到错误的那条`,
+          ).toBe(1)
+        }
+        expect(
+          adminSrc,
+          'product.ts 出现 db[...] 计算属性访问 —— 它不计入 db.execute( 字面量统计，' +
+            '可让「守护检查的那段」与「真正执行的那段」解耦（#286 round-9 / #287 round-2 同款攻击）',
+        ).not.toMatch(/\bdb\s*\[/)
+      })
+
+      /**
+       * 切出 admin 某个查询函数的 **函数体**（含 `const sc = scopeFilterSql(...)` 那行）。
+       *
+       * ⚠️ scope 断言必须打在函数体上，**不能打在 SQL 模板上** —— 模板里只有 `${sc}`
+       * 这个占位符，看不出 `sc` 是用哪一列构造的。本轮第一版就写成了
+       * `toMatch(/scopeFilterSql\(…'c\.bound_store_id'\)|WHERE \$\{sc\}/)`，
+       * 而 `WHERE ${sc}` 恒存在 ⇒ 整条断言**永远为真**（空断言），红检 R3 当场打出 GREEN。
+       */
+      const adminFnBody = (fn: string): string => normalize(functionBody(adminSrc, fn))
+
+      /**
+       * ★★★ **分子逐字等于「分母 + EXISTS 收窄」** —— 整组守护里最硬的一条。
+       *
+       * 前几版都是**字样守护**（检查 `FROM client_wechat_users` / `became_member_at` /
+       * `EXISTS` 等片段是否出现），闸门 2 round-1 的 codex 连着打穿两种：
+       *
+       *   a) `WHERE ${sc}` 改成 `WHERE TRUE` —— `scopeFilterSql(...,'c.bound_store_id')`
+       *      那行**仍在**（只是算出来没人用），四列集合仍为 1，全部断言照绿，
+       *      而单店/市场分子已不受 scope 约束、可再次超过分母。
+       *   b) 末尾追加 ` OR TRUE` —— 按 SQL 优先级整个 WHERE 恒真，
+       *      分子不再受会员/scope/购买条件约束，但被匹配的字样一个不少。
+       *
+       * 与其逐条去堵（`OR` 禁令、`${sc}` 出现次数…），不如把「同源」这件事
+       * **从字样升级成派生关系**：分子必须 === 分母**原文** + 一段 `EXISTS` 收窄。
+       *
+       * 于是：
+       *   · 分母怎么改，分子必须一模一样地跟着改，否则红 —— 这正是 #287 要防的
+       *     「一侧改了另一侧没改」
+       *   · `WHERE TRUE` / `OR TRUE` / 任何外层 WHERE 的改动都会让等式不成立
+       *   · 分子 ⊆ 分母 不再靠阅读理解，而是**逐字节可判定**
+       */
+      it('分子 === 分母 + EXISTS 收窄（逐字派生，不是两份独立快照）', () => {
+        const EXISTS_CLAUSE =
+          'AND EXISTS ( SELECT 1 FROM sale_items si ' +
+          'JOIN sale_orders so ON so.sale_order_id = si.sale_order_id ' +
+          'JOIN product_skus sk ON sk.sku_id = si.sku_id ' +
+          'JOIN product_categories pc ON pc.category_id = sk.category_id ' +
+          'WHERE so.client_user_id = c.user_id ' +
+          'AND si.paid_sessions > 0 ' +
+          "AND so.sale_order_type IN ('销售单', '转换单', '寄存单') " +
+          "AND so.status = '已支付' " +
+          'AND ${filter} )'
+
+        // ① 全局：分子 = 分母 + EXISTS
+        expect(
+          adminCardSql('queryCardHolders'),
+          '全局分子不再是「分母原文 + EXISTS 收窄」—— 分子分母已不同源（#287）',
+        ).toBe(`${adminCardSql('queryMemberCount')} ${EXISTS_CLAUSE}`)
+
+        // ② byStore：EXISTS 插在 GROUP BY 之前，其余逐字相同
+        const denByStore = adminCardSql('queryMemberCountByStore')
+        const cut = denByStore.lastIndexOf(' GROUP BY ')
+        expect(cut, 'byStore 分母未按 GROUP BY 收尾 —— 切片口径需同步更新').toBeGreaterThan(0)
+        expect(
+          adminCardSql('queryCardHoldersByStore'),
+          'byStore 分子不再是「分母原文 + EXISTS 收窄」—— 分子分母已不同源（#287）',
+        ).toBe(
+          `${denByStore.slice(0, cut)} ${EXISTS_CLAUSE}${denByStore.slice(cut)}`,
+        )
+
+        // ③ 分母自身不得退化：必须真的消费 ${sc}，不能只是「算了但没用」
+        for (const fn of ['queryMemberCount', 'queryMemberCountByStore']) {
+          expect(
+            (adminCardSql(fn).match(/\$\{sc\}/g) ?? []).length,
+            `${fn} 未恰好消费一次 \${sc} —— scopeFilterSql 算了却没用进 WHERE，scope 形同虚设`,
+          ).toBe(1)
+        }
+
+        /**
+         * ④ **四条 SQL 一律禁 `OR`** —— round-3 codex 打穿了「逐字派生 ⇒ 逻辑收窄」这个推论。
+         *
+         * 给**分母**末尾加 ` OR FALSE`，两边同步后逐字等式**仍然成立**，
+         * 但 PostgreSQL 按优先级解析成：
+         *     (scope AND member) OR (FALSE AND EXISTS)
+         * ⇒ 所有会员都成了持卡会员、占比恒 100%，而 `${sc}` 仍恰好一次、
+         *   会员条件 / EXISTS / scope 列 / 分组断言**全部满足**。
+         *
+         * 所以「任何外层 WHERE 改动都会让等式不成立」这句话是**错的** ——
+         * `AND` 链上追加的 `OR` 不改变字符串派生关系，却把整个谓词变成析取。
+         * 这四条 SQL 目前没有任何合法的 `OR` 需求，一刀切禁掉（fail-closed）。
+         */
+        const FOUR = [
+          'queryCardHolders',
+          'queryCardHoldersByStore',
+          'queryMemberCount',
+          'queryMemberCountByStore',
+        ]
+        for (const fn of FOUR) {
+          expect(
+            adminCardSql(fn),
+            `${fn} 的 SQL 出现 OR —— AND 链上追加 OR 不破坏逐字派生等式，` +
+              '却会把整个 WHERE 变成析取（(scope AND member) OR (…)），占比可恒 100%',
+          ).not.toMatch(/\bOR\b/i)
+
+          /**
+           * ⑤ **禁 SQL 注释**（round-4 codex）—— 逐字派生比的是 `normalize()` **压平空白后**的
+           * 文本，而 SQL 的 `--` 注释是**靠换行终止**的，换行恰好被压掉了。于是：
+           *
+           *   分母：  … AND c.became_member_at IS NOT NULL -- marker
+           *   分子：  … AND c.became_member_at IS NOT NULL -- marker AND EXISTS ( … )
+           *                                                ↑ 同一物理行
+           *
+           * 归一化后分子**精确等于**「分母 + EXISTS」，而 PostgreSQL 把整个 EXISTS
+           * 连同后面的内容**全部注释掉** ⇒ 分子退化为全部会员、占比恒 100%。
+           * 没有 `OR`、`${sc}` 仍一次、形状断言在注释里命中、函数壳快照又忽略整个 SQL。
+           *
+           * 这四条 SQL 不需要任何注释（口径说明写在函数 JSDoc 里），一刀切禁掉。
+           */
+          expect(
+            adminCardSql(fn),
+            `${fn} 的 SQL 出现 -- 或 /* 注释 —— normalize() 压掉换行后，` +
+              '`-- x AND EXISTS (…)` 能让逐字等式成立而 PG 把 EXISTS 整段注释掉（占比恒 100%）',
+          ).not.toMatch(/--|\/\*/)
+        }
+
+        /**
+         * ⑥ **投影必须钉死**（round-4 codex）。派生等式只证明「分子行集 ⊆ 分母行集」，
+         * 没说投影是什么 —— 两边同步改成 `SELECT 1000000 - COUNT(*) AS v` 时子集关系仍成立，
+         * 但比值完全失真。所以把两条分母的投影逐字钉住（分子的投影由派生等式跟着锁）。
+         */
+        expect(
+          adminCardSql('queryMemberCount'),
+          '集团分母的投影不是裸 COUNT(*) —— 包一层运算会让占比失真而子集关系仍成立',
+        ).toMatch(/^SELECT COUNT\(\*\) AS v FROM client_wechat_users c WHERE /)
+        expect(
+          adminCardSql('queryMemberCountByStore'),
+          'byStore 分母的投影不是「归店键 + 裸 COUNT(*)」',
+        ).toMatch(
+          /^SELECT c\.bound_store_id AS store_id, COUNT\(\*\) AS v FROM client_wechat_users c WHERE /,
+        )
+      })
+
+      it('admin 两个持卡查询都以「分母的壳 + EXISTS」为形状', () => {
+        for (const fn of ['queryCardHolders', 'queryCardHoldersByStore']) {
+          const s = adminCardSql(fn)
+          expect(s, `${fn} 的 SQL 模板未切出`).toBeTruthy()
+          // ① 人群同源：驱动表是会员表，且带会员条件
+          expect(s, `${fn} 的驱动表不是 client_wechat_users —— 分子会含非会员`).toMatch(
+            /FROM\s+client_wechat_users\s+c\b/,
+          )
+          expect(s, `${fn} 缺 became_member_at 条件 —— 分子人群与分母不同`).toMatch(
+            /c\.became_member_at\s+IS\s+NOT\s+NULL/,
+          )
+          // ② 归店同源：scope 必须由 c.bound_store_id 构造（打在函数体上，不是模板上）
+          const fnBody = adminFnBody(fn)
+          expect(fnBody, `${fn} 的函数体未切出`).toBeTruthy()
+          expect(
+            fnBody,
+            `${fn} 的 scope 不是用 c.bound_store_id 构造 —— 归店键与分母不同`,
+          ).toMatch(/scopeFilterSql\(session,\s*scope,\s*'c\.bound_store_id'\)/)
+          expect(fnBody, `${fn} 的 scope 仍用 so.store_id 构造`).not.toMatch(
+            /scopeFilterSql\(session,\s*scope,\s*'so\.store_id'\)/,
+          )
+          // 结构：购买条件收在 EXISTS 里，而不是把 sale_orders 拉成驱动表
+          expect(s, `${fn} 未用 EXISTS 收窄 —— 分子 ⊆ 分母 不再是结构性事实`).toMatch(
+            /AND\s+EXISTS\s*\(/,
+          )
+          // 反向：绝不能回到以订单表数人的老写法
+          expect(s, `${fn} 回到了 COUNT(DISTINCT so.client_user_id) —— #287 的缺陷原样复活`).not.toMatch(
+            /COUNT\(DISTINCT\s+so\.client_user_id\)/,
+          )
+        }
+      })
+
+      /**
+       * ★★ **守护必须是双边的** —— 上面那组只钉了**分子**。
+       *
+       * 只钉分子时，把**分母** `queryMemberCount` 的 scope 列改成 `'so.store_id'`，
+       * 就能原样造回「分子按绑定门店、分母按订单门店」的 253% 同型缺陷，
+       * 而 #287 的每一条断言**全绿** —— 正是本 PR 痛斥的那个失败模式，
+       * 差点在同一个 PR 里重演一次。
+       *
+       * 所以这里不再各自硬编码字面量，而是断言**两侧的 scope 列相等**：
+       * 一侧改了另一侧没改，必红。
+       */
+      it('分子与分母的 scope 列必须是同一个（两侧都不得单独改）', () => {
+        const scopeColOf = (fn: string): string | undefined =>
+          /scopeFilterSql\(session,\s*scope,\s*'([^']+)'\)/.exec(adminFnBody(fn))?.[1]
+
+        const cols = {
+          分子全局: scopeColOf('queryCardHolders'),
+          分子按店: scopeColOf('queryCardHoldersByStore'),
+          分母全局: scopeColOf('queryMemberCount'),
+          分母按店: scopeColOf('queryMemberCountByStore'),
+        }
+        for (const [k, v] of Object.entries(cols)) {
+          expect(v, `${k} 的 scopeFilterSql 调用未切出 —— 切片口径需同步更新`).toBeTruthy()
+        }
+        expect(
+          new Set(Object.values(cols)).size,
+          `持卡占比的四个查询用了不止一种 scope 列：${JSON.stringify(cols)} —— ` +
+            '分子分母归店键不同正是 #287 的第二处根因（集团恒 253%、单店最高 2600%）',
+        ).toBe(1)
+        expect(cols.分母全局, 'scope 列不是 c.bound_store_id').toBe('c.bound_store_id')
+      })
+
+      it('admin byStore 的分组键与分母一致（都是 c.bound_store_id）', () => {
+        expect(adminCardSql('queryCardHoldersByStore'), '持卡 byStore 未按 c.bound_store_id 分组').toMatch(
+          /GROUP\s+BY\s+c\.bound_store_id\s*$/,
+        )
+        expect(adminCardSql('queryCardHoldersByStore'), '持卡 byStore 仍按 so.store_id 分组').not.toMatch(
+          /GROUP\s+BY\s+so\.store_id/,
+        )
+        // 分母侧同键（改一侧没改另一侧时这条会红）
+        expect(adminCardSql('queryMemberCountByStore'), '会员 byStore 未按 c.bound_store_id 分组').toMatch(
+          /GROUP\s+BY\s+c\.bound_store_id\s*$/,
+        )
+      })
+
+      it('staff 持卡 SQL 同源（会员表驱动 + buildClientScope）', () => {
+        const card = normalize(/const cardSql = `([\s\S]*?)`/.exec(staffSrc)?.[1] ?? '')
+        expect(card, 'staff cardSql 未切出').toBeTruthy()
+        expect(card, 'staff 分子的驱动表不是 client_wechat_users —— 分子会含非会员').toMatch(
+          /FROM\s+client_wechat_users\s+c\b/,
+        )
+        expect(card, 'staff 分子缺 became_member_at 条件').toMatch(
+          /c\.became_member_at\s+IS\s+NOT\s+NULL/,
+        )
+        expect(card, 'staff 分子回到了以订单表数人的老写法').not.toMatch(
+          /COUNT\(DISTINCT\s+so\.client_user_id\)/,
+        )
+        expect(card, 'staff 分子未按会员去重').toMatch(/COUNT\(DISTINCT\s+c\.user_id\)/)
+        // 归店：必须走 buildClientScope（bound_store_id），不是 buildSaleScope（so.store_id）
+        const holder = /持卡 SQL（占比分子）[\s\S]*?const cardSql = `/.exec(staffSrc)?.[0] ?? ''
+        expect(holder, 'staff 持卡的 scope 仍用 buildSaleScope —— 归店键与分母不同').not.toMatch(
+          /const\s+sc\s*=\s*buildSaleScope/,
+        )
+        expect(holder, 'staff 持卡未用 buildClientScope 构造 scope').toMatch(
+          /const\s+cs\s*=\s*buildClientScope\(scopeType,\s*scopeId,\s*'c',\s*1\)/,
+        )
+      })
+
+      /**
+       * ★ **注释也要守** —— 本文件其余断言都跑在 `stripComments()` 之后，
+       * 也就是说「注释里写着旧口径」这类漂移**结构性地测不到**。
+       *
+       * 本 PR 差点就留下这个：SQL 改对了，紧邻的函数 JSDoc / 文件头★红线却还写着
+       * 「scope 用 `so.store_id`」，同一个文件里两套互相矛盾的口径自述。
+       * 下一个人照 JSDoc 把代码改回去时，只有 SQL 断言拦得住，注释一路绿灯 ——
+       * 而 memory `project-cross-end-copy-count-grows` 正记着「注释自述的口径不可信」。
+       *
+       * 所以这条**刻意跑在未剥注释的原文上**，禁掉已被推翻的旧口径字样。
+       */
+      it('两端的口径自述（含注释）不得残留旧的 so.store_id 归店说法', () => {
+        for (const [name, src] of [
+          ['admin product.ts', adminSrc],
+          ['staff mgmt-product.js', staffSrc],
+        ] as const) {
+          const stale = src
+            .split('\n')
+            .filter((l) => /^\s*(\*|\/\/)/.test(l)) // 只看注释行
+            .filter((l) => /so\.store_id/.test(l)) // 提到了订单店归店
+            .filter((l) => /持卡|占比|分子|cardHolder/i.test(l)) // 且在持卡语境里
+            // 放行两类**不是祈使句**的写法：
+            //   a) 同一行也提到 bound_store_id —— 那是在对比两者（「分子按 A、分母按 B」）
+            //   b) 带追述/否定词 —— 那是在讲历史或明确排除（「此前按…」「不是…」）
+            .filter((l) => !/bound_store_id/.test(l))
+            .filter((l) => !/此前|曾经|曾|原先|旧|不是|不得|禁|复活|回退/.test(l))
+          expect(
+            stale,
+            `${name} 的注释里仍把持卡/占比的归店**祈使为** so.store_id —— ` +
+              '与 #287 修正后的实现矛盾；照它改回去不会被其它断言拦住（其余断言都跑在 stripComments 之后）',
+          ).toEqual([])
+        }
+      })
+
+      it('staff 分子分母复用同一个 scope 构造（cs 只声明一次，两条查询都用它）', () => {
+        /**
+         * ⚠️ 第一版锚的是 `mgmtProductCycle` —— staffApi 里**没有这个函数**
+         * （只有 `cardHolders` / `cycleStats`），正则永不匹配、每次都回落到
+         * `?? staffSrc` 兜底全文件扫描。当前恰好全文件只有 1 处所以绿灯，
+         * 但它守的不是「`cardHolders` 函数内只声明一次」：
+         * `cycleStats` 将来也改走 `bound_store_id` 就会**误报红**，且报错信息指向错误的原因。
+         * 「切不出就兜底到全文」本身就是空断言的温床（同 `82e3f1e7` 修掉的那条）。
+         */
+        const fnBody = functionBody(staffSrc, 'cardHolders')
+        expect(fnBody, 'cardHolders 函数体未切出 —— 切片锚点需同步更新').toBeTruthy()
+        /**
+         * ⚠️ 数的是 **`buildClientScope(` 的调用次数**，不是 `const cs = …` 这个字面量 ——
+         * 红检 R13 实测：写成 `const csDup = buildClientScope(...)` 换个变量名就能绕过
+         * 按变量名计数的版本，而「两个 scope 对象同时存在」正是要防的东西。
+         */
+        expect(
+          (fnBody.match(/buildClientScope\s*\(/g) ?? []).length,
+          'cardHolders 里构造了不止一个 scope —— 分子分母各建一个，「归店键一致」会退化成靠自觉维护',
+        ).toBe(1)
+        expect(
+          (fnBody.match(/buildSaleScope\s*\(/g) ?? []).length,
+          'cardHolders 里出现 buildSaleScope —— 那是按 so.store_id 归店，正是 #287 的第二处根因',
+        ).toBe(0)
+        expect(
+          staffSrc,
+          '持卡查询仍在用 sc.params —— scope 参数与分母不同源',
+        ).not.toMatch(/pg\.query\(cardSql,\s*sc\.params\)/)
+        /**
+         * ⚠️ 第一版只断言了 `pg.query(cardSql, cs.params)` —— 名字声称守**两条**查询，
+         * 代码只守了一条（round-1 codex 找出的"第三条空断言"）。
+         * 把 `pg.query(memberSql, [])` 写进去，断言照绿，而 market/store 档的
+         * memberSql 含 `$1` 却没有绑定参数，运行时直接报错。
+         */
+        /**
+         * ⚠️ 必须跑在**剥注释后**的源码上（round-3 codex 找出的第四条空断言）：
+         * 原来直接 `toMatch(staffSrc)`，而 `staffSrc` 是未剥注释的整份原文 ——
+         * 在**注释里**写一行 `pg.query(cardSql, cs.params)` 就能满足断言，
+         * 真正的调用却可以传别的参数。
+         */
+        const staffExec = normalize(stripComments(staffSrc))
+        expect(staffExec, '持卡查询未共用 cs.params').toMatch(/pg\.query\(cardSql,\s*cs\.params\)/)
+        expect(staffExec, '会员查询未共用 cs.params —— 与分子的 scope 参数脱钩').toMatch(
+          /pg\.query\(memberSql,\s*cs\.params\)/,
+        )
+      })
     })
   })
 
@@ -160,12 +753,9 @@ describe('品项板块两端口径一致性守护', () => {
         /so\.status\s+NOT\s+IN\s*\(\s*'已关闭'\s*,\s*'已作废'\s*,\s*'未审核'\s*,\s*'待审批'\s*,\s*'支付失败'\s*\)/,
       )
     })
-    it('两端 fugou 只读取 repurchase_qualifying_days，且区间业绩排除寄存金额', () => {
+    it('两端 fugou 只读取 repurchase_qualifying_days（区间业绩的整段快照见下方 #288 一组）', () => {
       for (const code of [adminCode, staffCode]) {
         expect(code).toMatch(/repurchase_qualifying_days\s+AS\s*\([\s\S]*?WHERE\s+purchase_received\s*>=/)
-        expect(code).toMatch(
-          /period_agg\s+AS\s*\([\s\S]*?purchase_received\s+AS\s+day_received[\s\S]*?purchase_received\s*>\s*0/,
-        )
         expect(code).toMatch(/fugou\s+AS\s*\([\s\S]*?FROM\s+repurchase_qualifying_days\s+q/)
       }
     })
@@ -183,9 +773,117 @@ describe('品项板块两端口径一致性守护', () => {
   })
 
   /**
+   * #288：区间业绩是**净额** —— 退款负数冲销逐笔抵减，不得因「当日净额 ≤ 0」整组丢弃；
+   * 但负数行只进业绩、不造人（体验判定与人数归店只认 `day_received > 0`）。
+   *
+   * 缺陷原理：旧写法 `HAVING SUM(...) > 0` + `period_agg ... purchase_received > 0` 把净额为负的
+   * (顾客, 门店, 品项, 日) 整组丢掉 —— 同一批退款约 38% 被净入、62% 被吞，取决于当日净额符号。
+   * 2026-09 prod 实测新增业绩虚高 12%、复购业绩虚高 7%，门店级最高 +30%。
+   *
+   * 为什么是三段**整段等值**快照而不是「出现过 `<> 0`」：
+   *   - HAVING 只写 `SUM(...) <> 0` 仍会丢「寄存单恰好抵平销售单/转换单」的日子（prod 实测 14 组）
+   *   - `period_agg` 追加任何谓词（如 `AND day_received > 0`）都会让冲销重新被吞
+   *   - `tiyan` 丢了 `day_received > 0` 就会把「期内只有退款」的顾客算成体验客（prod 实测 +60 人）
+   * 这些都是「局部字面量仍在、整体语义已变」的形态，只有整段等值能挡住。
+   *
+   * 三份模板（admin KPI / admin 明细 / staff）各自钉死，同时构成跨端对齐。
+   */
+  describe('区间业绩净额，负数冲销不整组丢弃（#288）', () => {
+    /** SQL 行注释剥掉 + 空白压平（三份模板的字符串字面量里都没有 `--`） */
+    const flatSql = (tpl: string): string => normalize(tpl.replace(/--[^\n]*/g, ' '))
+    /**
+     * 三份模板。admin KPI 的模板中途嵌了 `sql` 子模板（cohort 三选一），
+     * 惰性匹配会停在第一个嵌套反引号处 —— 本组要看的 daily_agg / period_agg / tiyan 都在它之前，够用；
+     * KPI 的出口 SELECT 在嵌套之后，单独切。
+     */
+    const templates = (): Array<[string, string]> => {
+      const tpl = (body: string): string => /db\.execute\(sql`([\s\S]*?)`/.exec(body)?.[1] ?? ''
+      const staffSql = /const sql = `([\s\S]*?)`/.exec(functionBody(staffSrc, 'cycleStats'))?.[1] ?? ''
+      return [
+        ['admin KPI queryCycle', flatSql(tpl(functionBody(adminSrc, 'queryCycle')))],
+        ['admin 明细 queryCycleByStore', flatSql(tpl(functionBody(adminSrc, 'queryCycleByStore')))],
+        ['staff cycleStats', flatSql(staffSql)],
+      ]
+    }
+    const isStaff = (label: string): boolean => label.startsWith('staff')
+
+    it('三份模板都切得出来，且每份恰好一个 HAVING / period_agg / tiyan', () => {
+      for (const [label, sqlText] of templates()) {
+        expect(sqlText, `${label} 模板未切出`).toMatch(/daily_agg\s+AS\s+\(/)
+        expect((sqlText.match(/\bHAVING\b/gi) ?? []).length, `${label} 的 HAVING 不止一处`).toBe(1)
+        expect((sqlText.match(/\bperiod_agg\s+AS\b/gi) ?? []).length, `${label} 的 period_agg 声明不唯一`).toBe(1)
+        expect((sqlText.match(/\btiyan\s+AS\b/gi) ?? []).length, `${label} 的 tiyan 声明不唯一`).toBe(1)
+      }
+    })
+
+    it('daily_agg 的 HAVING 只剔除「两列都为 0」的空组', () => {
+      for (const [label, sqlText] of templates()) {
+        const having = /\bHAVING\s+([\s\S]*?)\s*\),\s*qualifying_days\s+AS\s/.exec(sqlText)?.[1] ?? ''
+        const sep = isStaff(label) ? "'销售单','转换单'" : "'销售单', '转换单'"
+        expect(
+          having,
+          `${label}：HAVING 变了 —— 「> 0」会吞掉负数冲销日，只判 day_received 会吞掉寄存单抵平日`,
+        ).toBe(
+          `SUM(sipe.amount::numeric) <> 0 OR SUM(sipe.amount::numeric) FILTER (WHERE so.sale_order_type IN (${sep})) <> 0`,
+        )
+      }
+    })
+
+    it('period_agg 只排除纯寄存日（purchase_received <> 0），不追加任何谓词', () => {
+      for (const [label, sqlText] of templates()) {
+        const block = /\bperiod_agg\s+AS\s+\(\s*([\s\S]*?)\s*\),\s*\w+\s+AS\s/.exec(sqlText)?.[1] ?? ''
+        expect(block, `${label}：period_agg 变了 —— 追加谓词会让退款冲销重新被吞`).toBe(
+          isStaff(label)
+            ? 'SELECT client_user_id, store_id, product_kind, purchase_date, purchase_received AS day_received ' +
+                'FROM daily_agg WHERE purchase_date BETWEEN $1 AND $2 AND purchase_received <> 0'
+            : 'SELECT client_user_id, store_id, grp, purchase_date, purchase_received AS day_received ' +
+                'FROM daily_agg WHERE purchase_date BETWEEN ${range.start} AND ${range.end} AND purchase_received <> 0',
+        )
+      }
+    })
+
+    it('tiyan 只从正数购买日派生（负数行不造体验客）', () => {
+      for (const [label, sqlText] of templates()) {
+        const block = /\btiyan\s+AS\s+\(\s*([\s\S]*?)\s*\)\s*(?:,\s*\w+\s+AS\s|SELECT\s)/.exec(sqlText)?.[1] ?? ''
+        const k = isStaff(label) ? 'product_kind' : 'grp'
+        expect(block, `${label}：tiyan 变了 —— 丢掉 day_received > 0 会把「期内只有退款」的顾客算成体验客`).toBe(
+          `SELECT DISTINCT pa.client_user_id, pa.${k} FROM period_agg pa WHERE pa.day_received > 0 ` +
+            `AND NOT EXISTS ( SELECT 1 FROM first_entry f WHERE f.client_user_id = pa.client_user_id AND f.${k} = pa.${k} )`,
+        )
+      }
+    })
+
+    it('业绩出口读 period_agg 全部行（不得在出口处再滤掉负数）；KPI cohort 三选一原样', () => {
+      const kpiBody = normalize(functionBody(adminSrc, 'queryCycle').replace(/--[^\n]*/g, ' '))
+      // 从 cohort 起整段钉到模板结尾：三选一的嵌套子模板也在其中（上面 templates() 的惰性切片会在
+      // 第一个嵌套反引号处截断，看不到这一段 —— 闸门 2 round-1 GLM 指出的盲区）
+      // ⚠️ 截断点依赖「子模板闭反引号后不紧跟 `)`」这一排版事实；若改写成 `${(sql`…`)}` 会误红（fail-closed），
+      // 届时按新写法同步本快照即可
+      expect((kpiBody.match(/\bcohort AS \(/g) ?? []).length, 'admin KPI 的 cohort 声明不唯一').toBe(1)
+      const kpiTail = /\bcohort AS \(([\s\S]*?)\s*`\)/.exec(kpiBody)?.[1] ?? ''
+      expect(kpiTail, 'admin KPI 的 cohort 三选一或出口 SELECT 变了').toBe(
+        " ${ group === 'trial' ? sql`SELECT client_user_id, grp FROM tiyan` : group === 'new' " +
+          "? sql`SELECT client_user_id, grp FROM xinzeng` : sql`SELECT client_user_id, grp FROM fugou` } ) " +
+          'SELECT COUNT(DISTINCT c.client_user_id) AS count, COALESCE(SUM(pa.day_received), 0) AS revenue ' +
+          'FROM cohort c LEFT JOIN period_agg pa ON pa.client_user_id = c.client_user_id AND pa.grp = c.grp',
+      )
+      const staffSql = templates()[2][1]
+      const staffOut = /\)\s*(SELECT 'trial' AS group_kind[\s\S]*)$/.exec(staffSql)?.[1] ?? ''
+      const seg = (alias: string, cohort: string, kind: string): string =>
+        `SELECT '${kind}' AS group_kind, ${alias}.product_kind, ` +
+        `COUNT(DISTINCT ${alias}.client_user_id)::int AS count, COALESCE(SUM(pa.day_received), 0)::numeric AS revenue ` +
+        `FROM ${cohort} ${alias} LEFT JOIN period_agg pa ON pa.client_user_id = ${alias}.client_user_id ` +
+        `AND pa.product_kind = ${alias}.product_kind GROUP BY ${alias}.product_kind`
+      expect(staffOut, 'staff 三段 UNION ALL 出口变了').toBe(
+        [seg('t', 'tiyan', 'trial'), seg('x', 'xinzeng', 'new'), seg('f', 'fugou', 'repurchase')].join(' UNION ALL '),
+      )
+    })
+  })
+
+  /**
    * #286：明细「新增人数」的归店必须以 `xinzeng` 为主表 LEFT JOIN `period_agg`。
    *
-   * 缺陷原理：`period_agg` 要求 `purchase_received > 0`（只统计销售单/转换单，**不含寄存单**），
+   * 缺陷原理：`period_agg` 只收 `purchase_received <> 0` 的行（#288 前是 `> 0`；只统计销售单/转换单，**不含寄存单**），
    * 而进入达标（`first_entry` → `entry_store` → `xinzeng`）走 `day_received`（**含寄存单**）。
    * 以 `period_agg` 作主表再内连接回来，会把「进入达标日金额全部来自寄存单」的顾客整体丢弃 ——
    * 生产实测明细合计只有 KPI 的三分之一（**漏 65.5%**），派生的新增客单价与复购率双双虚高 **2.90 倍**。
@@ -279,103 +977,10 @@ describe('品项板块两端口径一致性守护', () => {
      * `/*`。round-7 codex 指出上一版把它跑在 `stripComments` 之后的文本上，
      * 配对好的块注释在检查前就已经消失 —— **那条断言证明不了它声称的事**（空断言）。
      */
-    const queryCycleByStoreBody = (src: string): string => {
-      const decl = /async function queryCycleByStore\s*\(/.exec(src)
-      if (!decl) return ''
-      let i = decl.index + decl[0].length
-      for (let paren = 1; i < src.length && paren > 0; i++) {
-        if (src[i] === '(') paren++
-        else if (src[i] === ')') paren--
-      }
-      let angle = 0
-      while (i < src.length) {
-        const c = src[i]
-        if (c === '<') angle++
-        else if (c === '>') angle = Math.max(0, angle - 1)
-        else if (c === '{' && angle === 0) break
-        i++
-      }
-      let out = ''
-      let depth = 0
-      while (i < src.length) {
-        const c = src[i]
-        if (c === '/' && src[i + 1] === '/') {
-          while (i < src.length && src[i] !== '\n') i++
-          out += ' '
-          continue
-        }
-        if (c === '/' && src[i + 1] === '*') {
-          i += 2
-          while (i < src.length && !(src[i] === '*' && src[i + 1] === '/')) i++
-          i += 2
-          out += ' '
-          continue
-        }
-        if (c === "'" || c === '"') {
-          const quote = c
-          out += c
-          i++
-          while (i < src.length) {
-            if (src[i] === '\\') {
-              out += src.slice(i, i + 2)
-              i += 2
-              continue
-            }
-            out += src[i]
-            i++
-            if (src[i - 1] === quote) break
-          }
-          continue
-        }
-        if (c === '`') {
-          out += c
-          i++
-          let tplDepth = 0
-          while (i < src.length) {
-            if (src[i] === '\\') {
-              out += src.slice(i, i + 2)
-              i += 2
-              continue
-            }
-            if (src[i] === '$' && src[i + 1] === '{') {
-              tplDepth++
-              out += '${'
-              i += 2
-              continue
-            }
-            if (src[i] === '}' && tplDepth > 0) {
-              tplDepth--
-              out += '}'
-              i++
-              continue
-            }
-            if (src[i] === '`' && tplDepth === 0) {
-              out += '`'
-              i++
-              break
-            }
-            out += src[i]
-            i++
-          }
-          continue
-        }
-        if (c === '{') depth++
-        else if (c === '}') {
-          depth--
-          out += c
-          i++
-          if (depth === 0) break
-          continue
-        }
-        out += c
-        i++
-      }
-      return out
-    }
 
     /** 未经 SQL 清洗的模板原文 —— 「扫描器语法是超集」那组断言要用它。 */
     const detailTemplateRaw = (src: string): string =>
-      /db\.execute\(sql`([\s\S]*?)`\)/.exec(queryCycleByStoreBody(src))?.[1] ?? ''
+      /db\.execute\(sql`([\s\S]*?)`\)/.exec(functionBody(src, 'queryCycleByStore'))?.[1] ?? ''
 
     /** 切出 queryCycleByStore 的 SQL 模板，避免 KPI 侧同名 CTE 链顶替。 */
     const detailSql = (src: string): string => normalize(stripSqlNoise(detailTemplateRaw(src)))
@@ -466,12 +1071,12 @@ describe('品项板块两端口径一致性守护', () => {
 
     it('切片锚点有效（能切出明细侧 SQL 且含关键 CTE）', () => {
       expect(adminDetail, 'queryCycleByStore 的 SQL 模板未切出').toBeTruthy()
-      for (const cte of ['entry_store', 'xinzeng', 'new_store', 'store_ids', 'period_agg']) {
+      for (const cte of ['entry_store', 'xinzeng', 'new_store', 'new_revenue_store', 'store_ids', 'period_agg']) {
         expect(adminDetail, `明细侧缺 ${cte} CTE`).toMatch(new RegExp(`${cte}\\s+AS\\s`))
       }
       // ⚠️ 必须用词法扫描出的真实函数体来数，不能再用正则切片 ——
       // 正则会在第一个顶格 `}` 处收尾，于是「诱饵 + 真 SQL」两条 db.execute 只数到 1。
-      const body = queryCycleByStoreBody(adminSrc)
+      const body = functionBody(adminSrc, 'queryCycleByStore')
       expect(body, 'queryCycleByStore 函数体未切出').toBeTruthy()
       /**
        * ★ **通用截断探测** —— 不去追每一种能骗过词法扫描器的写法，直接检查
@@ -674,19 +1279,23 @@ describe('品项板块两端口径一致性守护', () => {
      *   A) 换别名写成内连接 + 注释补字面量
      *   H) 加 `HAVING SUM(pa.day_received) > 0` —— entry-only 兜底组 revenue=0 被整体滤掉
      *   J) 追加一条裸 `JOIN period_agg gate ...` —— 不含 INNER/RIGHT/FULL/CROSS 关键字
+     *
+     * #288 起 `new_store` **只算人数**，业绩挪到 `new_revenue_store`：ON 里的 `pa.day_received > 0`
+     * 是有意的 —— 只有正数购买日决定人落在哪家店，负数冲销行不造人。它不会打掉兜底人群：
+     * LEFT JOIN 的 ON 谓词不减少 xinzeng 行，匹配不到正数行的人照样落回 entry_store_id。
      */
     it('new_store：以 xinzeng 为主表、恰一条 LEFT JOIN、无 WHERE/HAVING、计数主体是 x', () => {
-      const block = cteBlock(adminDetail, 'new_store', 'repurchase_store')
+      const block = cteBlock(adminDetail, 'new_store', 'new_revenue_store')
       expect(block, 'new_store 块未切出（CTE 顺序变了？）').toBeTruthy()
       assertNoNestedCte(block, 'new_store')
       // 堵「, LATERAL (SELECT 1 LIMIT 0)」这类零行破坏，以及任何回查子查询
       expect(block, 'new_store 体内出现子查询').not.toMatch(/\(\s*SELECT\s/i)
 
       // ON 子句整条钉死：JOIN 计数 = 1 只管「有几条连接」，管不住在这一条的 ON 里
-      // 追加谓词（如 `AND pa.store_id IS DISTINCT FROM 'store-x'` 把某店业绩挪走，
-      // 或 `AND pa.day_received > 0` 把兜底人群的消费行打掉）—— round-3 GLM 探针 P-b 实测可绕。
-      expect(block, 'new_store 的主表不是 xinzeng，或 ON 子句被追加了连接键以外的谓词').toMatch(
-        /FROM\s+xinzeng\s+x\s+LEFT\s+JOIN\s+period_agg\s+pa\s+ON\s+pa\.client_user_id\s*=\s*x\.client_user_id\s+AND\s+pa\.grp\s*=\s*x\.grp\s+GROUP\s+BY\b/,
+      // 追加谓词（如 `AND pa.store_id IS DISTINCT FROM 'store-x'` 把某店的人挪走）
+      // —— round-3 GLM 探针 P-b 实测可绕。唯一允许的额外谓词是 #288 的 `pa.day_received > 0`。
+      expect(block, 'new_store 的主表不是 xinzeng，或 ON 子句被追加了连接键与正数行之外的谓词').toMatch(
+        /FROM\s+xinzeng\s+x\s+LEFT\s+JOIN\s+period_agg\s+pa\s+ON\s+pa\.client_user_id\s*=\s*x\.client_user_id\s+AND\s+pa\.grp\s*=\s*x\.grp\s+AND\s+pa\.day_received\s*>\s*0\s+GROUP\s+BY\b/,
       )
       // 恰好一条 JOIN，且必是 LEFT —— 堵「追加一条裸 JOIN 当过滤闸」
       expect(
@@ -699,11 +1308,11 @@ describe('品项板块两端口径一致性守护', () => {
       expect(block, 'new_store 用逗号连接了两个表 —— 等价于内连接').not.toMatch(
         /FROM\s+\w+\s+\w+\s*,/,
       )
-      // WHERE 对右表加过滤会把 LEFT JOIN 打回内连接；HAVING 会把 revenue=0 的兜底组整体滤掉
+      // WHERE 对右表加过滤会把 LEFT JOIN 打回内连接；HAVING 会把兜底组整体滤掉
       expect(block, 'new_store 体内出现 WHERE —— 对右表过滤会退化成内连接').not.toMatch(/\bWHERE\b/i)
       expect(
         block,
-        'new_store 体内出现 HAVING —— 「只有寄存单进入」的门店 revenue=0，会被整组滤掉（#286 换个写法回归）',
+        'new_store 体内出现 HAVING —— 「只有寄存单进入」的兜底组会被整组滤掉（#286 换个写法回归）',
       ).not.toMatch(/\bHAVING\b/i)
       // 计数主体必须是 xinzeng 的顾客：兜底分组里 pa.* 全是 NULL
       expect(block, 'new_store 回退成按 pa 计数').not.toMatch(/COUNT\(DISTINCT\s+pa\.client_user_id\)/)
@@ -733,12 +1342,28 @@ describe('品项板块两端口径一致性守护', () => {
         'new_store 块与字面快照不符 —— 先确认语义没变（尤其是计数主体与 GROUP BY 维度），再同步更新本断言',
       ).toBe(
         'SELECT COALESCE(pa.store_id, x.entry_store_id) AS store_id, ' +
-          'COUNT(DISTINCT x.client_user_id) AS cnt, ' +
-          'COALESCE(SUM(pa.day_received), 0) AS revenue ' +
+          'COUNT(DISTINCT x.client_user_id) AS cnt ' +
           'FROM xinzeng x ' +
           'LEFT JOIN period_agg pa ' +
-          'ON pa.client_user_id = x.client_user_id AND pa.grp = x.grp ' +
+          'ON pa.client_user_id = x.client_user_id AND pa.grp = x.grp AND pa.day_received > 0 ' +
           'GROUP BY COALESCE(pa.store_id, x.entry_store_id)',
+      )
+    })
+
+    /**
+     * #288：新增业绩按 `period_agg` **全部行**（含负数冲销）归到消费发生的门店，净额可为负。
+     * 内连接不扇出：xinzeng 每个 (client_user_id, grp) 恰一行（entry_store 的 DISTINCT ON）。
+     * 在这里加 `pa.day_received > 0`（ON 或 WHERE）就是 #288 原样复活 —— 字面快照挡住。
+     */
+    it('new_revenue_store：xinzeng 在 period_agg 全部行上的净额，按消费门店归组', () => {
+      const block = cteBlock(adminDetail, 'new_revenue_store', 'repurchase_store')
+      expect(block, 'new_revenue_store 块未切出（CTE 顺序变了？）').toBeTruthy()
+      assertNoNestedCte(block, 'new_revenue_store')
+      expect(block.trim(), 'new_revenue_store 块与字面快照不符 —— 追加任何谓词都可能让退款冲销重新被吞').toBe(
+        'SELECT pa.store_id, SUM(pa.day_received) AS revenue ' +
+          'FROM xinzeng x JOIN period_agg pa ' +
+          'ON pa.client_user_id = x.client_user_id AND pa.grp = x.grp ' +
+          'GROUP BY pa.store_id',
       )
     })
 
@@ -758,10 +1383,12 @@ describe('品项板块两端口径一致性守护', () => {
      *
      * 前面所有断言都切到 `store_ids` 就结束了 —— CTE 全部算对，结果仍可在**消费端**被丢掉：
      *
-     *   LEFT JOIN new_store n ON n.store_id = s.store_id AND n.revenue > 0
+     *   LEFT JOIN new_store n ON n.store_id = s.store_id AND EXISTS (SELECT 1 FROM period_agg …)
      *
-     * 这一条就把「只有寄存单进入、零销售单消费」的门店（revenue = 0）重新滤掉，
+     * 这一条就把「只有寄存单进入、零销售单消费」的门店重新滤掉，
      * 正好抵消 `store_ids` 第二个 UNION 分支要保护的场景，而上面的断言无一触发。
+     * 同理，`LEFT JOIN new_revenue_store nr ON … AND nr.revenue > 0` 会把净额为负的门店业绩
+     * 抹成 0 —— #288 在消费端换个写法复活。
      *
      * 同理，把 `COALESCE(n.cnt, 0) AS new_count` 改成 `COALESCE(n.cnt, 0) * 0` 之类也无人拦。
      * 与 `new_store` 同样处理：**字面快照**，见上面那段关于 fail-closed 取舍的说明。
@@ -776,34 +1403,48 @@ describe('品项板块两端口径一致性守护', () => {
         'SELECT s.store_id AS store_id, ' +
           'COALESCE(t.cnt, 0) AS trial_count, ' +
           'COALESCE(n.cnt, 0) AS new_count, ' +
-          'COALESCE(n.revenue, 0) AS new_revenue, ' +
+          'COALESCE(nr.revenue, 0) AS new_revenue, ' +
           'COALESCE(r.cnt, 0) AS repurchase_count, ' +
           'COALESCE(r.revenue, 0) AS repurchase_revenue ' +
           'FROM store_ids s ' +
           'LEFT JOIN trial_store t ON t.store_id = s.store_id ' +
           'LEFT JOIN new_store n ON n.store_id = s.store_id ' +
+          'LEFT JOIN new_revenue_store nr ON nr.store_id = s.store_id ' +
           'LEFT JOIN repurchase_store r ON r.store_id = s.store_id',
       )
     })
 
     /**
-     * 体验/复购不需要兜底：`tiyan` 本就从 `period_agg` 派生，
-     * `fugou` 要求 `purchase_received >= threshold > 0`，两者必然在 `period_agg` 里有行。
+     * 体验/复购不需要兜底：`tiyan` 本就从正数 `period_agg` 行派生，
+     * `fugou` 要求 `purchase_received >= threshold > 0`，两者必然在 `period_agg` 里有正数行。
      * 锁住这一点，免得日后有人"顺手"把它们也改成 LEFT JOIN 兜底，反而引入无处归店的行。
+     *
+     * #288 起两块钉成整块字面快照：人数只认正数购买日（`day_received > 0`），
+     * 复购业绩读全部行求净额。把 FILTER 挪成 WHERE 会让复购业绩重新吞掉冲销；
+     * 删掉 trial_store 的 WHERE 会让「只有退款」的门店多出体验人数 —— 局部断言都看不出来。
      */
-    it('体验/复购仍以 period_agg 为主表（它们必然有 period 行，无需兜底）', () => {
+    it('体验/复购仍以 period_agg 为主表，人数只认正数行、业绩读全部行', () => {
       const trial = cteBlock(adminDetail, 'trial_store', 'new_store')
       const repurchase = cteBlock(adminDetail, 'repurchase_store', 'store_ids')
       expect(trial, 'trial_store 块未切出').toBeTruthy()
       expect(repurchase, 'repurchase_store 块未切出').toBeTruthy()
-      expect(trial).toMatch(/FROM\s+period_agg\s+pa\s+JOIN\s+tiyan\s+t/)
-      expect(repurchase).toMatch(/FROM\s+period_agg\s+pa\s+JOIN\s+fugou\s+fg/)
-      // 与 new_store 同理：正向断言只认前缀，追加第二条 JOIN 当过滤闸仍然全绿
-      expect((trial.match(/\bJOIN\b/gi) ?? []).length, 'trial_store 的 JOIN 不止一条').toBe(1)
-      expect(
-        (repurchase.match(/\bJOIN\b/gi) ?? []).length,
-        'repurchase_store 的 JOIN 不止一条',
-      ).toBe(1)
+      assertNoNestedCte(trial, 'trial_store')
+      assertNoNestedCte(repurchase, 'repurchase_store')
+      expect(trial.trim(), 'trial_store 块与字面快照不符').toBe(
+        'SELECT pa.store_id, COUNT(DISTINCT pa.client_user_id) AS cnt ' +
+          'FROM period_agg pa ' +
+          'JOIN tiyan t ON t.client_user_id = pa.client_user_id AND t.grp = pa.grp ' +
+          'WHERE pa.day_received > 0 ' +
+          'GROUP BY pa.store_id',
+      )
+      expect(repurchase.trim(), 'repurchase_store 块与字面快照不符').toBe(
+        'SELECT pa.store_id, ' +
+          'COUNT(DISTINCT pa.client_user_id) FILTER (WHERE pa.day_received > 0) AS cnt, ' +
+          'COALESCE(SUM(pa.day_received), 0) AS revenue ' +
+          'FROM period_agg pa ' +
+          'JOIN fugou fg ON fg.client_user_id = pa.client_user_id AND fg.grp = pa.grp ' +
+          'GROUP BY pa.store_id',
+      )
     })
 
     /**

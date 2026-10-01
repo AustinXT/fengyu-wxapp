@@ -24,6 +24,7 @@ import type { AuthSession, SaleOrder, SaleItem, DateBasis, OrderStatus, SaleOrde
 import { revalidatePath } from 'next/cache'
 import { scopeCondition, isInScope, requireAdmin, isDepositOrderApprover } from '@/lib/permissions'
 import { withPermission, withAnyPermission } from '@/lib/with-permission'
+import { ORDER_DETAIL_PAGE_CAPABILITIES } from '@/lib/order-detail-access'
 import { logOperation, logTransition, logUpdate } from '@/lib/operation-log'
 import { ApiError, parseErrorPrefix } from '@/lib/api-error'
 import { businessErrorMessage } from '@/lib/action-error'
@@ -3070,7 +3071,8 @@ export const exportAllocationOrders = withPermission(
 // 订单详情页可由订单查看者（sale_order:list）或退款相关角色
 // （sale_order:refund_create 提单人 / sale_order:refund_approve 审批人）访问
 export const getOrderById = withAnyPermission(
-  ['sale_order:list', 'sale_order:refund_create', 'sale_order:refund_approve'],
+  // 与 /orders/[id] 页面守卫、各处「跳转订单详情」链接同一单源（#350）
+  [...ORDER_DETAIL_PAGE_CAPABILITIES],
   async (session, saleOrderId: string): Promise<SaleOrder | null> => {
   // 2026-07-08 修复 T1：与 getOrders 对齐，left join clientWechatUsers 做 name/phone 兜底。
   const rows = await db
@@ -3630,7 +3632,8 @@ export const updatePaymentPerformanceAttributionDate = withPermission(
  */
 // 详情页支付流水：订单查看者或退款相关角色（提单人 / 审批人）均可读
 export const getOrderPayments = withAnyPermission(
-  ['sale_order:list', 'sale_order:refund_create', 'sale_order:refund_approve'],
+  // 与 /orders/[id] 页面守卫、各处「跳转订单详情」链接同一单源（#350）
+  [...ORDER_DETAIL_PAGE_CAPABILITIES],
   async (session, saleOrderId: string): Promise<import('@/lib/types').SaleOrderPayment[]> => {
   // scope 校验：只有订单所在门店在 scope 内才允许查看流水
   const [order] = await db
@@ -5871,12 +5874,20 @@ export const createConversionOrder = withPermission(
       name: clientWechatUsers.name,
       customerType: clientWechatUsers.customerType,
       memberLevel: clientWechatUsers.memberLevel,
+      boundStoreId: clientWechatUsers.boundStoreId,
+      isCrossStoreTemp: clientWechatUsers.isCrossStoreTemp,
     })
     .from(clientWechatUsers)
     .where(eq(clientWechatUsers.userId, data.clientUserId))
     .limit(1)
   if (!client) {
     return { success: false, message: '顾客不存在' }
+  }
+  if (!client.boundStoreId) {
+    return { success: false, message: '顾客未注册小程序或未绑定门店' }
+  }
+  if (client.boundStoreId !== data.storeId && !client.isCrossStoreTemp) {
+    return { success: false, message: '该顾客不属于当前门店，无法开单' }
   }
   const getCustomerMarketScope = createCustomerMarketScopeProvider(data.clientUserId)
 
@@ -6056,6 +6067,7 @@ export const createConversionOrder = withPermission(
 
       type OutItem = {
         refSaleItemId: string
+        sourceStoreId: string
         skuId: string | null
         productName: string | null
         productType: '疗程卡' | '家居产品' | null
@@ -6081,8 +6093,7 @@ export const createConversionOrder = withPermission(
       const outItems: OutItem[] = []
 
       for (const row of held) {
-        // 归属校验：store_id / client_user_id / direction / 状态
-        if (row.store_id !== data.storeId) throw new ApiError('INVALID_STATE', 'CARD_STORE_MISMATCH: 所选卡不属于当前门店')
+        // 来源门店可不同；顾客、权益方向和状态仍须锁内逐行复核。
         if (row.client_user_id !== data.clientUserId) throw new ApiError('INVALID_STATE', 'CARD_OWNER_MISMATCH: 所选卡不属于该顾客')
         const isEntitlement = isConvertibleEntitlementRow({
           item_direction: row.item_direction as string,
@@ -6146,7 +6157,10 @@ export const createConversionOrder = withPermission(
             received: row.received as string,
             unitRealPrice: row.unit_real_price as string,
           })
-          qty = Math.max(0, Number(row.quantity ?? 0) - Number(row.picked_up_quantity ?? 0))
+          qty = Math.max(0, Number(row.quantity ?? 0)
+            - Number(row.picked_up_quantity ?? 0)
+            - Number(row.refunded_quantity ?? 0)
+            - Number(row.converted_quantity ?? 0))
           lineAmount = Math.round(home.amount * 100) / 100
         }
 
@@ -6199,6 +6213,7 @@ export const createConversionOrder = withPermission(
 
         outItems.push({
           refSaleItemId: row.sale_item_id as string,
+          sourceStoreId: row.store_id as string,
           skuId: (row.sku_id as string) ?? null,
           productName: (row.product_name as string) ?? null,
           productType: productType as OutItem['productType'],
@@ -6648,7 +6663,7 @@ export const createConversionOrder = withPermission(
             .where(
               and(
                 eq(saleItems.saleItemId, out.refSaleItemId),
-                eq(saleItems.storeId, data.storeId),
+                eq(saleItems.storeId, out.sourceStoreId),
                 sql`COALESCE(${saleItems.remainingSessions}, 0) >= ${out.quantity}`,
               ),
             )
@@ -6664,7 +6679,7 @@ export const createConversionOrder = withPermission(
             .where(
               and(
                 eq(saleItems.saleItemId, out.refSaleItemId),
-                eq(saleItems.storeId, data.storeId),
+                eq(saleItems.storeId, out.sourceStoreId),
                 eq(saleItems.productType, '家居产品'),
                 sql`(COALESCE(${saleItems.pickedUpQuantity}, 0) + COALESCE(${saleItems.refundedQuantity}, 0) + COALESCE(${saleItems.convertedQuantity}, 0) + ${out.quantity}) <= ${saleItems.quantity}`,
               ),
