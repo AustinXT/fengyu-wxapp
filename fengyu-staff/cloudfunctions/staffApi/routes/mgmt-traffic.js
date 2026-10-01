@@ -532,10 +532,10 @@ async function queryNewMemberSpend(scopeType, scopeId, period) {
  * 新会员对应消费 · WorkFine 历史单分支（#289）。与 queryNewMemberSpend 相加 = 新会员消费。
  *
  * WorkFine 单在款项流水里没有行，不补这条时「本年」这类跨 2026-07-03 割点的区间低报约 4 成；
- * 截至 2026-09-26 prod 数据，WorkFine 单归属日期最晚到 2026-08-01，区间起点 ≥ 2026-08-02 时本分支为 0
- * （数据现状不是约束：历史单拉取不限日期，再拉入更晚的单会随之计入）。
+ * #471 明确只接入归属日期不晚于 2026-07-03 的旧源；纯割点后区间本分支恒为 0。
  * 金额 / 过滤口径照搬本端顾客详情页 legacy_year_stats（mgmt-customer.js / customer.js），
- * 人群条件与 scope 列（c.bound_store_id）同 queryNewMemberSpend（#439 起归店跟着人走）。与线上单时间重叠不去重（2026-09-26 拍板）。
+ * 人群条件与 scope 列（c.bound_store_id）同 queryNewMemberSpend（#439 起归店跟着人走）。
+ * #471 割点后的 WorkFine 单不参与本 KPI；此前发现的线上单重叠样本均在割点后。
  *
  * ⚠️ admin 同口径副本：fengyu-admin customer.ts::queryNewMemberLegacySpend + lib/data-center/workfine-legacy-spend.ts，
  * 两端逐字一致、legacy 片段四份副本整段等值，由 fengyu-admin consistency.customer.test.ts 守护。
@@ -558,7 +558,8 @@ async function queryNewMemberLegacySpend(scopeType, scopeId, period) {
         AND o.status IN ('已支付', '部分支付', '已完成')
         AND o.sale_order_type IN ('销售单', '转换单')
         AND o.legacy_source = 'workfine'
-        AND o.performance_attribution_date BETWEEN ${startDateExpr(period)} AND ${endDateExpr(period)}`,
+        AND o.performance_attribution_date BETWEEN ${startDateExpr(period)} AND ${endDateExpr(period)}
+        AND o.performance_attribution_date <= DATE '2026-07-03'`,
     sc.params,
   )
   return Number(rows[0]?.v || 0)

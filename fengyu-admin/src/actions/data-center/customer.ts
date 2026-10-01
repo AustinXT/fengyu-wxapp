@@ -436,12 +436,11 @@ async function queryNewMemberSpend(
  * 新增会员对应消费 · WorkFine 历史单分支（#289）。与上面的款项流水分支相加 = 新客客单价分子。
  *
  * WorkFine 单在款项流水里没有行，不补这条时「今年」这类跨割点区间低报约 4 成；
- * 截至 2026-09-26 prod 数据，WorkFine 单归属日期最晚到 2026-08-01，区间起点 ≥ 2026-08-02 时本分支为 0、
- * 结果与补之前一致 —— 这是数据现状不是约束：历史单拉取不限日期，以后再拉入更晚的单，本分支会随之计入。
+ * #471 明确只接入归属日期不晚于 2026-07-03 的旧源；纯割点后区间本分支恒为 0。
  * 人群条件与 scope 列（`c.bound_store_id`）同款项流水分支（#439 起归店跟着人走，与分母同源）；
  * 口径与片段来源见 lib/data-center/workfine-legacy-spend.ts。
  * staff 同口径副本：mgmt-traffic.js::queryNewMemberLegacySpend（consistency.customer.test.ts 逐字守护）。
- * 与线上单时间重叠（12 家店 113 张）不去重，2026-09-26 拍板接受。
+ * #471 割点后的 WorkFine 单不参与本 KPI；此前发现的线上单重叠样本均在割点后。
  */
 async function queryNewMemberLegacySpend(
   session: AuthSession,
