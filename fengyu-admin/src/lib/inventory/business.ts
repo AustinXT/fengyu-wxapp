@@ -3322,6 +3322,60 @@ export async function resolveInventorySkuSupplierStatus(
   }))
 }
 
+/** #356：作废汇总只释放占用，单据、血缘与履约历史保留。 */
+export async function voidMarketReportSummary(
+  session: AuthSession,
+  input: { summaryId: string; reason: string },
+): Promise<{ id: string }> {
+  const summaryId = required(input.summaryId, '汇总单号')
+  const reason = required(input.reason, '作废原因')
+  await syncLocations()
+  await db.transaction(async (tx) => {
+    await assertInventoryBusinessWritable(tx)
+    const [peek] = rows<{ target_org_node_id: string | null }>(await tx.execute(sql`
+      SELECT target_org_node_id FROM inventory_docs
+       WHERE id = ${summaryId} AND doc_type = '市场报货汇总'
+    `))
+    if (!peek?.target_org_node_id) throw new ApiError('NOT_FOUND', '市场报货汇总单不存在')
+    // 与采购建单同序：总部主体 → 来源明细 → 来源单头，避免作废与新引用穿透。
+    const supplyChain = await locationForUpdate(tx, peek.target_org_node_id)
+    assertType(supplyChain, '总部', '供应链库存主体')
+    assertLocationWritable(session, supplyChain)
+    const items = rows<{ fulfilled_quantity: string }>(await tx.execute(sql`
+      SELECT fulfilled_quantity FROM inventory_doc_items
+       WHERE doc_id = ${summaryId} ORDER BY id FOR UPDATE
+    `))
+    const header = await docForUpdate(tx, summaryId)
+    if (header.docType !== '市场报货汇总' || header.status !== '已完成') {
+      throw new ApiError('INVALID_STATE', '只能作废已完成的市场报货汇总单')
+    }
+    if (header.targetOrgNodeId !== supplyChain.orgNodeId) {
+      throw new ApiError('CONFLICT', '汇总单主体已变化，请刷新重试')
+    }
+    const references = rows<{ id: string }>(await tx.execute(sql`
+      SELECT purchase.id FROM inventory_doc_links link
+        JOIN inventory_docs purchase ON purchase.id = link.to_doc_id
+       WHERE link.from_doc_id = ${summaryId}
+         AND link.relation_type = '报货汇总采购订单'
+         AND purchase.doc_type = '采购订单' AND purchase.status <> '已取消'
+       LIMIT 1
+    `))
+    if (references.length > 0) throw new ApiError('INVALID_STATE', '汇总单已被未取消的采购订单引用，不能作废')
+    if (items.some((item) => Number(item.fulfilled_quantity) > 0)) {
+      throw new ApiError('INVALID_STATE', '汇总单已有履约数量，不能作废')
+    }
+    await tx.execute(sql`
+      UPDATE inventory_docs
+         SET status = '已取消', cancellation_reason = ${reason},
+             cancelled_by = ${session.employeeId}, cancelled_at = NOW(), updated_at = NOW()
+       WHERE id = ${summaryId} AND status = '已完成'
+    `)
+    await logOperation(session, 'inventory.market_report_summary.void', 'inventory_docs', summaryId, { reason }, tx)
+  })
+  refreshInventoryPaths()
+  return { id: summaryId }
+}
+
 /**
  * 把选中的市场报货明细汇总成一张供应链侧的「市场报货汇总」单（#193）。
  *
@@ -3405,6 +3459,9 @@ export async function createMarketReportSummary(
       const availableQuantity = fixed(sourceItems.reduce((sum, item) => sum + item.quantity, 0))
       if (nearlyGreater(quantity, availableQuantity)) {
         throw new ApiError('CONFLICT', '汇总数量不能超过所选市场报货的未汇总数量')
+      }
+      if (nearlyGreater(availableQuantity, quantity)) {
+        throw new ApiError('INVALID_PARAMS', '本次汇总必须等于所选明细的未汇总数量，请刷新后重试')
       }
       const sku = await loadSku(tx, skuId, false, false)
       assertSkuAvailableToMarket(sku, market.orgNodeId)
@@ -3675,13 +3732,14 @@ interface PreparedPurchaseSource {
 export async function createPurchaseOrder(
   session: AuthSession,
   input: CreateMergedPurchaseOrderInput,
-): Promise<{ id: string }> {
+): Promise<{ id: string; warnings: string[] }> {
   const supplyChainLocationId = required(input.supplyChainLocationId, '供应链库存主体')
   if (!Array.isArray(input.items) || input.items.length === 0) {
     throw new ApiError('INVALID_PARAMS', '采购订单至少需要一条明细')
   }
   dateOrToday(input.docDate)
   await syncLocations()
+  const warnings: string[] = []
   const id = await db.transaction(async (tx) => {
     await assertInventoryBusinessWritable(tx)
     const supplyChain = await locationForUpdate(tx, supplyChainLocationId)
@@ -3710,11 +3768,9 @@ export async function createPurchaseOrder(
         throw new ApiError('INVALID_STATE', '来源单据不属于所选供应链主体')
       }
       const sku = await loadSku(tx, source.skuId, false, false)
-      // fail-closed：供应商现在是按商品带出的，缺档案就没法下单。先收集齐再一次性报，
-      // 免得操作人补一个、报一个。
+      // #356：缺供应商只提示，不阻断；数量、主体、SKU 归属仍逐项校验。
       if (!sku.supplierId) {
         missingSupplier.set(sku.skuId, sku.productName)
-        continue
       }
       if (header.docType === '市场报货汇总') {
         // 已下单量以来源行的 `fulfilled_quantity` 为准，**不能**改用血缘累计：
@@ -3776,9 +3832,7 @@ export async function createPurchaseOrder(
         throw new ApiError('INVALID_STATE', '采购订单只能引用市场报货汇总或品项公司报货需求')
       }
     }
-    // 供应商还必须是**启用中**的档案 —— 收敛前这道校验由 ensureSupplier 承担
-    // （它带 `is_active = true`），合并后单头不再选供应商，这道校验一并下沉到行级。
-    // 停用的与未绑定的合到同一份清单里一次性报，免得操作人补一个、报一个。
+    // #356：停用与未绑定档案合到同一份提示，保留原供应商快照，允许继续下单。
     const boundSupplierIds = Array.from(new Set(
       prepared.map((line) => line.sku.supplierId).filter((id): id is string => Boolean(id)),
     ))
@@ -3800,11 +3854,7 @@ export async function createPurchaseOrder(
       }
     }
     if (missingSupplier.size > 0) {
-      const names = Array.from(missingSupplier.values()).join('、')
-      throw new ApiError(
-        'INVALID_STATE',
-        `以下商品的供应商档案缺失或已停用，请先在商品资料处理后再下单：${names}`,
-      )
+      warnings.push(`以下商品的供应商档案缺失或已停用，请在商品资料补全：${Array.from(missingSupplier.values()).join('、')}`)
     }
     if (prepared.length === 0) {
       throw new ApiError('INVALID_PARAMS', '采购订单至少需要一条明细')
@@ -3976,7 +4026,7 @@ export async function createPurchaseOrder(
     sourceItemCount: input.items.length,
   })
   refreshInventoryPaths()
-  return { id }
+  return { id, warnings }
 }
 
 async function bumpFulfilledQuantity(tx: Tx, itemId: number, quantity: number): Promise<void> {

@@ -182,6 +182,33 @@ try {
   check('按无需求的市场筛选得到空集', emptyMarketSummary.items.length === 0,
     `items=${emptyMarketSummary.items.length}`)
 
+  // #356：作废不删单/血缘；关闭全部未收采购后释放来源，重新汇总。
+  const { id: voidProbeId } = await biz.createMarketReportSummary({
+    supplyChainLocationId: HQ_ORG,
+    items: [{ skuId: SKU_SUPPLY, marketId: MKA_ORG, quantity: 6, sourceReportItemIds: [mbhItem.id] }],
+  })
+  const [voidProbeItem] = await docItems(voidProbeId)
+  await expectThrow('#356 作废原因必填', /INVALID_PARAMS/, () =>
+    biz.voidMarketReportSummary({ summaryId: voidProbeId, reason: ' ' }))
+  setSession(marketASession())
+  await expectThrow('#356 市场权限不能作废总部汇总', /PERMISSION_DENIED/, () =>
+    biz.voidMarketReportSummary({ summaryId: voidProbeId, reason: '有误' }))
+  setSession(supplyChainSession())
+  const { id: voidProbePo } = await biz.createPurchaseOrder({
+    supplyChainLocationId: HQ_ORG, items: [{ sourceItemId: voidProbeItem.id, quantity: 1 }],
+  })
+  await expectThrow('#356 未取消采购引用不能作废', /未取消的采购订单引用/, () =>
+    biz.voidMarketReportSummary({ summaryId: voidProbeId, reason: '有误' }))
+  await biz.cancelSupplyChainPurchaseOrder({ purchaseOrderId: voidProbePo, cancellationReason: '未收全关闭' })
+  await biz.voidMarketReportSummary({ summaryId: voidProbeId, reason: '重新汇总' })
+  check('#356 作废单据保留', (await docHeader(voidProbeId))?.status === '已取消')
+  const preservedLinks = await pgQuery('SELECT id FROM inventory_doc_links WHERE to_doc_id=$1',[voidProbeId])
+  check('#356 作废后原血缘保留', preservedLinks.length > 0)
+  const releasedSummary = await biz.summarizeMarketReplenishmentRequests({ supplyChainLocationId: HQ_ORG, marketIds: [MKA_ORG] })
+  check('#356 来源明细重新可汇总且量未双扣', releasedSummary.items.some((i) => i.skuId === SKU_SUPPLY && i.outstandingQuantity === 6))
+  await expectThrow('#356 已取消不可再作废', /INVALID_STATE/, () =>
+    biz.voidMarketReportSummary({ summaryId: voidProbeId, reason: '重复' }))
+
   const { id: mhzId } = await biz.createMarketReportSummary({
     supplyChainLocationId: HQ_ORG,
     items: [{ skuId: SKU_SUPPLY, marketId: MKA_ORG, quantity: 6, sourceReportItemIds: [mbhItem.id] }],
@@ -192,10 +219,13 @@ try {
     num((await docItems(mbhId))[0]?.fulfilled_quantity) === 0,
     `fulfilled=${(await docItems(mbhId))[0]?.fulfilled_quantity}`)
 
-  const { id: cgdId } = await biz.createPurchaseOrder({
+  await pgQuery('UPDATE inventory_skus SET supplier_id=NULL WHERE sku_id=$1', [SKU_SUPPLY])
+  const { id: cgdId, warnings: supplierWarnings } = await biz.createPurchaseOrder({
     supplyChainLocationId: HQ_ORG,
     items: [{ sourceItemId: mhzItem.id, quantity: 6 }],
   })
+  check('#356 缺供应商采购可建单且返回提示', supplierWarnings.length > 0)
+  await pgQuery('UPDATE inventory_skus SET supplier_id=$2 WHERE sku_id=$1', [SKU_SUPPLY,SUPPLIER_ID])
   const cgdHead = await docHeader(cgdId)
   const [cgdItem] = await docItems(cgdId)
   // #335：市场行也走供应链采购入库，金额按供应链采购价（6×800），市场结算价 950 只作参考列
@@ -885,14 +915,25 @@ try {
   })
   const [dupPairMbhItem] = await docItems(dupPairMbhId)
   setSession(supplyChainSession())
-  const dupPairSummaryItems = []
-  for (let index = 0; index < 2; index += 1) {
-    const { id: dupPairMhzId } = await biz.createMarketReportSummary({
-      supplyChainLocationId: HQ_ORG,
-      items: [{ skuId: SKU_SUPPLY, marketId: MKA_ORG, quantity: 1, sourceReportItemIds: [dupPairMbhItem.id] }],
-    })
-    dupPairSummaryItems.push((await docItems(dupPairMhzId))[0])
-  }
+  // #356 新建禁止部分汇总；本段保留 #335 历史双血缘回归，用私有库夹具构造存量形态。
+  await expectThrow('#356 API 不能把固定未汇总量篡改成部分汇总', /本次汇总必须等于/, () =>
+    biz.createMarketReportSummary({ supplyChainLocationId: HQ_ORG,
+      items: [{ skuId: SKU_SUPPLY, marketId: MKA_ORG, quantity: 1, sourceReportItemIds: [dupPairMbhItem.id] }] }))
+  const { id: dupPairMhzId } = await biz.createMarketReportSummary({ supplyChainLocationId: HQ_ORG,
+    items: [{ skuId: SKU_SUPPLY, marketId: MKA_ORG, quantity: 2, sourceReportItemIds: [dupPairMbhItem.id] }] })
+  const [dupPairFullItem] = await docItems(dupPairMhzId)
+  const legacySummaryId = `${dupPairMhzId}-L`
+  await pgQuery(`INSERT INTO inventory_docs (id,doc_type,status,target_org_node_id,doc_date,created_by)
+    SELECT $2,doc_type,status,target_org_node_id,doc_date,created_by FROM inventory_docs WHERE id=$1`, [dupPairMhzId,legacySummaryId])
+  await pgQuery('UPDATE inventory_doc_items SET quantity=1 WHERE id=$1',[dupPairFullItem.id])
+  await pgQuery('UPDATE inventory_doc_links SET quantity=1 WHERE to_doc_id=$1',[dupPairMhzId])
+  const [legacyItem] = await pgQuery(`INSERT INTO inventory_doc_items
+    (doc_id,sku_id,sku_name,market_id,quantity,fulfilled_quantity,supply_chain_unit_cost,standard_unit_price,actual_unit_price,market_standard_unit_price,market_actual_unit_price)
+    SELECT $2,sku_id,sku_name,market_id,1,0,supply_chain_unit_cost,standard_unit_price,actual_unit_price,market_standard_unit_price,market_actual_unit_price
+    FROM inventory_doc_items WHERE id=$1 RETURNING id`,[dupPairFullItem.id,legacySummaryId])
+  await pgQuery(`INSERT INTO inventory_doc_links (from_doc_id,to_doc_id,relation_type,from_item_id,to_item_id,quantity)
+    VALUES ($1,$2,'市场报货汇总',$3,$4,1)`,[dupPairMbhId,legacySummaryId,dupPairMbhItem.id,legacyItem.id])
+  const dupPairSummaryItems = [(await docItems(dupPairMhzId))[0],(await docItems(legacySummaryId))[0]]
   const { id: dupPairPoId } = await biz.createPurchaseOrder({
     supplyChainLocationId: HQ_ORG,
     items: dupPairSummaryItems.map((item) => ({ sourceItemId: item.id, quantity: 1 })),

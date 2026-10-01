@@ -39,6 +39,7 @@ import {
   createSupplyChainStaffPurchase,
   createPurchaseOrder,
   createMarketReportSummary,
+  voidMarketReportSummary,
   resolveInventorySkuSupplierStatus,
   summarizeMarketReplenishmentRequests,
   createReturnForRestock,
@@ -1231,6 +1232,7 @@ const INBOX_ACTION_LABEL: Record<InventoryInboxActionKind, string> = {
   'shipment-receive-goto': '去收货',
   'purchase-receive-goto': '去收货',
   'purchase-close': '关闭采购',
+  'summary-void': '作废汇总',
   'generic-receive': '确认收货',
   'report-ship-goto': '去发货',
   'draft-edit-goto': '继续编辑',
@@ -1353,6 +1355,18 @@ function buildInboxActionConfig(
         if (!receive) throw new Error('当前业务没有一键整单收货入口')
         return receive({ shipmentId: docId, remark: remark || null })
       },
+    },
+    'summary-void': {
+      title: '作废市场报货汇总单',
+      label: '作废原因',
+      placeholder: '请说明作废原因',
+      remarkRequired: true,
+      consequence: '作废后释放来源报货明细，可重新汇总；单据和血缘记录保留，不可恢复。存在未取消的采购引用或履约数量时不能作废。',
+      confirmText: '确认作废',
+      confirmVariant: 'destructive',
+      successMessage: () => '汇总单已作废，来源报货明细已释放',
+      errorFallback: '作废汇总单失败',
+      run: (docId, remark) => voidMarketReportSummary({ summaryId: docId, reason: remark }),
     },
     'purchase-close': {
       title: '关闭采购订单',
@@ -2819,9 +2833,8 @@ const fmtSummaryPrice = (value: number | null) => (value === null ? '—' : valu
 /**
  * 金额 = 本次汇总数量 × 实际单价。
  *
- * ⚠️ 刻意做成**联动**而不是"未汇总数量 × 实际单价"的固定派生：#356 会把「本次汇总」的
- * 数量输入删掉、固定为未汇总量，届时本式自然退化为只读派生列，两种形态下都对。
- * 若按固定派生写，在 #356 合并之前反而是错的（用户改了数量金额不动）。
+ * 数量列由 #356 固定为「未汇总数量」（不可改），所以这里就是「未汇总数量 × 实际单价」的
+ * 只读派生列 —— 当初刻意写成联动而不是固定派生，正是为了两种形态下都正确。
  */
 function summaryLineAmount(line: MarketReportSummaryDraftLine): number | null {
   if (line.marketActualUnitPrice === null) return null
@@ -2923,8 +2936,7 @@ function MarketReportSummaryForm({
     const items: Array<{ skuId: string; marketId: string; quantity: number; sourceReportItemIds: number[] }> = []
     for (const line of lines) {
       if (!line.selected) continue
-      const quantity = positiveNumber(line.quantity)
-      if (quantity === null) continue
+      const quantity = line.outstandingQuantity
       items.push({
         skuId: line.skuId,
         marketId: line.marketId,
@@ -2933,7 +2945,7 @@ function MarketReportSummaryForm({
       })
     }
     if (items.length === 0) {
-      toast.error('请至少勾选一条并填写汇总数量')
+      toast.error('请至少勾选一条待汇总明细')
       return
     }
     setSaving(true)
@@ -3007,7 +3019,6 @@ function MarketReportSummaryForm({
                 <th className="px-3 py-2 font-medium">汇总</th>
                 <th className="px-3 py-2 font-medium">商品</th>
                 <th className="px-3 py-2 font-medium">市场</th>
-                <th className="px-3 py-2 font-medium">供应商</th>
                 <th className="px-3 py-2 text-right font-medium">未汇总数量</th>
                 <th className="px-3 py-2 text-right font-medium">本次汇总</th>
                 {summaryPriceVisible && <>
@@ -3046,22 +3057,8 @@ function MarketReportSummaryForm({
                       {line.specName && <div className="text-xs text-[#888888]">{line.specName}</div>}
                     </td>
                     <td className="px-3 py-2">{line.marketName}</td>
-                    <td className={`px-3 py-2 ${line.supplierId ? '' : 'text-[#D94040]'}`}>
-                      {line.supplierName ?? '未绑定'}
-                    </td>
                     <td className="px-3 py-2 text-right">{line.outstandingQuantity}</td>
-                    <td className="px-3 py-2 text-right">
-                      <InventoryNumberInput
-                        aria-label={`本次汇总 ${rowName}`}
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        max="9999999999.99"
-                        value={line.quantity}
-                        disabled={!line.selected}
-                        onChange={(event) => updateLine(key, { quantity: event.target.value })}
-                      />
-                    </td>
+                    <td className="px-3 py-2 text-right">{line.selected ? line.outstandingQuantity : 0}</td>
                     {summaryPriceVisible && <>
                       <td className="px-3 py-2 text-right">{fmtSummaryPrice(line.marketStandardUnitPrice)}</td>
                       <td className="px-3 py-2 text-right">{fmtSummaryPrice(line.marketActualUnitPrice)}</td>
@@ -3265,11 +3262,6 @@ function PurchaseOrderForm({
       toast.error('请选择供应链库存主体')
       return
     }
-    // 服务端同样 fail-closed，这里先挡一道是为了让操作人一次看全要补哪些商品。
-    if (missingSupplierNames.length > 0) {
-      toast.error(`以下商品未绑定供应商档案，请先在商品资料补全：${missingSupplierNames.join('、')}`)
-      return
-    }
     const items: Array<{ sourceItemId: number; quantity: number }> = []
     for (const line of lines) {
       const quantity = positiveNumber(line.quantity)
@@ -3288,6 +3280,7 @@ function PurchaseOrderForm({
         remark: optionalText(remark),
         items,
       })
+      for (const warning of result.warnings ?? []) toast.info(warning)
       onSuccess(`采购订单已创建：${result.id}`)
       setSelectedDocIds([])
       setLines([])
@@ -3342,7 +3335,7 @@ function PurchaseOrderForm({
 
       {missingSupplierNames.length > 0 && (
         <div className="rounded-[var(--radius)] border border-[#D94040] bg-[#FFF0F0] p-3 text-sm text-[#D94040]">
-          以下商品未绑定供应商档案，补全后才能下单：{missingSupplierNames.join('、')}
+          以下商品未绑定供应商档案，可继续下单，请在商品资料补全：{missingSupplierNames.join('、')}
         </div>
       )}
 
@@ -3357,9 +3350,7 @@ function PurchaseOrderForm({
                 <span className="text-xs text-[#5E8BB3]">
                   {group.marketId ? (marketNameByOrgNodeId.get(group.marketId) ?? group.marketId) : '品项公司自用'}
                 </span>
-                <span className={`text-xs ${group.missingSupplier ? 'text-[#D94040]' : 'text-[#666666]'}`}>
-                  供应商：{group.supplier ?? '未绑定'}
-                </span>
+
               </div>
               {group.lines.map((line) => (
                 <div key={line.sourceItemId} className="grid grid-cols-1 gap-2 border-t border-[var(--border)] pt-2 md:grid-cols-[minmax(0,1fr)_8rem_10rem]">
@@ -3391,7 +3382,7 @@ function PurchaseOrderForm({
       <RemarkField value={remark} onChange={setRemark} />
       <div className="flex justify-end">
         {/* loading 时禁提交：明细还是上一版勾选集合的（见装载 effect 的注释） */}
-        <Button type="submit" loading={saving} disabled={loading || lines.length === 0 || missingSupplierNames.length > 0}>
+        <Button type="submit" loading={saving} disabled={loading || lines.length === 0}>
           创建采购订单
         </Button>
       </div>

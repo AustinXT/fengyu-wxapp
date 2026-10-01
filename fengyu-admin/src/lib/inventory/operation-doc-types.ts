@@ -145,7 +145,10 @@ export const INVENTORY_OPERATION_DOC_QUERY: Record<InventoryOperationId, Invento
   // —— 供应链 ——
   'item-company-request': { produced: { docTypes: ['品项公司报货需求'] } },
   // 供应链跨市场汇总各市场报货需求（#193），是采购订单的来源之一。
-  'market-report-summary': { produced: { docTypes: ['市场报货汇总'] } },
+  'market-report-summary': {
+    produced: { docTypes: ['市场报货汇总'], statuses: ['已取消'] },
+    inbox: { docTypes: ['市场报货汇总'], statuses: ['已完成'], scopeRole: 'target' },
+  },
   /*
    * `供应链采购订单` 已于 #194 并入 `采购订单`（migration 0043 收敛存量 / 0044 收紧约束），
    * 原先的 supply-chain-purchase-order 业务卡片也一并去掉了。
@@ -515,6 +518,7 @@ export const INVENTORY_INBOX_ACTION_KINDS = [
   'shipment-receive-goto',
   'purchase-receive-goto',
   'purchase-close',
+  'summary-void',
   'generic-receive',
   'report-ship-goto',
   'draft-edit-goto',
@@ -538,6 +542,7 @@ export const INVENTORY_INBOX_ACTION_STATUS: Record<InventoryInboxActionKind, Inv
   'shipment-receive-goto': '待收货',
   'purchase-receive-goto': '待收货',
   'purchase-close': '待收货',
+  'summary-void': '已完成',
   'generic-receive': '待收货',
   // 市场报货单「已完成」即可发货（#336，见 company-shipment 的 inbox 注释）
   'report-ship-goto': '已完成',
@@ -556,6 +561,7 @@ export const INVENTORY_OPERATION_INBOX_ACTIONS = {
   // 所以只给「去收货」跳转，没有一键整单收货。
   'supply-chain-receipt': ['purchase-receive-goto'],
   'supply-chain-purchase-cancel': ['purchase-close'],
+  'market-report-summary': ['summary-void'],
   // 发货要逐行选批次，只给「去发货」跳转（#336）
   'company-shipment': ['report-ship-goto'],
   // 草稿编辑要回表单重新汇总门店需求、重新取价，只能跳转；删除走确认弹窗（#348）
