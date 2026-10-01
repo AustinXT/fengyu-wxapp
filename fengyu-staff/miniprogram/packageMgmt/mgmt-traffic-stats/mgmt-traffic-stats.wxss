@@ -81,11 +81,11 @@
   margin-top: var(--gap-grid);
 }
 
-.tf-grid-4 > mgmt-stat-card { min-width: 0; }
-.tf-grid-4 > :nth-child(8n + 1),
-.tf-grid-4 > :nth-child(8n + 3),
-.tf-grid-4 > :nth-child(8n + 6),
-.tf-grid-4 > :nth-child(8n + 8) { --mgmt-stat-bg: var(--color-primary-light); }
+.tf-grid-4 > .tf-grid-item { min-width: 0; }
+.tf-grid-4 > .tf-grid-item:nth-child(8n + 1),
+.tf-grid-4 > .tf-grid-item:nth-child(8n + 3),
+.tf-grid-4 > .tf-grid-item:nth-child(8n + 6),
+.tf-grid-4 > .tf-grid-item:nth-child(8n + 8) { --mgmt-stat-bg: var(--color-primary-light); }
 .tf-traffic-card { min-width: 0; padding: var(--spacing-tight); border-radius: var(--radius-lg); background: var(--mgmt-stat-bg, var(--color-bg-card)); }
 .tf-traffic-title { font-size: 26rpx; font-weight: 600; margin-bottom: var(--spacing-tight); }
 .tf-traffic-metric { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4rpx 8rpx; padding: 6rpx 0; }
@@ -96,8 +96,8 @@
 .tf-member-row .tf-row-mid { margin: 0; }
 @media (max-width: 480px) {
   .tf-grid-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .tf-grid-4 > :nth-child(n) { --mgmt-stat-bg: var(--color-bg-card); }
-  .tf-grid-4 > :nth-child(4n + 1),
-  .tf-grid-4 > :nth-child(4n) { --mgmt-stat-bg: var(--color-primary-light); }
+  .tf-grid-4 > .tf-grid-item:nth-child(n) { --mgmt-stat-bg: var(--color-bg-card); }
+  .tf-grid-4 > .tf-grid-item:nth-child(4n + 1),
+  .tf-grid-4 > .tf-grid-item:nth-child(4n) { --mgmt-stat-bg: var(--color-primary-light); }
   .tf-status-grid { grid-template-columns: minmax(0, 1fr); gap: var(--gap-grid); }
 }
