@@ -36,6 +36,7 @@ const FORBIDDEN_TABLES = [
 
 const REQUIRED_COLUMNS = [
   ['inventory_locations', 'parent_location_id'],
+  ['inventory_suppliers', 'owner_market_id'],
   ['inventory_stock_lots', 'supplier_id'],
   ['inventory_skus', 'supplier_id'],
   ['inventory_stock_lots', 'source_doc_id'],
@@ -59,6 +60,7 @@ const REQUIRED_CONSTRAINTS = [
   'inventory_locations_parent_location_id_inventory_locations_location_id_fk',
   'inventory_stock_lots_supplier_id_inventory_suppliers_supplier_id_fk',
   'inventory_skus_supplier_id_inventory_suppliers_supplier_id_fk',
+  'inventory_suppliers_owner_market_id_org_nodes_id_fk',
   'inventory_stock_lots_source_doc_id_inventory_docs_id_fk',
   'inventory_doc_items_promotion_plan_id_inventory_promotion_plans_id_fk',
   'inventory_doc_links_from_item_doc_fk',
@@ -76,7 +78,12 @@ const REQUIRED_CONSTRAINTS = [
   'chk_inventory_movements_doc_item_pair',
 ]
 
+const FORBIDDEN_INDEXES = ['uq_inventory_suppliers_name']
+
 const REQUIRED_INDEXES = [
+  'uq_inventory_suppliers_shared_name',
+  'uq_inventory_suppliers_market_name',
+  'idx_inventory_suppliers_owner_market',
   'uq_inventory_doc_items_id_doc',
   'idx_inventory_doc_items_promotion',
 ]
@@ -191,7 +198,7 @@ async function main() {
          FROM pg_indexes
         WHERE schemaname = 'public'
           AND indexname = ANY($1::text[])`,
-      [REQUIRED_INDEXES],
+      [[...REQUIRED_INDEXES, ...FORBIDDEN_INDEXES]],
     )
     const constraints = new Map(constraintRows.rows.map((row) => [row.conname, row.convalidated]))
     const indexes = new Set(indexRows.rows.map((row) => row.indexname))
@@ -204,6 +211,7 @@ async function main() {
         ...REQUIRED_INDEXES.filter((name) => !indexes.has(name)),
       ],
     ) && ok
+    ok = report('retired supplier global name index', FORBIDDEN_INDEXES.filter((name) => indexes.has(name))) && ok
     ok = report(
       'validated constraints',
       expectedConstraints

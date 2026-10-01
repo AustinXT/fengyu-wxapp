@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AuthSession } from '@/lib/types'
 vi.mock('@/db', () => ({ db: {} }))
-import { canManageSupplier, supplierCreationOwner, supplierWritableMarkets } from './supplier-access'
+import { canCreateSupplier, canManageSupplier, supplierCreationOwner, supplierWritableMarkets } from './supplier-access'
 import { supplierDisplayName } from './supplier-label'
 
 const MARKET = 'inventory:market_sku_manage'
@@ -37,6 +37,24 @@ describe('#365 供应商维护绑定', () => {
   it('多个市场写绑定无法唯一确定本市场，拒绝由前端任选', () => {
     expect(() => supplierCreationOwner(session([['市场', 'M1', [MARKET]], ['市场', 'M2', [MARKET]]])))
       .toThrow('唯一的本市场')
+  })
+  it('市场误授供应链动作不能创建或维护共有，不能借总部读绑定', () => {
+    const marketSupply = session([['市场', 'M1', [SUPPLY]]])
+    expect(canManageSupplier(marketSupply, null)).toBe(false)
+    expect(() => supplierCreationOwner(marketSupply)).toThrow('唯一的本市场')
+    expect(canCreateSupplier(marketSupply)).toBe(false)
+    const borrowedHq = session([['市场', 'M1', [SUPPLY]], ['总部', 'HQ', ['inventory:stock_list']]])
+    expect(canManageSupplier(borrowedHq, null)).toBe(false)
+    expect(canCreateSupplier(borrowedHq)).toBe(false)
+    const own = session([['市场', 'M1', [SUPPLY, MARKET]]])
+    expect(supplierCreationOwner(own)).toBe('M1')
+    expect(canManageSupplier(own, null)).toBe(false)
+    expect(canManageSupplier(own, 'M1')).toBe(true)
+  })
+  it('页面快捷入口与归属判据一致，拒多市场而放行单市场/总部', () => {
+    expect(canCreateSupplier(session([['市场', 'M1', [MARKET]], ['市场', 'M2', [MARKET]]]))).toBe(false)
+    expect(canCreateSupplier(session([['市场', 'M1', [MARKET]]]))).toBe(true)
+    expect(canCreateSupplier(session([['总部', 'HQ', [SUPPLY]]]))).toBe(true)
   })
   it('同名选项按归属展示，共有标识明确', () => {
     expect(supplierDisplayName('恒美', null)).toBe('恒美（供应链共有）')

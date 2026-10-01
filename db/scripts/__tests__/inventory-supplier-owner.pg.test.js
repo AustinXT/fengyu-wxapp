@@ -3,6 +3,7 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
 const { Client } = require('pg')
+const { upsertSku } = require('../workfine-inventory-common')
 const url = process.env.SUPPLIER_OWNER_TEST_DATABASE_URL
 
 // 候选结构验证必须使用本单私有库，绝不回退业务连接串。
@@ -47,6 +48,16 @@ test('#365 候选迁移保留存量共有并实现两种名称唯一', { skip: !
     assert.match(indexes.find((row) => row.indexname === 'uq_inventory_suppliers_shared_name').indexdef, /UNIQUE.+\(name\).+owner_market_id IS NULL/)
     assert.match(indexes.find((row) => row.indexname === 'uq_inventory_suppliers_market_name').indexdef, /UNIQUE.+\(owner_market_id, name\).+owner_market_id IS NOT NULL/)
     assert.ok(indexes.some((row) => row.indexname === 'idx_inventory_suppliers_owner_market'))
+    const importRow = {
+      productCode: 'VERIFY365-LINK', productName: 'VERIFY365-导入测试', supplier: 'VERIFY365-同名',
+      sourceType: '市场自采', marketId: 'VERIFY365-M1', isReportable: false, isActive: true,
+    }
+    for (let i = 0; i < 10; i++) {
+      const skuId = await upsertSku(client, importRow)
+      const { rows: [sku] } = await client.query('SELECT supplier_id FROM inventory_skus WHERE sku_id=$1', [skuId])
+      assert.equal(sku.supplier_id, 'VERIFY365-OWN1')
+      await client.query('UPDATE inventory_skus SET supplier_id=NULL WHERE sku_id=$1', [skuId])
+    }
     console.log('#365 PG：存量启用/停用无损，跨归属同名通过，两条唯一/FK拒绝正例通过')
   } finally { await client.end() }
 })

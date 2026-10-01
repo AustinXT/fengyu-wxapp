@@ -175927,9 +175927,14 @@ var SUPPLIER_MANAGE_ACTIONS = [
   "inventory:supply_chain_master_data_manage",
   "inventory:market_sku_manage"
 ];
+function canManageSharedSupplier(session4) {
+  if (!hasPermission(session4, SUPPLIER_MANAGE_ACTIONS[0]))
+    return false;
+  return isAdminScope(session4) || session4.roles.some((role) => role.scopeType === "总部" && role.actions?.includes(SUPPLIER_MANAGE_ACTIONS[0]));
+}
 function supplierCreationOwner(session4) {
   const scoped = scopeSessionToActions(session4, SUPPLIER_MANAGE_ACTIONS);
-  if (hasPermission(scoped, SUPPLIER_MANAGE_ACTIONS[0]))
+  if (canManageSharedSupplier(scoped))
     return null;
   const markets = supplierWritableMarkets(scoped);
   if (markets.length !== 1) {
@@ -175944,7 +175949,7 @@ function supplierWritableMarkets(session4) {
 }
 function canManageSupplier(session4, ownerMarketId) {
   if (ownerMarketId === null)
-    return hasPermission(session4, SUPPLIER_MANAGE_ACTIONS[0]);
+    return canManageSharedSupplier(session4);
   return isAdminScope(session4) && hasPermission(session4, "inventory:market_sku_manage") || supplierWritableMarkets(session4).includes(ownerMarketId);
 }
 
