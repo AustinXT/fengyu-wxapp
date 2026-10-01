@@ -122,6 +122,13 @@ const locationFilterOptions: InventoryLocationFilterOptions = {
   defaultLocationId: 'HQ',
 }
 
+it('日期区间错误在筛选区提示且保留筛选控件', () => {
+  render(<InventoryDocsPage {...baseProps} rows={[]} total={0} filterError="开始日期不能晚于结束日期" />)
+  expect(screen.getByRole('alert').textContent).toBe('开始日期不能晚于结束日期')
+  expect(screen.getByLabelText('开始日期')).toBeTruthy()
+  expect(screen.getByLabelText('结束日期')).toBeTruthy()
+})
+
 // 页内标题块已由 6c6d375c 移除（面包屑已经给了「单据中心」，页内 h1 是重复），
 // 故这里断言的是页面的检索与动作能力，不再断言页内 heading。
 describe('InventoryDocsPage 职责边界', () => {

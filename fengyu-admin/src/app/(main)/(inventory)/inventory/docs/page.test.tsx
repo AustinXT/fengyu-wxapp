@@ -66,6 +66,7 @@ interface DocsPageProps {
   canApprove: boolean
   canReceive: boolean
   allowedCreateDocTypes: readonly InventoryDocType[]
+  filterError?: string
 }
 
 /** 用给定 action 集渲染页面，拿到传给 InventoryDocsPage 的 props。 */
@@ -256,4 +257,35 @@ describe('单据中心 · 关联销售单链接权限', () => {
       expect((await renderWith(STORE, action, ...deps)).canOpenOrderDetail).toBe(true)
     },
   )
+})
+
+it('单据中心将日期区间与流程进度送到同一分页查询', async () => {
+  mockFilterOptions.mockResolvedValue({
+    headquarters: [{ locationId: 'HQ', name: '总部' }], markets: [], defaultLocationId: 'HQ',
+  })
+  mockGetSession.mockResolvedValue({
+    employeeId: 'E-1',
+    permissions: { actions: BASE_ACTIONS, scopeStoreIds: [], scopeOrgNodeIds: [] },
+    roles: [],
+  })
+  render(await Page({ searchParams: Promise.resolve({
+    startDate: '2026-09-01', endDate: '2026-09-30', processProgress: '未采购', page: '2',
+  }) }))
+  expect(mockListDocs).toHaveBeenCalledWith(expect.objectContaining({
+    orgNodeId: 'HQ', startDate: '2026-09-01', endDate: '2026-09-30', processProgress: '未采购', page: 2,
+  }))
+})
+
+it('单据中心倒序日期留在筛选区提示，不触发查询或整页错误', async () => {
+  mockFilterOptions.mockResolvedValue({
+    headquarters: [{ locationId: 'HQ', name: '总部' }], markets: [], defaultLocationId: 'HQ',
+  })
+  mockGetSession.mockResolvedValue({
+    employeeId: 'E-1',
+    permissions: { actions: BASE_ACTIONS, scopeStoreIds: [], scopeOrgNodeIds: [] },
+    roles: [],
+  })
+  render(await Page({ searchParams: Promise.resolve({ startDate: '2026-09-30', endDate: '2026-09-01' }) }))
+  expect(mockListDocs).not.toHaveBeenCalled()
+  expect((captured.props as unknown as DocsPageProps).filterError).toBe('开始日期不能晚于结束日期')
 })

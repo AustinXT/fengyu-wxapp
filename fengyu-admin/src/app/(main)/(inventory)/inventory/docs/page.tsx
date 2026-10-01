@@ -14,6 +14,7 @@ import { type InventoryDocType } from '@/lib/inventory/types'
 import { hasUiCapability } from '@/lib/permission-contract'
 import { canOpenOrderDetail } from '@/lib/order-detail-access'
 import { requireAllUiPageCapabilities } from '@/lib/page-capability'
+import { isValidInventoryCalendarDate } from '@/lib/calendar-date'
 import InventoryDocsPage from '../_components/inventory-docs-page'
 
 export const dynamic = 'force-dynamic'
@@ -71,11 +72,21 @@ export default async function Page({
     allowedCreateDocTypes.includes('市场间调货出库') ? listInventoryMarketTransferTargets() : Promise.resolve([]),
   ])
   const selectedOrgNodeId = resolveInventoryFilterLocationId(filterOptions, params.orgNodeId)
-  const docs = selectedOrgNodeId
+  const filterError = params.startDate && !isValidInventoryCalendarDate(params.startDate)
+    ? '开始日期格式应为 YYYY-MM-DD'
+    : params.endDate && !isValidInventoryCalendarDate(params.endDate)
+      ? '结束日期格式应为 YYYY-MM-DD'
+      : params.startDate && params.endDate && params.startDate > params.endDate
+        ? '开始日期不能晚于结束日期'
+        : undefined
+  const docs = selectedOrgNodeId && !filterError
     ? await listInventoryCoreDocs({
         orgNodeId: selectedOrgNodeId,
         docType: params.docType as never,
         status: params.status as never,
+        processProgress: params.processProgress as never,
+        startDate: params.startDate,
+        endDate: params.endDate,
         keyword: params.q,
         page,
         pageSize,
@@ -106,6 +117,7 @@ export default async function Page({
           allowedCreateDocTypes={allowedCreateDocTypes}
           locationFilterOptions={filterOptions}
           selectedOrgNodeId={selectedOrgNodeId}
+          filterError={filterError}
         />
       </Suspense>
     </div>

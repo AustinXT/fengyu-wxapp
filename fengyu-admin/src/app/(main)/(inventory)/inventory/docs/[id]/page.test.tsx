@@ -362,7 +362,7 @@ describe('库存单据详情页 · 采购订单市场行（#335）', () => {
     } as Partial<InventoryDocDetail>))
     expect(screen.queryByRole('columnheader', { name: '已发货' })).toBeNull()
     expect(screen.queryByRole('columnheader', { name: '市场结算价（参考）' })).toBeNull()
-    expect(screen.getByText('待收货')).toBeTruthy()
+    expect(screen.getAllByText('待收货').length).toBeGreaterThan(0)
   })
 })
 
@@ -515,6 +515,6 @@ describe('#363 市场报货参考价格与血缘主体', () => {
     for (const name of ['市场单价', '单价优惠', '实际单价', '门店单价（参考）']) {
       expect(screen.queryByRole('columnheader', { name })).toBeNull()
     }
-    expect(screen.getByText('暂无关联单据').getAttribute('colspan')).toBe('9')
+    expect(screen.getByText('当前单据')).toBeInTheDocument()
   })
 })

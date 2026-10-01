@@ -2252,8 +2252,12 @@ describe('库存单据详情履约进度', () => {
     const lineageSql = renderSql(lineageQuery)
     const fulfillmentSql = renderSql(fulfillmentQuery)
     expect(lineageSql).toContain('inventory_doc_links')
-    expect(sqlContains(lineageQuery, 'to_doc.source_org_node_id')).toBe(true)
-    expect(sqlContains(lineageQuery, 'from_doc.target_org_node_id')).toBe(true)
+    expect(sqlContains(lineageQuery, 'from_doc.source_org_node_id')).toBe(true)
+    expect(sqlContains(lineageQuery, 'to_doc.target_org_node_id')).toBe(true)
+    expect(lineageSql).toContain('JOIN LATERAL')
+    expect(lineageSql).toContain('upstream.to_doc_id = walk.doc_id')
+    expect(lineageSql).toContain('downstream.from_doc_id = walk.doc_id')
+    expect(lineageSql).not.toContain('visible_edges')
     expect(fulfillmentSql).toContain('visible_docs')
     expect(sqlContains(fulfillmentQuery, 'visible_doc.source_org_node_id')).toBe(true)
     // #336：发货直连报货行，按血缘原值累计，不再经采购行占比分摊
@@ -2523,6 +2527,8 @@ describe('库存单据详情履约进度', () => {
     mockDb.execute
       .mockResolvedValueOnce([{
         direction: '上游',
+        depth: 1,
+        via_doc_id: 'SRK-260810-0001',
         relation_type: '发货收货',
         doc_id: 'GFH-260810-0001',
         doc_type: '品项公司发货',
@@ -2530,10 +2536,11 @@ describe('库存单据详情履约进度', () => {
         doc_date: '2026-08-10',
         total_quantity: '10',
         linked_quantity: '10',
-      }])
-      .mockResolvedValueOnce([{
+      }, {
         direction: '上游',
-        relation_type: '原始报货单（经品项公司发货）',
+        depth: 2,
+        via_doc_id: 'GFH-260810-0001',
+        relation_type: '市场报货发货',
         doc_id: 'MBH-260809-0001',
         doc_type: '市场报货',
         source_org_node_name: '测试市场',
@@ -2547,16 +2554,18 @@ describe('库存单据详情履约进度', () => {
 
     expect(detail?.lineage.map((row) => [row.relationType, row.docId])).toEqual([
       ['发货收货', 'GFH-260810-0001'],
-      ['原始报货单（经品项公司发货）', 'MBH-260809-0001'],
+      ['市场报货发货', 'MBH-260809-0001'],
+    ])
+    expect(detail?.lineage.map((row) => [row.depth, row.viaDocId])).toEqual([
+      [1, 'SRK-260810-0001'],
+      [2, 'GFH-260810-0001'],
     ])
     expect(detail?.lineage.find((row) => row.docId === 'MBH-260809-0001')?.sourceOrgNodeName).toBe('测试市场')
-    const originQuery = mockDb.execute.mock.calls.map(([query]) => query)
-      .find((query) => sqlContains(query, 'origin_report'))
-    expect(originQuery).toBeDefined()
-    expect(sqlContains(originQuery, 'MAX(origin_source.name) AS source_org_node_name')).toBe(true)
-    expect(sqlContains(originQuery, 'origin_source.org_node_id = origin_report.source_org_node_id')).toBe(true)
-    expect(sqlContains(originQuery, "origin_ship_link.relation_type IN ('市场报货发货', '市场报货赠送发货')")).toBe(true)
-    expect(sqlContains(originQuery, "origin_receipt_link.relation_type = '发货收货'")).toBe(true)
+    expect(mockDb.execute).toHaveBeenCalledTimes(1)
+    const lineageQuery = mockDb.execute.mock.calls[0]?.[0]
+    expect(sqlContains(lineageQuery, 'WITH RECURSIVE lineage_walk')).toBe(true)
+    expect(sqlContains(lineageQuery, 'JOIN LATERAL')).toBe(true)
+    expect(sqlContains(lineageQuery, 'source_location.org_node_id = linked_doc.source_org_node_id')).toBe(true)
   })
 
   it('非市场采购入库的单据不跑原始报货单那条两跳查询', async () => {

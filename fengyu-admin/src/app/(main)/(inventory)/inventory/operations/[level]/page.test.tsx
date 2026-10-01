@@ -9,10 +9,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from '@testing-library/react'
 
 const {
-  captured, mockListDocs, mockListLocations, mockListMarketTargets, mockListShipmentMarkets, mockListSkus, mockListSuppliers,
+  captured, mockListDocs, mockInboxTotals, mockListLocations, mockListMarketTargets, mockListShipmentMarkets, mockListSkus, mockListSuppliers,
   mockGetSession, mockRequireCaps,
 } = vi.hoisted(() => ({
   mockListShipmentMarkets: vi.fn(),
+  mockInboxTotals: vi.fn(),
   captured: { props: null as Record<string, unknown> | null },
   mockListDocs: vi.fn(),
   mockListLocations: vi.fn(),
@@ -23,7 +24,7 @@ const {
   mockRequireCaps: vi.fn(),
 }))
 
-vi.mock('@/actions/inventory/docs', () => ({ listInventoryCoreDocs: mockListDocs }))
+vi.mock('@/actions/inventory/docs', () => ({ listInventoryCoreDocs: mockListDocs, listInventoryOperationInboxTotals: mockInboxTotals }))
 vi.mock('@/actions/inventory/locations', () => ({
   listInventoryLocations: mockListLocations,
   listInventoryMarketTransferTargets: mockListMarketTargets,
@@ -71,6 +72,13 @@ beforeEach(() => {
   mockListSkus.mockResolvedValue({ data: [], total: 0 })
   mockListSuppliers.mockResolvedValue({ data: [], total: 0 })
   mockListDocs.mockResolvedValue({ data: [], total: 0, canViewPrice: false })
+  mockInboxTotals.mockResolvedValue({ 'market-receipt': 3 })
+})
+
+it('办理台一次读取全卡片待办数并传给页面', async () => {
+  await renderWith('market', '市场', 'inventory:market_operate')
+  expect(mockInboxTotals).toHaveBeenCalledTimes(1)
+  expect(captured.props?.inboxTotals).toEqual({ 'market-receipt': 3 })
 })
 
 describe('办理台 · 市场间调货接收主体候选（#340）', () => {

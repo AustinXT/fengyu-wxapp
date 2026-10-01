@@ -80,6 +80,9 @@ export default async function Page({
   const itemCompanyRequestFulfillment = doc.fulfillmentProgress?.kind === '品项公司报货履约'
     ? doc.fulfillmentProgress
     : null
+  const marketSummaryFulfillment = doc.fulfillmentProgress?.kind === '市场汇总采购'
+    ? doc.fulfillmentProgress
+    : null
   const supplyChainPurchaseFulfillment = doc.fulfillmentProgress?.kind === '供应链采购收货'
     ? doc.fulfillmentProgress
     : null
@@ -92,6 +95,9 @@ export default async function Page({
   const itemCompanyRequestProgressByItemId = new Map(
     itemCompanyRequestFulfillment?.items.map((item) => [item.itemId, item]) ?? [],
   )
+  const marketSummaryProgressByItemId = new Map(
+    marketSummaryFulfillment?.items.map((item) => [item.itemId, item]) ?? [],
+  )
   const supplyChainPurchaseProgressByItemId = new Map(
     supplyChainPurchaseFulfillment?.items.map((item) => [item.itemId, item]) ?? [],
   )
@@ -100,6 +106,7 @@ export default async function Page({
     : 0
   const shipmentColumnCount = shipmentFulfillment ? 2 : 0
   const itemCompanyRequestColumnCount = itemCompanyRequestFulfillment ? 3 : 0
+  const marketSummaryColumnCount = marketSummaryFulfillment ? 2 : 0
   // 采购订单的市场行（#335）：同样经供应链采购入库，另列市场结算价（参考）。
   // 发货自 #336 起直连市场报货单，采购单上不再有「已发货」列。
   const hasPurchaseMarketLine = doc.docType === '采购订单' && doc.items.some((item) => item.marketId)
@@ -131,7 +138,7 @@ export default async function Page({
   const priceColumnCount = showPrice ? (showMarketReportPrice ? 4 + Number(showMarketReportStorePrice) : showStoreAllocationPrice ? 4 : 2 + marketReferencePriceColumnCount) : 0
   const promotionColumnCount = doc.items.some((item) => item.promotionPlanId || item.promotionPlanNoSnapshot) ? 1 : 0
   const itemColumnCount = 9 + lineOwnershipColumnCount + priceColumnCount + reportColumnCount + shipmentColumnCount +
-    itemCompanyRequestColumnCount + supplyChainPurchaseColumnCount + promotionColumnCount +
+    itemCompanyRequestColumnCount + marketSummaryColumnCount + supplyChainPurchaseColumnCount + promotionColumnCount +
     stocktakeColumnCount
   // 市场报货单的整单履约（#336）：已发 / 已收都按「市场报货发货」直连血缘累计，只算正常量（赠送不占报货量），
   // 用来判断「是否已全部发出 / 全部入库」。
@@ -184,6 +191,11 @@ export default async function Page({
     [doc.docType === '市场报货' || doc.docType === '门店报货' ? '删除原因' : '撤回原因', doc.cancellationReason],
     ['备注', doc.remark],
   ] as const
+  const lineageSteps = [
+    ...doc.lineage.filter((step) => step.direction === '上游').sort((a, b) => b.depth - a.depth),
+    null,
+    ...doc.lineage.filter((step) => step.direction === '下游').sort((a, b) => a.depth - b.depth),
+  ]
 
   return (
     <div className="p-6 space-y-6">
@@ -243,11 +255,12 @@ export default async function Page({
       <Card>
         <CardContent className="p-5">
           <h2 className="mb-4 text-base font-medium">关联单据血缘</h2>
+          <p className="mb-3 text-xs text-[#888888]">同一单据涉及不同关系时分别列出，关联数量按关系计算。</p>
           <div className="overflow-x-auto rounded-md border border-[var(--border)]">
             <table className="w-full min-w-[760px] text-sm">
               <thead className="bg-[#F8F8F8] text-xs text-[#666666]">
                 <tr>
-                  <th className="px-3 py-2 text-left">方向</th>
+                  <th className="px-3 py-2 text-left">链路环节</th>
                   <th className="px-3 py-2 text-left">关系</th>
                   <th className="px-3 py-2 text-left">关联单据</th>
                   <th className="px-3 py-2 text-left">类型</th>
@@ -259,10 +272,22 @@ export default async function Page({
                 </tr>
               </thead>
               <tbody>
-                {doc.lineage.map((lineage) => (
-                  <tr key={`${lineage.direction}-${lineage.relationType}-${lineage.docId}`} className="border-t border-[var(--border)]">
-                    <td className="px-3 py-2">{lineage.direction}</td>
-                    <td className="px-3 py-2">{lineage.relationType}</td>
+                {lineageSteps.map((lineage, index) => lineage === null ? (
+                  <tr key="current" className="border-t border-[var(--border)] bg-[#FFF8F7]">
+                    <td className="border-l-2 border-[var(--primary)] px-3 py-2 font-medium"><span className="mr-2 inline-block size-2 rounded-full bg-[var(--primary)]" />当前单据</td>
+                    <td className="px-3 py-2">—</td>
+                    <td className="px-3 py-2 font-mono text-xs">{doc.id}</td>
+                    <td className="px-3 py-2">{doc.docType}</td>
+                    <td className="px-3 py-2">{fmt(doc.sourceOrgNodeName)}</td>
+                    <td className="px-3 py-2">{doc.status}</td>
+                    <td className="px-3 py-2 text-right">—</td>
+                    <td className="px-3 py-2 text-right">{doc.totalQuantity}</td>
+                    <td className="px-3 py-2">{fmt(doc.docDate?.slice(0, 10))}</td>
+                  </tr>
+                ) : (
+                  <tr key={`${lineage.direction}-${lineage.depth}-${lineage.viaDocId}-${lineage.relationType}-${lineage.docId}-${index}`} className="border-t border-[var(--border)]">
+                    <td className="border-l-2 border-[var(--primary)] px-3 py-2 whitespace-nowrap"><span className="mr-2 inline-block size-2 rounded-full bg-[var(--primary)]" />{lineage.direction} · 第 {lineage.depth} 跳</td>
+                    <td className="px-3 py-2">{lineage.relationType}<span className="block text-xs text-[#888888]">{lineage.direction === '上游' ? `${lineage.docId} → ${lineage.viaDocId}` : `${lineage.viaDocId} → ${lineage.docId}`}</span></td>
                     <td className="px-3 py-2 font-mono text-xs">
                       <Link href={`/inventory/docs/${encodeURIComponent(lineage.docId)}`} className="text-[var(--primary)] hover:underline">
                         {lineage.docId}
@@ -277,11 +302,6 @@ export default async function Page({
                     <td className="px-3 py-2">{fmt(lineage.docDate?.slice(0, 10))}</td>
                   </tr>
                 ))}
-                {doc.lineage.length === 0 && (
-                  <tr>
-                    <td className="px-3 py-8 text-center text-[#999999]" colSpan={9}>暂无关联单据</td>
-                  </tr>
-                )}
               </tbody>
             </table>
           </div>
@@ -337,6 +357,10 @@ export default async function Page({
                 <th className="px-3 py-2 text-right">已下单</th>
                 <th className="px-3 py-2 text-right">已入库</th>
               </>}
+              {marketSummaryFulfillment && <>
+                <th className="px-3 py-2 text-right">已下单</th>
+                <th className="px-3 py-2 text-right">未下单</th>
+              </>}
               {supplyChainPurchaseFulfillment && <>
                 <th className="px-3 py-2 text-right">已入库</th>
                 <th className="px-3 py-2 text-right">待入库</th>
@@ -350,6 +374,7 @@ export default async function Page({
               const reportProgress = reportProgressByItemId.get(item.id)
               const shipmentProgress = shipmentProgressByItemId.get(item.id)
               const itemCompanyRequestProgress = itemCompanyRequestProgressByItemId.get(item.id)
+              const marketSummaryProgress = marketSummaryProgressByItemId.get(item.id)
               const supplyChainPurchaseProgress = supplyChainPurchaseProgressByItemId.get(item.id)
               return (
                 <tr key={item.id} className="border-t border-[var(--border)]">
@@ -417,6 +442,10 @@ export default async function Page({
                     <td className="px-3 py-2 text-right">{fmt(itemCompanyRequestProgress?.demandQuantity)}</td>
                     <td className="px-3 py-2 text-right">{fmt(itemCompanyRequestProgress?.orderedQuantity)}</td>
                     <td className="px-3 py-2 text-right">{fmt(itemCompanyRequestProgress?.receivedQuantity)}</td>
+                  </>}
+                  {marketSummaryFulfillment && <>
+                    <td className="px-3 py-2 text-right">{fmt(marketSummaryProgress?.orderedQuantity)}</td>
+                    <td className="px-3 py-2 text-right">{fmt(marketSummaryProgress?.outstandingQuantity)}</td>
                   </>}
                   {supplyChainPurchaseFulfillment && <>
                     <td className="px-3 py-2 text-right">{fmt(supplyChainPurchaseProgress?.receivedQuantity)}</td>
