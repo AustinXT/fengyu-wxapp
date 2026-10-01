@@ -18,7 +18,11 @@ import { INVENTORY_CORE_RECEIVE_ACTIONS } from '@/lib/inventory/business-level'
 import { resolveOperationDocQuery } from '@/lib/inventory/operation-doc-types'
 import type { InventoryOperationDocFilter } from '@/lib/inventory/operation-doc-types'
 import type { InventoryDocCandidateFilters } from '@/lib/inventory/doc-candidates'
-import { exportMarketReportSummarySourcesForSession, listMarketReportSummarySourcesForSession } from '@/lib/inventory/market-report-summary-detail'
+import {
+  exportMarketReportSummarySourcesForSession,
+  listMarketReportSummarySourceMarkets as listMarketReportSummarySourceMarketsImpl,
+  listMarketReportSummarySourcesForSession,
+} from '@/lib/inventory/market-report-summary-detail'
 import type { ExportBatchOptions } from '@/lib/export-pagination'
 import { ApiError } from '@/lib/api-error'
 import { withAnyPermission, withPermission } from '@/lib/with-permission'
@@ -173,6 +177,12 @@ export const listMarketReportSummarySources = withPermission(
   'inventory:list',
   async (session, input: { docId?: string; market?: string }) =>
     listMarketReportSummarySourcesForSession(session, input ?? {}),
+)
+
+/** 来源明细的市场下拉选项（独立查询：不受截断与当前筛选影响）。 */
+export const listMarketReportSummarySourceMarkets = withPermission(
+  'inventory:list',
+  async (session, input: { docId?: string }) => listMarketReportSummarySourceMarketsImpl(session, input ?? {}),
 )
 
 /**

@@ -153,9 +153,13 @@ export function settlementProjectionSql(params: SettlementProjectionParams): SQL
           i.store_actual_unit_price,
           -- 市场退货按市场价计价；其余按触发器算好的 amount（赠送行为 0）。
           -- 市场价缺失时回退供应链成本价，都缺则记 0（不冲减），绝不回落到门店价。
+          -- 赠送行一律不冲减：与「赠送行 amount = 0」的不变量对齐（市场退货也要判 is_gift，
+          -- 否则它会按市场价×数量算出非零冲减，而对应的正向赠送行金额是 0）。
           kind.sign * (
             CASE WHEN kind.market_price
-                 THEN COALESCE(i.market_actual_unit_price, i.supply_chain_unit_cost, 0) * i.quantity
+                 THEN CASE WHEN i.is_gift THEN 0
+                           ELSE COALESCE(i.market_actual_unit_price, i.supply_chain_unit_cost, 0) * i.quantity
+                      END
                  ELSE COALESCE(i.amount, 0) END
           ) AS signed_amount,
           CASE WHEN kind.swapped OR kind.market_price
@@ -293,8 +297,13 @@ export const listInventorySettlements = withPermission(
       scopedOrgNodeIds,
       [priceTiers.market],
     )
+    // 选项按**两段收窄后的并集**生成，与会话能看到的行保持一致 ——
+    // 用未收窄的 scoped 会列出「选了却是空表」的市场（混合绑定会话尤其明显）。
+    const optionScopedOrgNodeIds = marketScopedOrgNodeIds === null || storeScopedOrgNodeIds === null
+      ? null
+      : [...new Set([...marketScopedOrgNodeIds, ...storeScopedOrgNodeIds])]
     const [marketOptions, marketRows, storeRows] = await Promise.all([
-      listSettlementMarketOptions(scopedOrgNodeIds),
+      listSettlementMarketOptions(optionScopedOrgNodeIds),
       canViewMarketSettlement
         ? summarizeSettlementDocs({ segment: 'market', startDate, endDate, scopedOrgNodeIds: marketScopedOrgNodeIds, market })
         : Promise.resolve([]),

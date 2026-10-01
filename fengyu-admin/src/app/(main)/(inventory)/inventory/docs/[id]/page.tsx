@@ -2,7 +2,11 @@ import Link from 'next/link'
 import { ReturnContextLink } from '@/components/return-context'
 import { notFound } from 'next/navigation'
 import { ArrowLeft } from 'lucide-react'
-import { getInventoryCoreDocById, listMarketReportSummarySources } from '@/actions/inventory/docs'
+import {
+  getInventoryCoreDocById,
+  listMarketReportSummarySourceMarkets,
+  listMarketReportSummarySources,
+} from '@/actions/inventory/docs'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import { fmtDateTime } from '@/lib/datetime'
@@ -70,11 +74,16 @@ export default async function Page({
   const sourceMarketFilter = typeof query?.market === 'string' && query.market.trim()
     ? query.market.trim()
     : undefined
-  const summarySources = doc.docType === '市场报货汇总'
-    ? await listMarketReportSummarySources({ docId: doc.id })
+  const summarySourceData = doc.docType === '市场报货汇总'
+    ? await Promise.all([
+        // 市场筛选走 SQL（与导出同一 where），不在内存里过滤 —— 见组件的注释
+        listMarketReportSummarySources({ docId: doc.id, market: sourceMarketFilter }),
+        // 选项独立查（不受截断与当前筛选影响）
+        listMarketReportSummarySourceMarkets({ docId: doc.id }),
+      ]).then(([sources, markets]) => ({ sources, markets }))
     : null
   // 价格档只在汇总单分支求值（&& 短路）：其它单据类型不因为这个 Card 多碰一次会话数据。
-  const canViewSourcePrice = summarySources !== null && inventoryPriceVisibility(session) !== 'none'
+  const canViewSourcePrice = summarySourceData !== null && inventoryPriceVisibility(session) !== 'none'
 
   const showPrice = doc.totalAmount !== undefined && doc.docType !== '品项公司发货'
   // 市场报货四列价格来自服务端快照，门店参考价按主体市场价格档遮蔽。
@@ -324,15 +333,16 @@ export default async function Page({
         </CardContent>
       </Card>
 
-      {summarySources && (
+      {summarySourceData && (
         <MarketReportSummarySources
-          rows={summarySources.rows}
+          rows={summarySourceData.sources.rows}
           docId={doc.id}
           query={query ?? {}}
           marketFilter={sourceMarketFilter}
+          marketOptions={summarySourceData.markets}
           canViewPrice={canViewSourcePrice}
           canExport={hasUiCapability(session.permissions.actions, 'inventory:export')}
-          truncated={summarySources.truncated}
+          truncated={summarySourceData.sources.truncated}
         />
       )}
 

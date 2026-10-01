@@ -90,32 +90,35 @@ export function MarketReportSummarySources({
   docId,
   query,
   marketFilter,
+  marketOptions,
   canViewPrice,
   canExport,
   truncated,
 }: {
+  /** 已按当前 market 筛选（服务端 SQL 层）后的行集。 */
   rows: MarketReportSummarySourceRow[]
   docId: string
   /** 当前 URL 的 searchParams，用于构造保留返回上下文的筛选链接。 */
   query: Record<string, string | undefined>
   marketFilter?: string
+  /** 独立查询下发（不受截断与当前筛选影响），照结算页的做法。 */
+  marketOptions: Array<{ id: string; name: string }>
   canViewPrice: boolean
   /** 与页面闸同源下发（`hasUiCapability(session.permissions.actions, 'inventory:export')`）。 */
   canExport: boolean
   truncated: boolean
 }) {
-  const visibleRows = marketFilter ? rows.filter((row) => row.marketId === marketFilter) : rows
-  const groups = groupSources(visibleRows)
-  const totalQuantity = visibleRows.reduce((sum, row) => sum + row.quantity, 0)
-  const totalAmount = visibleRows.reduce<number | null>(
+  /*
+   * 不再在内存里过滤：行集由服务端按 market 过滤（与导出同一 where）。
+   * 原先的"取全量再内存筛"在 `MAX_PAGE_ROWS` 截断后会漏掉本该属于该市场的行，
+   * 页面上却显示"该市场下没有来源明细" —— 与导出的行集不再同源。
+   */
+  const groups = groupSources(rows)
+  const totalQuantity = rows.reduce((sum, row) => sum + row.quantity, 0)
+  const totalAmount = rows.reduce<number | null>(
     (sum, row) => (row.amount === null ? sum : round2((sum ?? 0) + row.amount)),
     null,
   )
-  // 选项取自**全量**行：筛选后仍能看到其它市场，否则筛一次就回不去。
-  const marketOptions = [...new Map(rows.map((row) => [
-    row.marketId ?? '',
-    { id: row.marketId ?? '', name: row.marketName ?? '未知市场' },
-  ])).values()].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
 
   return (
     <Card>
@@ -228,14 +231,14 @@ export function MarketReportSummarySources({
                   )))}
                 </Fragment>
               ))}
-              {visibleRows.length === 0 && (
+              {rows.length === 0 && (
                 <tr>
                   <td className="px-3 py-8 text-center text-[#999999]" colSpan={canViewPrice ? 11 : 7}>
-                    {rows.length === 0 ? '没有来源明细' : '该市场下没有来源明细'}
+                    {marketFilter ? '该市场下没有来源明细' : '没有来源明细'}
                   </td>
                 </tr>
               )}
-              {visibleRows.length > 0 && (
+              {rows.length > 0 && (
                 <tr className="border-t border-[var(--border)] bg-[#F8F8F8]">
                   <td className="px-3 py-2 font-medium" colSpan={5}>合计</td>
                   <td className="px-3 py-2 text-right font-medium">{totalQuantity}</td>

@@ -3273,7 +3273,14 @@ export async function summarizeMarketReplenishmentRequests(
         requestItemIds: parseIdArray(row.request_item_ids),
         supplierId: text(row.supplier_id),
         supplierName: text(row.supplier_name),
-        marketActualUnitPrice: canViewPrice ? numberOrNull(row.market_actual_unit_price) : null,
+        /*
+         * ⚠️ `marketActualUnitPrice` **不按价格档剥离**：它是既有字段，且是建单写路径的入参 ——
+         * `loadSummary` 把它映射进草稿行、`createMarketReportSummary` 用它写金额快照。
+         * 按档剥成 null 会让「只有办理权、没有价格权」的角色（自定义角色可以把两者拆开）
+         * 提交出金额为 0 的单据，而页面上他恰好也看不到价格列，两边都发现不了。
+         * 新增的 `marketStandardUnitPrice` 只用于展示，才按档剥离。
+         */
+        marketActualUnitPrice: numberOrNull(row.market_actual_unit_price),
         marketStandardUnitPrice: canViewPrice ? numberOrNull(row.market_standard_unit_price) : null,
       })),
     }

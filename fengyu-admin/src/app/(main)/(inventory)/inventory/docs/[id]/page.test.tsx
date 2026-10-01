@@ -13,16 +13,18 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
 import type { InventoryDocDetail } from '@/lib/inventory/types'
 
-const { mockGetDoc, mockGetSession, mockRequireCaps, mockGetSources } = vi.hoisted(() => ({
+const { mockGetDoc, mockGetSession, mockRequireCaps, mockGetSources, mockGetSourceMarkets } = vi.hoisted(() => ({
   mockGetDoc: vi.fn(),
   mockGetSession: vi.fn(),
   mockRequireCaps: vi.fn(),
   mockGetSources: vi.fn(),
+  mockGetSourceMarkets: vi.fn(),
 }))
 
 vi.mock('@/actions/inventory/docs', () => ({
   getInventoryCoreDocById: mockGetDoc,
   listMarketReportSummarySources: mockGetSources,
+  listMarketReportSummarySourceMarkets: mockGetSourceMarkets,
 }))
 vi.mock('@/lib/auth', () => ({ getSession: mockGetSession }))
 vi.mock('@/lib/page-capability', () => ({ requireAllUiPageCapabilities: mockRequireCaps }))
@@ -551,6 +553,8 @@ describe('#349 汇总单来源明细', () => {
       roles: [],
       permissions: { actions: ['inventory:list', 'inventory:market_price_view'] },
     })
+    // 市场选项现在由独立查询下发（不从行集派生）
+    mockGetSourceMarkets.mockResolvedValue([{ id: 'M1', name: '南昌凤御' }])
   })
 
   it('汇总单渲染来源明细，市场小计与合计同源', async () => {

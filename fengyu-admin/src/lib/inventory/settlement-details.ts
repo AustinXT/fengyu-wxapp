@@ -286,7 +286,10 @@ export async function exportSettlementSegmentDetailsForSession(
   const limit = resolveExportBatchLimit(options?.limit)
   if (limit == null) throw new ApiError('INVALID_STATE', '结算明细导出只支持分批取数')
   const projection = projectionFor(session, filters)
-  if (projection === null) return { rows: [], truncated: false, hasMore: false }
+  // 导出与页面不同：段不可见时页面返回空集是对的（页面本身走 404 收口），
+  // 但任务路径没有价格档校验 —— 静默产出只有表头的 xlsx 会变成"成功但无意义"的任务与审计噪音，
+  // 所以这里 fail-fast。
+  if (projection === null) throw new ApiError('PERMISSION_DENIED', '当前账号无权导出该结算段')
   const fetched = await queryRows(settlementSegmentDetailSelectSql(projection, filters.segment, limit + 1, cursor))
   const page = resolveExportKeysetPage(fetched, limit, (row) => row.id)
   return {

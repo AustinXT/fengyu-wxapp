@@ -65,9 +65,16 @@ export function normalizeMarketReportSummarySourceFilters(
  * - 非空数组 = 仅这些市场节点参与的价格可见。
  */
 export function marketReportSummaryPriceScope(session: AuthSession): string[] | null {
-  if (inventoryPriceVisibility(session) === 'none') return []
+  const visibility = inventoryPriceVisibility(session)
+  if (visibility === 'none') return []
+  /*
+   * 供应链档（含全档）**不受市场节点限制**：§9.5 的「供应链可见市场结算价」本来就是全市场的，
+   * 而它的档位绑定落在**总部节点**上 —— 拿去和来源行的 `market_id`（市场节点）做交集会全部落空，
+   * 结果是供应链用户看来源明细一片「—」、而建单表单（会话级 supply_chain||all）却有价，两边打架。
+   */
+  if (visibility === 'supply_chain' || visibility === 'all') return null
   const tiers = inventoryPriceScopeByTier(session)
-  return inventoryTierRestrictedOrgNodeIds(null, [tiers.supplyChain, tiers.market])
+  return inventoryTierRestrictedOrgNodeIds(null, [tiers.market])
 }
 
 /**
@@ -188,6 +195,29 @@ export async function listMarketReportSummarySourcesForSession(
     marketReportSummaryPriceScope(session),
   )
   return { rows: rows.slice(0, MAX_PAGE_ROWS), truncated: rows.length > MAX_PAGE_ROWS }
+}
+
+/**
+ * 来源明细的**市场筛选选项**：该汇总单 scope 内的全部来源市场（DISTINCT）。
+ *
+ * 不走"从已取的行里派生"：行集会被 `MAX_PAGE_ROWS` 截断，从截断后的行派生既会漏市场，
+ * 也会让"筛一次就回不到其它市场"。与取数共用同一 where，口径不会分叉。
+ */
+export async function listMarketReportSummarySourceMarkets(
+  session: AuthSession,
+  input: { docId?: unknown },
+): Promise<Array<{ id: string; name: string }>> {
+  const docId = requireDocId(input.docId)
+  const where = marketReportSummarySourceWhereSql(docId, {}, inventoryScopedOrgNodeIds(session))
+  const rows = await db.execute(sql`
+    SELECT DISTINCT i.market_id AS id, COALESCE(market.name, i.market_id) AS name
+      FROM inventory_doc_links l
+      JOIN inventory_doc_items i ON i.id = l.from_item_id
+      LEFT JOIN inventory_locations market ON market.org_node_id = i.market_id
+     WHERE ${where} AND i.market_id IS NOT NULL
+     ORDER BY name
+  `) as unknown as Array<{ id: string; name: string }>
+  return rows.map((row) => ({ id: row.id, name: row.name }))
 }
 
 /**

@@ -163,15 +163,20 @@ function SettlementSection({
     {
       key: 'detail',
       header: '明细',
-      cell: (row) => (
-        <Button
-          variant="outline"
-          onClick={() => toggleDetail(row)}
-          loading={loadingKey === rowKeyOf(row)}
-        >
-          {detail?.key === rowKeyOf(row) ? '收起' : '查看'}
-        </Button>
-      ),
+      cell: (row) => {
+        // 缺端点的行下钻不了：服务端对空端点抛 INVALID_PARAMS，点了只会看到「加载明细失败」
+        const drillable = row.sourceOrgNodeId !== null && row.targetOrgNodeId !== null
+        return (
+          <Button
+            variant="outline"
+            disabled={!drillable}
+            onClick={() => toggleDetail(row)}
+            loading={loadingKey === rowKeyOf(row)}
+          >
+            {detail?.key === rowKeyOf(row) ? '收起' : '查看'}
+          </Button>
+        )
+      },
     },
   ]
 
@@ -224,7 +229,10 @@ function SettlementSection({
               // issue 验收「明细合计必须等于汇总行」：不留合计行的话，用户只能靠导出对账
               <div className="mt-2 flex justify-end gap-4 text-xs text-[#666666]">
                 <span>{detail.truncated ? '可见行合计（已截断）' : '合计'}</span>
-                <span className="text-right">数量 {detail.rows.reduce((sum, row) => sum + row.quantity, 0)}</span>
+                {/* 退货行在表格里显示为负数量，合计必须同号 —— 否则「6 正 + 4 退」会被加成 10 */}
+                <span className="text-right">
+                  数量 {detail.rows.reduce((sum, row) => sum + (row.isReturn ? -row.quantity : row.quantity), 0)}
+                </span>
                 <span className="text-right">
                   {formatSignedCurrency(detail.rows.reduce((sum, row) => sum + row.signedAmount, 0))}
                 </span>
