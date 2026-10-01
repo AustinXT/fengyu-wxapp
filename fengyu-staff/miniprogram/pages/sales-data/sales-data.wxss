@@ -285,7 +285,7 @@
   .sd-consume-cell .sd-cell-label { flex: 1; min-width: 0; text-align: left; }
   .sd-consume-cell .sd-cell-value { flex: 1; min-width: 0; text-align: right; }
 }
-.sd-matrix-cell:nth-child(1), .sd-matrix-cell:nth-child(4) { background: var(--color-primary-light); }
+.sd-matrix-cell:nth-child(1), .sd-matrix-cell:nth-child(3) { background: var(--color-primary-light); }
 .sd-breakdown-row, .sd-kind-row, .sd-leaf-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr) minmax(0, 0.8fr);
@@ -298,3 +298,8 @@
 }
 .sd-breakdown-row:nth-child(even), .sd-leaf-row:nth-child(even) { background: var(--color-bg-page); }
 .sd-kind-name, .sd-kind-value, .sd-kind-ratio { color: var(--color-text-primary); }
+
+@media (max-width: 480px) {
+  .sd-matrix-cell:nth-child(3) { background: var(--color-bg-card); }
+  .sd-matrix-cell:nth-child(4) { background: var(--color-primary-light); }
+}
