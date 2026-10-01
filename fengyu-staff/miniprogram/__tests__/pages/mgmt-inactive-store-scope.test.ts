@@ -240,6 +240,29 @@ describe('hub · 默认关店空态与手选历史（#473）', () => {
     expect(mocked).not.toHaveBeenCalledWith('mgmtDashboard.summary', expect.anything())
   })
 
+  test('市场账号授权市场全部关店时默认进入关店空态', async () => {
+    const hub = instantiate('hub')
+    hub.data.selectedDate = today()
+    hub.data.scopeResolveDefault = true
+    hub.data.scope = { scopeType: 'market', scopeId: 'm', scopeName: '市场' }
+    const picker = instantiate('picker')
+    picker.properties.resolveDefault = true
+    picker.data.applied = hub.data.scope
+    picker.data.current = hub.data.scope
+    mocked.mockResolvedValueOnce({
+      staffLevel: 'market', allowAll: false, allowedMarketIds: ['m'], inactiveStores: [],
+      markets: [{ id: 'm', name: '市场', stores: [{ storeId: 'closed', storeName: '已关店', closed: true }] }],
+    })
+    await picker.loadOptions()
+    for (const event of picker.events) {
+      if (event.name === 'change') hub.onScopeChange({ detail: event.detail })
+      if (event.name === 'defaultresolved') hub.onScopeDefaultResolved()
+    }
+    expect(hub.data.scope).toMatchObject({ scopeType: 'store', scopeId: 'closed', closed: true })
+    expect(hub.data.summaryState).toBe('empty')
+    expect(mocked).not.toHaveBeenCalledWith('mgmtDashboard.summary', expect.anything())
+  })
+
   test('权限内只有关店门店时默认不发 summary，展示关店空态', async () => {
     const hub = instantiate('hub')
     hub.data.selectedDate = today()

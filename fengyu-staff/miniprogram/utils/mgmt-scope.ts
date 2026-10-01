@@ -54,7 +54,8 @@ export interface MgmtScopeOptionsLite {
  *   2. 有未关店门店的直接授权市场 → 该市场（staff 无 admin 的「全部授权门店」，市场账号沿用市场范围）
  *   3. 有未关店门店 → 门店（店长管辖门店优先）
  *   4. 直接授权的无门店市场（如只授权品项公司）→ 该市场
- *   5. 都没有 → null，保留页面初判（全部停用由 #400、全部关店由 #473 的空态处理）
+ *   5. 直接授权市场只剩已关店门店 → 落到该市场首店，由 #473 的关店空态处理
+ *   6. 都没有 → null，保留页面初判（全部停用由 #400、无授权范围由页面空态处理）
  * 与 admin 对齐的关键：有在营门店时绝不落到无门店市场（店长 + hr@品项公司 → 门店）。
  *
  * `current`（页面初判）已属于命中档位时原样保留，只在档位不对时才换——
@@ -102,5 +103,14 @@ export function resolveDefaultMgmtScope(
     return { scopeType: 'store', scopeId: s.storeId, scopeName: `${s.marketName} · ${s.storeName}`, marketId: s.marketId }
   }
 
-  return pickMarket(markets.filter((m) => granted.has(m.id) && m.stores.length === 0))
+  const emptyMarket = pickMarket(markets.filter((m) => granted.has(m.id) && m.stores.length === 0))
+  if (emptyMarket) return emptyMarket
+
+  const closedMarket = markets.find((m) => granted.has(m.id) && m.stores.length > 0 && m.stores.every((s) => s.closed))
+  if (closedMarket) {
+    const first = closedMarket.stores[0]
+    return { scopeType: 'store', scopeId: first.storeId, scopeName: `${closedMarket.name} · ${first.storeName}`,
+      marketId: closedMarket.id, closed: true }
+  }
+  return null
 }

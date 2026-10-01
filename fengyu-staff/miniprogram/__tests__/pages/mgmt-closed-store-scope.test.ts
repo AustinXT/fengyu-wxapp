@@ -170,6 +170,13 @@ describe('默认范围跳过已关店门店（#473）', () => {
     ] }, current, ['closed'])).toBeNull()
   })
 
+  test('市场级账号仅有已关店门店时默认落关店空态范围', () => {
+    expect(resolveDefaultMgmtScope({ allowAll: false, allowedMarketIds: ['m'], markets: [
+      { id: 'm', name: '市场', stores: stores.slice(0, 1) },
+    ] }, { scopeType: 'market', scopeId: 'm', scopeName: '市场' }, []))
+      .toMatchObject({ scopeType: 'store', scopeId: 'closed', closed: true, marketId: 'm' })
+  })
+
   test('用户手选已关店门店，change 携带关店标记', async () => {
     const picker = await storeLevelPicker(stores)
     picker.onPickStore({ currentTarget: { dataset: { storeId: 'closed' } } })
