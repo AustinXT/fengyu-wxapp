@@ -141,6 +141,12 @@ describe('resolveScopeName', () => {
     mockLoadClosedStoreIds.mockResolvedValue(new Set(['S1']))
     expect(await resolveScopeName({ type: 'store', id: 'S1' })).toBe('蓝莱店（已关店）')
   })
+  it('关店标签查询失败时保留单店和多店名称', async () => {
+    dbRows.value = [{ id: 'S1', name: '蓝莱店' }]
+    mockLoadClosedStoreIds.mockRejectedValue(new Error('timeout'))
+    expect(await resolveScopeName({ type: 'store', id: 'S1' })).toBe('蓝莱店')
+    expect(await resolveScopeName({ type: 'stores', ids: ['S1'] })).toBe('蓝莱店')
+  })
 })
 
 describe('prepareBoardContext', () => {

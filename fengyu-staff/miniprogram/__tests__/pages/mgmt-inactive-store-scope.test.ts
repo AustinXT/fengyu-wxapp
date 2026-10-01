@@ -153,6 +153,16 @@ describe('hub · 默认关店空态与手选历史（#473）', () => {
     expect(picker.events.at(-1)?.name).toBe('defaultresolved')
   })
 
+  test('同批默认范围与纠正开关的两个 observer 只发一次完成事件', async () => {
+    const picker = instantiate('picker')
+    mocked.mockResolvedValueOnce({ allowAll: true, allowedMarketIds: [], markets: [], inactiveStores: [] })
+    await picker.loadOptions()
+    picker.properties.resolveDefault = true
+    definitions.picker.observers.defaultScope.call(picker, { scopeType: 'store', scopeId: 'old', scopeName: '旧店' })
+    definitions.picker.observers.resolveDefault.call(picker, true)
+    expect(picker.events.filter((event: { name: string }) => event.name === 'defaultresolved')).toHaveLength(1)
+  })
+
   test('范围请求先于页面初始化失败时保留错误态及重试入口', async () => {
     const hub = instantiate('hub')
     const picker = instantiate('picker')
@@ -253,7 +263,7 @@ describe('hub · 默认关店空态与手选历史（#473）', () => {
     expect(mocked).not.toHaveBeenCalledWith('mgmtDashboard.summary', expect.objectContaining({ scopeId: 'closed' }))
   })
 
-  test('picker 默认纠正事件传到页面：只有关店时显示空态且不查询', async () => {
+  test('picker 默认纠正事件传到页面：只有关店时经服务端确认未停用再显示空态', async () => {
     const hub = instantiate('hub')
     hub.data.selectedDate = today()
     hub.data.scopeResolveDefault = true
@@ -266,14 +276,16 @@ describe('hub · 默认关店空态与手选历史（#473）', () => {
       staffLevel: 'store_manager', allowAll: false, allowedMarketIds: [], inactiveStores: [],
       markets: [{ id: 'm', name: '市场', stores: [{ storeId: 'closed', storeName: '已关店', closed: true }] }],
     })
+    mocked.mockResolvedValueOnce(summaryResp({ type: 'store', id: 'closed', name: '已关店', inactive: false }))
     await picker.loadOptions()
     for (const event of picker.events) {
       if (event.name === 'defaultresolved') hub.onScopeDefaultResolved()
       if (event.name === 'change') hub.onScopeChange({ detail: event.detail })
     }
     expect(hub.data.scope.closed).toBe(true)
+    await Promise.resolve()
     expect(hub.data.summaryState).toBe('empty')
-    expect(mocked).not.toHaveBeenCalledWith('mgmtDashboard.summary', expect.anything())
+    expect(mocked).toHaveBeenCalledWith('mgmtDashboard.summary', expect.objectContaining({ scopeId: 'closed' }))
   })
 
   test('市场账号授权市场全部关店时默认进入关店空态', async () => {
@@ -289,22 +301,25 @@ describe('hub · 默认关店空态与手选历史（#473）', () => {
       staffLevel: 'market', allowAll: false, allowedMarketIds: ['m'], inactiveStores: [],
       markets: [{ id: 'm', name: '市场', stores: [{ storeId: 'closed', storeName: '已关店', closed: true }] }],
     })
+    mocked.mockResolvedValueOnce(summaryResp({ type: 'store', id: 'closed', name: '已关店', inactive: false }))
     await picker.loadOptions()
     for (const event of picker.events) {
       if (event.name === 'change') hub.onScopeChange({ detail: event.detail })
       if (event.name === 'defaultresolved') hub.onScopeDefaultResolved()
     }
     expect(hub.data.scope).toMatchObject({ scopeType: 'store', scopeId: 'closed', closed: true })
+    await Promise.resolve()
     expect(hub.data.summaryState).toBe('empty')
-    expect(mocked).not.toHaveBeenCalledWith('mgmtDashboard.summary', expect.anything())
+    expect(mocked).toHaveBeenCalledWith('mgmtDashboard.summary', expect.objectContaining({ scopeId: 'closed' }))
   })
 
-  test('权限内只有关店门店时默认不发 summary，展示关店空态', async () => {
+  test('权限内只有关店门店时经服务端确认未停用后展示关店空态', async () => {
     const hub = instantiate('hub')
     hub.data.selectedDate = today()
     hub.data.scope = { scopeType: 'store', scopeId: 'closed', scopeName: '已关店', closed: true }
+    mocked.mockResolvedValueOnce(summaryResp({ type: 'store', id: 'closed', name: '已关店', inactive: false }))
     await hub.loadSummary()
-    expect(mocked).not.toHaveBeenCalled()
+    expect(mocked).toHaveBeenCalledWith('mgmtDashboard.summary', expect.objectContaining({ scopeId: 'closed' }))
     expect(hub.data.summaryState).toBe('empty')
     expect(hub.data.summaryEmptyText).toContain('已关店')
   })
@@ -319,6 +334,15 @@ describe('hub · 默认关店空态与手选历史（#473）', () => {
     expect(hub.data.summaryState).toBe('empty')
     expect(hub.data.summaryEmptyText).toContain('已停用')
     expect(hub.data.summaryEmptyHint).not.toContain('可选择关店前日期')
+  })
+
+  test('停用列表未知且关店时，服务端停用判定仍优先', async () => {
+    const hub = instantiate('hub')
+    hub.data.selectedDate = today()
+    hub.data.scope = { scopeType: 'store', scopeId: 'closed', scopeName: '蓝湾店', closed: true }
+    mocked.mockResolvedValueOnce(summaryResp({ type: 'store', id: 'closed', name: '蓝湾店', inactive: true, hasActiveAlternative: false }))
+    await hub.loadSummary()
+    expect(hub.data.summaryEmptyText).toContain('已停用')
   })
 
   test('手选已关店门店后仍可查历史日期', async () => {

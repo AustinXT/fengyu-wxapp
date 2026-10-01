@@ -422,17 +422,6 @@ Page({
     const seq = ++summarySeq
     const today = new Date()
     const todayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
-    if (this.data.scope.scopeType === 'store' && this.data.scope.closed && !this.data.scope.inactive && !this.data.scopeUserPicked && this.data.selectedDate === todayKey) {
-      this.setData({
-        loading: false,
-        display: null,
-        displayKey: '',
-        summaryState: 'empty',
-        summaryEmptyText: `「${this.data.scope.scopeName || '该门店'}」已关店`,
-        summaryEmptyHint: '可选择关店前日期查看历史数据',
-      })
-      return
-    }
     // 旧内容只在「同一 scope + 同一日期」的刷新里保留；换了 scope / 日期还挂着旧数字，
     // 请求一失败就成了「B 店（已停用）」配 A 店指标（#400 评审发现）
     const key = `${this.data.scope.scopeType}|${this.data.scope.scopeId || ''}|${this.data.selectedDate}`
@@ -461,6 +450,21 @@ Page({
           summaryState: 'empty',
           summaryEmptyText: inactiveScopeText(summary.scope.name || this.data.scope.scopeName),
           summaryEmptyHint: inactiveScopeHint(summary.scope.hasActiveAlternative),
+        })
+        return
+      }
+      // 停用状态只有 summary 的服务端判定可信；先确认未停用，再显示今日关店空态。
+      if (this.data.scope.scopeType === 'store' && this.data.scope.closed && !this.data.scopeUserPicked && this.data.selectedDate === todayKey) {
+        this.setData({
+          summary,
+          loading: false,
+          display: null,
+          displayKey: '',
+          'scope.inactive': false,
+          'defaultScope.inactive': false,
+          summaryState: 'empty',
+          summaryEmptyText: `「${this.data.scope.scopeName || '该门店'}」已关店`,
+          summaryEmptyHint: '可选择关店前日期查看历史数据',
         })
         return
       }

@@ -190,4 +190,25 @@ describe('默认范围跳过已关店门店（#473）', () => {
     picker.onPickStore({ currentTarget: { dataset: { storeId: 'closed' } } })
     expect(picker.events.at(-1)).toMatchObject({ name: 'change', detail: { scopeId: 'closed', closed: true, userPicked: true } })
   })
+
+  test('已选门店会话中关店或重开后，重拉选项并直接确认使用最新标记', async () => {
+    const picker = await storeLevelPicker([{ storeId: 'open', storeName: '在营店' }])
+    picker.onPickStore({ currentTarget: { dataset: { storeId: 'open' } } })
+    mocked.mockResolvedValueOnce({
+      staffLevel: 'store_manager', allowAll: false, allowedMarketIds: [], inactiveStores: [],
+      markets: [{ id: 'mkt-jj', name: '九江凤御', stores: [{ storeId: 'open', storeName: '在营店', closed: true }] }],
+    })
+    await picker.loadOptions()
+    picker.onConfirm()
+    expect(picker.events.at(-1)).toMatchObject({ name: 'change', detail: { scopeId: 'open', closed: true } })
+    mocked.mockResolvedValueOnce({
+      staffLevel: 'store_manager', allowAll: false, allowedMarketIds: [], inactiveStores: [],
+      markets: [{ id: 'mkt-jj', name: '九江凤御', stores: [{ storeId: 'open', storeName: '在营店' }] }],
+    })
+    await picker.loadOptions()
+    picker.onConfirm()
+    expect(picker.data.applied.closed).toBe(false)
+    expect(picker.events.at(-1)).toMatchObject({ name: 'change', detail: { scopeId: 'open' } })
+    expect(picker.events.at(-1)?.detail.closed).toBeUndefined()
+  })
 })

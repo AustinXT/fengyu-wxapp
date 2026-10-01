@@ -409,9 +409,9 @@ describe('#422 范围下拉「（已关店）」展示标记 · 两端 helper', 
       ],
       'fengyu-admin/src/lib/data-center/context.ts': [
         "import { loadClosedStoreIds } from '@/lib/store-closed-label'",
-        'const closedIds = await loadClosedStoreIds(rows.map((r) => r.id))',
+        'const closedIds = await loadClosedStoreIds(rows.map((r) => r.id)).catch(() => new Set<string>())',
         'const names = new Map(rows.map((r) => [r.id, storeOptionLabel({ storeName: r.name, closed: closedIds.has(r.id) })]))',
-        'const closedIds = await loadClosedStoreIds([scope.id])',
+        'const closedIds = await loadClosedStoreIds([scope.id]).catch(() => new Set<string>())',
         'return storeOptionLabel({ storeName: row.name, closed: closedIds.has(scope.id) })',
       ],
       'fengyu-staff/cloudfunctions/staffApi/routes/mgmt-dashboard.js': [

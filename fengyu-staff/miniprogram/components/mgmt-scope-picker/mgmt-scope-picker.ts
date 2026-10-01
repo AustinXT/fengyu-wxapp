@@ -66,6 +66,7 @@ Component({
     optionsLoaded: false,
     optionsSeq: 0,
     userPicked: false,
+    defaultResolvedEmitted: false,
   },
 
   lifetimes: {
@@ -113,7 +114,7 @@ Component({
   methods: {
     /**
      * 拉范围数据。首次加载后校正默认范围；之后每次打开弹窗重拉（会话中门店可能被启停），
-     * 重拉只刷新可选列表、不动当前范围——当前范围的启停由页面按 summary 回包同步，不在这里自动换店。
+     * 重拉只刷新可选列表和当前范围的关店标签，不自动换店。
      */
     async loadOptions() {
       const seq = this.data.optionsSeq + 1
@@ -140,6 +141,7 @@ Component({
           optionsLoaded: true,
         })
         if (initial) this._normalizeApplied()
+        else this._refreshClosedMarkers()
       } catch (err) {
         if (seq !== this.data.optionsSeq) return
         // 重拉失败保留已有列表，不打扰；首次失败才提示
@@ -147,6 +149,32 @@ Component({
           wx.showToast({ title: '加载范围失败', icon: 'none' })
           this.triggerEvent('optionsfailed')
         }
+      }
+    },
+
+    /** 列表重拉后同步当前门店的展示状态；范围 ID 与用户手选状态不变。 */
+    _refreshClosedMarkers() {
+      const lists = this.data.storeListByMarket as Record<string, StoreMini[]>
+      const closedOf = (scope: Scope): boolean | undefined => {
+        if (scope.scopeType !== 'store' || !scope.scopeId) return undefined
+        const store = scope.marketId && (lists[scope.marketId] || []).find((item) => item.storeId === scope.scopeId)
+        return store ? store.closed === true : undefined
+      }
+      const applied = this.data.applied as Scope
+      const current = this.data.current as Scope
+      const appliedClosed = closedOf(applied)
+      const currentClosed = closedOf(current)
+      const appliedChanged = appliedClosed !== undefined && applied.closed !== appliedClosed
+      const update: Record<string, boolean> = {}
+      if (appliedChanged) update['applied.closed'] = appliedClosed
+      if (currentClosed !== undefined && current.closed !== currentClosed) update['current.closed'] = currentClosed
+      if (Object.keys(update).length === 0) return
+      this.setData(update)
+      if (appliedChanged) {
+        this.triggerEvent('change', {
+          ...applied,
+          closed: appliedClosed,
+        })
       }
     },
 
@@ -164,7 +192,8 @@ Component({
       const onKnownInactive = applied.scopeType === 'store'
         && ((this.data.inactiveStoreIds as string[] | null) || []).includes(applied.scopeId || '')
       // 弹窗开着时不纠正（首次加载失败、onOpen 重拉才首次拿到选项）：会覆盖弹窗里正在选的项
-      const finishDefault = this.properties.resolveDefault && !this.data.userPicked && !this.data.showPopup
+      const finishDefault = this.properties.resolveDefault && !this.data.userPicked
+        && !this.data.showPopup && !this.data.defaultResolvedEmitted
       const resolving = finishDefault && !onKnownInactive
       if (resolving) {
         // 最新停用列表已确认该店不再停用时，丢掉登录缓存中的旧标记再决策；
@@ -246,7 +275,10 @@ Component({
           ...(nextApplied.closed ? { closed: true } : {}),
         })
       }
-      if (finishDefault) this.triggerEvent('defaultresolved')
+      if (finishDefault) {
+        this.setData({ defaultResolvedEmitted: true })
+        this.triggerEvent('defaultresolved')
+      }
     },
 
     onOpen() {

@@ -95,7 +95,7 @@ export async function resolveScopeName(scope: DataCenterScope): Promise<string> 
       .from(stores)
       .where(inArray(stores.storeId, scope.ids))
       .limit(scope.ids.length)
-    const closedIds = await loadClosedStoreIds(rows.map((r) => r.id))
+    const closedIds = await loadClosedStoreIds(rows.map((r) => r.id)).catch(() => new Set<string>())
     const names = new Map(rows.map((r) => [r.id, storeOptionLabel({ storeName: r.name, closed: closedIds.has(r.id) })]))
     return multiStoreName(scope.ids.map((id) => names.get(id) ?? '未知门店'))
   }
@@ -105,7 +105,7 @@ export async function resolveScopeName(scope: DataCenterScope): Promise<string> 
     .where(eq(stores.storeId, scope.id))
     .limit(1)
   if (!row) return '未知门店'
-  const closedIds = await loadClosedStoreIds([scope.id])
+  const closedIds = await loadClosedStoreIds([scope.id]).catch(() => new Set<string>())
   return storeOptionLabel({ storeName: row.name, closed: closedIds.has(scope.id) })
 }
 
