@@ -95,8 +95,8 @@ export function resolveDefaultMgmtScope(
     if (current?.scopeType === 'store') {
       const currentStore = markets.flatMap((m) => m.stores).find((s) => s.storeId === current.scopeId)
       // 旧缓存可能仍标停用，而最新选项已确认该店启用但已关店；此时须先避开关店。
-      if (current.inactive && currentStore?.closed !== true) return current
-      if (!current.closed && currentStore?.closed !== true) return current
+      if (current.scopeId && current.inactive && currentStore?.closed !== true) return current
+      if (current.scopeId && !current.closed && currentStore && currentStore.closed !== true) return current
     }
     const managerIds = new Set(managerStoreIds || [])
     const s = stores.find((x) => managerIds.has(x.storeId)) || stores[0]

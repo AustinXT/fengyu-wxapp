@@ -163,6 +163,14 @@ describe('默认范围跳过已关店门店（#473）', () => {
       .toMatchObject({ scopeType: 'store', scopeId: 'open' })
   })
 
+  test('初判空门店 ID、最新范围已有授权在营门店时选中该店', () => {
+    expect(resolveDefaultMgmtScope({ allowAll: false, allowedMarketIds: [], markets: [
+      { id: 'm', name: '市场', stores },
+    ] }, { scopeType: 'store', scopeId: '', scopeName: '' }, []))
+      .toMatchObject({ scopeType: 'store', scopeId: 'open' })
+  })
+
+
   test('只有已关店门店时保留初判，由页面显示空态', () => {
     const current = { scopeType: 'store' as const, scopeId: 'closed', scopeName: '已关店' }
     expect(resolveDefaultMgmtScope({ allowAll: false, allowedMarketIds: [], markets: [

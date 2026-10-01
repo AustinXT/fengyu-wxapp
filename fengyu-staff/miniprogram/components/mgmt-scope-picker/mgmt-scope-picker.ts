@@ -167,13 +167,18 @@ Component({
       const finishDefault = this.properties.resolveDefault && !this.data.userPicked && !this.data.showPopup
       const resolving = finishDefault && !onKnownInactive
       if (resolving) {
+        // 最新停用列表已确认该店不再停用时，丢掉登录缓存中的旧标记再决策；
+        // 查询失败为 null 时保留旧标记，避免把未知状态误当在营。
+        const inactiveIds = this.data.inactiveStoreIds as string[] | null
+        const initialScope = applied.scopeType === 'store' && applied.inactive && inactiveIds
+          && !inactiveIds.includes(applied.scopeId || '') ? { ...applied, inactive: false } : applied
         const resolved = resolveDefaultMgmtScope(
           {
             allowAll: this.data.allowAll,
             allowedMarketIds,
             markets: marketList.map((m) => ({ ...m, stores: storeListByMarket[m.id] || [] })),
           },
-          applied,
+          initialScope,
           getApp<IAppOption>().globalData.managerStoreIds || [],
         )
         if (resolved) nextApplied = resolved

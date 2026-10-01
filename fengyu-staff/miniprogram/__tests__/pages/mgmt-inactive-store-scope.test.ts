@@ -190,6 +190,42 @@ describe('hub · 默认关店空态与手选历史（#473）', () => {
     expect(mocked).not.toHaveBeenCalledWith('mgmtDashboard.summary', expect.anything())
   })
 
+  test('登录缓存初判空门店、范围接口已有授权门店时纠正后查该店', async () => {
+    const hub = instantiate('hub')
+    hub.data.selectedDate = today()
+    hub.data.scopeResolveDefault = true
+    hub.data.scope = { scopeType: 'store', scopeId: '', scopeName: '' }
+    const picker = instantiate('picker')
+    picker.properties.resolveDefault = true
+    picker.data.applied = hub.data.scope
+    picker.data.current = hub.data.scope
+    mocked.mockResolvedValueOnce({
+      staffLevel: 'store_manager', allowAll: false, allowedMarketIds: [], inactiveStores: [],
+      markets: [{ id: 'm', name: '市场', stores: [{ storeId: 'open', storeName: '在营店' }] }],
+    })
+    mocked.mockResolvedValueOnce(summaryResp({ type: 'store', id: 'open', name: '在营店', inactive: false }))
+    await picker.loadOptions()
+    for (const event of picker.events) {
+      if (event.name === 'change') hub.onScopeChange({ detail: event.detail })
+      if (event.name === 'defaultresolved') hub.onScopeDefaultResolved()
+    }
+    expect(hub.data.scope.scopeId).toBe('open')
+    expect(mocked).toHaveBeenCalledWith('mgmtDashboard.summary', expect.objectContaining({ scopeId: 'open' }))
+  })
+
+  test('最新停用列表确认旧缓存门店不再停用且范围已有别店时改选可用门店', async () => {
+    const picker = instantiate('picker')
+    picker.properties.resolveDefault = true
+    picker.data.applied = { scopeType: 'store', scopeId: 'removed', scopeName: '旧店', inactive: true }
+    picker.data.current = picker.data.applied
+    mocked.mockResolvedValueOnce({
+      staffLevel: 'store_manager', allowAll: false, allowedMarketIds: [], inactiveStores: [],
+      markets: [{ id: 'm', name: '市场', stores: [{ storeId: 'open', storeName: '在营店' }] }],
+    })
+    await picker.loadOptions()
+    expect(picker.data.applied).toMatchObject({ scopeType: 'store', scopeId: 'open' })
+  })
+
   test('picker 默认纠正事件传到页面：有在营替代时只查询替代门店', async () => {
     const hub = instantiate('hub')
     hub.data.selectedDate = today()
