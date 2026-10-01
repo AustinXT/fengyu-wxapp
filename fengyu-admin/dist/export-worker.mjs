@@ -161641,8 +161641,6 @@ function formatCurrency(amount) {
   const num = typeof amount === "string" ? parseFloat(amount) : amount;
   if (num == null || Number.isNaN(num))
     return "¥0.00";
-  if (num < 0)
-    return `-¥${Math.abs(num).toFixed(2)}`;
   return `¥${num.toFixed(2)}`;
 }
 function calcCouponDiscount(couponType, discountValue, maxDiscount, totalAmount) {
@@ -180058,6 +180056,27 @@ function settlementProjectionSql(params) {
        AND p.effective_date <= ${params.endDate}::date
   `;
 }
+var SETTLEMENT_DOC_TYPES = [...new Set(SETTLEMENT_DOC_KINDS.map((kind) => kind.docType))];
+async function listSettlementMarketOptions(scopedOrgNodeIds) {
+  if (scopedOrgNodeIds !== null && scopedOrgNodeIds.length === 0)
+    return [];
+  const conditions3 = [
+    import_drizzle_orm59.sql`d.market_id IS NOT NULL`,
+    import_drizzle_orm59.sql`d.doc_type IN (${import_drizzle_orm59.sql.join(SETTLEMENT_DOC_TYPES.map((docType) => import_drizzle_orm59.sql`${docType}`), import_drizzle_orm59.sql`, `)})`
+  ];
+  if (scopedOrgNodeIds !== null) {
+    const ids = import_drizzle_orm59.sql.join(scopedOrgNodeIds.map((id) => import_drizzle_orm59.sql`${id}`), import_drizzle_orm59.sql`, `);
+    conditions3.push(import_drizzle_orm59.sql`(d.source_org_node_id IN (${ids}) OR d.target_org_node_id IN (${ids}))`);
+  }
+  const rows = await db2.execute(import_drizzle_orm59.sql`
+    SELECT DISTINCT d.market_id AS id, COALESCE(loc.name, d.market_id) AS name
+      FROM inventory_docs d
+      LEFT JOIN inventory_locations loc ON loc.org_node_id = d.market_id
+     WHERE ${import_drizzle_orm59.sql.join(conditions3, import_drizzle_orm59.sql` AND `)}
+     ORDER BY name
+  `);
+  return rows.map((row) => ({ id: row.id, name: row.name }));
+}
 async function summarizeSettlementDocs(params) {
   if (params.scopedOrgNodeIds !== null && params.scopedOrgNodeIds.length === 0)
     return [];
@@ -180096,6 +180115,7 @@ var listInventorySettlements = withPermission("inventory:list", async (session4,
       startDate,
       endDate,
       priceVisibility,
+      marketOptions: [],
       canViewMarketSettlement: false,
       canViewStoreSettlement: false,
       marketRows: [],
@@ -180106,7 +180126,8 @@ var listInventorySettlements = withPermission("inventory:list", async (session4,
   const priceTiers = inventoryPriceScopeByTier(session4);
   const marketScopedOrgNodeIds = inventoryTierRestrictedOrgNodeIds(scopedOrgNodeIds, [priceTiers.supplyChain, priceTiers.market]);
   const storeScopedOrgNodeIds = inventoryTierRestrictedOrgNodeIds(scopedOrgNodeIds, [priceTiers.market]);
-  const [marketRows, storeRows] = await Promise.all([
+  const [marketOptions, marketRows, storeRows] = await Promise.all([
+    listSettlementMarketOptions(scopedOrgNodeIds),
     canViewMarketSettlement ? summarizeSettlementDocs({ segment: "market", startDate, endDate, scopedOrgNodeIds: marketScopedOrgNodeIds, market }) : Promise.resolve([]),
     canViewStoreSettlement ? summarizeSettlementDocs({ segment: "store", startDate, endDate, scopedOrgNodeIds: storeScopedOrgNodeIds, market }) : Promise.resolve([])
   ]);
@@ -180114,6 +180135,7 @@ var listInventorySettlements = withPermission("inventory:list", async (session4,
     startDate,
     endDate,
     priceVisibility,
+    marketOptions,
     canViewMarketSettlement,
     canViewStoreSettlement,
     marketRows,
@@ -180511,6 +180533,12 @@ function normalizeMarketReportSummarySourceFilters(input) {
   }
   return { market: optionalText3(input.market, "市场") };
 }
+function marketReportSummaryPriceScope(session4) {
+  if (inventoryPriceVisibility(session4) === "none")
+    return [];
+  const tiers = inventoryPriceScopeByTier(session4);
+  return inventoryTierRestrictedOrgNodeIds(null, [tiers.supplyChain, tiers.market]);
+}
 function marketReportSummarySourceWhereSql(docId, filters, scoped) {
   const conditions3 = [
     import_drizzle_orm62.sql`l.to_doc_id = ${docId}`,
@@ -180551,8 +180579,9 @@ function numericOrNull(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 var round23 = (value) => Number(value.toFixed(2));
-function mapRow2(row, canViewPrice2) {
+function mapRow2(row, priceScopedMarketIds) {
   const quantity = Number(row.quantity);
+  const canViewPrice2 = row.market_id !== null && (priceScopedMarketIds === null || priceScopedMarketIds.includes(row.market_id));
   const actualUnitPrice = canViewPrice2 ? numericOrNull(row.market_actual_unit_price) : null;
   return {
     id: row.id,
@@ -180572,15 +180601,14 @@ function mapRow2(row, canViewPrice2) {
     promotionPlanNo: row.promotion_plan_no_snapshot
   };
 }
-async function queryRows2(query, canViewPrice2) {
-  return (await db2.execute(query)).map((row) => mapRow2(row, canViewPrice2));
+async function queryRows2(query, priceScopedMarketIds) {
+  return (await db2.execute(query)).map((row) => mapRow2(row, priceScopedMarketIds));
 }
 async function listMarketReportSummarySourcesForSession(session4, input) {
   const docId = requireDocId(input.docId);
   const filters = normalizeMarketReportSummarySourceFilters(input);
-  const canViewPrice2 = inventoryPriceVisibility(session4) !== "none";
   const where = marketReportSummarySourceWhereSql(docId, filters, inventoryScopedOrgNodeIds(session4));
-  const rows = await queryRows2(marketReportSummarySourceSelectSql(where, MAX_PAGE_ROWS + 1), canViewPrice2);
+  const rows = await queryRows2(marketReportSummarySourceSelectSql(where, MAX_PAGE_ROWS + 1), marketReportSummaryPriceScope(session4));
   return { rows: rows.slice(0, MAX_PAGE_ROWS), truncated: rows.length > MAX_PAGE_ROWS };
 }
 async function exportMarketReportSummarySourcesForSession(session4, input, options) {
@@ -180593,7 +180621,7 @@ async function exportMarketReportSummarySourcesForSession(session4, input, optio
   const limit = resolveExportBatchLimit(options?.limit);
   if (limit == null)
     throw new ApiError("INVALID_STATE", "汇总单来源明细导出只支持分批取数");
-  const canViewPrice2 = inventoryPriceVisibility(session4) !== "none";
+  const canViewPrice2 = marketReportSummaryPriceScope(session4);
   const where = marketReportSummarySourceWhereSql(docId, filters, inventoryScopedOrgNodeIds(session4));
   const fetched = await queryRows2(marketReportSummarySourceSelectSql(where, limit + 1, cursor), canViewPrice2);
   const page = resolveExportKeysetPage(fetched, limit, (row) => row.id);
@@ -180601,7 +180629,7 @@ async function exportMarketReportSummarySourcesForSession(session4, input, optio
     rows: page.pageRows,
     truncated: false,
     hasMore: page.hasMore,
-    canViewPrice: canViewPrice2,
+    canViewPrice: canViewPrice2 === null || canViewPrice2.length > 0,
     ...page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }
   };
 }
@@ -180751,7 +180779,7 @@ function settlementSegmentDetailSelectSql(projection, segment, limit, cursor) {
   `;
 }
 var numOrNull2 = (value) => {
-  if (value === null)
+  if (value === null || value === undefined)
     return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
@@ -180776,9 +180804,6 @@ function mapRow3(row) {
     quantity: Number(row.quantity ?? 0),
     signedAmount: Number(row.signed_amount ?? 0),
     isReturn: row.is_return,
-    standardUnitPrice: numOrNull2(row.standard_unit_price),
-    unitDiscount: numOrNull2(row.unit_discount),
-    actualUnitPrice: numOrNull2(row.actual_unit_price),
     marketStandardUnitPrice: numOrNull2(row.market_standard_unit_price),
     marketUnitDiscount: numOrNull2(row.market_unit_discount),
     marketActualUnitPrice: numOrNull2(row.market_actual_unit_price),
@@ -188619,7 +188644,16 @@ var settlementDetailColumns = (segment) => mapColumns([
   { header: "商品", width: 28, key: "skuName" },
   { header: "规格", width: 16, key: "specName" },
   ...segment === "store" ? [{ header: "批号", width: 16, key: "batchNo" }] : [],
-  { header: "数量", width: 10, key: "quantity", map: (row) => numberOrEmpty(row, "quantity") },
+  {
+    header: "数量",
+    width: 10,
+    key: "quantity",
+    map: (row) => {
+      const quantity = Number(value(row, "quantity") ?? 0);
+      return row.isReturn ? -quantity : quantity;
+    }
+  },
+  { header: "退货", width: 8, key: "isReturn", map: (row) => boolLabel(row, "isReturn") },
   ...segment === "market" ? [
     { header: "市场单价", width: 14, key: "marketStandardUnitPrice", map: (row) => numberOrEmpty(row, "marketStandardUnitPrice") },
     { header: "单价优惠", width: 14, key: "marketUnitDiscount", map: (row) => numberOrEmpty(row, "marketUnitDiscount") },
