@@ -301,8 +301,8 @@
 **折抵后原单该行「欠款归零」（#182）**：折抵 = 整行退出，原单不该再为已经不存在的权益挂欠款。
 
 ```
-仅当 sale_order_type <> '寄存单' AND sale_amount > 0 AND received > 0 AND Δ_row > 0：
-  行级 Δ_row   = sale_amount − received（received 是行级**净**实收；Δ_row > 0 即 received < sale_amount）
+仅当 sale_order_type <> '寄存单' AND sale_amount > 0 AND received > 0（waiveEligible）：
+  行级 Δ_row   = max(0, sale_amount − received)（received 是行级**净**实收；付清/overpay 为 0）
   订单级 Δ_ord = Δ_row − 该行已退款额 = 真实欠款
   原行：sale_amount -= Δ_row；waived_amount += Δ_row（留底，供关单回滚）；
         pending_received = received + 该行已退款额（= **毛已付**，见下方 ⚠）

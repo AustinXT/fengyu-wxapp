@@ -164227,6 +164227,8 @@ function positiveQuantity(row) {
   return quantity != null && quantity > 0 ? quantity : 1;
 }
 function displayQuantity(row) {
+  if (finiteNumber(row.__quantity) === 0)
+    return 0;
   const sessions = finiteNumber(row.sessionCount);
   if (sessions != null)
     return sessions;

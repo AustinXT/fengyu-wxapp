@@ -30,6 +30,8 @@ function positiveQuantity(row: ExportRow): number {
 }
 
 function displayQuantity(row: ExportRow): number | null {
+  // 纯金额余数转出镜像原卡 session_count，但注销权益为 0，报表不能计作原卡次数。
+  if (finiteNumber(row.__quantity) === 0) return 0
   const sessions = finiteNumber(row.sessionCount)
   if (sessions != null) return sessions
   return finiteNumber(row.__quantity)

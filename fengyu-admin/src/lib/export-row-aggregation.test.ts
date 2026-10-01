@@ -327,7 +327,7 @@ describe('aggregateContiguousExportRows', () => {
 describe('#182 零数量余数报表', () => {
   it('订单汇总保留纯金额转出 0 件，转入仍为 1 件', () => {
     const result = aggregateOrderExportRows([
-      orderRow({ __itemDirection: '转出', __quantity: 0, sessionCount: 0, totalAmount: '-214.00', received: '-214.00' }),
+      orderRow({ __itemDirection: '转出', __quantity: 0, sessionCount: 7, totalAmount: '-214.00', received: '-214.00' }),
       orderRow({ __sourceId: 'IN', __itemDirection: '转入', __quantity: 1, sessionCount: 10, totalAmount: '214.00', received: '214.00' }),
     ])
     expect(result.map(row => row.__quantity)).toEqual([0, 1])
@@ -336,7 +336,7 @@ describe('#182 零数量余数报表', () => {
   })
   it('业绩分配汇总不把零数量余数当成一件', () => {
     const result = aggregateAllocationExportRows([
-      allocationRow(1, 'A', { __itemDirection: '转出', __quantity: 0, sessionCount: 0, __receiptAmount: '-214.00', __paymentAmount: '-214.00', saleAmount: -214 }),
+      allocationRow(1, 'A', { __itemDirection: '转出', __quantity: 0, sessionCount: 7, __receiptAmount: '-214.00', __paymentAmount: '-214.00', saleAmount: -214 }),
     ])
     expect(result).toHaveLength(1)
     expect(result[0].__quantity).toBe(0)
