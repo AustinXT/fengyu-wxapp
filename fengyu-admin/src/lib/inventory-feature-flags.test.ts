@@ -106,6 +106,7 @@ describe('prod 环境模板守护', () => {
   })
 
   it('admin 构建链把 NEXT_PUBLIC_ 开关传进镜像', () => {
+    expect(readSource('../docker/docker-compose.yml')).toContain('NEXT_PUBLIC_INVENTORY_ENTRY_ENABLED: ${NEXT_PUBLIC_INVENTORY_ENTRY_ENABLED:-false}')
     expect(readSource('../docker/Dockerfile.admin')).toContain('ARG NEXT_PUBLIC_INVENTORY_ENTRY_ENABLED=')
     expect(readSource('../.claude/skills/remote-deploy/deploy-common.sh')).toContain('--build-arg NEXT_PUBLIC_INVENTORY_ENTRY_ENABLED=')
     expect(readSource('../docker/Dockerfile.admin')).toContain('ARG NEXT_PUBLIC_INVENTORY_LINKAGE_ENABLED=')

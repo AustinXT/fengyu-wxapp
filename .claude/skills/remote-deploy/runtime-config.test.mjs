@@ -286,6 +286,9 @@ test('legacy reconcile migrates all real env files before the strict gate', () =
   const firstPass = fs.readFileSync(path.join(envDir, 'prod.env'), 'utf8')
   reconcileLegacyConfigFiles({ root })
   assert.equal(fs.readFileSync(path.join(envDir, 'prod.env'), 'utf8'), firstPass)
+  fs.writeFileSync(path.join(envDir, 'prod.env'), firstPass.replace('NEXT_PUBLIC_INVENTORY_ENTRY_ENABLED=true', 'NEXT_PUBLIC_INVENTORY_ENTRY_ENABLED=false'))
+  reconcileLegacyConfigFiles({ root })
+  assert.equal(parseEnv(fs.readFileSync(path.join(envDir, 'prod.env'), 'utf8')).NEXT_PUBLIC_INVENTORY_ENTRY_ENABLED, 'false')
   fs.rmSync(root, { recursive: true, force: true })
 })
 
