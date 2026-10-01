@@ -2,17 +2,23 @@ import Link from 'next/link'
 import { ReturnContextLink } from '@/components/return-context'
 import { notFound } from 'next/navigation'
 import { ArrowLeft } from 'lucide-react'
-import { getInventoryCoreDocById } from '@/actions/inventory/docs'
+import {
+  getInventoryCoreDocById,
+  listMarketReportSummarySourceMarkets,
+  listMarketReportSummarySources,
+} from '@/actions/inventory/docs'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import { fmtDateTime } from '@/lib/datetime'
 import { getSession } from '@/lib/auth'
 import { requireAllUiPageCapabilities } from '@/lib/page-capability'
+import { hasUiCapability } from '@/lib/permission-contract'
 import { canOpenOrderDetail } from '@/lib/order-detail-access'
 import { isStocktakeDocType, stocktakeDiff, stocktakeSummary } from '@/lib/inventory/stocktake'
 import { resolveInventoryDocReturn } from '@/lib/inventory/operation-return'
 import { inventoryDocStatusLabel } from '@/lib/inventory/doc-status-label'
 import { InventoryDocReturnLink } from './inventory-doc-return-link'
+import { MarketReportSummarySources } from './market-report-summary-sources'
 
 export const dynamic = 'force-dynamic'
 
@@ -59,6 +65,25 @@ export default async function Page({
   const canLinkOrder = canOpenOrderDetail(session.permissions.actions)
   const doc = await getInventoryCoreDocById(id)
   if (!doc) notFound()
+
+  /*
+   * #349 汇总单来源明细：只在汇总单上取，其它单据类型不产生这次查询。
+   * 市场筛选走 URL（`?market=`），与返回入口的 from/level/op 并存 —— 组件内构造链接时会保留它们。
+   */
+  const sourceMarketFilter = typeof query?.market === 'string' && query.market.trim()
+    ? query.market.trim()
+    : undefined
+  const summarySourceData = doc.docType === '市场报货汇总'
+    ? await Promise.all([
+        // 市场筛选走 SQL（与导出同一 where），不在内存里过滤 —— 见组件的注释
+        listMarketReportSummarySources({ docId: doc.id, market: sourceMarketFilter }),
+        // 选项独立查（不受截断与当前筛选影响）
+        listMarketReportSummarySourceMarkets({ docId: doc.id }),
+      ]).then(([sources, markets]) => ({ sources, markets }))
+    : null
+  // 价格档由**取数层按行级判据**下发（见 listMarketReportSummarySourcesForSession 的注释）：
+  // 会话级 visibility 与行级剥离在"档位绑定集合为空"时会分叉，页面会渲染出整列「—」的表头。
+  const canViewSourcePrice = summarySourceData?.sources.priceVisible ?? false
 
   const showPrice = doc.totalAmount !== undefined && doc.docType !== '品项公司发货'
   // 市场报货四列价格来自服务端快照，门店参考价按主体市场价格档遮蔽。
@@ -307,6 +332,20 @@ export default async function Page({
           </div>
         </CardContent>
       </Card>
+
+      {summarySourceData && (
+        <MarketReportSummarySources
+          rows={summarySourceData.sources.rows}
+          docId={doc.id}
+          query={query ?? {}}
+          marketFilter={sourceMarketFilter}
+          marketOptions={summarySourceData.markets}
+          canViewPrice={canViewSourcePrice}
+          canExport={hasUiCapability(session.permissions.actions, 'inventory:export')}
+          truncated={summarySourceData.sources.truncated}
+          limit={summarySourceData.sources.limit}
+        />
+      )}
 
       <div className="overflow-x-auto rounded-md border border-[var(--border)] bg-white">
         <table className={`w-full ${

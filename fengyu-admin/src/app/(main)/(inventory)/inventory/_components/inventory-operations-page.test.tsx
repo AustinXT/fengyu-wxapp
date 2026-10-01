@@ -3213,3 +3213,33 @@ describe('门店报货草稿（#348 · 348a）', () => {
     expect(screen.queryByRole('button', { name: '提交门店报货单' })).not.toBeInTheDocument()
   })
 })
+
+/**
+ * #349 汇总表单的价格列。
+ *
+ * 这几条是**源码级**守护，和本文件其它用例同构：价格列的成立条件散在
+ * 「服务端下发的 priceVisible → state → 表头/单元格三处 JSX」之间，
+ * 只靠渲染测试挡不住「某处漏了条件、某列无条件渲染」。
+ */
+describe('汇总表单的价格列（#349）', () => {
+  const source = readFileSync(resolve(__dirname, 'inventory-operations-page.tsx'), 'utf8')
+
+  it('价格列由服务端下发的 priceVisible 门控，不由前端猜', () => {
+    expect(source).toContain('setSummaryPriceVisible(summary.priceVisible)')
+    // 表头与行两处都要门控：只门控一处会渲染出「有表头无数据」的错位表
+    expect(source.match(/\{summaryPriceVisible && <>/g)?.length).toBe(2)
+  })
+
+  it('loadSummary 映射了两个价格字段', () => {
+    // 漏映射的表现是字段恒 null + 列恒「—」，而没有任何测试会红 —— 所以在这里钉住
+    expect(source).toContain('marketStandardUnitPrice: item.marketStandardUnitPrice')
+    expect(source).toContain('marketActualUnitPrice: item.marketActualUnitPrice')
+  })
+
+  it('金额随本次汇总数量联动（#356 把数量固定后自然退化为只读派生）', () => {
+    expect(source).toContain('function summaryLineAmount(')
+    expect(source).toContain('quantity * line.marketActualUnitPrice')
+    // 反向：不得写成固定用 outstandingQuantity 算（#356 合并前那与可编辑的数量对不上）
+    expect(source).not.toContain('line.outstandingQuantity * line.marketActualUnitPrice')
+  })
+})

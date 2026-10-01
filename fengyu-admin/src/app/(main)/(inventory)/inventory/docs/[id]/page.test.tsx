@@ -13,13 +13,19 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
 import type { InventoryDocDetail } from '@/lib/inventory/types'
 
-const { mockGetDoc, mockGetSession, mockRequireCaps } = vi.hoisted(() => ({
+const { mockGetDoc, mockGetSession, mockRequireCaps, mockGetSources, mockGetSourceMarkets } = vi.hoisted(() => ({
   mockGetDoc: vi.fn(),
   mockGetSession: vi.fn(),
   mockRequireCaps: vi.fn(),
+  mockGetSources: vi.fn(),
+  mockGetSourceMarkets: vi.fn(),
 }))
 
-vi.mock('@/actions/inventory/docs', () => ({ getInventoryCoreDocById: mockGetDoc }))
+vi.mock('@/actions/inventory/docs', () => ({
+  getInventoryCoreDocById: mockGetDoc,
+  listMarketReportSummarySources: mockGetSources,
+  listMarketReportSummarySourceMarkets: mockGetSourceMarkets,
+}))
 vi.mock('@/lib/auth', () => ({ getSession: mockGetSession }))
 vi.mock('@/lib/page-capability', () => ({ requireAllUiPageCapabilities: mockRequireCaps }))
 vi.mock('next/navigation', () => ({
@@ -516,5 +522,83 @@ describe('#363 市场报货参考价格与血缘主体', () => {
       expect(screen.queryByRole('columnheader', { name })).toBeNull()
     }
     expect(screen.getByText('当前单据')).toBeInTheDocument()
+  })
+})
+
+describe('#349 汇总单来源明细', () => {
+  const sourceRow = (over: Record<string, unknown> = {}) => ({
+    id: '1',
+    marketId: 'M1',
+    marketName: '南昌凤御',
+    sourceDocId: 'MTH-20260920-0001',
+    sourceDocDate: '2026-09-20',
+    skuId: 'SKU-1',
+    skuName: '面膜',
+    specName: null,
+    batchNo: 'B1',
+    quantity: 3,
+    marketStandardUnitPrice: 1200,
+    marketUnitDiscount: 200,
+    marketActualUnitPrice: 1000,
+    amount: 3000,
+    promotionPlanNo: 'FA-1',
+    ...over,
+  })
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    // roles 必须存在：汇总单分支会读会话价格档，而 isAdminScope 要遍历 roles。
+    mockGetSession.mockResolvedValue({
+      employeeId: 'E1',
+      roles: [],
+      permissions: { actions: ['inventory:list', 'inventory:market_price_view'] },
+    })
+    // 市场选项现在由独立查询下发（不从行集派生）
+    mockGetSourceMarkets.mockResolvedValue([{ id: 'M1', name: '南昌凤御' }])
+  })
+
+  it('汇总单渲染来源明细，市场小计与合计同源', async () => {
+    mockGetSources.mockResolvedValue({
+      rows: [sourceRow(), sourceRow({ id: '2', sourceDocId: 'MTH-20260920-0002', quantity: 2, amount: 2000 })],
+      truncated: false,
+      priceVisible: true,
+    })
+    await renderPage(docFixture({ docType: '市场报货汇总', items: [itemFixture({})] } as Partial<InventoryDocDetail>))
+
+    expect(screen.getByRole('heading', { name: '来源明细' })).toBeInTheDocument()
+    expect(screen.getByText('MTH-20260920-0001')).toBeInTheDocument()
+    // 小计 5 件 / 5000.00 与合计各出现一次
+    expect(screen.getAllByText('5')).toHaveLength(2)
+    expect(screen.getAllByText('5000.00')).toHaveLength(2)
+  })
+
+  it('新表渲染在明细表之前，itemTable() 仍取到明细表', async () => {
+    mockGetSources.mockResolvedValue({ rows: [sourceRow()], truncated: false, priceVisible: true })
+    await renderPage(docFixture({
+      docType: '市场报货汇总',
+      items: [itemFixture({ skuId: 'SKU-MAIN', skuName: '汇总商品' })],
+    } as Partial<InventoryDocDetail>))
+    // 来源明细若被放到明细表之后，这里会取到来源表，断不到「汇总商品」
+    expect(within(itemTable()).getByText('汇总商品')).toBeInTheDocument()
+  })
+
+  it('无价格档时来源明细不渲染价格列', async () => {
+    mockGetSession.mockResolvedValue({ employeeId: 'E1', roles: [], permissions: { actions: ['inventory:list'] } })
+    mockGetSources.mockResolvedValue({
+      rows: [sourceRow({ marketStandardUnitPrice: null, marketUnitDiscount: null, marketActualUnitPrice: null, amount: null })],
+      truncated: false,
+      // 行级判据：档位不覆盖任何市场时服务端只下发 priceVisible=false
+      priceVisible: false,
+    })
+    await renderPage(docFixture({ docType: '市场报货汇总', items: [itemFixture({})] } as Partial<InventoryDocDetail>))
+    for (const name of ['市场单价', '单价优惠', '实际单价', '金额']) {
+      expect(screen.queryByRole('columnheader', { name })).toBeNull()
+    }
+  })
+
+  it('非汇总单不渲染来源明细，也不触发这次查询', async () => {
+    await renderPage(docFixture({ docType: '市场报货', items: [itemFixture({})] } as Partial<InventoryDocDetail>))
+    expect(screen.queryByRole('heading', { name: '来源明细' })).toBeNull()
+    expect(mockGetSources).not.toHaveBeenCalled()
   })
 })
