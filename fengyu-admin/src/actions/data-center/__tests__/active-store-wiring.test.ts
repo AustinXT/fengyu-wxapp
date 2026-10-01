@@ -108,7 +108,7 @@ const EXEMPT_SQL: Array<[reason: string, pattern: RegExp]> = [
   ['剩余卡项品类字典', /^-- 一级名没有唯一约束：[^\n]*? SELECT c\.category_id, c\.category_name, c\.product_kind, c\.sort_order, MIN\(kind_row\.sort_order\) AS kind_sort FROM product_categories c [^;]*$/],
   ['报表会话参数', /^SET LOCAL (statement_timeout = '\d+s'|jit = off|enable_nestloop = off)$/],
   // 各门店数据起点（loadStoreDataStarts）：只用于判定较上期是否跨割点，按门店分组、不汇总统计值
-  ['数据起点·款项', /^SELECT spe\.store_id, to_char\(MIN\(spe\.performance_date\), 'YYYY-MM-DD'\) AS start FROM sale_reportable_payment_events spe WHERE spe\.status = '已支付' AND spe\.change_type IN \('首次支付', '回款', '退款'\) AND spe\.sale_order_type IN \('销售单', '转换单', '充值单'\) AND spe\.legacy_source IS DISTINCT FROM 'workfine' AND spe\.performance_amount <> 0 GROUP BY spe\.store_id$/],
+  ['数据起点·款项', /^SELECT so\.store_id, to_char\(MIN\(p\.performance_attribution_date\), 'YYYY-MM-DD'\) AS start FROM sale_order_payments p JOIN sale_orders so ON so\.sale_order_id = p\.sale_order_id [^;]*GROUP BY so\.store_id$/],
   ['数据起点·服务单', /^SELECT store_id, to_char\(MIN\(service_date\), 'YYYY-MM-DD'\) AS start FROM service_orders WHERE status = '已完成' GROUP BY store_id$/],
 ]
 
