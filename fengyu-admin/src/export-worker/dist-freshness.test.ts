@@ -132,6 +132,22 @@ function moduleSegments(dist: string, file: string, keepIndent = false): string[
 
 const PROBES: Probe[] = [
   {
+    label: '拓客款项视图 · 按款项关联 receipt（#494）',
+    file: '../db/schema/order.ts',
+    pattern: /^(LEFT JOIN LATERAL \(|WHERE spir\.sale_payment_id = spe\.sale_payment_id)$/,
+    minLines: 2,
+    uniqueLines: 2,
+    exactLinesInModule: true,
+  },
+  {
+    label: '拓客子项视图 · receipt 分配上界与残差防重复（#494）',
+    file: '../db/schema/order.ts',
+    pattern: /^(SELECT 'receipt:' \|\| r\.receipt_id::text AS event_key,|receipt_bounded AS \(|END AS allocatable_amount|ELSE ROUND\(rb\.allocatable_amount \* rb\.amount \/ rb\.eligible_total, 2\)|THEN rr\.allocatable_amount - SUM\(rr\.rounded_amount\) OVER \(\) \+ rr\.rounded_amount|WHERE sipe\.is_legacy_residual)$/,
+    minLines: 6,
+    uniqueLines: 6,
+    exactLinesInModule: true,
+  },
+  {
     label: '人效板 · 员工排行榜入榜口径（#290）',
     file: 'src/actions/data-center/efficiency.ts',
     pattern: /^WHERE \(pe\.has_skills OR COALESCE\(/,
