@@ -179,6 +179,12 @@ describe('staff.todayCommission', () => {
     expect(ctx.result.lastMonthOrderCount).toBe(10)
     expect(ctx.result.lastMonthServiceCount).toBe(8)
     expect(ctx.result.storeTodayRevenue).toBeUndefined()
+    for (const index of [0, 2, 4]) {
+      const amountSql = pg.query.mock.calls[index][0]
+      expect(amountSql).toContain('JOIN sale_reportable_item_events sipe ON sipe.receipt_id = spir.id')
+      expect(amountSql).toContain('sipe.performance_amount::numeric / NULLIF(spir.amount::numeric, 0)')
+      expect(amountSql).not.toContain('spia.commission_amount')
+    }
   })
 
   test('店长额外获取门店今日营收', async () => {

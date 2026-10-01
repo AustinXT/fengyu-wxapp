@@ -532,8 +532,15 @@ test('0041 业绩视图直读款项归属日期列，写入侧 trigger 与非空
   const schemaSql = read('schema/order.ts')
   const migrationSql = read('migrations/0041_bizarre_wolfpack.sql')
   const snapshot41 = JSON.parse(read('migrations/meta/0041_snapshot.json'))
+  const orderQueryStart = schemaSql.indexOf('const saleOrderPerformanceEventsQuery = sql`')
+  const orderQueryEnd = schemaSql.indexOf('`;', orderQueryStart)
+  const itemViewStart = schemaSql.indexOf('export const saleItemPerformanceEvents = pgView(')
+  const itemViewEnd = schemaSql.indexOf('`);', itemViewStart)
+  assert.ok(orderQueryStart >= 0 && orderQueryEnd > orderQueryStart)
+  assert.ok(itemViewStart >= 0 && itemViewEnd > itemViewStart)
   const viewDefinitions = [
-    schemaSql,
+    schemaSql.slice(orderQueryStart, orderQueryEnd),
+    schemaSql.slice(itemViewStart, itemViewEnd),
     snapshot41.views['public.sale_order_performance_events'].definition,
     snapshot41.views['public.sale_item_performance_events'].definition,
   ]
@@ -550,7 +557,9 @@ test('0041 业绩视图直读款项归属日期列，写入侧 trigger 与非空
   })
 
   // 收敛的正面证据：直读列
-  for (const definition of [...viewDefinitions, ...viewStatements]) {
+  // 当前子项源码通过模板插入同一款项查询，不会再复制 performance_date 字面量。
+  assert.match(viewDefinitions[1], /\$\{saleOrderPerformanceEventsQuery\}/)
+  for (const definition of [viewDefinitions[0], ...viewDefinitions.slice(2), ...viewStatements]) {
     assert.match(definition, /sop\.performance_attribution_date AS performance_date/)
   }
   // 收敛的反面证据：0037/0038 那三段回退分支必须从**视图定义**里消失，否则等于口径没收敛。

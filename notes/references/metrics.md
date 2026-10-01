@@ -153,6 +153,7 @@
 | 收入 | 销售提成 + 服务提成 | 销售=`sale_payment_item_allocations.employee_id`；服务=`service_commissions.employee_id` | 销售按 `[spe.performance_date_period]`；服务按 `[service_date_period]` | `is_void=FALSE`；销售使用 `commission_amount`；服务使用 `service_commissions.commission_amount` |
 
 > **业绩 vs 收入区别**：业绩是剔除拓客的员工销售营业额份额；收入 = 原有销售提成 + 服务提成（`service_commissions`），提成金额不随本次报表业绩排除而变化，因此两者不可直接按比例比较。
+> staff `todayCommission` 的 `todayAmount` / `thisMonthAmount` / `lastMonthAmount` 虽沿用“分成”命名，历史公式是 `allocated_amount`（销售营业额分配份额），故按本次可计子项比例缩放；它们不是员工应发提成。真正的销售提成仍是 `commission_amount`，收入查看和提成结算不按拓客比例改写。
 >
 > **2026-09-03 员工归属口径变更（实耗 / 客流 / 项目数）**：归属字段从 `service_items.employee_id`
 > 改为 `service_commissions.employee_id`（`is_void=FALSE`），实耗额外乘 `allocation_ratio`。
@@ -1144,7 +1145,7 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 | 指标 | 公式 | 说明 |
 |------|------|------|
 | ☆ 业绩合计 | = 销售板「总业绩」：`SUM(spe.performance_amount)` ∩ 已支付 ∩ `change_type IN ('首次支付','回款','退款')` ∩ `sale_order_type IN ('销售单','转换单','充值单')` ∩ `legacy_source IS DISTINCT FROM 'workfine'` ∩ `[spe.performance_date]` | **含充值**（原型「合计 = 4 类之和」不含）。**不带**「父订单已结清」（`so.status='已支付'`）过滤，与 #300 同方向 |
-| 各经营类型 / 品项业绩 | 款项集合同上但只取销售单 + 转换单；每行 `receipt.amount × 款项金额 ÷ 该款项全部 receipts 之和` 后按 `sale_items.sales_category` / SKU 所挂二级品项汇总 | 储值卡抵扣份额、转换单折抵残差自然剔除（储值卡在充值时已计业绩）。分母为 0 / 款项无 receipts / `sku_id` 为空 / SKU 挂在一级 / 二级找不到一级 / `sales_category` 为空 → 进「未分类」，不丢钱 |
+| 各经营类型 / 品项业绩 | 款项集合同上但只取销售单 + 转换单；直接汇总 `sale_reportable_item_events.performance_amount` 的 receipt 行，按 `sale_items.sales_category` / SKU 所挂二级品项分组；再以「款项可计额 − receipt 可计额」补未分类差额 | 拓客 receipt 为 0，普通 receipt 按款项金额封顶且不超过原普通分摊额；储值卡抵扣不进入此现金款项集。无 receipt、零分母及分摊缺口通过差额进入「未分类」，不丢钱。`sku_id` / `sales_category` 缺失时也归未分类 |
 | ☆ 充值 | 款项集合同上但只取充值单 | 充值单没有商品明细，单列在「生态合作业绩」与「业绩合计」之间 |
 | 服务（各经营类型 / 合计） | = 销售板「总实耗」：`SUM(sit.unit_real_price * sit.session_used)` ∩ `so.status='已完成'` ∩ `[service_date]` ∩ 剔除寄存单退款专用单，按 `service_items.sales_category` 分组 | 按核销门店。☆ **含寄存单老卡核销**：2026-08 服务合计 4,575,126.33 中寄存单核销 3,417,853.37（74.7%），服务合计约为业绩合计的 1.33 倍——数字正确，交付前向甲方说明 |
 | ☆ 自销自耗业绩占比 | 自销自耗业绩 ÷ 业绩合计 | 分母跟业绩口径走（含充值）：2026-08 含充值 33.3%、不含 35.6%。遇负数照常计算（验收要求，含业绩合计为负），**只有分母为 0 → `--`**；#310 的负基期规则只管增幅徽章，不管占比 |
