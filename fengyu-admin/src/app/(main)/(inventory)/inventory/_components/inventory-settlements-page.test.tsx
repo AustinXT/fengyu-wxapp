@@ -29,7 +29,9 @@ const BASE_REPORT: InventorySettlementReport = {
     targetOrgNodeId: 'HQ',
     targetOrgNodeName: '供应链总部',
     docCount: 2,
+    returnDocCount: 1,
     totalQuantity: 30,
+    returnedQuantity: 5,
     payableAmount: 1234.5,
   }],
   storeRows: [{
@@ -38,14 +40,16 @@ const BASE_REPORT: InventorySettlementReport = {
     targetOrgNodeId: 'S1',
     targetOrgNodeName: '红谷滩店',
     docCount: 3,
+    returnDocCount: 0,
     totalQuantity: 12,
+    returnedQuantity: 0,
     payableAmount: 888,
   }],
 }
 
 describe('InventorySettlementsPage', () => {
   it('市场价格档同时渲染市场结算与分院结算及应付金额', () => {
-    render(<InventorySettlementsPage report={BASE_REPORT} />)
+    render(<InventorySettlementsPage canExport={false} report={BASE_REPORT} />)
 
     expect(screen.getByText('市场货款结算（市场应付供应链）')).toBeTruthy()
     expect(screen.getByText('分院货款结算（门店应付市场）')).toBeTruthy()
@@ -58,6 +62,7 @@ describe('InventorySettlementsPage', () => {
   it('供应链价格档隐藏分院结算区块', () => {
     render(
       <InventorySettlementsPage
+        canExport={false}
         report={{
           ...BASE_REPORT,
           priceVisibility: 'supply_chain',

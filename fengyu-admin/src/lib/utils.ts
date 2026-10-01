@@ -16,6 +16,20 @@ export function formatCurrency(amount: number | string | null | undefined): stri
 }
 
 /**
+ * 带符号金额：负数写成 `-¥1,500.00`（负号在币符之前）。
+ *
+ * 与 `formatCurrency` 分开是有意的 —— 后者被十几个页面（含顾客频率表文案、退款列表）
+ * 依赖，改它的负数写法会波及无关页面的用户可见文本。结算净额是第一个真正会出现
+ * 整列负数的场景（上月配货、本月退货），只在这里用这个变体。
+ */
+export function formatSignedCurrency(amount: number | string | null | undefined): string {
+  const num = typeof amount === 'string' ? parseFloat(amount) : amount
+  if (num == null || Number.isNaN(num)) return '¥0.00'
+  if (num < 0) return `-¥${Math.abs(num).toFixed(2)}`
+  return `¥${num.toFixed(2)}`
+}
+
+/**
  * @deprecated 仅对 11 位手机号脱敏，其他长度返回明文。新代码请用
  * `import { formatPhoneSafe } from '@/lib/format'`（基于 pii.maskPhone，全长度统一脱敏）。
  */
