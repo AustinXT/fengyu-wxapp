@@ -117,9 +117,8 @@
         </view>
         <view class="sd-breakdown-list">
           <block wx:for="{{byProductKind}}" wx:key="label" wx:for-item="kind">
-            <!-- 一级行：左竖条 + 主色加粗 -->
+            <!-- 一级汇总行：浅灰底 + 加粗 -->
             <view class="sd-kind-row">
-              <view class="sd-kind-bar"></view>
               <text class="sd-kind-name">{{kind.label}}</text>
               <text class="sd-kind-value">{{kind.value}}</text>
               <text class="sd-kind-ratio">{{kind.ratio}}</text>

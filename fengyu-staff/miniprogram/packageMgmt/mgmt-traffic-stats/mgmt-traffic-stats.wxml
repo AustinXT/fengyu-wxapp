@@ -28,13 +28,12 @@
       <!-- Section 2：到店客流数据 -->
       <view class="tf-section-title">到店客流数据（区间内）</view>
       <view class="tf-grid-4">
-        <mgmt-stat-card size="md" wx:for="{{display.traffic}}" wx:key="type" count="{{item.count}}" label="{{item.label}}" />
-      </view>
-      <view class="tf-grid-4">
-        <mgmt-stat-card size="md" wx:for="{{display.traffic}}" wx:key="type" count="{{item.users}}" label="对应人数" />
-      </view>
-      <view class="tf-grid-4">
-        <mgmt-stat-card size="md" wx:for="{{display.traffic}}" wx:key="type" count="{{item.sessions}}" label="项目数" />
+        <view class="tf-traffic-card" wx:for="{{display.traffic}}" wx:key="type">
+          <view class="tf-traffic-title">{{item.label}}</view>
+          <view class="tf-traffic-metric"><text class="lbl">客流</text><text class="val">{{item.count}}</text></view>
+          <view class="tf-traffic-metric"><text class="lbl">对应人数</text><text class="val">{{item.users}}</text></view>
+          <view class="tf-traffic-metric"><text class="lbl">项目数</text><text class="val">{{item.sessions}}</text></view>
+        </view>
       </view>
 
       <!-- Section 3：会员状态与客活 -->
@@ -91,7 +90,7 @@
 
       <!-- Section 4：会员被经营情况 -->
       <view class="tf-section-title">会员被经营情况（区间内）</view>
-      <view wx:for="{{display.memberOps.buckets}}" wx:key="tier" class="tf-row">
+      <view wx:for="{{display.memberOps.buckets}}" wx:key="tier" class="tf-row tf-member-row">
         <text class="lbl">{{item.tierLabel}}</text>
         <text class="val">{{item.count}}</text>
         <text class="lbl tf-row-mid">消费金额</text>
