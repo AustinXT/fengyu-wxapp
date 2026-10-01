@@ -95,6 +95,7 @@ const ADMIN_PASSTHROUGH = [
 // v2.0 首次启用严格配置门禁时允许从模板补齐的非秘密运行时默认值。
 // 秘密、数据库地址和环境标识绝不能从 example 猜测，必须沿用真实 env 或历史 staff 账号文件。
 const LEGACY_SAFE_DEFAULT_KEYS = [
+  'NEXT_PUBLIC_INVENTORY_ENTRY_ENABLED',
   'SYSTEM_RUNTIME_DIR',
   'DATABASE_BACKUP_REQUEST_DIR',
   'DATABASE_BACKUP_DIR',
@@ -480,8 +481,10 @@ function publicManifest(env, config, target) {
     analystAdminOrigin: config.ANALYST_ADMIN_ORIGIN,
     analystAdminLoginUrl: config.ANALYST_ADMIN_LOGIN_URL,
     nextPublicRsaPublicKey: config.NEXT_PUBLIC_RSA_PUBLIC_KEY,
-    // 进销存发布开关。刻意不进 REQUIRED_KEYS：缺键时回落 'false'（fail-closed），
-    // 既不阻断未同步该键的本地 env 部署，也不会把库存入口误开进未完成期初核验的环境。
+    // 两个开关独立，刻意不进 REQUIRED_KEYS，未配置时 manifest 回落 false。
+    // reconcile 会按模板补登记入口 true；要关闭入口须显式设为 false。
+    // LINKAGE 不补模板默认，继续 fail-closed，避免误开未完成期初核验的库存联动。
+    nextPublicInventoryEntryEnabled: config.NEXT_PUBLIC_INVENTORY_ENTRY_ENABLED ?? 'false',
     nextPublicInventoryLinkageEnabled: config.NEXT_PUBLIC_INVENTORY_LINKAGE_ENABLED ?? 'false',
     cloudbaseEnvId: config.CLOUDBASE_ENV_ID,
     cdnBase: config.CDN_BASE,

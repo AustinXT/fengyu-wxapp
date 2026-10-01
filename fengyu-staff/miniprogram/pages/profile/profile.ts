@@ -4,7 +4,7 @@ import { bindPhone } from '../../utils/auth';
 import { canAccessInventory, isManager, canSwitchLoginLevel, canAccessManagement } from '../../utils/role';
 import { emit, on, EVENT_STORE_CHANGED } from '../../utils/event-bus';
 import { APP_VERSION } from '../../utils/version';
-import { INVENTORY_ENTRY_ENABLED } from '../../utils/feature-flags';
+import { INVENTORY_ENTRY_ENABLED, INVENTORY_LINKAGE_ENABLED } from '../../utils/feature-flags';
 
 type ScopedStore = { storeId: string; storeName: string };
 
@@ -20,6 +20,7 @@ Page({
     avatarHttpUrl: '',
     isManager: false,
     inventoryEntryEnabled: INVENTORY_ENTRY_ENABLED,
+    inventoryLinkageEnabled: INVENTORY_LINKAGE_ENABLED,
     canAccessInventory: false,
     // scope 范围内门店切换（与 workbench 一致语义）
     currentStoreName: '',

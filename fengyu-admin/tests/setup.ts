@@ -25,3 +25,5 @@ process.env.NEXT_PUBLIC_INVENTORY_LINKAGE_ENABLED =
 afterEach(() => {
   cleanup()
 })
+
+process.env.NEXT_PUBLIC_INVENTORY_ENTRY_ENABLED = process.env.NEXT_PUBLIC_INVENTORY_ENTRY_ENABLED || 'true'
