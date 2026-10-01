@@ -66,6 +66,20 @@ function makeMarketCtx(payload = {}) {
   })
 }
 
+function makeZeroStoreMarketCtx(payload = {}) {
+  return createCtx({
+    payload,
+    auth: {
+      staffLevel: 'market',
+      loginLevel: 'management',
+      hasDataCenterDashboard: true,
+      roleBindings: [{ role: 'finance', scopeId: 'mkt-px', scopeType: '市场' }],
+      scopeOrgNodeIds: ['mkt-px'],
+      scopeStoreIds: [],
+    },
+  })
+}
+
 function isStoreCountSql(sql) {
   return (
     /COUNT\(\*\)::int\s+AS\s+cnt/.test(sql) &&
@@ -105,6 +119,26 @@ function setupDefaultMocks({
 }
 
 describe('mgmtDashboard.summary 参数与权限校验', () => {
+  test('零门店市场账号：本市场返回零值，其它范围在路由层拒绝', async () => {
+    setupDefaultMocks({ metricValue: 0, storeCount: 0, marketName: '品项公司' })
+    const ctx = makeZeroStoreMarketCtx({ date: '2026-09-25', scopeType: 'market', scopeId: 'mkt-px' })
+    await summary(ctx)
+    expect(ctx.result.scope).toMatchObject({ type: 'market', id: 'mkt-px', name: '品项公司' })
+    expect(ctx.result.storeCount).toEqual({ day: 0, month: 0 })
+    expect(ctx.result.storeRevenue.today).toBe(0)
+
+    for (const scope of [
+      { scopeType: 'all' },
+      { scopeType: 'market', scopeId: 'mkt-other' },
+      { scopeType: 'store', scopeId: 'store-other' },
+    ]) {
+      pg.query.mockClear()
+      await expect(summary(makeZeroStoreMarketCtx({ date: '2026-09-25', ...scope })))
+        .rejects.toThrow(/PERMISSION_DENIED/)
+      expect(pg.query).not.toHaveBeenCalled()
+    }
+  })
+
   test('缺 date 抛 INVALID_PARAMS', async () => {
     const ctx = makeHqCtx({ scopeType: 'all' })
     await expect(summary(ctx)).rejects.toThrow(/INVALID_PARAMS.*日期/)
@@ -2874,17 +2908,13 @@ describe('mgmtDashboard.scopeOptions · 已关店标记', () => {
     expect(closedCall[1]).toEqual([['store-A1', 'store-A2']])
   })
 
-  test('关店查询失败 → 不打标、下拉照常返回', async () => {
+  test('关店查询失败 → 范围加载失败，不能误判关店门店为在营', async () => {
     routeQueries(() => { throw new Error('boom') })
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
     const ctx = marketCtx()
-    await scopeOptions(ctx)
+    await expect(scopeOptions(ctx)).rejects.toThrow('boom')
     spy.mockRestore()
-
-    expect(ctx.result.markets[0].stores).toEqual([
-      { storeId: 'store-A1', storeName: '上海A店' },
-      { storeId: 'store-A2', storeName: '上海B店' },
-    ])
+    expect(ctx.result).toBeNull()
   })
 
   test('没有可见门店 → 不发关店查询', async () => {

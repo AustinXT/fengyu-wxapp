@@ -88,6 +88,8 @@ interface ScopeValue {
   marketId?: string
   /** 门店组织节点已停用（#400）：整段出「已停用」空态，子页经 query 继承 */
   inactive?: boolean
+  /** 只关店而组织节点仍启用：用户可显式查看关店前历史 */
+  closed?: boolean
 }
 
 interface SummaryData {
@@ -209,10 +211,12 @@ Page({
     summaryEmptyText: '',
     // 默认范围落在停用门店时允许 picker 自动换到在营门店；用户显式选过后关掉
     scopeAutoCorrect: true,
+    scopeUserPicked: false,
     // 范围仍是初判：picker 拿到 scopeOptions 后按 admin 同规则纠正一次默认范围（#424），纠正过或用户选过后关。
     // 初始 false、由 initDashboard 与初判同一次 setData 打开：scopeOptions 先于 initDashboard 返回时，
     // 不能把这一次纠正耗在占位的「全部市场」上
     scopeResolveDefault: false,
+    scopeOptionsFailedBeforeInit: false,
     summaryEmptyHint: '',
 
     // 门店排行榜
@@ -306,8 +310,16 @@ Page({
       scope: defaultScope,
       defaultScope,
       scopeResolveDefault: true,
+      scopeUserPicked: false,
     })
-    this.loadSummary()
+    if (this.data.scopeOptionsFailedBeforeInit) {
+      this.setData({ loading: false, display: null, displayKey: '', summaryState: 'error' })
+    } else if (defaultScope.scopeType === 'store' && !defaultScope.scopeId) {
+      this.setData({ summaryState: 'empty', summaryEmptyText: '当前账号没有可用的在营门店', summaryEmptyHint: '请联系管理员检查门店授权' })
+    } else {
+      // 先等 scopeOptions 确认关店状态和默认替代门店，避免冷启动请求旧门店并闪现 0。
+      this.setData({ summaryState: 'loading', display: null, displayKey: '' })
+    }
   },
 
   computeDefaultScope(): ScopeValue {
@@ -366,7 +378,7 @@ Page({
       showCalendar: false,
       defaultCalendarDate: d.getTime(),
     })
-    this.loadSummary()
+    if (!this.data.scopeResolveDefault) this.loadSummary()
   },
 
   onScopeChange(e: WechatMiniprogram.CustomEvent<ScopeValue & { userPicked?: boolean }>) {
@@ -377,19 +389,39 @@ Page({
       scope,
       defaultScope: scope,
       ...(userPicked ? { scopeAutoCorrect: false, scopeResolveDefault: false } : {}),
+      ...(userPicked ? { scopeUserPicked: true } : {}),
     })
     this.loadSummary()
   },
 
   /** picker 已按 scopeOptions 纠正过默认范围（#424）：之后重建的 picker 不再纠正 */
   onScopeDefaultResolved() {
-    this.setData({ scopeResolveDefault: false })
+    this.setData({ scopeResolveDefault: false, scopeOptionsFailedBeforeInit: false })
+    this.loadSummary()
+  },
+
+  onScopeOptionsFailed() {
+    if (!this.data.scopeResolveDefault) {
+      if (!this.data.selectedDate) this.setData({ scopeOptionsFailedBeforeInit: true })
+      return
+    }
+    ++summarySeq
+    this.setData({ loading: false, display: null, displayKey: '', summaryState: 'error' })
   },
 
   async loadSummary() {
     if (!this.data.selectedDate) return
+    if (this.data.scopeResolveDefault) return
+    if (this.data.scope.scopeType === 'store' && !this.data.scope.scopeId) {
+      ++summarySeq
+      this.setData({ loading: false, display: null, displayKey: '', summaryState: 'empty',
+        summaryEmptyText: '当前账号没有可用的在营门店', summaryEmptyHint: '请联系管理员检查门店授权' })
+      return
+    }
     // 只认最后一次请求：切 scope / 日期后，迟到的旧响应（含失败）一律丢弃
     const seq = ++summarySeq
+    const today = new Date()
+    const todayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
     // 旧内容只在「同一 scope + 同一日期」的刷新里保留；换了 scope / 日期还挂着旧数字，
     // 请求一失败就成了「B 店（已停用）」配 A 店指标（#400 评审发现）
     const key = `${this.data.scope.scopeType}|${this.data.scope.scopeId || ''}|${this.data.selectedDate}`
@@ -421,6 +453,21 @@ Page({
         })
         return
       }
+      // 停用状态只有 summary 的服务端判定可信；先确认未停用，再显示今日关店空态。
+      if (this.data.scope.scopeType === 'store' && this.data.scope.closed && !this.data.scopeUserPicked && this.data.selectedDate === todayKey) {
+        this.setData({
+          summary,
+          loading: false,
+          display: null,
+          displayKey: '',
+          'scope.inactive': false,
+          'defaultScope.inactive': false,
+          summaryState: 'empty',
+          summaryEmptyText: `「${this.data.scope.scopeName || '该门店'}」已关店`,
+          summaryEmptyHint: '可选择关店前日期查看历史数据',
+        })
+        return
+      }
       this.setData({
         summary,
         display: this.buildDisplay(summary),
@@ -443,6 +490,12 @@ Page({
   },
 
   onSummaryRetry() {
+    if (this.data.scopeResolveDefault) {
+      const picker = this.selectComponent('#scopePicker') as WechatMiniprogram.Component.TrivialInstance & { loadOptions?: () => Promise<void> }
+      picker?.loadOptions?.()
+      this.setData({ summaryState: 'loading' })
+      return
+    }
     this.loadSummary()
   },
 
@@ -531,10 +584,13 @@ Page({
    */
   buildScopeQuery(): string {
     const { scope } = this.data
+    const scopeName = scope.closed && !scope.scopeName.endsWith('（已关店）')
+      ? `${scope.scopeName}（已关店）`
+      : scope.scopeName
     return [
       `scopeType=${scope.scopeType}`,
       scope.scopeId ? `scopeId=${encodeURIComponent(scope.scopeId)}` : '',
-      `scopeName=${encodeURIComponent(scope.scopeName || '')}`,
+      `scopeName=${encodeURIComponent(scopeName || '')}`,
       scope.inactive ? `${SCOPE_INACTIVE_QUERY_KEY}=1` : '',
     ].filter(Boolean).join('&')
   },

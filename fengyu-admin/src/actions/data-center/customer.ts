@@ -436,12 +436,11 @@ async function queryNewMemberSpend(
  * 新增会员对应消费 · WorkFine 历史单分支（#289）。与上面的款项流水分支相加 = 新客客单价分子。
  *
  * WorkFine 单在款项流水里没有行，不补这条时「今年」这类跨割点区间低报约 4 成；
- * 截至 2026-09-26 prod 数据，WorkFine 单归属日期最晚到 2026-08-01，区间起点 ≥ 2026-08-02 时本分支为 0、
- * 结果与补之前一致 —— 这是数据现状不是约束：历史单拉取不限日期，以后再拉入更晚的单，本分支会随之计入。
+ * #471 明确只接入归属日期不晚于 2026-07-03 的旧源；纯割点后区间本分支恒为 0。
  * 人群条件与 scope 列（`c.bound_store_id`）同款项流水分支（#439 起归店跟着人走，与分母同源）；
  * 口径与片段来源见 lib/data-center/workfine-legacy-spend.ts。
  * staff 同口径副本：mgmt-traffic.js::queryNewMemberLegacySpend（consistency.customer.test.ts 逐字守护）。
- * 与线上单时间重叠（12 家店 113 张）不去重，2026-09-26 拍板接受。
+ * #471 割点后的 WorkFine 单不参与本 KPI；此前发现的线上单重叠样本均在割点后。
  */
 async function queryNewMemberLegacySpend(
   session: AuthSession,
@@ -462,7 +461,7 @@ async function queryNewMemberLegacySpend(
 }
 
 /**
- * 当月流量客人数（成交率分母）= 期初未达会员的到店活跃池 ∪ 本期全部新增会员
+ * 成交率分母 = 期初未达会员的到店活跃池 ∪ 本期全部新增会员
  * （D-conv-denom=1c，#284 于 2026-09-22 拍板；推翻原 D-2=B）
  *
  * 为什么不能只用 `customer_type IN ('体验客','小美客')`：该字段是**只升不降的当前快照**
@@ -487,7 +486,7 @@ async function queryTrialFootfall(
   const rows = await db.execute(sql`
     SELECT COUNT(DISTINCT t.uid) AS v
     FROM (
-      -- ① 本期到店 且 期初未达会员（当前仍未达会员 OR 本期内才转化）
+      -- ① 本期到店 且 期初未达会员（之后才转会员者仍属历史到店池）
       SELECT so.client_user_id AS uid
       FROM service_orders so
       JOIN client_wechat_users c ON c.user_id = so.client_user_id
@@ -496,8 +495,8 @@ async function queryTrialFootfall(
         AND so.client_user_id IS NOT NULL
         AND so.service_date BETWEEN ${range.start} AND ${range.end}
         AND (
-          c.customer_type IN ('体验客', '小美客')
-          OR c.became_member_at::date BETWEEN ${range.start} AND ${range.end}
+          (c.became_member_at IS NULL AND c.customer_type IN ('体验客', '小美客'))
+          OR c.became_member_at::date >= ${range.start}
         )
       UNION
       -- ② 本期全部新增会员（兜住本期无已完成服务单者，保证分子 ⊆ 分母）
@@ -869,8 +868,8 @@ async function queryOpsBreakdown(
           AND so.client_user_id IS NOT NULL
           AND so.service_date BETWEEN ${start} AND ${end}
           AND (
-            c.customer_type IN ('体验客', '小美客')
-            OR c.became_member_at::date BETWEEN ${start} AND ${end}
+            (c.became_member_at IS NULL AND c.customer_type IN ('体验客', '小美客'))
+            OR c.became_member_at::date >= ${start}
           )
         UNION
         SELECT ${groupId} AS group_id, c.user_id AS uid

@@ -156,12 +156,8 @@ async function scopeOptions(ctx) {
   })
 
   // 只关店、节点仍启用的门店留在下拉里（有关店前的历史数据），打 closed 标给前端显示「（已关店）」、
-  // 选市场时默认门店跳过它（#422）。纯展示：查失败就不打标，不拖垮范围下拉
+  // 选市场及初次进入看板的默认门店都须跳过已关店门店（#473）。查失败时不能把未知误判为在营。
   const closedIds = await loadClosedStoreIds(pg, visible.flatMap((market) => market.stores.map((store) => store.storeId)))
-    .catch((err) => {
-      console.error('[mgmtDashboard.scopeOptions] loadClosedStoreIds failed:', err)
-      return new Set()
-    })
   const markets = closedIds.size === 0
     ? visible
     : visible.map((market) => ({

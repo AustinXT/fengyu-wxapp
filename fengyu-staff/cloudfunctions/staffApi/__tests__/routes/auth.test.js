@@ -17,6 +17,26 @@ describe('auth.login', () => {
     cloud.getWXContext.mockReturnValue({ OPENID: 'staff-openid-001' })
   })
 
+  test('无门店市场 finance 登录回包仅下发管理层身份和合法市场绑定', async () => {
+    pg.query.mockImplementation(async (sql) => {
+      if (/FROM\s+staff_wechat_users\s+u/.test(sql)) return [{
+        employee_id: 'emp-px', phone: '13800009999', name: '品项财务',
+        position_name: '财务', is_resigned: false, skills: [], store_id: null,
+        store_name: null, market_name: null,
+      }]
+      if (/FROM\s+permission_roles\s+pr/.test(sql)) return [{
+        role: 'finance', scope_id: 'mkt-px', scope_type: '市场', scope_name: '品项公司',
+      }]
+      if (/FROM\s+permission_role_definitions/.test(sql)) return [{ role_key: 'finance', actions: ['data_center:dashboard'] }]
+      return []
+    })
+    const ctx = { event: {}, context: {}, auth: { openid: 'staff-openid-001' }, result: null }
+    await authRoutes.login(ctx)
+    expect(ctx.result.availableLoginLevels).toEqual(['management'])
+    expect(ctx.result.scopedStores).toEqual([])
+    expect(ctx.result.roleBindings).toMatchObject([{ scopeType: '市场', scopeId: 'mkt-px', scopeName: '品项公司' }])
+  })
+
   test('已注册的活跃员工返回完整信息（含 P2-14 skills）', async () => {
     pg.query
       .mockResolvedValueOnce([{

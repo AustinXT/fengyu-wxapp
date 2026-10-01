@@ -11,6 +11,7 @@ interface Scope {
   marketId?: string
   /** 门店组织节点已停用（#400）：触发器标「（已停用）」，页面出空态 */
   inactive?: boolean
+  closed?: boolean
 }
 
 interface MarketMini {
@@ -65,6 +66,7 @@ Component({
     optionsLoaded: false,
     optionsSeq: 0,
     userPicked: false,
+    defaultResolvedEmitted: false,
   },
 
   lifetimes: {
@@ -86,8 +88,9 @@ Component({
         // 同一范围只是启停标记变了（页面据 summary 回包确认）：照抄，不重新校正、不广播。
         // 若拿缓存的 inactiveStoreIds 重新校正，会把服务端刚确认的停用撤掉 → change → 重新 summary →
         // 又确认停用 …… 形成请求死循环（#400 评审发现）
-        if (!!def.inactive !== !!applied.inactive) {
-          this.setData({ 'applied.inactive': !!def.inactive, 'current.inactive': !!def.inactive })
+        if (!!def.inactive !== !!applied.inactive || !!def.closed !== !!applied.closed) {
+          this.setData({ 'applied.inactive': !!def.inactive, 'current.inactive': !!def.inactive,
+            'applied.closed': !!def.closed, 'current.closed': !!def.closed })
         }
         return
       }
@@ -95,6 +98,11 @@ Component({
       // 页面 initDashboard 在同一次 setData 里下发 defaultScope + resolveDefault（#424）：依赖框架「同批属性先全部提交、
       // 再派发 observers」，此处读到的 resolveDefault 已是新值。若 optionsLoaded 此刻为 false，纠正在首次 loadOptions 里做
       if (this.data.optionsLoaded) this._normalizeApplied()
+    },
+    resolveDefault(resolve: boolean) {
+      // scopeOptions 可能先于页面 initDashboard 返回，此时 defaultScope 仍是占位的「全部市场」。
+      // 页面随后打开纠正开关时，即使范围 ID 没变，也必须完成首次归一化并回报页面。
+      if (resolve && this.data.optionsLoaded && !this.data.userPicked) this._normalizeApplied()
     },
     appliedInactive(inactive: boolean) {
       const applied = this.data.applied as Scope
@@ -106,7 +114,7 @@ Component({
   methods: {
     /**
      * 拉范围数据。首次加载后校正默认范围；之后每次打开弹窗重拉（会话中门店可能被启停），
-     * 重拉只刷新可选列表、不动当前范围——当前范围的启停由页面按 summary 回包同步，不在这里自动换店。
+     * 重拉只刷新可选列表和当前范围的关店标签，不自动换店。
      */
     async loadOptions() {
       const seq = this.data.optionsSeq + 1
@@ -133,10 +141,40 @@ Component({
           optionsLoaded: true,
         })
         if (initial) this._normalizeApplied()
+        else this._refreshClosedMarkers()
       } catch (err) {
         if (seq !== this.data.optionsSeq) return
         // 重拉失败保留已有列表，不打扰；首次失败才提示
-        if (initial) wx.showToast({ title: '加载范围失败', icon: 'none' })
+        if (initial) {
+          wx.showToast({ title: '加载范围失败', icon: 'none' })
+          this.triggerEvent('optionsfailed')
+        }
+      }
+    },
+
+    /** 列表重拉后同步当前门店的展示状态；范围 ID 与用户手选状态不变。 */
+    _refreshClosedMarkers() {
+      const lists = this.data.storeListByMarket as Record<string, StoreMini[]>
+      const closedOf = (scope: Scope): boolean | undefined => {
+        if (scope.scopeType !== 'store' || !scope.scopeId) return undefined
+        const store = scope.marketId && (lists[scope.marketId] || []).find((item) => item.storeId === scope.scopeId)
+        return store ? store.closed === true : undefined
+      }
+      const applied = this.data.applied as Scope
+      const current = this.data.current as Scope
+      const appliedClosed = closedOf(applied)
+      const currentClosed = closedOf(current)
+      const appliedChanged = appliedClosed !== undefined && applied.closed !== appliedClosed
+      const update: Record<string, boolean> = {}
+      if (appliedChanged) update['applied.closed'] = appliedClosed
+      if (currentClosed !== undefined && current.closed !== currentClosed) update['current.closed'] = currentClosed
+      if (Object.keys(update).length === 0) return
+      this.setData(update)
+      if (appliedChanged) {
+        this.triggerEvent('change', {
+          ...applied,
+          closed: appliedClosed,
+        })
       }
     },
 
@@ -154,21 +192,27 @@ Component({
       const onKnownInactive = applied.scopeType === 'store'
         && ((this.data.inactiveStoreIds as string[] | null) || []).includes(applied.scopeId || '')
       // 弹窗开着时不纠正（首次加载失败、onOpen 重拉才首次拿到选项）：会覆盖弹窗里正在选的项
-      const resolving = this.properties.resolveDefault && !this.data.userPicked && !onKnownInactive && !this.data.showPopup
+      const finishDefault = this.properties.resolveDefault && !this.data.userPicked
+        && !this.data.showPopup && !this.data.defaultResolvedEmitted
+      const resolving = finishDefault && !onKnownInactive
       if (resolving) {
+        // 最新停用列表已确认该店不再停用时，丢掉登录缓存中的旧标记再决策；
+        // 查询失败为 null 时保留旧标记，避免把未知状态误当在营。
+        const inactiveIds = this.data.inactiveStoreIds as string[] | null
+        const initialScope = applied.scopeType === 'store' && applied.inactive && inactiveIds
+          && !inactiveIds.includes(applied.scopeId || '') ? { ...applied, inactive: false } : applied
         const resolved = resolveDefaultMgmtScope(
           {
             allowAll: this.data.allowAll,
             allowedMarketIds,
             markets: marketList.map((m) => ({ ...m, stores: storeListByMarket[m.id] || [] })),
           },
-          applied,
+          initialScope,
           getApp<IAppOption>().globalData.managerStoreIds || [],
         )
         if (resolved) nextApplied = resolved
         // 初判纠正每个会话只做一次：页面据此关掉 resolveDefault。否则 wx:if 切 tab 重建 picker 时会再纠正一遍，
         // 把会话中组织变动后、已展示过数字的范围换掉（违背 #400「展示过就不换店」）
-        this.triggerEvent('defaultresolved')
       }
       // 若调用方传入的 defaultScope 是 market 维度但 scopeName / marketId 缺失（页面层占位），
       // 按返回数据回填真实市场名，并广播一次 change 同步页面显示。
@@ -177,28 +221,28 @@ Component({
         const m = marketList.find(x => x.id === marketId)
         if (m) nextApplied = { ...nextApplied, marketId: m.id, scopeName: m.name }
       }
-      if (nextApplied.scopeType === 'store' && !nextApplied.marketId && nextApplied.scopeId) {
+      if (nextApplied.scopeType === 'store' && nextApplied.scopeId) {
         const market = marketList.find((m) =>
           (storeListByMarket[m.id] || []).some((store) => store.storeId === nextApplied.scopeId),
         )
         if (market) {
           const store = (storeListByMarket[market.id] || []).find((item) => item.storeId === nextApplied.scopeId)
-          nextApplied = {
-            ...nextApplied,
-            marketId: market.id,
-            scopeName: nextApplied.scopeName || `${market.name} · ${store?.storeName || ''}`,
+          const scopeName = nextApplied.scopeName || `${market.name} · ${store?.storeName || ''}`
+          const closed = store?.closed === true
+          if (nextApplied.marketId !== market.id || nextApplied.scopeName !== scopeName || nextApplied.closed !== closed) {
+            nextApplied = { ...nextApplied, marketId: market.id, scopeName, closed }
           }
         }
       }
       // 默认门店落在已停用门店（#400）：取数会滤掉它的全部数据（满屏 0）。
       // 有在营门店可选就纠正到第一家在营门店；没有就保留，标「已停用」由页面出空态。
-      // 只纠正停用门店 —— 只关店、节点仍在营的门店照常在下拉里（标「（已关店）」，#422）、照样有历史数据，不动它。
+      // 停用门店按 #400 替代，替代候选也须未关店；关店门店仍可在下拉手选查历史。
       const knownInactive = this.data.inactiveStoreIds as string[] | null
       if (knownInactive) {
         const inactiveIds = new Set(knownInactive)
         if (nextApplied.scopeType === 'store' && nextApplied.scopeId && inactiveIds.has(nextApplied.scopeId)) {
           // 两份列表出自两条查询（非同一快照），同一家店可能两边都有 → 停用优先，替代门店须不在停用集合里
-          const firstActiveOf = (m: MarketMini) => (storeListByMarket[m.id] || []).find((store) => !inactiveIds.has(store.storeId))
+          const firstActiveOf = (m: MarketMini) => (storeListByMarket[m.id] || []).find((store) => !store.closed && !inactiveIds.has(store.storeId))
           const market = marketList.find((m) => !!firstActiveOf(m))
           const firstActive = market ? firstActiveOf(market) : undefined
           nextApplied = market && firstActive && this.properties.autoCorrect
@@ -228,7 +272,12 @@ Component({
           scopeName: nextApplied.scopeName,
           marketId: nextApplied.marketId,
           inactive: nextApplied.inactive === true,
+          ...(nextApplied.closed ? { closed: true } : {}),
         })
+      }
+      if (finishDefault) {
+        this.setData({ defaultResolvedEmitted: true })
+        this.triggerEvent('defaultresolved')
       }
     },
 
@@ -277,6 +326,7 @@ Component({
             marketId,
             scopeId: firstStore.storeId,
             scopeName: `${market.name} · ${firstStore.storeName}`,
+            closed: firstStore.closed === true,
           }
           : this.data.current as Scope
       this.setData({ current: next, currentAllowsMarket })
@@ -311,6 +361,7 @@ Component({
         marketId: cur.marketId,
         scopeId: storeId,
         scopeName: `${market.name} · ${store.storeName}`,
+        closed: store.closed === true,
       }
       this._confirmAndEmit(next)
     },
@@ -339,6 +390,7 @@ Component({
         // 带上所属市场：门店日后停用、picker 重建时已无法从在营列表反推市场
         marketId: next.marketId,
         inactive,
+        ...(next.closed ? { closed: true } : {}),
         userPicked: true,
       })
     },

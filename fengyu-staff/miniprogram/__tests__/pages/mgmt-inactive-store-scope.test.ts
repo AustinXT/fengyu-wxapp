@@ -85,17 +85,17 @@ beforeAll(async () => {
   })
 
   registering = 'hub'
-  await import('../../pages/mgmt-dashboard/mgmt-dashboard')
+  await import('../../pages/mgmt-dashboard/mgmt-dashboard.ts')
   registering = 'picker'
-  await import('../../components/mgmt-scope-picker/mgmt-scope-picker')
+  await import('../../components/mgmt-scope-picker/mgmt-scope-picker.ts')
   registering = 'traffic'
-  await import('../../packageMgmt/mgmt-traffic-stats/mgmt-traffic-stats')
+  await import('../../packageMgmt/mgmt-traffic-stats/mgmt-traffic-stats.ts')
   registering = 'sales'
-  await import('../../pages/sales-data/sales-data')
+  await import('../../pages/sales-data/sales-data.ts')
   registering = 'products'
-  await import('../../packageMgmt/mgmt-product-cycle/mgmt-product-cycle')
+  await import('../../packageMgmt/mgmt-product-cycle/mgmt-product-cycle.ts')
   registering = 'customers'
-  await import('../../packageMgmt/mgmt-customer-list/mgmt-customer-list')
+  await import('../../packageMgmt/mgmt-customer-list/mgmt-customer-list.ts')
 })
 
 afterAll(() => {
@@ -108,6 +108,264 @@ beforeEach(() => {
   vi.clearAllMocks()
   mocked.mockReset()
   setGlobalData({})
+})
+
+describe('hub · 默认关店空态与手选历史（#473）', () => {
+  const today = () => {
+    const d = new Date()
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  }
+
+  test('冷启动先等待范围选项，未确认关店状态前不请求 summary', () => {
+    setGlobalData({ scopedStores: [{ storeId: 'closed', storeName: '已关店', isActive: true }] })
+    const hub = instantiate('hub')
+    hub.initDashboard()
+    expect(hub.data.scopeResolveDefault).toBe(true)
+    expect(hub.data.summaryState).toBe('loading')
+    expect(mocked).not.toHaveBeenCalled()
+  })
+
+  test('首次范围请求失败显示错误，不能把未知关店状态显示成 0', async () => {
+    const hub = instantiate('hub')
+    hub.data.selectedDate = today()
+    hub.data.scopeResolveDefault = true
+    hub.data.scope = { scopeType: 'store', scopeId: 'closed', scopeName: '已关店' }
+    const picker = instantiate('picker')
+    mocked.mockRejectedValueOnce(new Error('network'))
+    await picker.loadOptions()
+    expect(picker.events.at(-1)?.name).toBe('optionsfailed')
+    hub.onScopeOptionsFailed()
+    expect(hub.data.summaryState).toBe('error')
+    expect(mocked).not.toHaveBeenCalledWith('mgmtDashboard.summary', expect.anything())
+  })
+
+  test('范围选项先返回、页面后打开默认纠正开关时仍结束 loading', async () => {
+    setGlobalData({ roleBindings: [{ role: 'admin', scopeType: '总部', scopeId: 'hq' }] })
+    const picker = instantiate('picker')
+    mocked.mockResolvedValueOnce({ allowAll: true, allowedMarketIds: [], markets: [], inactiveStores: [] })
+    await picker.loadOptions()
+    expect(picker.events).not.toContainEqual(expect.objectContaining({ name: 'defaultresolved' }))
+    const hub = instantiate('hub')
+    hub.initDashboard()
+    picker.properties.defaultScope = hub.data.defaultScope
+    picker.properties.resolveDefault = true
+    definitions.picker.observers.resolveDefault.call(picker, true)
+    expect(picker.events.at(-1)?.name).toBe('defaultresolved')
+  })
+
+  test('同批默认范围与纠正开关的两个 observer 只发一次完成事件', async () => {
+    const picker = instantiate('picker')
+    mocked.mockResolvedValueOnce({ allowAll: true, allowedMarketIds: [], markets: [], inactiveStores: [] })
+    await picker.loadOptions()
+    picker.properties.resolveDefault = true
+    definitions.picker.observers.defaultScope.call(picker, { scopeType: 'store', scopeId: 'old', scopeName: '旧店' })
+    definitions.picker.observers.resolveDefault.call(picker, true)
+    expect(picker.events.filter((event: { name: string }) => event.name === 'defaultresolved')).toHaveLength(1)
+  })
+
+  test('范围请求先于页面初始化失败时保留错误态及重试入口', async () => {
+    const hub = instantiate('hub')
+    const picker = instantiate('picker')
+    mocked.mockRejectedValueOnce(new Error('network'))
+    await picker.loadOptions()
+    expect(picker.events.at(-1)?.name).toBe('optionsfailed')
+    hub.onScopeOptionsFailed()
+    expect(hub.data.scopeOptionsFailedBeforeInit).toBe(true)
+    hub.initDashboard()
+    expect(hub.data.scopeResolveDefault).toBe(true)
+    expect(hub.data.summaryState).toBe('error')
+    expect(mocked).not.toHaveBeenCalledWith('mgmtDashboard.summary', expect.anything())
+  })
+
+  test('范围首次加载失败后点击重试重新拉取范围选项', async () => {
+    const hub = instantiate('hub')
+    hub.data.scopeResolveDefault = true
+    hub.data.summaryState = 'error'
+    const picker = instantiate('picker')
+    hub.selectComponent = () => picker
+    mocked.mockResolvedValueOnce({ allowAll: true, allowedMarketIds: [], markets: [], inactiveStores: [] })
+    hub.onSummaryRetry()
+    await Promise.resolve()
+    expect(mocked).toHaveBeenCalledWith('mgmtDashboard.scopeOptions', {})
+    expect(hub.data.summaryState).toBe('loading')
+  })
+
+  test('无授权范围完成默认纠正后保持空态，不发送空门店请求', async () => {
+    const hub = instantiate('hub')
+    hub.data.selectedDate = today()
+    hub.data.scopeResolveDefault = true
+    hub.data.scope = { scopeType: 'store', scopeId: '', scopeName: '' }
+    hub.onScopeDefaultResolved()
+    expect(hub.data.summaryState).toBe('empty')
+    expect(mocked).not.toHaveBeenCalledWith('mgmtDashboard.summary', expect.anything())
+  })
+
+  test('登录缓存初判空门店、范围接口已有授权门店时纠正后查该店', async () => {
+    const hub = instantiate('hub')
+    hub.data.selectedDate = today()
+    hub.data.scopeResolveDefault = true
+    hub.data.scope = { scopeType: 'store', scopeId: '', scopeName: '' }
+    const picker = instantiate('picker')
+    picker.properties.resolveDefault = true
+    picker.data.applied = hub.data.scope
+    picker.data.current = hub.data.scope
+    mocked.mockResolvedValueOnce({
+      staffLevel: 'store_manager', allowAll: false, allowedMarketIds: [], inactiveStores: [],
+      markets: [{ id: 'm', name: '市场', stores: [{ storeId: 'open', storeName: '在营店' }] }],
+    })
+    mocked.mockResolvedValueOnce(summaryResp({ type: 'store', id: 'open', name: '在营店', inactive: false }))
+    await picker.loadOptions()
+    for (const event of picker.events) {
+      if (event.name === 'change') hub.onScopeChange({ detail: event.detail })
+      if (event.name === 'defaultresolved') hub.onScopeDefaultResolved()
+    }
+    expect(hub.data.scope.scopeId).toBe('open')
+    expect(mocked).toHaveBeenCalledWith('mgmtDashboard.summary', expect.objectContaining({ scopeId: 'open' }))
+  })
+
+  test('最新停用列表确认旧缓存门店不再停用且范围已有别店时改选可用门店', async () => {
+    const picker = instantiate('picker')
+    picker.properties.resolveDefault = true
+    picker.data.applied = { scopeType: 'store', scopeId: 'removed', scopeName: '旧店', inactive: true }
+    picker.data.current = picker.data.applied
+    mocked.mockResolvedValueOnce({
+      staffLevel: 'store_manager', allowAll: false, allowedMarketIds: [], inactiveStores: [],
+      markets: [{ id: 'm', name: '市场', stores: [{ storeId: 'open', storeName: '在营店' }] }],
+    })
+    await picker.loadOptions()
+    expect(picker.data.applied).toMatchObject({ scopeType: 'store', scopeId: 'open' })
+  })
+
+  test('picker 默认纠正事件传到页面：有在营替代时只查询替代门店', async () => {
+    const hub = instantiate('hub')
+    hub.data.selectedDate = today()
+    hub.data.scopeResolveDefault = true
+    hub.data.scope = { scopeType: 'store', scopeId: 'closed', scopeName: '已关店' }
+    const picker = instantiate('picker')
+    picker.properties.resolveDefault = true
+    picker.data.applied = hub.data.scope
+    picker.data.current = hub.data.scope
+    mocked.mockResolvedValueOnce({
+      staffLevel: 'store_manager', allowAll: false, allowedMarketIds: [], inactiveStores: [],
+      markets: [{ id: 'm', name: '市场', stores: [
+        { storeId: 'closed', storeName: '已关店', closed: true },
+        { storeId: 'open', storeName: '在营店' },
+      ] }],
+    })
+    mocked.mockResolvedValueOnce(summaryResp({ type: 'store', id: 'open', name: '在营店', inactive: false }))
+    await picker.loadOptions()
+    for (const event of picker.events) {
+      if (event.name === 'defaultresolved') hub.onScopeDefaultResolved()
+      if (event.name === 'change') hub.onScopeChange({ detail: event.detail })
+    }
+    expect(hub.data.scope.scopeId).toBe('open')
+    expect(mocked).toHaveBeenCalledWith('mgmtDashboard.summary', expect.objectContaining({ scopeId: 'open' }))
+    expect(mocked).not.toHaveBeenCalledWith('mgmtDashboard.summary', expect.objectContaining({ scopeId: 'closed' }))
+  })
+
+  test('picker 默认纠正事件传到页面：只有关店时经服务端确认未停用再显示空态', async () => {
+    const hub = instantiate('hub')
+    hub.data.selectedDate = today()
+    hub.data.scopeResolveDefault = true
+    hub.data.scope = { scopeType: 'store', scopeId: 'closed', scopeName: '已关店' }
+    const picker = instantiate('picker')
+    picker.properties.resolveDefault = true
+    picker.data.applied = hub.data.scope
+    picker.data.current = hub.data.scope
+    mocked.mockResolvedValueOnce({
+      staffLevel: 'store_manager', allowAll: false, allowedMarketIds: [], inactiveStores: [],
+      markets: [{ id: 'm', name: '市场', stores: [{ storeId: 'closed', storeName: '已关店', closed: true }] }],
+    })
+    mocked.mockResolvedValueOnce(summaryResp({ type: 'store', id: 'closed', name: '已关店', inactive: false }))
+    await picker.loadOptions()
+    for (const event of picker.events) {
+      if (event.name === 'defaultresolved') hub.onScopeDefaultResolved()
+      if (event.name === 'change') hub.onScopeChange({ detail: event.detail })
+    }
+    expect(hub.data.scope.closed).toBe(true)
+    await Promise.resolve()
+    expect(hub.data.summaryState).toBe('empty')
+    expect(mocked).toHaveBeenCalledWith('mgmtDashboard.summary', expect.objectContaining({ scopeId: 'closed' }))
+  })
+
+  test('市场账号授权市场全部关店时默认进入关店空态', async () => {
+    const hub = instantiate('hub')
+    hub.data.selectedDate = today()
+    hub.data.scopeResolveDefault = true
+    hub.data.scope = { scopeType: 'market', scopeId: 'm', scopeName: '市场' }
+    const picker = instantiate('picker')
+    picker.properties.resolveDefault = true
+    picker.data.applied = hub.data.scope
+    picker.data.current = hub.data.scope
+    mocked.mockResolvedValueOnce({
+      staffLevel: 'market', allowAll: false, allowedMarketIds: ['m'], inactiveStores: [],
+      markets: [{ id: 'm', name: '市场', stores: [{ storeId: 'closed', storeName: '已关店', closed: true }] }],
+    })
+    mocked.mockResolvedValueOnce(summaryResp({ type: 'store', id: 'closed', name: '已关店', inactive: false }))
+    await picker.loadOptions()
+    for (const event of picker.events) {
+      if (event.name === 'change') hub.onScopeChange({ detail: event.detail })
+      if (event.name === 'defaultresolved') hub.onScopeDefaultResolved()
+    }
+    expect(hub.data.scope).toMatchObject({ scopeType: 'store', scopeId: 'closed', closed: true })
+    await Promise.resolve()
+    expect(hub.data.summaryState).toBe('empty')
+    expect(mocked).toHaveBeenCalledWith('mgmtDashboard.summary', expect.objectContaining({ scopeId: 'closed' }))
+  })
+
+  test('权限内只有关店门店时经服务端确认未停用后展示关店空态', async () => {
+    const hub = instantiate('hub')
+    hub.data.selectedDate = today()
+    hub.data.scope = { scopeType: 'store', scopeId: 'closed', scopeName: '已关店', closed: true }
+    mocked.mockResolvedValueOnce(summaryResp({ type: 'store', id: 'closed', name: '已关店', inactive: false }))
+    await hub.loadSummary()
+    expect(mocked).toHaveBeenCalledWith('mgmtDashboard.summary', expect.objectContaining({ scopeId: 'closed' }))
+    expect(hub.data.summaryState).toBe('empty')
+    expect(hub.data.summaryEmptyText).toContain('已关店')
+  })
+
+  test('同店既停用又关店时按停用口径取服务端空态', async () => {
+    const hub = instantiate('hub')
+    hub.data.selectedDate = today()
+    hub.data.scope = { scopeType: 'store', scopeId: 'closed', scopeName: '蓝湾店', inactive: true, closed: true }
+    mocked.mockResolvedValueOnce(summaryResp({ type: 'store', id: 'closed', name: '蓝湾店', inactive: true, hasActiveAlternative: false }))
+    await hub.loadSummary()
+    expect(mocked).toHaveBeenCalledWith('mgmtDashboard.summary', expect.objectContaining({ scopeId: 'closed' }))
+    expect(hub.data.summaryState).toBe('empty')
+    expect(hub.data.summaryEmptyText).toContain('已停用')
+    expect(hub.data.summaryEmptyHint).not.toContain('可选择关店前日期')
+  })
+
+  test('停用列表未知且关店时，服务端停用判定仍优先', async () => {
+    const hub = instantiate('hub')
+    hub.data.selectedDate = today()
+    hub.data.scope = { scopeType: 'store', scopeId: 'closed', scopeName: '蓝湾店', closed: true }
+    mocked.mockResolvedValueOnce(summaryResp({ type: 'store', id: 'closed', name: '蓝湾店', inactive: true, hasActiveAlternative: false }))
+    await hub.loadSummary()
+    expect(hub.data.summaryEmptyText).toContain('已停用')
+  })
+
+  test('手选已关店门店后仍可查历史日期', async () => {
+    const hub = instantiate('hub')
+    hub.data.selectedDate = '2026-07-01'
+    mocked.mockResolvedValueOnce(summaryResp({ type: 'store', id: 'closed', name: '已关店', inactive: false }))
+    hub.onScopeChange({ detail: { scopeType: 'store', scopeId: 'closed', scopeName: '蓝湾店', closed: true, userPicked: true } })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(mocked).toHaveBeenCalledWith('mgmtDashboard.summary', expect.objectContaining({ scopeId: 'closed', date: '2026-07-01' }))
+    expect(hub.data.summaryState).toBe('content')
+    expect(decodeURIComponent(hub.buildScopeQuery())).toContain('scopeName=蓝湾店（已关店）')
+  })
+
+  test('默认关店门店切到历史日期后也能查数', async () => {
+    const hub = instantiate('hub')
+    hub.data.selectedDate = '2026-07-01'
+    hub.data.scope = { scopeType: 'store', scopeId: 'closed', scopeName: '蓝湾店', closed: true }
+    mocked.mockResolvedValueOnce(summaryResp({ type: 'store', id: 'closed', name: '蓝湾店', inactive: false }))
+    await hub.loadSummary()
+    expect(mocked).toHaveBeenCalledWith('mgmtDashboard.summary', expect.objectContaining({ scopeId: 'closed', date: '2026-07-01' }))
+    expect(hub.data.summaryState).toBe('content')
+  })
 })
 
 // roleBindings.scopeId 是组织节点 id（生产形如 org-门店-<ts>），与 storeId 不同；店长管辖门店走 managerStoreIds
@@ -342,6 +600,17 @@ describe('scope-picker · 纠正落在停用门店的默认范围', () => {
 
     expect(picker.data.applied).toMatchObject({ scopeType: 'store', scopeId: 'store-lw', scopeName: '九江凤御 · 九江蓝湾店' })
     expect(picker.events).toEqual([{ name: 'change', detail: { scopeType: 'store', scopeId: 'store-lw', scopeName: '九江凤御 · 九江蓝湾店', marketId: 'mkt-jj', inactive: false } }])
+  })
+
+  test('停用门店自动替代跳过已关店候选', async () => {
+    mocked.mockResolvedValueOnce(options({ markets: [{ id: 'mkt-jj', name: '九江凤御', stores: [
+      { storeId: 'store-closed', storeName: '已关店', closed: true },
+      { storeId: 'store-lw', storeName: '九江蓝湾店' },
+    ] }] }))
+    const picker = pickerWith({ scopeType: 'store', scopeId: 'store-zh', scopeName: '九江中辉店' })
+    await picker.loadOptions()
+    expect(picker.data.applied).toMatchObject({ scopeId: 'store-lw' })
+    expect(picker.events.at(-1).detail).toMatchObject({ scopeId: 'store-lw' })
   })
 
   test('没有在营门店 → 保留停用门店，标 inactive（触发器显示「（已停用）」）', async () => {

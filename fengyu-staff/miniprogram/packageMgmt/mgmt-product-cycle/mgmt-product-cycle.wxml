@@ -123,6 +123,7 @@
   <!-- 复购情况 -->
   <view class="pc-subsection">
     <view class="pc-subsection-title">复购情况</view>
+    <scroll-view scroll-x class="pc-table-scroll">
     <view class="pc-table pc-table--repurchase">
       <view class="pc-table-header">
         <view class="pc-col pc-col-name">品项</view>
@@ -151,5 +152,6 @@
         </view>
       </mgmt-data-state>
     </view>
+    </scroll-view>
   </view>
 </view>

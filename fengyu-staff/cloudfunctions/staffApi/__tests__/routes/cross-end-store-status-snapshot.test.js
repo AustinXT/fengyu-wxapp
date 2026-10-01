@@ -395,7 +395,7 @@ describe('#422 范围下拉「（已关店）」展示标记 · 两端 helper', 
    * `filter(!closedIds.has(...))` 收窄统计范围都不会变红（#422 pr-ready boundary P2）。
    * 换变量名 / 换 import 写法同样会让行对不上而变红——改动须在这里登记并说明为何仍是纯展示。
    */
-  it('消费方里关店标记的用法闭集：只在两份下拉数据源里打 closed 标、只在下拉展示里读它', () => {
+  it('消费方里关店标记的用法闭集：仅供下拉与已选范围名称展示', () => {
     const EXPECTED = {
       'fengyu-admin/src/lib/data-center/types.ts': [
         '* 纯展示，缺省 = 未关店；判定在 `lib/store-closed-label`，不参与取数范围。',
@@ -407,12 +407,18 @@ describe('#422 范围下拉「（已关店）」展示标记 · 两端 helper', 
         'return store.closed ? `${store.storeName}（已关店）` : store.storeName',
         '...(store.closed ? { closed: true } : {}),',
       ],
+      'fengyu-admin/src/lib/data-center/context.ts': [
+        "import { loadClosedStoreIds } from '@/lib/store-closed-label'",
+        'const closedIds = await loadClosedStoreIds(rows.map((r) => r.id)).catch(() => new Set<string>())',
+        'const names = new Map(rows.map((r) => [r.id, storeOptionLabel({ storeName: r.name, closed: closedIds.has(r.id) })]))',
+        'const closedIds = await loadClosedStoreIds([scope.id]).catch(() => new Set<string>())',
+        'return storeOptionLabel({ storeName: row.name, closed: closedIds.has(scope.id) })',
+      ],
       'fengyu-staff/cloudfunctions/staffApi/routes/mgmt-dashboard.js': [
         "const { loadClosedStoreIds } = require('../utils/store-closed-label')",
         '*     markets: [{ id, name, stores: [{ storeId, storeName, closed? }] }, ...],   // closed: 只关店、节点仍启用（#422）',
         '// 只关店、节点仍启用的门店留在下拉里（有关店前的历史数据），打 closed 标给前端显示「（已关店）」、',
         'const closedIds = await loadClosedStoreIds(pg, visible.flatMap((market) => market.stores.map((store) => store.storeId)))',
-        "console.error('[mgmtDashboard.scopeOptions] loadClosedStoreIds failed:', err)",
         'const markets = closedIds.size === 0',
         'stores: market.stores.map((store) => (closedIds.has(store.storeId) ? { ...store, closed: true } : store)),',
       ],
