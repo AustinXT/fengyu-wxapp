@@ -103,7 +103,14 @@ function computeItemOverpayRemainders(origItems) {
     // 归零，(session_count − remaining) 覆盖了被折走的次数，但它算的是**标价**价值；
     // overpay 场景（received > sale_amount，如 7 次 × ¥398 实收 ¥3000）折走的是 ¥214 这笔
     // 真实金额、且不动 remaining_sessions（Q=0 的纯余数行），不扣它就能折一次再退一次。
-    // converted_amount / converted_quantity 缺省（历史调用方不传）时为 0，退回旧口径，零回归。
+    // 转出金额必须由取数侧聚合提供；疗程卡缺聚合、家居聚合半缺时拒绝计算。
+    // 聚合缺失会低估已兑现金额、虚增可退余数，必须拒绝退款。
+    const hasPicked = it.picked_quantity != null
+    const hasConvAmt = it.converted_amount != null
+    if ((it.product_type === '疗程卡' && !hasConvAmt)
+        || (it.product_type !== '疗程卡' && hasPicked !== hasConvAmt)) {
+      throw new Error('INVALID_STATE: REFUND_SOURCE_MISSING_CONVERTED_AMOUNT: 缺少已提货/已转换金额聚合，取数处需补齐')
+    }
     const convertedAmount = Number(it.converted_amount ?? 0) || 0
     const convertedQuantity = Math.max(0, Number(it.converted_quantity ?? 0) || 0)
     // ⚠ 不要加 `it.product_type !== '疗程卡' &&` 前缀：疗程卡在下面的三元里有独立分支，
@@ -139,7 +146,7 @@ function computeItemOverpayRemainders(origItems) {
 }
 
 /**
- * 计算行级 overpay 合计。无行级 received 的旧单元测试/历史调用回退到旧订单级口径。
+ * 计算行级 overpay 合计。无行级 received 时回退到订单级口径；缺必需列/聚合仍拒绝计算。
  *
  * @param {object} order sale_orders 行（需 received / refunded_amount）
  * @param {Array<object>} origItems 原单 sale_items（item_direction='购买'）
@@ -160,8 +167,16 @@ function computeOverpayRemainder(order, origItems) {
     if (it.product_type === '疗程卡') {
       const sc = Number(it.session_count) || 0
       const rem = Number(it.remaining_sessions) || 0
-      consumedValue += Math.max(0, sc - rem) * urp
+      if (it.converted_amount == null) {
+        throw new Error('INVALID_STATE: REFUND_SOURCE_MISSING_CONVERTED_AMOUNT: 疗程卡缺少已转换金额聚合')
+      }
+      const convQty = Math.max(0, Number(it.converted_quantity) || 0)
+      const convAmt = Number(it.converted_amount) || 0
+      consumedValue += Math.max(0, sc - rem - convQty) * urp + convAmt
     } else {
+      if ((it.picked_quantity != null) !== (it.converted_amount != null)) {
+        throw new Error('INVALID_STATE: REFUND_SOURCE_MISSING_CONVERTED_AMOUNT: 家居金额聚合必须同时提供')
+      }
       // #154：「已消耗」= 已提货金额 + 已转走金额，不含已退款（received 已扣过逐项退款）。
       // 已转走优先取实际金额 converted_amount —— 折抵金额含余数时「件数 × 单价」会低估
       // （折 4 件可能带走 ¥450 而非 ¥400），低估 consumed 会让 overpay 余数虚高 → 多退。

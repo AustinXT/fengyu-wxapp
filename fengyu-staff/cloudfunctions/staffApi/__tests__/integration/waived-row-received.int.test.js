@@ -77,19 +77,40 @@ const insCard = (id, orderId, saleAmount, pending, sessionCount) =>
 //   行级 Δ = sale_amount − 净实收；pending_received 钉到**毛已付** = 净实收 + 该行已退款额
 async function foldRow(saleItemId, rowRefunded) {
   const cur = await client.query(
-    `SELECT sale_amount::numeric AS sale_amount, received::numeric AS received
+    `SELECT sale_order_id, sale_amount::numeric AS sale_amount, received::numeric AS received,
+            session_count, unit_real_price
        FROM sale_items WHERE sale_item_id = $1`,
     [saleItemId],
   )
-  const saleAmount = num(cur.rows[0].sale_amount)
-  const received = num(cur.rows[0].received)
-  const rowWaive = num(saleAmount - received)
+  const row = cur.rows[0]
+  const saleAmount = num(row.sale_amount)
+  const received = num(row.received)
+  const rowWaive = Math.max(0, num(saleAmount - received))
   await client.query(
     `UPDATE sale_items
         SET sale_amount = $2, waived_amount = waived_amount + $3,
             pending_received = $4, remaining_sessions = 0
       WHERE sale_item_id = $1`,
-    [saleItemId, received, rowWaive, num(received + rowRefunded)],
+    [saleItemId, Math.min(saleAmount, received), rowWaive, num(received + rowRefunded)],
+  )
+  // ⚠ 必须真的落一条**转出行**：「该行已折抵退出」的判据是「存在未关闭的转出行引用本行」，
+  //   不是 waived_amount > 0（付清行 / overpay 行 Δ_row = 0 却同样已退出）。
+  //   只改列不落转出行的话，Branch B 的固定预留不会生效，用例会以 D3 失败——
+  //   这正是判据换成 EXISTS 之后 fixture 必须跟着变真的地方。
+  // 按整个 saleItemId 派生，避免两个 item 的尾 8 位相同而撞主键（varchar(30) 够放）
+  const convOrderId = `CV-${saleItemId}`.slice(0, 30)
+  await insOrder(convOrderId, 0, 0)
+  await client.query(
+    `UPDATE sale_orders SET sale_order_type = '转换单' WHERE sale_order_id = $1`,
+    [convOrderId],
+  )
+  await client.query(
+    `INSERT INTO sale_items
+       (sale_item_id, sale_order_id, store_id, item_direction, ref_sale_item_id, product_type,
+        unit_price, unit_real_price, sale_amount, received, quantity, sales_category)
+     VALUES ($1, $2, $3, '转出', $4, '疗程卡', $5, $5, $6, $6, 0, '自销自耗')`,
+    [`${convOrderId}-O`.slice(0, 30), convOrderId, storeId, saleItemId,
+      row.unit_real_price, -received],
   )
   return { rowWaive, orderWaive: Math.max(0, num(rowWaive - rowRefunded)) }
 }
@@ -257,4 +278,45 @@ describe('#182 折抵行 received 重建（real PG 5433, BEGIN...ROLLBACK）', (
     // 0.02 换不到任何一次，四行 paid_sessions 全为 0，已消费 0 → D3 成立
     for (const id of inIds) expect(items[id].paid_sessions).toBe(0)
   })
+})
+
+
+describe('#182 Δ=0固定预留与历史部分折抵的实际分摊', () => {
+  async function scenario(suffix, overpay) {
+    const order = `IT182-${suffix}-${RUN}`
+    const a = `IT182-${suffix}A-${RUN}`
+    const b = `IT182-${suffix}B-${RUN}`
+    const received = overpay ? 170 : 100
+    await insOrder(order, 200, received)
+    await insCard(a, order, 100, overpay ? 0 : 100, 10)
+    await insCard(b, order, 100, 100, 10)
+    await client.query('UPDATE sale_items SET received=$2 WHERE sale_item_id=$1', [a, overpay ? 120 : 50])
+    await foldRow(a, 0)
+    if (overpay) {
+      // 已消费10次后只折走20余数；源行应付不反向上调，Δ=0。
+      await client.query(`UPDATE sale_items SET received=-20 WHERE ref_sale_item_id=$1 AND item_direction='转出'`, [a])
+    } else {
+      // 历史部分折抵：源行仍有5次、应付100、pending100，不得被固定预留或产能归零。
+      await client.query(`UPDATE sale_items SET sale_amount=100,waived_amount=0,pending_received=100,remaining_sessions=5 WHERE sale_item_id=$1`, [a])
+    }
+    await recalcPaidSessionsForOrder(client, order)
+    const values = await readItems(order)
+    expect(num(values[a].received)).toBe(overpay ? 120 : 50)
+    expect(num(values[b].received)).toBe(50)
+    expect(values[a].paid_sessions).toBe(overpay ? 10 : 5)
+    const payment = await client.query(`INSERT INTO sale_order_payments(sale_order_id,change_type,amount,payment_method,status,source_end,paid_at)
+      VALUES($1,'回款',50,'线下','已支付','staff',NOW()) RETURNING id`, [order])
+    const receipt = await capturePaymentAllocatables(client, {salePaymentId:payment.rows[0].id,saleOrderId:order,eventAmount:50})
+    expect(receipt.find(r=>r.saleItemId===a)?.amount || 0).toBe(overpay ? 0 : 25)
+    expect(receipt.find(r=>r.saleItemId===b)?.amount).toBe(overpay ? 50 : 25)
+    if (overpay) {
+      await client.query('UPDATE sale_items SET received=50 WHERE sale_item_id=$1', [b])
+      await foldRow(b, 0)
+      const late = await client.query(`INSERT INTO sale_order_payments(sale_order_id,change_type,amount,payment_method,status,source_end)
+        VALUES($1,'回款',10,'线下','已支付','staff') RETURNING id`, [order])
+      expect(await capturePaymentAllocatables(client, {salePaymentId:late.rows[0].id,saleOrderId:order,eventAmount:10})).toEqual([])
+    }
+  }
+  it('overpay退出Δ=0仍保留毛实收120和满付次数，同单回款只进入欠款行', async()=> scenario('OP',true))
+  it('历史部分折抵EXISTS但仍有权益：保留瀑布产能和后续回款归属', async()=> scenario('PART',false))
 })

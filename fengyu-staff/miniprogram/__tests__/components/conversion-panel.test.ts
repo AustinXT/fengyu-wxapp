@@ -112,3 +112,25 @@ describe('conversion-panel 疗程卡分组', () => {
     }))
   })
 })
+
+
+describe('#182 可折金额与注销权益展示', () => {
+  test.each([[680, 594, 0], [16.67, 50.01, 3]])('单价%s剩余已付%s按分展示可折%s件', async (price, amount, paid) => {
+    vi.mocked(callStaffApi).mockResolvedValueOnce({ cards: [{
+      saleItemId: 'home', sourceSaleOrderId: 'sale', productType: '家居产品',
+      productName: '测试家居', unit: '盒', remainingQuantity: 3,
+      unitRealPrice: String(price), deductibleAmount: String(amount), saleAmount: '1000',
+      saleOrderType: '销售单', quantity: 3,
+    }] })
+    const component = createComponent()
+    await component.loadCards('client')
+    expect(component.data.cards[0].paidQuantity).toBe(paid)
+    expect(component.data.cards[0].remainingQuantity).toBe(3)
+  })
+  test('WXML可折金额标签与注销数量独立显示', () => {
+    const wxml = fs.readFileSync(path.resolve(__dirname, '../../components/conversion-panel/conversion-panel.wxml'), 'utf8')
+    expect(wxml).toContain('可折金额')
+    expect(wxml).toContain('可折 {{item.paidQuantity}}')
+    expect(wxml).toContain('注销 {{item.remainingQuantity}}')
+  })
+})

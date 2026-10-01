@@ -1336,7 +1336,7 @@ describe('转换单转入 received 重算 SQL 四端一致性守护', () => {
     // #182：排除判据是「存在未关闭的转出行引用本行」，**不是** waived_amount > 0——
     // 全额结清的转入行再被折抵时 Δ=0、不写 waived_amount，却同样已注销权益，
     // 而本 SQL 是整额覆盖式重分摊，漏排除就会在 target 收缩时把它的 received 改小 → 踩 D3。
-    expect(sqls.staff).toContain("AND NOT EXISTS (SELECT 1 FROM sale_items conv_out")
+    expect(sqls.staff).toContain("AND NOT (EXISTS (SELECT 1 FROM sale_items conv_out")
     expect(sqls.staff).toContain("conv_out.ref_sale_item_id = si.sale_item_id")
     expect(sqls.staff).not.toContain("AND in_item.waived_amount::numeric = 0")
   })
@@ -1536,12 +1536,12 @@ describe("STEP 1 received 分摊 SQL 四端字节同义守护", () => {
       expect(allocSqls.payNotify).toMatch(pattern)
       expect(allocSqls.adminTs).toMatch(pattern)
     })
-    // #182：折抵退出的行（waived_amount > 0）必须走**固定预留**——按 pending_received（毛已付）
+    // #182：折抵退出的行（未关闭转出引用且权益耗尽）必须走**固定预留**——按 pending_received（毛已付）
     // 预留、同时从 untargeted 扣除，且 pend_cap / sale_cap 归 0 不参与比例瀑布。
     // 三种错误写法都踩过（详见 backend.pr.spec.md）：钉净实收 → STEP 1.5 二次扣退款；
     // 丢回比例池 → untargeted < Σpend_cap 时被摊薄；事后单行抬下限 → Σ行级 > 订单级实收。
     test("四端折抵退出行按 pending_received 固定预留（reserved）", () => {
-      const reserved = /CASE WHEN si\.waived_amount::numeric > 0\s*THEN GREATEST\(0,\s*si\.pending_received::numeric\s*-\s*COALESCE\(tg\.targeted,\s*0\)::numeric\)\s*ELSE 0 END AS reserved/i
+      const reserved = /CASE WHEN \(EXISTS \([\s\S]*?AND \(CASE WHEN si\.product_type[\s\S]*?END\)\)\s*THEN GREATEST\(0,\s*si\.pending_received::numeric\s*-\s*COALESCE\(tg\.targeted,\s*0\)::numeric\)\s*ELSE 0 END AS reserved/i
       for (const sql of [allocSqls.staff, allocSqls.client, allocSqls.payNotify, allocSqls.adminTs]) {
         expect(sql).toMatch(reserved)
         // 预留额从 untargeted 扣除（否则同单其它行会被多分、Σ行级 > 订单级实收）
@@ -1550,8 +1550,8 @@ describe("STEP 1 received 分摊 SQL 四端字节同义守护", () => {
         expect(sql).toMatch(/THEN caps\.targeted \+ caps\.reserved/i)
         expect(sql).toMatch(/ELSE caps\.targeted \+ caps\.reserved END/i)
         // 折抵行不得参与比例瀑布
-        expect(sql).toMatch(/CASE WHEN si\.waived_amount::numeric > 0 THEN 0\s*ELSE GREATEST\(0,\s*si\.pending_received[\s\S]*?END AS pend_cap/i)
-        expect(sql).toMatch(/CASE WHEN si\.waived_amount::numeric > 0 THEN 0\s*ELSE GREATEST\(0,\s*si\.sale_amount[\s\S]*?END AS sale_cap/i)
+        expect(sql).toMatch(/CASE WHEN \(EXISTS \([\s\S]*?AND \(CASE WHEN si\.product_type[\s\S]*?END\)\) THEN 0\s*ELSE GREATEST\(0,\s*si\.pending_received[\s\S]*?END AS pend_cap/i)
+        expect(sql).toMatch(/CASE WHEN \(EXISTS \([\s\S]*?AND \(CASE WHEN si\.product_type[\s\S]*?END\)\) THEN 0\s*ELSE GREATEST\(0,\s*si\.sale_amount[\s\S]*?END AS sale_cap/i)
       }
     })
     // ⚠ 不得改成 (sale_amount + waived_amount)：放大上限会让退出行吸走本该给同单欠款行的回款
@@ -2378,12 +2378,12 @@ describe('cross-end-sql-snapshot 反模式守护（防镜像 bug 字面锁定失
     }
   })
 
-  // #182：折抵退出的行（waived_amount > 0）债务已归零、权益已注销，不得再吸收新款项。
+  // #182：折抵退出的行（未关闭转出引用且权益耗尽）债务已归零、权益已注销，不得再吸收新款项。
   // 它的 pending_received 被钉成「毛已付」作为 paid-sessions STEP 1 的预留依据，
   // 若照常算 pendCap = pending − prior，无历史 receipt 的老单（prior = 0）会凭空得到
   // 一整笔产能，把本该落在真正欠款行的回款分给已结清行。四端 JS/TS 派生逻辑同步守护
   // （本段不是 SQL 字面量，只能按特征文本比对）。
-  test('四端款项分摊必须把折抵退出行的产能归零（且取数带 waived_amount）', () => {
+  test('四端款项分摊必须把折抵退出行的产能归零（且取数带合取 converted_out）', () => {
     const ENDS = [
       ['staff', FILES.staffPaymentAllocatableJs],
       ['client', FILES.clientPaymentAllocatableJs],
@@ -2392,13 +2392,13 @@ describe('cross-end-sql-snapshot 反模式守护（防镜像 bug 字面锁定失
     ]
     for (const [end, file] of ENDS) {
       const text = readFile(file)
-      expect(text, `${end} 购买行取数缺 waived_amount，无法判断是否已折抵`)
-        .toContain('waived_amount::numeric AS waived_amount')
+      expect(text, `${end} 购买行取数缺 converted_out，无法判断是否已折抵`)
+        .toContain('AS converted_out')
       expect(text, `${end} 缺「折抵行产能归零」分支`)
-        .toMatch(/if \(Number\(i\.waived_amount\) > 0\) \{[\s\S]{0,120}pendCap: 0, saleCap: 0/)
+        .toMatch(/if \(i\.converted_out === true\) \{[\s\S]{0,120}pendCap: 0, saleCap: 0/)
       // 两段产能均为 0 的兜底不得把钱落到折抵行上
       expect(text, `${end} 兜底仍写死 items[0]，可能落到折抵行`)
-        .toMatch(/items\.find\(\(i\) => !\(Number\(i\.waived_amount\) > 0\)\) \|\| items\[0\]/)
+        .toMatch(/items\.find\(\(i\) => i\.converted_out !== true\)/)
     }
   })
 

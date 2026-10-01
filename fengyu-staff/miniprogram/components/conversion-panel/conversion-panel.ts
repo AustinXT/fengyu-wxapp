@@ -238,6 +238,12 @@ Component({
             remainingSessions: sumGroupValue(group, (card) => card.remainingSessions),
             remainingQuantity: sumGroupValue(group, (card) => card.remainingQuantity),
             deductibleAmount: sumGroupValue(group, (card) => Number(card.deductibleAmount)).toFixed(2),
+            // 展示已付整件数，与注销剩余权益数量分开；按分整除避免 16.67×3 的浮点分叉。
+            paidQuantity: primary.productType === '家居产品'
+              ? (primary.saleOrderType === '寄存单' || Number(primary.saleAmount) <= 0 || Math.round(Number(primary.unitRealPrice) * 100) <= 0
+                ? primary.remainingQuantity ?? 0
+                : Math.min(primary.remainingQuantity ?? 0, Math.floor(Math.round(Number(primary.deductibleAmount) * 100) / Math.round(Number(primary.unitRealPrice) * 100))))
+              : 0,
             selected: false,
             selectedQuantity: 0,
           };

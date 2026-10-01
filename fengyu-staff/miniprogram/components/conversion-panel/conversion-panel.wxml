@@ -102,6 +102,7 @@
             <!-- #182：折抵 = 整行退出，展示「注销多少权益」而非「剩余多少」；
                  remainingQuantity 为 0 的纯余数行（次数已用完 / 件已全提，只剩不足一整次(件)
                  的已付余额）单独提示，否则店员会以为这行是空的、不敢选。 -->
+            <text wx:if="{{item.productType === '家居产品'}}" class="conv-card-remain">可折 {{item.paidQuantity}} {{item.unit || '盒'}}</text>
             <text wx:if="{{item.remainingQuantity > 0}}" class="conv-card-remain">注销 {{item.remainingQuantity}} {{item.unit || (item.productType === '疗程卡' ? '次' : '盒')}}</text>
             <text wx:else class="conv-card-remain">仅余额（无剩余{{item.productType === '疗程卡' ? '次数' : '件数'}}）</text>
             <text wx:if="{{item.productType === '疗程卡'}}" class="conv-card-remain">· 共 {{item.cardCount || 1}} 张</text>
@@ -111,7 +112,7 @@
         </view>
         <view class="conv-card-amount">
           <text class="conv-card-amount-value">¥{{item.deductibleAmount}}</text>
-          <text class="conv-card-amount-label">可折抵</text>
+          <text class="conv-card-amount-label">可折金额</text>
         </view>
         <view wx:if="{{item.selected}}" class="conv-card-quantity" catchtap="preventBubble">
           <block wx:if="{{item.sourceItems.length > 1}}">
