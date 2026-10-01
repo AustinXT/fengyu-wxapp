@@ -570,7 +570,7 @@ const settlementDetailColumns = (segment: 'market' | 'store') => mapColumns([
   { header: segment === 'market' ? '供应链主体' : '门店', width: 20, key: 'partyName' },
   { header: segment === 'market' ? '报货日期' : '配货日期', width: 14, key: 'effectiveDate' },
   { header: '单号', width: 26, key: 'docId' },
-  { header: '单据类型', width: 14, key: 'docType' },
+  { header: '类型', width: 14, key: 'docType' },
   { header: '商品', width: 28, key: 'skuName' },
   { header: '规格', width: 16, key: 'specName' },
   ...(segment === 'store' ? [{ header: '批号', width: 16, key: 'batchNo' }] : []),

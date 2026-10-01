@@ -265,11 +265,15 @@ export async function listSettlementDetailsForSession(
 ): Promise<SettlementDetailResult> {
   const filters = normalizeSettlementDetailFilters(input)
   const projection = projectionFor(session, filters)
-  if (projection === null) return { rows: [], truncated: false }
+  if (projection === null) return { rows: [], truncated: false, limit: DETAIL_PAGE_LIMIT }
   const rows = await queryRows(
     settlementDetailSelectSql(projection, filters.segment, filters.marketNode, filters.partyNode, DETAIL_PAGE_LIMIT + 1),
   )
-  return { rows: rows.slice(0, DETAIL_PAGE_LIMIT), truncated: rows.length > DETAIL_PAGE_LIMIT }
+  return {
+    rows: rows.slice(0, DETAIL_PAGE_LIMIT),
+    truncated: rows.length > DETAIL_PAGE_LIMIT,
+    limit: DETAIL_PAGE_LIMIT,
+  }
 }
 
 /** 导出用：整段 keyset 分批，游标是明细行的不可变主键。 */

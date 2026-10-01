@@ -266,6 +266,11 @@ export const listInventorySettlements = withPermission(
     session,
     filters: { startDate?: string; endDate?: string; market?: string } = {},
   ): Promise<InventorySettlementReport> => {
+    // null / 数组等非对象入参在解引用前先拒：此前只覆盖了 undefined 的默认值，
+    // null 会一路走到 normalizeSettlementPeriod 读属性时抛裸 TypeError。
+    if (typeof filters !== 'object' || filters === null || Array.isArray(filters)) {
+      throw new ApiError('INVALID_PARAMS', '查询条件格式不正确')
+    }
     const { startDate, endDate } = normalizeSettlementPeriod(filters)
     const market = typeof filters.market === 'string' ? filters.market.trim() || undefined : undefined
     const priceVisibility = inventoryPriceVisibility(session)

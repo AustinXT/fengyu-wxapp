@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Landmark, Store as StoreIcon } from 'lucide-react'
 import type { InventorySettlementReport, InventorySettlementRow } from '@/lib/inventory/types'
 import type { SettlementDetailRow, SettlementDetailSegment } from '@/lib/inventory/settlement-detail-types'
@@ -96,9 +96,11 @@ function SettlementSection({
   market: string
   canExport: boolean
 }) {
-  const [detail, setDetail] = useState<{ key: string; label: string; rows: SettlementDetailRow[]; truncated: boolean } | null>(null)
+  const [detail, setDetail] = useState<{ key: string; label: string; rows: SettlementDetailRow[]; truncated: boolean; limit: number } | null>(null)
   const [loadingKey, setLoadingKey] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // 快速连点两行时，先发的请求可能后返回并覆盖后发的结果 —— 只认最后一次请求
+  const latestRequestKey = useRef<string | null>(null)
 
   /*
    * 筛选变化后丢弃展开的明细：detail 的状态键只有行端点，不含期间/市场 ——
@@ -117,6 +119,7 @@ function SettlementSection({
     }
     setLoadingKey(key)
     setError(null)
+    latestRequestKey.current = key
     try {
       const result = await listSettlementDetails({
         segment,
@@ -126,16 +129,20 @@ function SettlementSection({
         marketNode: row.sourceOrgNodeId ?? '',
         partyNode: row.targetOrgNodeId ?? '',
       })
+      // 已被后续请求取代就丢弃这次响应（否则面板显示 A 的明细、按钮状态却指向 B）
+      if (latestRequestKey.current !== key) return
       setDetail({
         key,
         label: `${row.sourceOrgNodeName ?? row.sourceOrgNodeId ?? '—'} → ${row.targetOrgNodeName ?? row.targetOrgNodeId ?? '—'}`,
         rows: result.rows,
         truncated: result.truncated,
+        limit: result.limit,
       })
     } catch (err) {
+      if (latestRequestKey.current !== key) return
       setError(actionErrorMessage(err, '加载明细失败'))
     } finally {
-      setLoadingKey(null)
+      if (latestRequestKey.current === key) setLoadingKey(null)
     }
   }
 
@@ -224,12 +231,15 @@ function SettlementSection({
               <h3 className="text-sm font-medium">明细 · {detail.label}</h3>
               <Button variant="ghost" onClick={() => setDetail(null)}>收起</Button>
             </div>
+            {/* 上限由服务端回传（detail.limit），不再写死 —— 写死会在后端调上限时漂掉 */}
             {detail.truncated && (
-              <p className="mb-2 text-xs text-[#D4820A]">明细超过 500 行，仅显示前 500 行；完整明细请用导出。</p>
+              <p className="mb-2 text-xs text-[#D4820A]">
+                明细超过展示上限，仅显示前 {detail.limit} 行；完整明细请用导出。
+              </p>
             )}
             <DataTable columns={detailColumnsFor(segment)} data={detail.rows} emptyText="该行期间内没有明细" />
+            {/* issue 验收「明细合计必须等于汇总行」：不留合计行的话，用户只能靠导出对账 */}
             {detail.rows.length > 0 && (
-              // issue 验收「明细合计必须等于汇总行」：不留合计行的话，用户只能靠导出对账
               <div className="mt-2 flex justify-end gap-4 text-xs text-[#666666]">
                 <span>{detail.truncated ? '可见行合计（已截断）' : '合计'}</span>
                 {/* 退货行在表格里显示为负数量，合计必须同号 —— 否则「6 正 + 4 退」会被加成 10 */}

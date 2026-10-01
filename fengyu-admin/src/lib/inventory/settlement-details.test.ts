@@ -79,7 +79,7 @@ describe('#349 结算下钻明细：参数与段可见性', () => {
   it('门店价格档两段都不可见，返回空集且不查库', async () => {
     for (const segment of ['market', 'store'] as const) {
       const result = await listSettlementDetailsForSession(NO_PRICE_SESSION as never, { ...baseFilters, segment })
-      expect(result).toEqual({ rows: [], truncated: false })
+      expect(result).toEqual({ rows: [], truncated: false, limit: 2000 })
     }
     expect(execute).not.toHaveBeenCalled()
   })

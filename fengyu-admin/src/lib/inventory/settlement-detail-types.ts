@@ -65,4 +65,9 @@ export interface SettlementDetailResult {
   rows: SettlementDetailRow[]
   /** 行数超过单次展示上限（仅页面路径会遇到）；完整明细走导出。 */
   truncated: boolean
+  /**
+   * 本次的展示上限。**由服务端回传**而不是前端写死 ——
+   * 上一版页面文案写死"500 行"、后端上限后来提到 2000，两边就漂了（评审 R4 抓到）。
+   */
+  limit: number
 }

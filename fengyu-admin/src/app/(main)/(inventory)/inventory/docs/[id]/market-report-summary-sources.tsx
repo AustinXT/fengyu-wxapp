@@ -7,9 +7,10 @@ import type { MarketReportSummarySourceRow } from '@/lib/inventory/market-report
 /**
  * #349 汇总单「来源明细」：构成汇总单的原始报货行，按 市场 → 来源报货单 → 商品 展示。
  *
- * 市场筛选在**内存**里做而非再发一次查询：来源行已按 scope 取全（一张汇总单的来源行数在数百量级），
- * 市场下拉需要"全部市场"这份全集来派生选项，再查一次反而多一次往返。筛选条件与导出侧
- * （`marketReportSummarySourceWhereSql` 的 `i.market_id = $market`）完全等价 —— 同一份行、同一个谓词。
+ * 市场筛选走**服务端 SQL**（与导出侧 `marketReportSummarySourceWhereSql` 的 `i.market_id = $market`
+ * 同一份 where），市场下拉选项由 `listMarketReportSummarySourceMarkets` **独立查询**下发。
+ * ⚠️ 不要改回"取全量行再在内存里筛"：行集会被 `MAX_PAGE_ROWS` 截断，截断后筛选既会漏行、
+ * 选项也会缺市场，且与导出的行集不再同源（R2 已修过一次）。
  */
 
 const round2 = (value: number) => Number(value.toFixed(2))
@@ -27,6 +28,11 @@ interface MarketGroup {
   marketName: string
   quantity: number
   amount: number | null
+  /**
+   * 该市场内既有有价行、又有缺价行 —— 此时 amount 是**部分和**，必须显式标注。
+   * 不标注的话，"只累加了有价行"会被读成"这就是该市场的全额小计"。
+   */
+  partialPrice: boolean
   docs: SourceDocGroup[]
 }
 
@@ -36,6 +42,8 @@ function groupSources(rows: MarketReportSummarySourceRow[]): MarketGroup[] {
     marketName: string
     quantity: number
     amount: number | null
+    hasPriced: boolean
+    hasUnpriced: boolean
     docs: Map<string, SourceDocGroup>
   }>()
   for (const row of rows) {
@@ -49,6 +57,8 @@ function groupSources(rows: MarketReportSummarySourceRow[]): MarketGroup[] {
         // 初值必须与"该市场一行有价的行都没有"区分开：下面只在 row.amount 非 null 时累加，
         // 全缺价时保持 null → 页面显示「—」，而不是把"没价格"渲染成"合计为 0"。
         amount: null,
+        hasPriced: false,
+        hasUnpriced: false,
         docs: new Map(),
       }
       markets.set(marketKey, market)
@@ -56,7 +66,12 @@ function groupSources(rows: MarketReportSummarySourceRow[]): MarketGroup[] {
     market.quantity += row.quantity
     // 价格档为 none 时 amount 恒 null：保持 null 而不是累加成 0，
     // 否则"没价格"与"合计为 0"在页面上无法区分。
-    if (row.amount !== null) market.amount = round2((market.amount ?? 0) + row.amount)
+    if (row.amount !== null) {
+      market.amount = round2((market.amount ?? 0) + row.amount)
+      market.hasPriced = true
+    } else {
+      market.hasUnpriced = true
+    }
     let doc = market.docs.get(row.sourceDocId)
     if (!doc) {
       doc = { docId: row.sourceDocId, docDate: row.sourceDocDate, rows: [] }
@@ -69,6 +84,7 @@ function groupSources(rows: MarketReportSummarySourceRow[]): MarketGroup[] {
     marketName: market.marketName,
     quantity: market.quantity,
     amount: market.amount,
+    partialPrice: market.hasPriced && market.hasUnpriced,
     docs: [...market.docs.values()],
   }))
 }
@@ -119,6 +135,8 @@ export function MarketReportSummarySources({
     (sum, row) => (row.amount === null ? sum : round2((sum ?? 0) + row.amount)),
     null,
   )
+  // 同上：整表既有有价行又有缺价行时，合计是部分和
+  const totalPartialPrice = rows.some((row) => row.amount !== null) && rows.some((row) => row.amount === null)
 
   return (
     <Card>
@@ -201,7 +219,10 @@ export function MarketReportSummarySources({
                       <td className="px-3 py-2" />
                       <td className="px-3 py-2" />
                       <td className="px-3 py-2" />
-                      <td className="px-3 py-2 text-right font-medium">{fmtAmount(market.amount)}</td>
+                      <td className="px-3 py-2 text-right font-medium">
+                        {fmtAmount(market.amount)}
+                        {market.partialPrice && <span className="ml-1 text-[10px] text-[#D4820A]">部分行无价</span>}
+                      </td>
                     </>}
                     <td className="px-3 py-2" />
                   </tr>
@@ -246,7 +267,10 @@ export function MarketReportSummarySources({
                     <td className="px-3 py-2" />
                     <td className="px-3 py-2" />
                     <td className="px-3 py-2" />
-                    <td className="px-3 py-2 text-right font-medium">{fmtAmount(totalAmount)}</td>
+                    <td className="px-3 py-2 text-right font-medium">
+                      {fmtAmount(totalAmount)}
+                      {totalPartialPrice && <span className="ml-1 text-[10px] text-[#D4820A]">部分行无价</span>}
+                    </td>
                   </>}
                   <td className="px-3 py-2" />
                 </tr>
