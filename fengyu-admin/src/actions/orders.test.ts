@@ -7731,6 +7731,7 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
       createdAt: new Date('2026-07-01T00:00:00.000Z'),
       productType: '疗程卡', salesCategory: '自销自耗',
       productName: '【旧】水活焕能水光', // 转出旧卡
+      quantity: 0,
       sessionCount: 10, paidUnusedSessions: 0, // 转出后余 0
       unitRealPrice: '300.00',
       categoryL1: '护理项目', categoryL2: '水光',
@@ -7741,6 +7742,7 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
       received: '3000.00', // 转入行 received（正）
       cashAmount: '3000.00',
       productName: '【新】疼痛管理', // 转入新卡
+      quantity: 1,
       paidUnusedSessions: 10, // 新卡未用
     }
     ;(db.select as any).mockReturnValueOnce(makeChain([rawOut, rawIn])).mockReturnValueOnce(makeChain([]))
@@ -7753,6 +7755,8 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
     expect(rows[0].saleOrderType).toBe('转换单')
     // 转出旧卡 / 转入新卡 各自透传
     expect(rows[0].productName).toBe('【旧】水活焕能水光')
+    expect(rows[0].__quantity).toBe(0)
+    expect(rows[1].__quantity).toBe(1)
     expect(rows[1].productName).toBe('【新】疼痛管理')
     // 金额照实：转出负、转入正（区别于寄存单 4 列留空）
     expect(rows[0].totalAmount).toBe('-3000.00')

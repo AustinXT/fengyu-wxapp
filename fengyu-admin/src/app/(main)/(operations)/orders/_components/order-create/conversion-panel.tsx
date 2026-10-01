@@ -66,7 +66,10 @@ function groupHeldCards(cards: HeldCardCandidate[]): GroupedHeldCardCandidate[] 
   return groupTreatmentCards(cards, {
     getId: (card) => card.saleItemId,
     getQuantity: (card) => card.quantity,
-    getIdentity: (card) => getTreatmentCardBusinessIdentity(card),
+    getIdentity: (card) => {
+      const identity = getTreatmentCardBusinessIdentity(card)
+      return card.productType === '疗程卡' ? identity : { ...identity, sourceId: card.saleItemId }
+    },
   }).map((group) => {
     const primary = group.primary
     return {

@@ -134,3 +134,14 @@ describe('#182 可折金额与注销权益展示', () => {
     expect(wxml).toContain('注销 {{item.remainingQuantity}}')
   })
 })
+
+
+test('#182 相同快照的两条不足一件家居不能合并算出一件', async () => {
+  const source = { sourceSaleOrderId:'same', productType:'家居产品',productName:'家居',unit:'盒',
+    remainingQuantity:1,unitRealPrice:'680',deductibleAmount:'594',saleAmount:'680',saleOrderType:'销售单',quantity:1 }
+  vi.mocked(callStaffApi).mockResolvedValueOnce({cards:[{...source,saleItemId:'one'},{...source,saleItemId:'two'}]})
+  const component = createComponent()
+  await component.loadCards('client')
+  expect(component.data.cards).toHaveLength(2)
+  expect(component.data.cards.map((card: any)=>card.paidQuantity)).toEqual([0,0])
+})

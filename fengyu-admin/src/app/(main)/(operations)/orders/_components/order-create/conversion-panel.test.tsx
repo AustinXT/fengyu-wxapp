@@ -4,13 +4,13 @@ import { describe, expect, test, vi } from 'vitest'
 import { ConversionPanel } from './conversion-panel'
 
 describe('#182 候选金额与件数展示', () => {
-  function render(productType: string, amount: string, unitPrice: string, remain: number) {
-    return renderToStaticMarkup(<ConversionPanel loading={false} heldCards={[{
-      saleItemId: 'source', saleOrderId: 'sale', productName: '折抵来源', productType,
+  function render(productType: string, amount: string, unitPrice: string, remain: number, duplicate = false) {
+    return renderToStaticMarkup(<ConversionPanel loading={false} heldCards={(duplicate ? ['one','two'] : ['one']).map((id) => ({
+      saleItemId: id, saleOrderId: 'sale', productName: '折抵来源', productType,
       unit: productType === '家居产品' ? '盒' : '次', quantity: 1, remainingQty: remain,
       remainingSessions: remain, sessionCount: 7, paidSessions: 7, unitRealPrice: unitPrice,
       saleAmount: '1000', saleOrderType: '销售单', deductibleAmount: amount,
-    } as any]} selectedIds={[]} onChange={vi.fn()} totalIn={1000}
+    } as any))} selectedIds={[]} onChange={vi.fn()} totalIn={1000}
       isExperienceConversion={false} onExperienceConversionChange={vi.fn()}
       receivedAmountInput="1000" receivedAmount={1000} remainingPayable={1000}
       onReceivedAmountChange={vi.fn()} onReceivedAmountBlur={vi.fn()} />)
@@ -25,6 +25,11 @@ describe('#182 候选金额与件数展示', () => {
     expect(html).toContain('可折金额 ¥594.00')
     expect(html).toContain('可折 0 盒')
     expect(html).toContain('注销 1 盒')
+  })
+  test('相同快照的家居不足一件分别展示两条0件，而非合计虚增1件', () => {
+    const html = render('家居产品','594.00','680',1,true)
+    expect(html.match(/可折 0 盒/g)).toHaveLength(2)
+    expect(html).not.toContain('可折 1 盒')
   })
   test('16.67×3=50.01按分整除展示3盒', () => {
     expect(render('家居产品', '50.01', '16.67', 3)).toContain('可折 3 盒')
