@@ -180060,7 +180060,6 @@ function settlementProjectionSql(params) {
        AND p.effective_date <= ${params.endDate}::date
   `;
 }
-var SETTLEMENT_DOC_TYPES = [...new Set(SETTLEMENT_DOC_KINDS.map((kind) => kind.docType))];
 async function listSettlementMarketOptions(scopedOrgNodeIds) {
   if (scopedOrgNodeIds !== null && scopedOrgNodeIds.length === 0)
     return [];
