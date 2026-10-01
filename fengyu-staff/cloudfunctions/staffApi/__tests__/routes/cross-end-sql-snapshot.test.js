@@ -3996,10 +3996,12 @@ describe('#182 已退出判据所有站点同源', () => {
       '../../../../../fengyu-admin/src/lib/paid-sessions.ts']
     for (const file of files) {
       const source = readFile(path.resolve(__dirname,file))
+      // admin保留可直接执行的Drizzle镜像，STEP1.6字面量与内联各一份。
+      const mirrors = file.endsWith('.ts') ? 2 : 1
       expect(count(source, `CASE WHEN ${exited('si')}`)).toBe(3)
-      expect(count(source, `AND NOT ${exited('in_item')}`)).toBe(1)
-      expect(count(source, `AND ${exited('in_item')}`)).toBe(1)
-      expect(count(source, `AND NOT ${exited('si')}`)).toBe(1)
+      expect(count(source, `AND NOT ${exited('in_item')}`)).toBe(mirrors)
+      expect(count(source, `AND ${exited('in_item')}`)).toBe(mirrors)
+      expect(count(source, `AND NOT ${exited('si')}`)).toBe(mirrors)
       expect(source).not.toContain('CASE WHEN si.waived_amount::numeric > 0')
     }
   })
