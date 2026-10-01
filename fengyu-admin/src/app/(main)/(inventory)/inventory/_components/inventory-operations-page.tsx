@@ -2809,6 +2809,25 @@ interface MarketReportSummaryDraftLine {
   supplierName: string | null
   selected: boolean
   quantity: string
+  /** 服务端按价格档下发（#349）；不可见时两列均为 null，整组价格列不渲染。 */
+  marketStandardUnitPrice: number | null
+  marketActualUnitPrice: number | null
+}
+
+const fmtSummaryPrice = (value: number | null) => (value === null ? '—' : value.toFixed(2))
+
+/**
+ * 金额 = 本次汇总数量 × 实际单价。
+ *
+ * ⚠️ 刻意做成**联动**而不是"未汇总数量 × 实际单价"的固定派生：#356 会把「本次汇总」的
+ * 数量输入删掉、固定为未汇总量，届时本式自然退化为只读派生列，两种形态下都对。
+ * 若按固定派生写，在 #356 合并之前反而是错的（用户改了数量金额不动）。
+ */
+function summaryLineAmount(line: MarketReportSummaryDraftLine): number | null {
+  if (line.marketActualUnitPrice === null) return null
+  const quantity = Number(line.quantity)
+  if (!Number.isFinite(quantity)) return null
+  return Number((quantity * line.marketActualUnitPrice).toFixed(2))
 }
 
 /**
@@ -2833,6 +2852,8 @@ function MarketReportSummaryForm({
   const [docDate, setDocDate] = useState(today)
   const [remark, setRemark] = useState('')
   const [lines, setLines] = useState<MarketReportSummaryDraftLine[]>([])
+  // 价格列可见性由服务端下发（价格档不覆盖时接口就不返回价格字段）
+  const [summaryPriceVisible, setSummaryPriceVisible] = useState(false)
   const [loadingSummary, setLoadingSummary] = useState(false)
   const [saving, setSaving] = useState(false)
   const [sourceItemIdsByLine, setSourceItemIdsByLine] = useState<Map<string, number[]>>(new Map())
@@ -2873,9 +2894,12 @@ function MarketReportSummaryForm({
           supplierName: item.supplierName,
           selected: true,
           quantity: String(item.outstandingQuantity),
+          marketStandardUnitPrice: item.marketStandardUnitPrice,
+          marketActualUnitPrice: item.marketActualUnitPrice,
         }
       }))
       setSourceItemIdsByLine(nextSourceIds)
+      setSummaryPriceVisible(summary.priceVisible)
       if (summary.items.length === 0) toast.info('当前没有待汇总的市场报货明细')
     } catch (error) {
       toast.error(actionErrorMessage(error, '汇总市场报货失败'))
@@ -2986,6 +3010,11 @@ function MarketReportSummaryForm({
                 <th className="px-3 py-2 font-medium">供应商</th>
                 <th className="px-3 py-2 text-right font-medium">未汇总数量</th>
                 <th className="px-3 py-2 text-right font-medium">本次汇总</th>
+                {summaryPriceVisible && <>
+                  <th className="px-3 py-2 text-right font-medium">市场单价</th>
+                  <th className="px-3 py-2 text-right font-medium">实际单价</th>
+                  <th className="px-3 py-2 text-right font-medium">金额</th>
+                </>}
               </tr>
             </thead>
             <tbody>
@@ -3033,6 +3062,11 @@ function MarketReportSummaryForm({
                         onChange={(event) => updateLine(key, { quantity: event.target.value })}
                       />
                     </td>
+                    {summaryPriceVisible && <>
+                      <td className="px-3 py-2 text-right">{fmtSummaryPrice(line.marketStandardUnitPrice)}</td>
+                      <td className="px-3 py-2 text-right">{fmtSummaryPrice(line.marketActualUnitPrice)}</td>
+                      <td className="px-3 py-2 text-right">{fmtSummaryPrice(summaryLineAmount(line))}</td>
+                    </>}
                   </tr>
                 )
               })}

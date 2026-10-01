@@ -307,10 +307,17 @@ export interface MarketReportSummaryLine {
   supplierName: string | null
   /** 按来源行数量加权的市场实际单价，用于汇总单与采购订单的金额快照。 */
   marketActualUnitPrice: number | null
+  /** 按来源行数量加权的市场标准单价（优惠前）。价格档不覆盖时服务端不返回。 */
+  marketStandardUnitPrice: number | null
 }
 
 export interface MarketReportSummary {
   supplyChainLocationId: string
+  /**
+   * 价格字段是否可见（价格档为供应链/全档）。前端据此裁列 —— 判据由服务端下发，
+   * 不让前端自己从"价格是不是 null"反推（数据缺价与档位不可见会混淆）。
+   */
+  priceVisible: boolean
   items: MarketReportSummaryLine[]
 }
 
@@ -3190,6 +3197,7 @@ export async function summarizeMarketReplenishmentRequests(
       requested_quantity: string | number
       outstanding_quantity: string | number
       market_actual_unit_price: string | number | null
+      market_standard_unit_price: string | number | null
       request_item_ids: number[] | string
     }>(await tx.execute(sql`
       WITH pending AS (
@@ -3200,6 +3208,7 @@ export async function summarizeMarketReplenishmentRequests(
                i.spec_name,
                i.quantity,
                i.market_actual_unit_price,
+               i.market_standard_unit_price,
                GREATEST(i.quantity - summarized.quantity - COALESCE(i.fulfilled_quantity, 0), 0)
                  AS outstanding_quantity
           FROM inventory_docs d
@@ -3231,6 +3240,8 @@ export async function summarizeMarketReplenishmentRequests(
              SUM(p.outstanding_quantity) AS outstanding_quantity,
              SUM(p.outstanding_quantity * COALESCE(p.market_actual_unit_price, 0))
                / NULLIF(SUM(p.outstanding_quantity), 0) AS market_actual_unit_price,
+             SUM(p.outstanding_quantity * COALESCE(p.market_standard_unit_price, 0))
+               / NULLIF(SUM(p.outstanding_quantity), 0) AS market_standard_unit_price,
              ARRAY_AGG(p.id ORDER BY p.id) AS request_item_ids
         FROM pending p
         LEFT JOIN inventory_locations market ON market.org_node_id = p.market_id
@@ -3240,8 +3251,17 @@ export async function summarizeMarketReplenishmentRequests(
        GROUP BY p.sku_id, p.market_id
        ORDER BY MAX(p.sku_name), p.sku_id, MAX(market.name)
     `))
+    /*
+     * #349：汇总建单的价格字段只对供应链档 / 全档可见。
+     * 闸门是 `inventory:supply_chain_operate`，而自定义角色可以只给办理权不给价格权
+     * （permission-presentation 的依赖关系不会自动补齐），所以这里 fail-closed 剥离，
+     * 而不是假设"能进这个表单就一定能看价"。
+     */
+    const priceVisibility = inventoryPriceVisibility(session)
+    const canViewPrice = priceVisibility === 'supply_chain' || priceVisibility === 'all'
     return {
       supplyChainLocationId,
+      priceVisible: canViewPrice,
       items: result.map((row) => ({
         skuId: row.sku_id,
         skuName: row.sku_name,
@@ -3253,7 +3273,8 @@ export async function summarizeMarketReplenishmentRequests(
         requestItemIds: parseIdArray(row.request_item_ids),
         supplierId: text(row.supplier_id),
         supplierName: text(row.supplier_name),
-        marketActualUnitPrice: numberOrNull(row.market_actual_unit_price),
+        marketActualUnitPrice: canViewPrice ? numberOrNull(row.market_actual_unit_price) : null,
+        marketStandardUnitPrice: canViewPrice ? numberOrNull(row.market_standard_unit_price) : null,
       })),
     }
   })
