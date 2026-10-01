@@ -85710,6 +85710,7 @@ var init_permissions = __esm(() => {
     ],
     finance: [
       "allocation:list",
+      "allocation:save",
       "card_transaction:list",
       "commission:create",
       "commission:list",
@@ -90671,6 +90672,8 @@ var init_with_permission = __esm(() => {
 // ../db/schema/order.ts
 var exports_order = {};
 __export2(exports_order, {
+  saleReportablePaymentEvents: () => saleReportablePaymentEvents,
+  saleReportableItemEvents: () => saleReportableItemEvents,
   salePaymentItemReceipts: () => salePaymentItemReceipts,
   salePaymentItemAllocations: () => salePaymentItemAllocations,
   salePaymentAllocatableItems: () => salePaymentAllocatableItems,
@@ -90681,7 +90684,7 @@ __export2(exports_order, {
   saleItemPerformanceEvents: () => saleItemPerformanceEvents,
   saleAllocations: () => saleAllocations
 });
-var saleOrders, saleItems, saleAllocations, saleOrderPayments, salePaymentAllocatableItems, salePaymentItemReceipts, salePaymentItemAllocations, saleOrderPerformanceEventsQuery, saleOrderPerformanceEvents, saleItemPerformanceEvents;
+var saleOrders, saleItems, saleAllocations, saleOrderPayments, salePaymentAllocatableItems, salePaymentItemReceipts, salePaymentItemAllocations, saleOrderPerformanceEventsQuery, saleOrderPerformanceEvents, saleReportablePaymentEvents, saleItemPerformanceEvents, saleReportableItemEvents;
 var init_order = __esm(() => {
   init_pg_core2();
   init_drizzle_orm();
@@ -90758,6 +90761,7 @@ var init_order = __esm(() => {
     itemDirection: itemDirectionEnum("item_direction").notNull().default("购买"),
     refSaleItemId: varchar3("ref_sale_item_id", { length: 30 }).references(() => saleItems.saleItemId),
     skuId: text3("sku_id").references(() => productSkus.skuId),
+    productKindAtSale: text3("product_kind_at_sale"),
     productName: text3("product_name"),
     productType: productTypeEnum("product_type"),
     inventoryCompositionSnapshot: jsonb3("inventory_composition_snapshot").$type(),
@@ -90956,6 +90960,59 @@ var init_order = __esm(() => {
     performanceDate: date3("performance_date").notNull(),
     isInitialEvent: boolean3("is_initial_event").notNull()
   }).as(saleOrderPerformanceEventsQuery);
+  saleReportablePaymentEvents = pgView2("sale_reportable_payment_events", {
+    salePaymentId: bigint3("sale_payment_id", { mode: "number" }).notNull(),
+    saleOrderId: varchar3("sale_order_id", { length: 30 }).notNull(),
+    storeId: text3("store_id").notNull(),
+    saleOrderType: saleOrderTypeEnum("sale_order_type").notNull(),
+    legacySource: text3("legacy_source"),
+    changeType: paymentChangeTypeEnum("change_type").notNull(),
+    paymentMethod: paymentMethodEnum("payment_method").notNull(),
+    status: paymentFlowStatusEnum("status").notNull(),
+    amount: numeric3("amount", { precision: 10, scale: 2 }).notNull(),
+    performanceAmount: numeric3("performance_amount", { precision: 10, scale: 2 }).notNull(),
+    paidAt: timestamp3("paid_at", { withTimezone: true }),
+    performanceDate: date3("performance_date").notNull(),
+    isInitialEvent: boolean3("is_initial_event").notNull(),
+    attributionMode: text3("attribution_mode").notNull()
+  }).as(sql3`
+  WITH receipt_summary AS (
+    SELECT spir.sale_payment_id,
+           COUNT(*) AS receipt_count,
+           SUM(spir.amount::numeric) AS receipt_amount,
+           COALESCE(SUM(spir.amount::numeric) FILTER (
+             WHERE si.product_kind_at_sale IS DISTINCT FROM '拓客引流卡'
+           ), 0) AS regular_amount,
+           COUNT(*) FILTER (WHERE si.product_kind_at_sale IS NULL) AS unknown_count
+    FROM sale_payment_item_receipts spir
+    LEFT JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
+    GROUP BY spir.sale_payment_id
+  )
+  SELECT spe.sale_payment_id, spe.sale_order_id, spe.store_id,
+         spe.sale_order_type, spe.legacy_source, spe.change_type,
+         spe.payment_method, spe.status, spe.amount,
+         CASE
+           WHEN spe.status <> '已支付'
+             OR spe.change_type NOT IN ('首次支付', '回款', '退款') THEN 0::numeric(10, 2)
+           WHEN spe.sale_order_type = '充值单'
+             OR rs.receipt_count IS NULL
+             OR rs.receipt_amount = 0 THEN spe.amount
+           ELSE ROUND(
+             spe.amount::numeric * LEAST(1::numeric, GREATEST(0::numeric,
+               rs.regular_amount / rs.receipt_amount)), 2
+           )::numeric(10, 2)
+         END AS performance_amount,
+         spe.paid_at, spe.performance_date, spe.is_initial_event,
+         CASE
+           WHEN spe.sale_order_type = '充值单' THEN 'recharge'
+           WHEN rs.receipt_count IS NULL THEN 'no_receipt'
+           WHEN rs.receipt_amount = 0 THEN 'zero_denominator'
+           WHEN rs.unknown_count > 0 THEN 'missing_category'
+           ELSE 'classified'
+         END AS attribution_mode
+  FROM sale_order_performance_events spe
+  LEFT JOIN receipt_summary rs ON rs.sale_payment_id = spe.sale_payment_id
+`);
   saleItemPerformanceEvents = pgView2("sale_item_performance_events", {
     eventKey: text3("event_key").notNull(),
     receiptId: bigint3("receipt_id", { mode: "number" }),
@@ -91037,6 +91094,68 @@ var init_order = __esm(() => {
     true AS is_initial_event,
     true AS is_legacy_residual
   FROM residuals r
+`);
+  saleReportableItemEvents = pgView2("sale_reportable_item_events", {
+    eventKey: text3("event_key").notNull(),
+    receiptId: bigint3("receipt_id", { mode: "number" }),
+    salePaymentId: bigint3("sale_payment_id", { mode: "number" }),
+    saleOrderId: varchar3("sale_order_id", { length: 30 }).notNull(),
+    saleItemId: varchar3("sale_item_id", { length: 30 }).notNull(),
+    storeId: text3("store_id").notNull(),
+    amount: numeric3("amount", { precision: 10, scale: 2 }).notNull(),
+    performanceAmount: numeric3("performance_amount", { precision: 10, scale: 2 }).notNull(),
+    productKindAtSale: text3("product_kind_at_sale"),
+    salesCategory: salesCategoryEnum("sales_category"),
+    changeType: paymentChangeTypeEnum("change_type").notNull(),
+    performanceDate: date3("performance_date").notNull(),
+    isInitialEvent: boolean3("is_initial_event").notNull(),
+    isLegacyResidual: boolean3("is_legacy_residual").notNull()
+  }).as(sql3`
+  WITH receipt_base AS (
+    SELECT sipe.receipt_id, sipe.sale_payment_id, sipe.amount::numeric AS amount,
+           si.product_kind_at_sale,
+           spe.performance_amount::numeric AS payment_performance_amount,
+           SUM(CASE WHEN si.product_kind_at_sale IS DISTINCT FROM '拓客引流卡'
+               THEN sipe.amount::numeric ELSE 0 END)
+             OVER (PARTITION BY sipe.sale_payment_id) AS eligible_total,
+           MAX(CASE WHEN si.product_kind_at_sale IS DISTINCT FROM '拓客引流卡'
+               THEN sipe.receipt_id END)
+             OVER (PARTITION BY sipe.sale_payment_id) AS last_eligible_receipt_id
+    FROM sale_item_performance_events sipe
+    JOIN sale_reportable_payment_events spe ON spe.sale_payment_id = sipe.sale_payment_id
+    JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id
+    WHERE sipe.receipt_id IS NOT NULL
+  ),
+  receipt_rounded AS (
+    SELECT rb.*,
+           CASE WHEN rb.product_kind_at_sale = '拓客引流卡' OR rb.eligible_total = 0
+                THEN 0::numeric
+                ELSE ROUND(rb.payment_performance_amount * rb.amount / rb.eligible_total, 2)
+           END AS rounded_amount
+    FROM receipt_base rb
+  ),
+  receipt_final AS (
+    SELECT rr.receipt_id,
+           CASE WHEN rr.receipt_id = rr.last_eligible_receipt_id
+                THEN rr.payment_performance_amount
+                   - SUM(rr.rounded_amount) OVER (PARTITION BY rr.sale_payment_id)
+                   + rr.rounded_amount
+                ELSE rr.rounded_amount
+           END::numeric(10, 2) AS performance_amount
+    FROM receipt_rounded rr
+  )
+  SELECT sipe.event_key, sipe.receipt_id, sipe.sale_payment_id,
+         sipe.sale_order_id, sipe.sale_item_id, sipe.store_id, sipe.amount,
+         CASE WHEN sipe.is_legacy_residual
+              THEN CASE WHEN si.product_kind_at_sale = '拓客引流卡'
+                        THEN 0::numeric(10, 2) ELSE sipe.amount END
+              ELSE COALESCE(rf.performance_amount, 0::numeric(10, 2))
+         END AS performance_amount,
+         si.product_kind_at_sale, sipe.sales_category, sipe.change_type,
+         sipe.performance_date, sipe.is_initial_event, sipe.is_legacy_residual
+  FROM sale_item_performance_events sipe
+  JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id
+  LEFT JOIN receipt_final rf ON rf.receipt_id = sipe.receipt_id
 `);
 });
 
@@ -181588,8 +181707,8 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
   const { scope } = ctx;
   const cur = ctx.comparison.current;
   const runStoreRevenue = async (range) => scalar(await db2.execute(import_drizzle_orm68.sql`
-          SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
-          FROM sale_order_performance_events spe
+          SELECT COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
+          FROM sale_reportable_payment_events spe
           WHERE ${scopeFilterSql(session4, scope, "spe.store_id")}
             AND spe.status = '已支付'
             AND spe.change_type IN ('首次支付', '回款', '退款')
@@ -181598,8 +181717,8 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
             AND spe.performance_date BETWEEN ${range.start} AND ${range.end}
         `));
   const runShengmeiRevenue = async (range) => scalar(await db2.execute(import_drizzle_orm68.sql`
-          SELECT COALESCE(SUM(sipe.amount::numeric), 0) AS v
-          FROM sale_item_performance_events sipe
+          SELECT COALESCE(SUM(sipe.performance_amount::numeric), 0) AS v
+          FROM sale_reportable_item_events sipe
           JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id
           JOIN sale_orders so ON so.sale_order_id = sipe.sale_order_id
           WHERE ${scopeFilterSql(session4, scope, "so.store_id")}
@@ -181630,8 +181749,8 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
             AND ${excludeDepositRefundSql("so")}
         `));
   const runNewCustomerRevenue = async (range) => scalar(await db2.execute(import_drizzle_orm68.sql`
-          SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
-          FROM sale_order_performance_events spe
+          SELECT COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
+          FROM sale_reportable_payment_events spe
           JOIN sale_orders so ON so.sale_order_id = spe.sale_order_id
           JOIN client_wechat_users c ON c.user_id = so.client_user_id
           WHERE ${scopeFilterSql(session4, scope, "so.store_id")}
@@ -181644,8 +181763,8 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
             AND spe.performance_date BETWEEN ${range.start} AND ${range.end}
         `));
   const runTrafficCustomerRevenue = async (range) => scalar(await db2.execute(import_drizzle_orm68.sql`
-          SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
-          FROM sale_order_performance_events spe
+          SELECT COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
+          FROM sale_reportable_payment_events spe
           JOIN sale_orders so ON so.sale_order_id = spe.sale_order_id
           JOIN client_wechat_users c ON c.user_id = so.client_user_id
           WHERE ${scopeFilterSql(session4, scope, "so.store_id")}
@@ -181744,8 +181863,8 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
     db2.execute(technicianByStoreSql(session4, scope, cur.end)),
     db2.execute(technicianDirectByMarketSql(session4, scope, cur.end)),
     db2.execute(import_drizzle_orm68.sql`
-        SELECT spe.store_id, COALESCE(SUM(spe.amount::numeric), 0) AS v
-        FROM sale_order_performance_events spe
+        SELECT spe.store_id, COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
+        FROM sale_reportable_payment_events spe
         WHERE ${scopeFilterSql(session4, scope, "spe.store_id")}
           AND spe.status = '已支付'
           AND spe.change_type IN ('首次支付', '回款', '退款')
@@ -181755,8 +181874,8 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
         GROUP BY spe.store_id
       `),
     db2.execute(import_drizzle_orm68.sql`
-        SELECT so.store_id, COALESCE(SUM(sipe.amount::numeric), 0) AS v
-        FROM sale_item_performance_events sipe
+        SELECT so.store_id, COALESCE(SUM(sipe.performance_amount::numeric), 0) AS v
+        FROM sale_reportable_item_events sipe
         JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id
         JOIN sale_orders so ON so.sale_order_id = sipe.sale_order_id
         WHERE ${scopeFilterSql(session4, scope, "so.store_id")}
@@ -181767,8 +181886,8 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
         GROUP BY so.store_id
       `),
     db2.execute(import_drizzle_orm68.sql`
-        SELECT so.store_id, COALESCE(SUM(spe.amount::numeric), 0) AS v
-        FROM sale_order_performance_events spe
+        SELECT so.store_id, COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
+        FROM sale_reportable_payment_events spe
         JOIN sale_orders so ON so.sale_order_id = spe.sale_order_id
         JOIN client_wechat_users c ON c.user_id = so.client_user_id
         WHERE ${scopeFilterSql(session4, scope, "so.store_id")}
@@ -181782,8 +181901,8 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
         GROUP BY so.store_id
       `),
     db2.execute(import_drizzle_orm68.sql`
-        SELECT so.store_id, COALESCE(SUM(spe.amount::numeric), 0) AS v
-        FROM sale_order_performance_events spe
+        SELECT so.store_id, COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
+        FROM sale_reportable_payment_events spe
         JOIN sale_orders so ON so.sale_order_id = spe.sale_order_id
         JOIN client_wechat_users c ON c.user_id = so.client_user_id
         WHERE ${scopeFilterSql(session4, scope, "so.store_id")}
@@ -182205,8 +182324,8 @@ async function queryOperatedMembers(session4, scope, range, threshold) {
   const rows = await db2.execute(import_drizzle_orm71.sql`
     WITH member_spend AS (
       SELECT o.client_user_id,
-             SUM(spe.amount::numeric) AS spend
-      FROM sale_order_performance_events spe
+             SUM(spe.performance_amount::numeric) AS spend
+      FROM sale_reportable_payment_events spe
       JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
       JOIN client_wechat_users c ON c.user_id = o.client_user_id
       WHERE ${sc}
@@ -182228,8 +182347,8 @@ async function queryMemberAvgTicket(session4, scope, range) {
   const rows = await db2.execute(import_drizzle_orm71.sql`
     WITH member_spend AS (
       SELECT o.client_user_id,
-             SUM(spe.amount::numeric) AS spend
-      FROM sale_order_performance_events spe
+             SUM(spe.performance_amount::numeric) AS spend
+      FROM sale_reportable_payment_events spe
       JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
       JOIN client_wechat_users c ON c.user_id = o.client_user_id
       WHERE ${sc}
@@ -182262,8 +182381,8 @@ async function queryNewMemberCount(session4, scope, range) {
 async function queryNewMemberSpend(session4, scope, range) {
   const sc = scopeFilterSql(session4, scope, "c.bound_store_id");
   const rows = await db2.execute(import_drizzle_orm71.sql`
-    SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
-    FROM sale_order_performance_events spe
+    SELECT COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
+    FROM sale_reportable_payment_events spe
     JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
     JOIN client_wechat_users c ON c.user_id = o.client_user_id
     WHERE ${sc}
@@ -182513,8 +182632,8 @@ async function queryOpsBreakdown(session4, scope, range, group, threshold) {
     -- 会员消费先按当前市场/门店 + 顾客合并：spend = SUM(已入账款项流水) @ 业绩归属日期（#138）
     member_spend AS (
       SELECT ${groupId} AS group_id, o.client_user_id,
-             SUM(spe.amount::numeric) AS spend
-      FROM sale_order_performance_events spe
+             SUM(spe.performance_amount::numeric) AS spend
+      FROM sale_reportable_payment_events spe
       JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
       JOIN skel sk ON sk.store_id = o.store_id
       JOIN client_wechat_users c ON c.user_id = o.client_user_id
@@ -182559,8 +182678,8 @@ async function queryOpsBreakdown(session4, scope, range, group, threshold) {
     -- ⚠ 本段注释在 SQL 模板字面量内部，禁止出现反引号（会直接截断模板）。
     newmem_spend AS (
       SELECT ${groupId} AS group_id,
-             COALESCE(SUM(spe.amount::numeric), 0) AS new_spend
-      FROM sale_order_performance_events spe
+             COALESCE(SUM(spe.performance_amount::numeric), 0) AS new_spend
+      FROM sale_reportable_payment_events spe
       JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
       JOIN client_wechat_users c ON c.user_id = o.client_user_id
       JOIN skel sk ON sk.store_id = c.bound_store_id
@@ -182989,14 +183108,14 @@ async function queryCycle(session4, scope, range, threshold, groupCol, filter, g
              so.store_id,
              ${groupCol} AS grp,
              sipe.performance_date AS purchase_date,
-             SUM(sipe.amount::numeric) AS day_received,
+             SUM(sipe.performance_amount::numeric) AS day_received,
              COALESCE(
-               SUM(sipe.amount::numeric) FILTER (
+               SUM(sipe.performance_amount::numeric) FILTER (
                  WHERE so.sale_order_type IN ('销售单', '转换单')
                ),
                0
              ) AS purchase_received
-      FROM sale_item_performance_events sipe
+      FROM sale_reportable_item_events sipe
       JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id
       JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
       JOIN product_skus sk ON sk.sku_id = si.sku_id
@@ -183012,8 +183131,8 @@ async function queryCycle(session4, scope, range, threshold, groupCol, filter, g
       -- 退款走负数冲销、不删行，此前「> 0」把净额为负的日子整组丢掉，冲销被吞、业绩只进不出。
       -- 也不能只判 day_received <> 0：寄存单金额恰好抵平销售单/转换单净额的日子（day_received = 0、
       -- purchase_received <> 0）仍会被误丢。FILTER 无行时为 NULL，NULL <> 0 不成立，与 0 同待遇。
-      HAVING SUM(sipe.amount::numeric) <> 0
-          OR SUM(sipe.amount::numeric) FILTER (WHERE so.sale_order_type IN ('销售单', '转换单')) <> 0
+      HAVING SUM(sipe.performance_amount::numeric) <> 0
+          OR SUM(sipe.performance_amount::numeric) FILTER (WHERE so.sale_order_type IN ('销售单', '转换单')) <> 0
     ),
     qualifying_days AS (
       SELECT client_user_id, store_id, grp, purchase_date
@@ -183130,14 +183249,14 @@ async function queryCycleByStore(session4, scope, range, threshold, groupCol, fi
              so.store_id,
              ${groupCol} AS grp,
              sipe.performance_date AS purchase_date,
-             SUM(sipe.amount::numeric) AS day_received,
+             SUM(sipe.performance_amount::numeric) AS day_received,
              COALESCE(
-               SUM(sipe.amount::numeric) FILTER (
+               SUM(sipe.performance_amount::numeric) FILTER (
                  WHERE so.sale_order_type IN ('销售单', '转换单')
                ),
                0
              ) AS purchase_received
-      FROM sale_item_performance_events sipe
+      FROM sale_reportable_item_events sipe
       JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id
       JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
       JOIN product_skus sk ON sk.sku_id = si.sku_id
@@ -183153,8 +183272,8 @@ async function queryCycleByStore(session4, scope, range, threshold, groupCol, fi
       -- 退款走负数冲销、不删行，此前「> 0」把净额为负的日子整组丢掉，冲销被吞、业绩只进不出。
       -- 也不能只判 day_received <> 0：寄存单金额恰好抵平销售单/转换单净额的日子（day_received = 0、
       -- purchase_received <> 0）仍会被误丢。FILTER 无行时为 NULL，NULL <> 0 不成立，与 0 同待遇。
-      HAVING SUM(sipe.amount::numeric) <> 0
-          OR SUM(sipe.amount::numeric) FILTER (WHERE so.sale_order_type IN ('销售单', '转换单')) <> 0
+      HAVING SUM(sipe.performance_amount::numeric) <> 0
+          OR SUM(sipe.performance_amount::numeric) FILTER (WHERE so.sale_order_type IN ('销售单', '转换单')) <> 0
     ),
     qualifying_days AS (
       SELECT client_user_id, store_id, grp, purchase_date
@@ -183496,8 +183615,8 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
   const { scope } = ctx;
   const cur = ctx.comparison.current;
   const qRevenueTotal = db2.execute(import_drizzle_orm73.sql`
-      SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
-      FROM sale_order_performance_events spe
+      SELECT COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
+      FROM sale_reportable_payment_events spe
       WHERE ${scopeFilterSql(session4, scope, "spe.store_id")}
         AND spe.change_type IN ('首次支付', '回款', '退款')
         AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
@@ -183584,8 +183703,8 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
   const qTechByStore = db2.execute(technicianByStoreSql(session4, scope, cur.end));
   const qTechDirectByMarket = db2.execute(technicianDirectByMarketSql(session4, scope, cur.end));
   const qRevenueByStore = db2.execute(import_drizzle_orm73.sql`
-      SELECT spe.store_id, COALESCE(SUM(spe.amount::numeric), 0) AS v
-      FROM sale_order_performance_events spe
+      SELECT spe.store_id, COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
+      FROM sale_reportable_payment_events spe
       WHERE ${scopeFilterSql(session4, scope, "spe.store_id")}
         AND spe.change_type IN ('首次支付', '回款', '退款')
         AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
@@ -183661,11 +183780,11 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
     `);
   const qStoreRankRevenue = db2.execute(import_drizzle_orm73.sql`
       SELECT s.store_id, s.store_name, o.name AS market_name,
-        COALESCE(SUM(spe.amount::numeric), 0) AS value
+        COALESCE(SUM(spe.performance_amount::numeric), 0) AS value
       FROM stores s
       JOIN org_nodes o_store ON s.org_node_id = o_store.id
       JOIN org_nodes o ON o_store.parent_id = o.id
-      LEFT JOIN sale_order_performance_events spe
+      LEFT JOIN sale_reportable_payment_events spe
         ON spe.store_id = s.store_id
         AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
         AND spe.legacy_source IS DISTINCT FROM 'workfine'
@@ -183780,12 +183899,15 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
   const qStaffRankRevenue = db2.execute(import_drizzle_orm73.sql`
       ${producerCte},
       revenue_by_emp AS (
-        SELECT spia.employee_id, COALESCE(SUM(spia.allocated_amount::numeric), 0) AS v
+        SELECT spia.employee_id,
+          COALESCE(SUM(ROUND(spia.allocated_amount::numeric *
+            COALESCE(sipe.performance_amount::numeric / NULLIF(spir.amount::numeric, 0), 0), 2)), 0) AS v
         FROM sale_payment_item_allocations spia
         JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+        JOIN sale_reportable_item_events sipe ON sipe.receipt_id = spir.id
         JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
         JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-        JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id
+        JOIN sale_reportable_payment_events spe ON spe.sale_payment_id = spir.sale_payment_id
         WHERE spia.is_void = FALSE
           AND so.sale_order_type IN ('销售单', '转换单')
           AND ${performanceEventDateBetween("spe", cur.start, cur.end)}
@@ -183896,16 +184018,17 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       ${producerCte},
       revenue_by_emp_cat AS (
         SELECT spia.employee_id,
-          COALESCE(SUM(spia.allocated_amount::numeric), 0) AS total,
-          COALESCE(SUM(spia.allocated_amount::numeric) FILTER (WHERE si.sales_category = '自销自耗'), 0) AS sale_zxzh,
-          COALESCE(SUM(spia.allocated_amount::numeric) FILTER (WHERE si.sales_category = '他销自耗'), 0) AS sale_txzh,
-          COALESCE(SUM(spia.allocated_amount::numeric) FILTER (WHERE si.sales_category = '他销他耗'), 0) AS sale_txth,
-          COALESCE(SUM(spia.allocated_amount::numeric) FILTER (WHERE si.sales_category = '生态合作'), 0) AS sale_eco
+          COALESCE(SUM(ROUND(spia.allocated_amount::numeric * COALESCE(sipe.performance_amount::numeric / NULLIF(spir.amount::numeric, 0), 0), 2)), 0) AS total,
+          COALESCE(SUM(ROUND(spia.allocated_amount::numeric * COALESCE(sipe.performance_amount::numeric / NULLIF(spir.amount::numeric, 0), 0), 2)) FILTER (WHERE si.sales_category = '自销自耗'), 0) AS sale_zxzh,
+          COALESCE(SUM(ROUND(spia.allocated_amount::numeric * COALESCE(sipe.performance_amount::numeric / NULLIF(spir.amount::numeric, 0), 0), 2)) FILTER (WHERE si.sales_category = '他销自耗'), 0) AS sale_txzh,
+          COALESCE(SUM(ROUND(spia.allocated_amount::numeric * COALESCE(sipe.performance_amount::numeric / NULLIF(spir.amount::numeric, 0), 0), 2)) FILTER (WHERE si.sales_category = '他销他耗'), 0) AS sale_txth,
+          COALESCE(SUM(ROUND(spia.allocated_amount::numeric * COALESCE(sipe.performance_amount::numeric / NULLIF(spir.amount::numeric, 0), 0), 2)) FILTER (WHERE si.sales_category = '生态合作'), 0) AS sale_eco
         FROM sale_payment_item_allocations spia
         JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+        JOIN sale_reportable_item_events sipe ON sipe.receipt_id = spir.id
         JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
         JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-        JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id
+        JOIN sale_reportable_payment_events spe ON spe.sale_payment_id = spir.sale_payment_id
         WHERE spia.is_void = FALSE
           AND so.sale_order_type IN ('销售单', '转换单')
           AND ${performanceEventDateBetween("spe", cur.start, cur.end)}
@@ -184695,8 +184818,8 @@ function operatingMasterExportGroup(column2) {
 "use server";
 function revenueByStoreSql(session4, scope, range) {
   return import_drizzle_orm74.sql`
-        SELECT spe.store_id, COALESCE(SUM(spe.amount::numeric), 0) AS v
-        FROM sale_order_performance_events spe
+        SELECT spe.store_id, COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
+        FROM sale_reportable_payment_events spe
         WHERE ${scopeFilterSql(session4, scope, "spe.store_id")}
           AND spe.status = '已支付'
           AND spe.change_type IN ('首次支付', '回款', '退款')
@@ -184713,9 +184836,9 @@ function managedByStoreSql(session4, scope, ytd, month, threshold) {
                COUNT(*) FILTER (WHERE t.month_amount >= ${threshold}) AS month_v
         FROM (
           SELECT spe.store_id, so.client_user_id,
-                 SUM(spe.amount::numeric) AS year_amount,
-                 SUM(spe.amount::numeric) FILTER (WHERE spe.performance_date >= ${month.start}) AS month_amount
-          FROM sale_order_performance_events spe
+                 SUM(spe.performance_amount::numeric) AS year_amount,
+                 SUM(spe.performance_amount::numeric) FILTER (WHERE spe.performance_date >= ${month.start}) AS month_amount
+          FROM sale_reportable_payment_events spe
           JOIN sale_orders so ON so.sale_order_id = spe.sale_order_id
           WHERE ${scopeFilterSql(session4, scope, "spe.store_id")}
             AND spe.status = '已支付'
@@ -184887,8 +185010,8 @@ init_with_permission();
 var import_drizzle_orm75 = __toESM(require_drizzle_orm(), 1);
 function performanceTotalSql(session4, scope, range) {
   return import_drizzle_orm75.sql`
-    SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
-    FROM sale_order_performance_events spe
+    SELECT COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
+    FROM sale_reportable_payment_events spe
     WHERE ${scopeFilterSql(session4, scope, "spe.store_id")}
       AND spe.status = '已支付'
       AND spe.change_type IN ('首次支付', '回款', '退款')
@@ -184918,8 +185041,8 @@ function dailyOverviewQueries(session4, scope, range) {
     `,
     performance: import_drizzle_orm75.sql`
       WITH pay AS (
-        SELECT spe.sale_payment_id, spe.store_id, spe.amount::numeric AS amount
-        FROM sale_order_performance_events spe
+        SELECT spe.sale_payment_id, spe.store_id, spe.performance_amount::numeric AS amount
+        FROM sale_reportable_payment_events spe
         WHERE ${scopeFilterSql(session4, scope, "spe.store_id")}
           AND spe.status = '已支付'
           AND spe.change_type IN ('首次支付', '回款', '退款')
@@ -184928,10 +185051,16 @@ function dailyOverviewQueries(session4, scope, range) {
           AND spe.performance_date BETWEEN ${range.start} AND ${range.end}
       ),
       receipt AS (
-        SELECT r.sale_payment_id, r.sale_item_id, r.amount::numeric AS amount,
-               SUM(r.amount::numeric) OVER (PARTITION BY r.sale_payment_id) AS denominator
-        FROM sale_payment_item_receipts r
-        WHERE r.sale_payment_id IN (SELECT sale_payment_id FROM pay)
+        SELECT r.sale_payment_id, r.sale_item_id,
+               r.performance_amount::numeric AS amount
+        FROM sale_reportable_item_events r
+        WHERE r.receipt_id IS NOT NULL
+          AND r.sale_payment_id IN (SELECT sale_payment_id FROM pay)
+      ),
+      receipt_total AS (
+        SELECT sale_payment_id, SUM(amount) AS amount
+        FROM receipt
+        GROUP BY sale_payment_id
       )
       SELECT 'total' AS kind, pay.store_id, NULL::text AS sales_category, NULL::text AS category_id,
              SUM(pay.amount)::text AS amount
@@ -184939,24 +185068,23 @@ function dailyOverviewQueries(session4, scope, range) {
       GROUP BY pay.store_id
       UNION ALL
       SELECT 'part' AS kind, pay.store_id, si.sales_category::text AS sales_category, sku.category_id,
-             SUM(rc.amount * pay.amount / rc.denominator)::text AS amount
+             SUM(rc.amount)::text AS amount
       FROM pay
-      JOIN receipt rc ON rc.sale_payment_id = pay.sale_payment_id AND rc.denominator <> 0
+      JOIN receipt rc ON rc.sale_payment_id = pay.sale_payment_id
       LEFT JOIN sale_items si ON si.sale_item_id = rc.sale_item_id
       LEFT JOIN product_skus sku ON sku.sku_id = si.sku_id
       GROUP BY pay.store_id, si.sales_category, sku.category_id
       UNION ALL
       SELECT 'part' AS kind, pay.store_id, NULL::text AS sales_category, NULL::text AS category_id,
-             SUM(pay.amount)::text AS amount
+             SUM(pay.amount - COALESCE(rt.amount, 0))::text AS amount
       FROM pay
-      WHERE NOT EXISTS (
-        SELECT 1 FROM receipt rc WHERE rc.sale_payment_id = pay.sale_payment_id AND rc.denominator <> 0
-      )
+      LEFT JOIN receipt_total rt ON rt.sale_payment_id = pay.sale_payment_id
       GROUP BY pay.store_id
+      HAVING SUM(pay.amount - COALESCE(rt.amount, 0)) <> 0
     `,
     recharge: import_drizzle_orm75.sql`
-      SELECT spe.store_id, SUM(spe.amount::numeric)::text AS amount
-      FROM sale_order_performance_events spe
+      SELECT spe.store_id, SUM(spe.performance_amount::numeric)::text AS amount
+      FROM sale_reportable_payment_events spe
       WHERE ${scopeFilterSql(session4, scope, "spe.store_id")}
         AND spe.status = '已支付'
         AND spe.change_type IN ('首次支付', '回款', '退款')
@@ -184989,14 +185117,14 @@ var inflight = null;
 async function queryStoreDataStarts() {
   const [performanceRows, serviceRows] = await Promise.all([
     db2.execute(import_drizzle_orm76.sql`
-      SELECT so.store_id, to_char(MIN(p.performance_attribution_date), 'YYYY-MM-DD') AS start
-        FROM sale_order_payments p
-        JOIN sale_orders so ON so.sale_order_id = p.sale_order_id
-       WHERE p.status = '已支付'
-         AND p.change_type IN ('首次支付', '回款', '退款')
-         AND so.sale_order_type IN ('销售单', '转换单', '充值单')
-         AND so.legacy_source IS DISTINCT FROM 'workfine'
-       GROUP BY so.store_id
+      SELECT spe.store_id, to_char(MIN(spe.performance_date), 'YYYY-MM-DD') AS start
+        FROM sale_reportable_payment_events spe
+       WHERE spe.status = '已支付'
+         AND spe.change_type IN ('首次支付', '回款', '退款')
+         AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
+         AND spe.legacy_source IS DISTINCT FROM 'workfine'
+         AND spe.performance_amount <> 0
+       GROUP BY spe.store_id
     `),
     db2.execute(import_drizzle_orm76.sql`
       SELECT store_id, to_char(MIN(service_date), 'YYYY-MM-DD') AS start
@@ -186196,9 +186324,9 @@ async function loadCustomerFrequencySource(session4, scope, range) {
     visit_store_events AS (${visitDayStoresSql({ axis: "service_or_payment", scope: inCust, range })}),
     amount_days AS (
       SELECT so.client_user_id, spe.performance_date AS day,
-             SUM(spe.amount::numeric) AS amount,
+             SUM(spe.performance_amount::numeric) AS amount,
              array_agg(DISTINCT st.store_name) AS stores
-      FROM sale_order_performance_events spe
+      FROM sale_reportable_payment_events spe
       JOIN sale_orders so ON so.sale_order_id = spe.sale_order_id
       LEFT JOIN stores st ON st.store_id = spe.store_id
       WHERE spe.status = '已支付'
