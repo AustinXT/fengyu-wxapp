@@ -84,6 +84,7 @@ async function buildLevelPayload(employeeId) {
     staffLevel,
     scopeStoreIds,
     hasDashboardPermission,
+    roleBindings,
   )
   const scopedStores = await fetchScopedStores(scopeStoreIds)
   // managerStores：仅 manager 角色绑定的门店，保留给门店模式下的店长写操作。
