@@ -59,6 +59,7 @@ import {
   requestItemCompanyShipmentCancellation,
   summarizeStoreReplenishmentRequests,
 } from '@/actions/inventory/business'
+import { supplierDisplayName } from '@/lib/inventory/supplier-label'
 import type { MarketPromotionQuoteResult, MarketPromotionSelectionInput, ReceiveShipmentInFullInput } from '@/lib/inventory/business'
 import type { StoreUnallocatedRequestSku } from '@/lib/inventory/doc-candidates'
 import {
@@ -5273,8 +5274,8 @@ function SelfPurchaseForm({
 
   async function submit() {
     if (saving) return
-    if (!marketId || !supplierId) {
-      toast.error('请选择市场和供应商')
+    if (!marketId) {
+      toast.error('请选择市场')
       return
     }
     const hasInvalidLine = lines.some((line) => {
@@ -5302,7 +5303,7 @@ function SelfPurchaseForm({
     try {
       const result = await createSelfPurchasedReceipt({
         marketId,
-        supplierId,
+        supplierId: supplierId || null,
         docDate: optionalText(docDate),
         receiptAttachmentUrl: optionalText(receiptAttachmentUrl),
         remark: optionalText(remark),
@@ -5329,11 +5330,11 @@ function SelfPurchaseForm({
           <InventorySubjectSelect
             options={markets.map((location) => ({ value: location.locationId, label: location.name }))}
             value={marketId}
-            onChange={(nextMarketId) => { setMarketId(nextMarketId); setLines((previous) => previous.map((line) => ({ ...line, skuId: '' }))) }}
+            onChange={(nextMarketId) => { setMarketId(nextMarketId); setSupplierId(''); setLines((previous) => previous.map((line) => ({ ...line, skuId: '' }))) }}
             placeholder="请选择市场"
           />
         </FormField>
-        <FormField label="供应商" required><Select value={supplierId} onChange={(event) => setSupplierId(event.target.value)}><option value="">请选择供应商</option>{suppliers.map((supplier) => <option key={supplier.supplierId} value={supplier.supplierId}>{supplier.name}</option>)}</Select></FormField>
+        <FormField label="供应商（选填）"><Select value={supplierId} onChange={(event) => setSupplierId(event.target.value)}><option value="">未指定</option>{suppliers.filter((supplier) => !supplier.ownerMarketId || supplier.ownerMarketId === marketId).map((supplier) => <option key={supplier.supplierId} value={supplier.supplierId}>{supplierDisplayName(supplier.name, supplier.ownerMarketName)}</option>)}</Select></FormField>
         <FormField label="入库日期"><DatePicker value={docDate} onValueChange={setDocDate} /></FormField>
         <FormField label="收据附件地址" className="md:col-span-2"><Input value={receiptAttachmentUrl} onChange={(event) => setReceiptAttachmentUrl(event.target.value)} placeholder="填写附件地址" /></FormField>
       </div>

@@ -572,7 +572,7 @@ export interface SelfPurchasedReceiptLineInput {
 
 export interface CreateSelfPurchasedReceiptInput {
   marketId: string
-  supplierId: string
+  supplierId?: string | null
   docDate?: string | null
   receiptAttachmentUrl?: string | null
   remark?: string | null
@@ -1519,13 +1519,15 @@ async function linkedQuantity(
   return Number(row?.quantity ?? 0)
 }
 
-async function ensureSupplier(tx: Tx, supplierId: string): Promise<{ id: string; name: string }> {
+async function ensureSupplier(tx: Tx, supplierId: string, marketId: string): Promise<{ id: string; name: string }> {
   const [supplier] = rows<{ supplier_id: string; name: string }>(await tx.execute(sql`
     SELECT supplier_id, name
       FROM inventory_suppliers
      WHERE supplier_id = ${supplierId}
        AND is_active = true
+       AND (owner_market_id IS NULL OR owner_market_id = ${marketId})
      LIMIT 1
+     FOR SHARE
   `))
   if (!supplier) throw new ApiError('NOT_FOUND', '供应商不存在或已停用')
   return { id: supplier.supplier_id, name: supplier.name }
@@ -5959,8 +5961,9 @@ export async function createSelfPurchasedReceipt(
     const market = await locationForUpdate(tx, marketId)
     assertType(market, '市场', '自采入库主体')
     assertLocationWritable(session, market)
-    const supplier = await ensureSupplier(tx, required(input.supplierId, '供应商'))
-    const supplierName = supplier.name
+    const supplierId = text(input.supplierId)
+    const supplier = supplierId ? await ensureSupplier(tx, supplierId, marketId) : null
+    const supplierName = supplier?.name ?? null
     const seenSkus = new Set<string>()
     const prepared: Array<{
       sku: SkuSnapshot
@@ -6019,7 +6022,7 @@ export async function createSelfPurchasedReceipt(
       status: '已完成',
       targetOrgNodeId: marketId,
       marketId,
-      supplierId: supplier.id,
+      supplierId: supplier?.id ?? null,
       supplierName,
       receiptAttachmentUrl: input.receiptAttachmentUrl,
       docDate: input.docDate,
@@ -6036,7 +6039,7 @@ export async function createSelfPurchasedReceipt(
         skuName: item.sku.productName,
         specName: item.sku.specName,
         supplier: supplierName,
-        supplierId: supplier.id,
+        supplierId: supplier?.id ?? null,
         productSeries: item.sku.productSeries,
         // 同一张自采单里赠送行与正常行行号不同，批号天然分开（#345 §2.7）
         batchNo: item.batchNo ?? autoBatchNo(docId, lineIndex + 1),
@@ -6058,6 +6061,7 @@ export async function createSelfPurchasedReceipt(
         skuName: lot.skuName,
         specName: lot.specName,
         supplier: lot.supplier,
+        supplierId: lot.supplierId,
         productSeries: lot.productSeries,
         batchNo: lot.batchNo,
         expiryDate: lot.expiryDate,

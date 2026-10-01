@@ -1,3 +1,4 @@
+import { canManageSupplier, supplierCreationOwner, supplierDisplayName, SUPPLIER_MANAGE_ACTIONS } from './supplier-access'
 import { isValidInventoryCalendarDate } from '@/lib/calendar-date'
 import { db } from '@/db'
 import 'server-only'
@@ -1683,6 +1684,7 @@ async function resolveSkuSupplier(
   tx: Tx,
   supplierIdInput: string | null | undefined,
   currentSupplierId: string | null,
+  ownerMarketId: string | null,
 ): Promise<{ supplierId: string | null; supplier: string | null; onlyIfCurrent: boolean } | null> {
   if (supplierIdInput === undefined) return null
   const id = normalizeText(supplierIdInput)
@@ -1696,12 +1698,14 @@ async function resolveSkuSupplier(
   // 锁序统一为 inventory_suppliers → inventory_skus（改名事务也是先改档案再同步 SKU），
   // 两条路径在供应商行上互斥，进不到同时操作 SKU 的阶段，不构成死锁。
   const [supplier] = await tx
-    .select({ name: inventorySuppliers.name, isActive: inventorySuppliers.isActive })
+    .select({ name: inventorySuppliers.name, isActive: inventorySuppliers.isActive, ownerMarketId: inventorySuppliers.ownerMarketId })
     .from(inventorySuppliers)
     .where(eq(inventorySuppliers.supplierId, id))
     .limit(1)
     .for('share')
-  if (!supplier) throw new ApiError('NOT_FOUND', '供应商不存在')
+  if (!supplier || (supplier.ownerMarketId != null && supplier.ownerMarketId !== ownerMarketId)) {
+    throw new ApiError('NOT_FOUND', '供应商不存在或不属于当前商品市场')
+  }
   if (!supplier.isActive && id !== currentSupplierId) {
     throw new ApiError('INVALID_STATE', `供应商「${supplier.name}」已停用，无法关联到库存商品`)
   }
@@ -1852,7 +1856,7 @@ export const createInventorySku = withAnyPermission(
     const priceValues = skuPriceValues(input, inventoryPriceVisibility(session), sourceType)
     const skuId = await db.transaction(async (tx) => {
       // 在事务内、且对档案行加 FOR SHARE —— 见 resolveSkuSupplier 的注释
-      const supplierValues = await resolveSkuSupplier(tx, input.supplierId, null)
+      const supplierValues = await resolveSkuSupplier(tx, input.supplierId, null, ownerMarketId)
       const generatedNo = await generateInventorySkuNo(tx)
       await tx.insert(inventorySkus).values({
         skuId: generatedNo,
@@ -1923,7 +1927,7 @@ export const updateInventorySku = withAnyPermission(
     // 供应商解析与 SKU 写入必须在同一事务：解析时对档案行加 FOR SHARE，
     // 挡住「读到旧名 → 别人改名并同步 → 我写回旧名」的时序（见 resolveSkuSupplier）
     await db.transaction(async (tx) => {
-      const supplierValues = await resolveSkuSupplier(tx, input.supplierId, current.supplierId)
+      const supplierValues = await resolveSkuSupplier(tx, input.supplierId, current.supplierId, ownerMarketId)
       // 只有「保持一个已停用的档案」这一种情况需要 CAS：行的 supplier_id 必须仍是它，
       // 否则说明中途被改挂了，这次写入就成了「换到停用档案」。
       const supplierGuard = supplierValues?.onlyIfCurrent && supplierValues.supplierId
@@ -4535,7 +4539,7 @@ export const confirmInventoryCoreReceive = withAnyPermission(
 )
 
 /**
- * 把 `uq_inventory_suppliers_name` 的唯一约束冲突翻成可读业务错误（#132）。
+ * 把供应链/市场内名称 partial unique 的冲突翻成可读业务错误。
  *
  * 不翻的话用户看到的是 fallback「创建供应商失败」：PG 原文是英文，而
  * `action-error.ts` 既把 `violates unique constraint` 列进 UNREADABLE_FRAGMENTS，
@@ -4545,18 +4549,22 @@ export const confirmInventoryCoreReceive = withAnyPermission(
  * （`listInventorySupplierOptions` 只查启用中的），默认也不在供应商列表里，
  * 用户撞上它时**没有任何入口能自己查明原因**，只会反复重试同一个名字。
  */
-function supplierNameConflict(error: unknown, name: string): unknown {
+function supplierNameConflict(error: unknown, name: string, ownerMarketId: string | null): unknown {
   if (pgErrorCode(error) === '23505') {
-    return new ApiError('CONFLICT', `供应商名称「${name}」已存在（可能是已停用的档案），请到供应商档案页查找`)
+    return new ApiError('CONFLICT', `供应商名称「${name}」已存在（可能是已停用的档案），请到${ownerMarketId ? '本市场' : '供应链共有'}供应商档案页查找`)
   }
   return error
 }
 
 function supplierRow(
-  row: typeof inventorySuppliers.$inferSelect & { linkedSkuCount: number },
+  row: typeof inventorySuppliers.$inferSelect & { linkedSkuCount: number; ownerMarketName: string | null },
+  session: AuthSession,
 ): InventorySupplierRow {
   return {
     supplierId: row.supplierId,
+    ownerMarketId: row.ownerMarketId,
+    ownerMarketName: row.ownerMarketName,
+    canManage: canManageSupplier(session, row.ownerMarketId),
     name: row.name,
     contactName: row.contactName,
     phone: row.phone,
@@ -4569,6 +4577,21 @@ function supplierRow(
   }
 }
 
+/** 总部不展开市场；门店读本店所属市场，沿用库存主体范围。 */
+async function supplierVisibility(session: AuthSession): Promise<SQL | undefined> {
+  const scoped = await scopedLocationIds(session)
+  if (scoped === null) return undefined
+  const locations = scoped.length === 0 ? [] : await db
+    .select({ locationId: inventoryLocations.locationId, locationType: inventoryLocations.locationType, parentLocationId: inventoryLocations.parentLocationId })
+    .from(inventoryLocations).where(inArray(inventoryLocations.locationId, scoped))
+  const markets = [...new Set(locations.flatMap((location) => {
+    if (location.locationType === '市场') return [location.locationId]
+    if (location.locationType === '门店' && location.parentLocationId) return [location.parentLocationId]
+    return []
+  }))]
+  return markets.length ? or(isNull(inventorySuppliers.ownerMarketId), inArray(inventorySuppliers.ownerMarketId, markets)) : isNull(inventorySuppliers.ownerMarketId)
+}
+
 /**
  * 供应商列表（#135 起返回 `{ data, total }`）。
  *
@@ -4579,10 +4602,10 @@ function supplierRow(
 export const listInventorySuppliers = withPermission(
   'inventory:stock_list',
   async (
-    _session,
+    session,
     filters: { keyword?: string; onlyActive?: boolean; page?: number; pageSize?: number } = {},
   ): Promise<{ data: InventorySupplierRow[]; total: number }> => {
-    const conditions: (SQL | undefined)[] = []
+    const conditions: (SQL | undefined)[] = [await supplierVisibility(session)]
     // 三态：undefined = 全部 / true = 仅启用 / false = 仅停用。
     // 原写法用 `?? true` 兜底，把三态压成了二值 ——
     // 「全部状态」(undefined) 变成只返回启用、「停用」(false) 变成返回全部，
@@ -4611,15 +4634,17 @@ export const listInventorySuppliers = withPermission(
     const query = db
       .select({
         supplier: inventorySuppliers,
+        ownerMarketName: orgNodes.name,
         // 停用前要提示「仍有 N 个 SKU 在用」（#132）。含已停用的 SKU：
         // 停用供应商不该因为 SKU 也停了就把关联当不存在。
         linkedSkuCount: sql<number>`cast(count(${inventorySkus.skuId}) as int)`,
       })
       .from(inventorySuppliers)
+      .leftJoin(orgNodes, eq(orgNodes.id, inventorySuppliers.ownerMarketId))
       .leftJoin(inventorySkus, eq(inventorySkus.supplierId, inventorySuppliers.supplierId))
       .where(whereClause)
-      .groupBy(inventorySuppliers.supplierId)
-      .orderBy(asc(inventorySuppliers.name))
+      .groupBy(inventorySuppliers.supplierId, orgNodes.name)
+      .orderBy(asc(inventorySuppliers.name), asc(inventorySuppliers.supplierId))
 
     // pageSize 缺省仍是「不分页」（办理台下拉共用本函数），但**一旦给了值就必须过白名单**：
     // `?size=7` 会让服务端每页 7 条而 UI 按 20 条算页数，尾部数据永远够不到；
@@ -4636,7 +4661,7 @@ export const listInventorySuppliers = withPermission(
       ? await query.limit(paged.pageSize).offset(paged.offset)
       : await query
     return {
-      data: rows.map((row) => supplierRow({ ...row.supplier, linkedSkuCount: row.linkedSkuCount })),
+      data: rows.map((row) => supplierRow({ ...row.supplier, linkedSkuCount: row.linkedSkuCount, ownerMarketName: row.ownerMarketName }, session)),
       total: totalRow?.total ?? 0,
     }
   },
@@ -4650,12 +4675,15 @@ export const listInventorySuppliers = withPermission(
  */
 export const listInventorySupplierOptions = withPermission(
   'inventory:stock_list',
-  async (): Promise<InventorySupplierOption[]> => {
-    return db
-      .select({ supplierId: inventorySuppliers.supplierId, name: inventorySuppliers.name })
+  async (session): Promise<InventorySupplierOption[]> => {
+    const visibility = await supplierVisibility(session)
+    const options = await db
+      .select({ supplierId: inventorySuppliers.supplierId, name: inventorySuppliers.name, ownerMarketName: orgNodes.name })
       .from(inventorySuppliers)
-      .where(eq(inventorySuppliers.isActive, true))
-      .orderBy(asc(inventorySuppliers.name))
+      .leftJoin(orgNodes, eq(orgNodes.id, inventorySuppliers.ownerMarketId))
+      .where(and(eq(inventorySuppliers.isActive, true), visibility))
+      .orderBy(asc(inventorySuppliers.name), asc(inventorySuppliers.supplierId))
+    return options.map((option) => ({ supplierId: option.supplierId, name: supplierDisplayName(option.name, option.ownerMarketName) }))
   },
 )
 
@@ -4667,8 +4695,12 @@ export const listInventorySupplierOptions = withPermission(
  */
 export const countInventorySkusBySupplier = withPermission(
   'inventory:stock_list',
-  async (_session, supplierIdInput: string): Promise<number> => {
+  async (session, supplierIdInput: string): Promise<number> => {
     const supplierId = normalizeRequired(supplierIdInput, '供应商')
+    const visibility = await supplierVisibility(session)
+    const [visible] = await db.select({ supplierId: inventorySuppliers.supplierId }).from(inventorySuppliers)
+      .where(and(eq(inventorySuppliers.supplierId, supplierId), visibility)).limit(1)
+    if (!visible) throw new ApiError('NOT_FOUND', '供应商不存在或无权查看')
     const [row] = await db
       .select({ count: sql<number>`cast(count(*) as int)` })
       .from(inventorySkus)
@@ -4677,14 +4709,28 @@ export const countInventorySkusBySupplier = withPermission(
   },
 )
 
-export const createInventorySupplier = withPermission(
-  'inventory:supply_chain_master_data_manage',
-  async (session, input: InventorySupplierInput): Promise<{ supplierId: string }> => {
+export const createInventorySupplier = withAnyPermission(
+  SUPPLIER_MANAGE_ACTIONS,
+  async (session, input: InventorySupplierInput): Promise<{ supplierId: string; name: string }> => {
+    const ownerMarketId = supplierCreationOwner(session)
+    if (input.ownerMarketId !== undefined && input.ownerMarketId !== ownerMarketId) {
+      throw new ApiError('PERMISSION_DENIED', '不能指定其它市场的供应商归属')
+    }
+    let ownerMarketName: string | null = null
+    if (ownerMarketId) {
+      await syncInventoryLocations()
+      await assertLocationVisible(session, ownerMarketId)
+      const [market] = await db.select({ name: orgNodes.name }).from(orgNodes)
+        .where(and(eq(orgNodes.id, ownerMarketId), eq(orgNodes.type, '市场'), eq(orgNodes.isActive, true))).limit(1)
+      if (!market) throw new ApiError('NOT_FOUND', '本市场不存在或已停用')
+      ownerMarketName = market.name
+    }
     const supplierId = `INV-SUP-${crypto.randomUUID()}`
     const name = normalizeRequired(input.name, '供应商名称')
     try {
       await db.insert(inventorySuppliers).values({
         supplierId,
+        ownerMarketId,
         name,
         contactName: normalizeText(input.contactName),
         phone: normalizeText(input.phone),
@@ -4693,16 +4739,16 @@ export const createInventorySupplier = withPermission(
         remark: normalizeText(input.remark),
       })
     } catch (error) {
-      throw supplierNameConflict(error, name)
+      throw supplierNameConflict(error, name, ownerMarketId)
     }
-    await logOperation(session, 'inventory.supplier.create', 'inventory_suppliers', supplierId, { name })
+    await logOperation(session, 'inventory.supplier.create', 'inventory_suppliers', supplierId, { name, ownerMarketId })
     revalidatePath('/inventory/suppliers')
-    return { supplierId }
+    return { supplierId, name: supplierDisplayName(name, ownerMarketName) }
   },
 )
 
-export const updateInventorySupplier = withPermission(
-  'inventory:supply_chain_master_data_manage',
+export const updateInventorySupplier = withAnyPermission(
+  SUPPLIER_MANAGE_ACTIONS,
   async (
     session,
     supplierIdInput: string,
@@ -4710,11 +4756,14 @@ export const updateInventorySupplier = withPermission(
   ): Promise<{ success: true }> => {
     const supplierId = normalizeRequired(supplierIdInput, '供应商')
     const [current] = await db
-      .select({ supplierId: inventorySuppliers.supplierId, name: inventorySuppliers.name })
+      .select({ supplierId: inventorySuppliers.supplierId, name: inventorySuppliers.name, ownerMarketId: inventorySuppliers.ownerMarketId })
       .from(inventorySuppliers)
       .where(eq(inventorySuppliers.supplierId, supplierId))
       .limit(1)
-    if (!current) throw new ApiError('NOT_FOUND', '供应商不存在')
+    if (!current || !canManageSupplier(session, current.ownerMarketId)) throw new ApiError('NOT_FOUND', '供应商不存在或无权维护')
+    if (input.ownerMarketId !== undefined && input.ownerMarketId !== current.ownerMarketId) {
+      throw new ApiError('PERMISSION_DENIED', '供应商归属市场不可修改')
+    }
     const nextName = input.name === undefined ? undefined : normalizeRequired(input.name, '供应商名称')
     try {
       await db.transaction(async (tx) => {
@@ -4725,12 +4774,12 @@ export const updateInventorySupplier = withPermission(
         // 档案叫 A、SKU 文本留在 B，持久分叉（admin 列表走 JOIN 显示 A，staff 读文本显示 B）。
         // FOR UPDATE 让乙等甲提交后再读，于是读到 B、判定「名字变了」、正确回写成 A。
         const [locked] = await tx
-          .select({ name: inventorySuppliers.name })
+          .select({ name: inventorySuppliers.name, ownerMarketId: inventorySuppliers.ownerMarketId })
           .from(inventorySuppliers)
           .where(eq(inventorySuppliers.supplierId, supplierId))
           .limit(1)
           .for('update')
-        if (!locked) throw new ApiError('NOT_FOUND', '供应商不存在')
+        if (!locked || !canManageSupplier(session, locked.ownerMarketId)) throw new ApiError('NOT_FOUND', '供应商不存在或无权维护')
         await tx
           .update(inventorySuppliers)
           .set({
@@ -4764,7 +4813,7 @@ export const updateInventorySupplier = withPermission(
         }
       })
     } catch (error) {
-      throw supplierNameConflict(error, nextName ?? current.name)
+      throw supplierNameConflict(error, nextName ?? current.name, current.ownerMarketId)
     }
     await logOperation(session, 'inventory.supplier.update', 'inventory_suppliers', supplierId, input)
     revalidatePath('/inventory/suppliers')

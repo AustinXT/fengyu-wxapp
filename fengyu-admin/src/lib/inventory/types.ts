@@ -270,6 +270,8 @@ export interface InventoryLocationFilterOptions {
 }
 
 export interface InventorySupplierInput {
+  /** 仅校验归属不变；建档归属由账号绑定推导。 */
+  ownerMarketId?: string | null
   name: string
   contactName?: string | null
   phone?: string | null
@@ -279,6 +281,9 @@ export interface InventorySupplierInput {
 }
 
 export interface InventorySupplierRow {
+  ownerMarketId: string | null
+  ownerMarketName: string | null
+  canManage: boolean
   supplierId: string
   name: string
   contactName: string | null

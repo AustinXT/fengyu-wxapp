@@ -330,6 +330,7 @@ export const inventorySuppliers = pgTable(
   {
     supplierId: text('supplier_id').primaryKey(),
     name: text('name').notNull(),
+    ownerMarketId: text('owner_market_id').references(() => orgNodes.id),
     contactName: text('contact_name'),
     phone: varchar('phone', { length: 30 }),
     address: text('address'),
@@ -342,7 +343,9 @@ export const inventorySuppliers = pgTable(
       .$onUpdate(() => sql`NOW()`),
   },
   (table) => [
-    uniqueIndex('uq_inventory_suppliers_name').on(table.name),
+    uniqueIndex('uq_inventory_suppliers_shared_name').on(table.name).where(sql`${table.ownerMarketId} IS NULL`),
+    uniqueIndex('uq_inventory_suppliers_market_name').on(table.ownerMarketId, table.name).where(sql`${table.ownerMarketId} IS NOT NULL`),
+    index('idx_inventory_suppliers_owner_market').on(table.ownerMarketId),
     index('idx_inventory_suppliers_active').on(table.isActive),
   ],
 )

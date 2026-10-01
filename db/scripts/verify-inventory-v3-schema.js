@@ -303,6 +303,7 @@ async function main() {
              AND btrim(COALESCE(supplier, '')) <> ''
              AND EXISTS (
                SELECT 1 FROM inventory_suppliers v WHERE v.name = btrim(inventory_skus.supplier)
+                 AND (v.owner_market_id IS NULL OR v.owner_market_id = inventory_skus.owner_market_id)
              )
          )::int AS matchable_but_unlinked,
          COUNT(*) FILTER (
@@ -311,6 +312,7 @@ async function main() {
              AND EXISTS (
                SELECT 1 FROM inventory_suppliers v
                 WHERE v.name = btrim(inventory_skus.supplier)
+                  AND (v.owner_market_id IS NULL OR v.owner_market_id = inventory_skus.owner_market_id)
                   AND v.created_at <= inventory_skus.created_at
              )
          )::int AS matchable_at_creation,
@@ -336,6 +338,7 @@ async function main() {
         `SELECT sku_id, product_name, supplier,
                 EXISTS (
                   SELECT 1 FROM inventory_suppliers v WHERE v.name = btrim(inventory_skus.supplier)
+                 AND (v.owner_market_id IS NULL OR v.owner_market_id = inventory_skus.owner_market_id)
                 ) AS matchable
            FROM inventory_skus
           WHERE supplier_id IS NULL AND btrim(COALESCE(supplier, '')) <> ''

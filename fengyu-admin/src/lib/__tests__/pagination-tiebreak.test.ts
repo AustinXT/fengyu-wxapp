@@ -171,9 +171,6 @@ function chainTail(code: string, end: number): string {
  * 这里显式登记那些**查过 schema 确认有 UNIQUE 约束**的列。
  */
 const UNIQUE_BY_INDEX: Array<[pattern: RegExp, why: string]> = [
-  [/asc\(inventorySuppliers\.name\)$/,
-    'db/schema/inventory.ts:345 `uniqueIndex(uq_inventory_suppliers_name).on(table.name)` '
-    + '—— 全表唯一索引（非部分索引），ORDER BY name 本身即全序，不需要 tie-break'],
   [/asc\(inventorySkus\.productCode\)$/,
     'db/schema/inventory.ts:108 `uniqueIndex(uq_inventory_skus_product_code)` + notNull，'
     + '迁移 0007_moaning_salo.sql:498 无 WHERE 条件 —— 全表唯一，本身即全序。'
@@ -344,12 +341,12 @@ describe('#282 · admin 分页查询的 orderBy 必须带唯一键 tie-break', (
       expect(offenders, `缺 tie-break 的分页查询:\n${offenders.join('\n')}`).toEqual([])
       // 下界防「守护被掏空」：切片逻辑若改坏，一个都扫不到、offenders 恒空而断言恒绿。
       //
-      // ⚠️ 这个数字要与 **`src/` 下 `.offset(` 的实际总数**对齐（当前 34，#338 +1，
+      // ⚠️ 这个数字要与 **`src/` 下 `.offset(` 的实际总数**对齐（当前 35，#338 +1；#465 拉卡拉入驻列表 +1，
       // `grep -rn "\.offset(" src --include="*.ts" | grep -v "\.test\." | wc -l`）。
       // 初版判据只认同链写法，只扫到 19 —— 14 处 deferred 写法
       // （`const query = …orderBy(…)` + `await query.limit().offset()`，本仓导出的主流写法）
       // 完全隐形，删掉它们的 tie-break 全套用例照样绿。补上 deferred 关联后才是 100%。
-      const totalOffsetCalls = 34
+      const totalOffsetCalls = 35
       expect(scanned, '扫到的分页查询数与 src 里 .offset( 的总数不符 —— 判据可能又漏了某种写法')
         .toBe(totalOffsetCalls)
     })
@@ -466,7 +463,7 @@ describe('#282 · admin 分页查询的 orderBy 必须带唯一键 tie-break', (
     })
   })
 
-  describe('覆盖率 · 全部 34 支分页查询都被按「文件 + 子句 + 次数」钉死', () => {
+  describe('覆盖率 · 全部 35 支分页查询都被按「文件 + 子句 + 次数」钉死', () => {
     // 第 1 层是启发式 —— `looksUnique` 对**任何** `*Id` 放行，**外键也算**。
     // 真正的位置级保护只能靠这张表。
     //
@@ -491,6 +488,7 @@ describe('#282 · admin 分页查询的 orderBy 必须带唯一键 tie-break', (
       ['actions/employees.ts', 'desc(staffWechatUsers.updatedAt), desc(staffWechatUsers.createdAt), asc(staffWechatUsers.employeeId)', 1],
       ['actions/legacy-orders.ts', 'desc(saleOrders.saleOrderDatetime), desc(saleOrders.saleOrderId)', 1],
       ['actions/logs.ts', 'desc(operationLogs.createdAt), desc(operationLogs.id)', 1],
+      ['actions/lakala-onboarding.ts', 'desc(lakalaOnboardingApplications.updatedAt), desc(lakalaOnboardingApplications.createdAt), desc(lakalaOnboardingApplications.id)', 1],
       ['actions/merchants.ts', 'desc(lakalaMerchants.updatedAt), desc(lakalaMerchants.id)', 1],
       ['actions/messages.ts', 'asc(clientWechatUsers.name), asc(clientWechatUsers.userId)', 1],
       ['actions/messages.ts', 'desc(messages.createdAt), desc(messages.id)', 1],
@@ -508,7 +506,7 @@ describe('#282 · admin 分页查询的 orderBy 必须带唯一键 tie-break', (
       ['lib/inventory/engine.ts', 'asc(inventoryLocations.locationType), asc(inventoryLocations.name), asc(inventoryStockLots.skuName), asc(inventoryStockLots.batchNo), asc(inventoryStockLots.id),', 1],
       ['lib/inventory/engine.ts', 'asc(inventoryLocations.locationType), asc(inventoryLocations.name), asc(inventoryStockLots.skuName), asc(inventoryStockLots.batchNo), asc(inventoryStockLots.id)', 1],
       ['lib/inventory/engine.ts', 'asc(inventorySkus.productCode)', 1],
-      ['lib/inventory/engine.ts', 'asc(inventorySuppliers.name)', 1],
+      ['lib/inventory/engine.ts', 'asc(inventorySuppliers.name), asc(inventorySuppliers.supplierId)', 1],
       // ×2：单据列表 listInventoryCoreDocs + #338 的办理台候选单 listInventoryDocCandidates
       ['lib/inventory/engine.ts', 'desc(inventoryDocs.docDate), desc(inventoryDocs.createdAt), desc(inventoryDocs.id)', 2],
     ]
@@ -537,7 +535,7 @@ describe('#282 · admin 分页查询的 orderBy 必须带唯一键 tie-break', (
 
       // 总数兜底：防两张表同时改错还互相抵消
       const total = [...actual.values()].reduce((a, b) => a + b, 0)
-      expect(total, '分页查询总数变了 —— 确认是新增/删除还是提取器失效').toBe(34)
+      expect(total, '分页查询总数变了 —— 确认是新增/删除还是提取器失效').toBe(35)
     })
   })
 
