@@ -29,6 +29,7 @@
         bind:retry="onSummaryRetry"
       >
         <view wx:if="{{ display }}">
+          <view class="dash-section-title dash-section-title--first">业绩与实耗</view>
           <!-- 大卡片：2×2 -->
           <view class="mgmt-dash-grid-large">
             <view class="dash-card dash-card--large">
@@ -57,7 +58,8 @@
             </view>
           </view>
 
-          <!-- 小卡片：4×1 -->
+          <view class="dash-section-title">客量概览</view>
+          <!-- 小卡片：宽屏 4 列，手机 2 列 -->
           <view class="mgmt-dash-grid-small">
             <view class="dash-card dash-card--small">
               <view class="dash-card-title">客流</view>

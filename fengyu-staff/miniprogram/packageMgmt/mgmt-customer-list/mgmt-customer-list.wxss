@@ -59,6 +59,7 @@
 }
 
 .customer-name-row {
+  flex-wrap: wrap;
   display: flex;
   align-items: center;
   gap: 8rpx;
@@ -66,6 +67,8 @@
 }
 
 .customer-name {
+  min-width: 0;
+  word-break: break-all;
   font-size: 28rpx;
   font-weight: 600;
   color: var(--color-text-primary);
@@ -86,8 +89,11 @@
 }
 
 .customer-recent {
-  font-size: 22rpx;
-  color: var(--color-text-hint);
+  display: block;
+  line-height: 1.5;
+  word-break: break-all;
+  font-size: 24rpx;
+  color: var(--color-text-secondary);
 }
 
 /* 头像文字 */
@@ -123,3 +129,7 @@
   background: #1A1A1A;
   color: #FFD700;
 }
+
+.customer-card:nth-child(even) { background: var(--color-primary-light); }
+.customer-card:active { opacity: 0.7; }
+.customer-phone { font-variant-numeric: tabular-nums; }
