@@ -164592,8 +164592,8 @@ async function getPointsDeductionMaxRate() {
 }
 
 // src/lib/inventory-feature-flags.ts
-var INVENTORY_ENABLED = process.env.NEXT_PUBLIC_INVENTORY_LINKAGE_ENABLED === "true";
-var INVENTORY_LINKAGE_ENABLED = INVENTORY_ENABLED;
+var INVENTORY_ENTRY_ENABLED = process.env.NEXT_PUBLIC_INVENTORY_ENTRY_ENABLED === "true";
+var INVENTORY_LINKAGE_ENABLED = process.env.NEXT_PUBLIC_INVENTORY_LINKAGE_ENABLED === "true";
 
 // src/lib/employee-assignment-server.ts
 init_db2();

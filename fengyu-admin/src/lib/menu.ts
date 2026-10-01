@@ -44,7 +44,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import type { AuthSession } from './types'
-import { INVENTORY_ENTRY_ENABLED } from './inventory-feature-flags'
+import { INVENTORY_ENTRY_ENABLED, INVENTORY_LINKAGE_ENABLED } from './inventory-feature-flags'
 import { isAdminScope } from './session-role-guards'
 import { scopeSessionToAllActions } from './action-scope'
 import {
@@ -164,7 +164,7 @@ export const MENU_CONFIG: MenuNode[] = [
   {
     label: '库存管理',
     icon: Boxes,
-    hidden: !INVENTORY_ENTRY_ENABLED,
+    hidden: !INVENTORY_LINKAGE_ENABLED,
     children: [
       { label: '库存查询', icon: PackageCheck, href: '/inventory/stocks', requiredActions: ['inventory:stock_list'] },
       { label: '进出明细', icon: ArrowLeftRight, href: '/inventory/movements', requiredActions: ['inventory:stock_list'] },

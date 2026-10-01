@@ -34,6 +34,9 @@ function validConfig(env = 'dev') {
   const target = TARGETS[env]
   return {
     ENV_PROFILE: env,
+    NEXT_PUBLIC_INVENTORY_ENTRY_ENABLED: 'true',
+    INVENTORY_LINKAGE_ENABLED: env === 'dev' ? 'true' : 'false',
+    NEXT_PUBLIC_INVENTORY_LINKAGE_ENABLED: env === 'dev' ? 'true' : 'false',
     PG_CONNECTION_STRING: `postgresql://user:pass@${target.migrationHost}:5433/fengyu_wxapp`,
     ADMIN_DATABASE_URL: `postgresql://user:pass@${target.containerDbHost}:5433/fengyu_wxapp`,
     CLOUDBASE_ENV_ID: target.cloudBaseEnvId,
@@ -248,6 +251,11 @@ test('legacy reconcile migrates all real env files before the strict gate', () =
 
   const dev = validConfig('dev')
   const prod = validConfig('prod')
+  delete dev.NEXT_PUBLIC_INVENTORY_ENTRY_ENABLED
+  delete prod.NEXT_PUBLIC_INVENTORY_ENTRY_ENABLED
+  // Existing explicit linkage false must survive reconcile, including dev.
+  dev.INVENTORY_LINKAGE_ENABLED = 'false'
+  dev.NEXT_PUBLIC_INVENTORY_LINKAGE_ENABLED = 'false'
   dev.STAFF_TENCENTCLOUD_SECRETID = ''
   dev.STAFF_TENCENTCLOUD_SECRETKEY = ''
   prod.STAFF_TENCENTCLOUD_SECRETID = 'prod-staff-id'
@@ -267,6 +275,10 @@ test('legacy reconcile migrates all real env files before the strict gate', () =
   const migratedProd = parseEnv(fs.readFileSync(path.join(envDir, 'prod.env'), 'utf8'))
   assert.equal(migratedDev.STAFF_TENCENTCLOUD_SECRETID, 'legacy-staff-id')
   assert.equal(migratedDev.COOKIE_DOMAIN, '')
+  assert.equal(migratedDev.NEXT_PUBLIC_INVENTORY_ENTRY_ENABLED, 'true')
+  assert.equal(migratedProd.NEXT_PUBLIC_INVENTORY_ENTRY_ENABLED, 'true')
+  assert.equal(migratedDev.INVENTORY_LINKAGE_ENABLED, 'false')
+  assert.equal(migratedDev.NEXT_PUBLIC_INVENTORY_LINKAGE_ENABLED, 'false')
   assert.equal(migratedProd.COOKIE_DOMAIN, '.example.com')
   for (const env of ['dev', 'prod']) {
     assert.equal(fs.statSync(path.join(envDir, `${env}.env`)).mode & 0o777, 0o600)
@@ -287,6 +299,11 @@ test('legacy reconcile preserves dollar signs in source env files', () => {
   const dev = validConfig('dev')
   const prod = validConfig('prod')
   for (const config of [dev, prod]) config.ADMIN_JWT_SECRET = 'jwt-$ecret$'
+  delete dev.NEXT_PUBLIC_INVENTORY_ENTRY_ENABLED
+  delete prod.NEXT_PUBLIC_INVENTORY_ENTRY_ENABLED
+  // Existing explicit linkage false must survive reconcile, including dev.
+  dev.INVENTORY_LINKAGE_ENABLED = 'false'
+  dev.NEXT_PUBLIC_INVENTORY_LINKAGE_ENABLED = 'false'
   dev.STAFF_TENCENTCLOUD_SECRETID = ''
   dev.STAFF_TENCENTCLOUD_SECRETKEY = ''
   prod.STAFF_TENCENTCLOUD_SECRETID = 'prod-staff-id'
@@ -318,7 +335,9 @@ test('bundle files are mode 0600 and contain only the target service whitelist',
   const source = path.join(temp, 'prod.env')
   fs.writeFileSync(source, renderEnv(validConfig('prod')), { mode: 0o600 })
   const output = path.join(temp, 'bundle')
-  renderBundle('prod', output, { file: source })
+  const manifest = renderBundle('prod', output, { file: source })
+  assert.equal(manifest.nextPublicInventoryEntryEnabled, 'true')
+  assert.equal(manifest.nextPublicInventoryLinkageEnabled, 'false')
   for (const file of ['admin.env', 'cron-worker.env', 'export-worker.env', 'analyst.env', 'build-manifest.json']) {
     assert.equal(fs.statSync(path.join(output, file)).mode & 0o777, 0o600)
   }
