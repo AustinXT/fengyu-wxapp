@@ -91429,6 +91429,7 @@ var init_inventory = __esm(() => {
   inventorySuppliers = pgTable2("inventory_suppliers", {
     supplierId: text3("supplier_id").primaryKey(),
     name: text3("name").notNull(),
+    ownerMarketId: text3("owner_market_id").references(() => orgNodes.id),
     contactName: text3("contact_name"),
     phone: varchar3("phone", { length: 30 }),
     address: text3("address"),
@@ -91437,7 +91438,9 @@ var init_inventory = __esm(() => {
     createdAt: timestamp3("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp3("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql3`NOW()`)
   }, (table4) => [
-    uniqueIndex2("uq_inventory_suppliers_name").on(table4.name),
+    uniqueIndex2("uq_inventory_suppliers_shared_name").on(table4.name).where(sql3`${table4.ownerMarketId} IS NULL`),
+    uniqueIndex2("uq_inventory_suppliers_market_name").on(table4.ownerMarketId, table4.name).where(sql3`${table4.ownerMarketId} IS NOT NULL`),
+    index2("idx_inventory_suppliers_owner_market").on(table4.ownerMarketId),
     index2("idx_inventory_suppliers_active").on(table4.isActive)
   ]);
   inventoryStockLots = pgTable2("inventory_stock_lots", {
@@ -175910,6 +175913,41 @@ var createRechargeOrder = withPermission("sale_order:create", async (session4, d
   return { success: true, message: "充值订单已创建", saleOrderId, payAmount };
 });
 
+// src/lib/inventory/supplier-access.ts
+init_api_error();
+init_permissions();
+
+// src/lib/inventory/supplier-label.ts
+function supplierDisplayName(name, marketName2) {
+  return marketName2 ? `${name}（${marketName2}）` : `${name}（供应链共有）`;
+}
+
+// src/lib/inventory/supplier-access.ts
+var SUPPLIER_MANAGE_ACTIONS = [
+  "inventory:supply_chain_master_data_manage",
+  "inventory:market_sku_manage"
+];
+function supplierCreationOwner(session4) {
+  const scoped = scopeSessionToActions(session4, SUPPLIER_MANAGE_ACTIONS);
+  if (hasPermission(scoped, SUPPLIER_MANAGE_ACTIONS[0]))
+    return null;
+  const markets = supplierWritableMarkets(scoped);
+  if (markets.length !== 1) {
+    throw new ApiError("PERMISSION_DENIED", "供应商建档必须具有唯一的本市场产品资料维护授权");
+  }
+  return markets[0];
+}
+function supplierWritableMarkets(session4) {
+  if (!hasPermission(session4, "inventory:market_sku_manage"))
+    return [];
+  return [...new Set(session4.roles.filter((role) => role.scopeType === "市场" && role.actions?.includes("inventory:market_sku_manage")).map((role) => role.scopeId))];
+}
+function canManageSupplier(session4, ownerMarketId) {
+  if (ownerMarketId === null)
+    return hasPermission(session4, SUPPLIER_MANAGE_ACTIONS[0]);
+  return isAdminScope(session4) && hasPermission(session4, "inventory:market_sku_manage") || supplierWritableMarkets(session4).includes(ownerMarketId);
+}
+
 // src/lib/inventory/engine.ts
 init_db2();
 init_api_error();
@@ -177566,15 +177604,16 @@ async function inventoryDocLocationFilterOptions(session4) {
 var listInventoryLocationFilterOptions = withPermission("inventory:stock_list", (session4) => inventoryLocationFilterOptions(session4));
 var listInventoryMovementLocationFilterOptions = withPermission("inventory:stock_list", (session4) => inventoryLocationFilterOptions(session4, { includeInactive: true }));
 var listInventoryDocLocationFilterOptions = withPermission("inventory:list", inventoryDocLocationFilterOptions);
-async function resolveSkuSupplier(tx, supplierIdInput, currentSupplierId) {
+async function resolveSkuSupplier(tx, supplierIdInput, currentSupplierId, ownerMarketId) {
   if (supplierIdInput === undefined)
     return null;
   const id = normalizeText(supplierIdInput);
   if (!id)
     return { supplierId: null, supplier: null, onlyIfCurrent: false };
-  const [supplier] = await tx.select({ name: inventorySuppliers.name, isActive: inventorySuppliers.isActive }).from(inventorySuppliers).where(import_drizzle_orm58.eq(inventorySuppliers.supplierId, id)).limit(1).for("share");
-  if (!supplier)
-    throw new ApiError("NOT_FOUND", "供应商不存在");
+  const [supplier] = await tx.select({ name: inventorySuppliers.name, isActive: inventorySuppliers.isActive, ownerMarketId: inventorySuppliers.ownerMarketId }).from(inventorySuppliers).where(import_drizzle_orm58.eq(inventorySuppliers.supplierId, id)).limit(1).for("share");
+  if (!supplier || supplier.ownerMarketId != null && supplier.ownerMarketId !== ownerMarketId) {
+    throw new ApiError("NOT_FOUND", "供应商不存在或不属于当前商品市场");
+  }
   if (!supplier.isActive && id !== currentSupplierId) {
     throw new ApiError("INVALID_STATE", `供应商「${supplier.name}」已停用，无法关联到库存商品`);
   }
@@ -177669,7 +177708,7 @@ var createInventorySku = withAnyPermission(["inventory:supply_chain_master_data_
   const ownerMarketId = await normalizeSkuOwnerMarket(session4, sourceType, input.ownerMarketId);
   const priceValues = skuPriceValues(input, inventoryPriceVisibility(session4), sourceType);
   const skuId = await db2.transaction(async (tx) => {
-    const supplierValues = await resolveSkuSupplier(tx, input.supplierId, null);
+    const supplierValues = await resolveSkuSupplier(tx, input.supplierId, null, ownerMarketId);
     const generatedNo = await generateInventorySkuNo(tx);
     await tx.insert(inventorySkus).values({
       skuId: generatedNo,
@@ -177726,7 +177765,7 @@ var updateInventorySku = withAnyPermission(["inventory:supply_chain_master_data_
   const ownerMarketId = await normalizeSkuOwnerMarket(session4, sourceType, requestedOwnerMarketId);
   const priceValues = skuPriceValues(input, inventoryPriceVisibility(session4), sourceType, current);
   await db2.transaction(async (tx) => {
-    const supplierValues = await resolveSkuSupplier(tx, input.supplierId, current.supplierId);
+    const supplierValues = await resolveSkuSupplier(tx, input.supplierId, current.supplierId, ownerMarketId);
     const supplierGuard = supplierValues?.onlyIfCurrent && supplierValues.supplierId ? import_drizzle_orm58.eq(inventorySkus.supplierId, supplierValues.supplierId) : undefined;
     const updateResult = await tx.update(inventorySkus).set({
       productName: normalizeText(input.productName) ?? undefined,
@@ -179533,15 +179572,18 @@ var confirmInventoryCoreReceive = withAnyPermission([...INVENTORY_CORE_RECEIVE_A
   import_cache11.revalidatePath("/inventory/stocks");
   return { success: true, inboundDocId };
 });
-function supplierNameConflict(error, name) {
+function supplierNameConflict(error, name, ownerMarketId) {
   if (pgErrorCode(error) === "23505") {
-    return new ApiError("CONFLICT", `供应商名称「${name}」已存在（可能是已停用的档案），请到供应商档案页查找`);
+    return new ApiError("CONFLICT", `供应商名称「${name}」已存在（可能是已停用的档案），请到${ownerMarketId ? "本市场" : "供应链共有"}供应商档案页查找`);
   }
   return error;
 }
-function supplierRow(row) {
+function supplierRow(row, session4) {
   return {
     supplierId: row.supplierId,
+    ownerMarketId: row.ownerMarketId,
+    ownerMarketName: row.ownerMarketName,
+    canManage: canManageSupplier(session4, row.ownerMarketId),
     name: row.name,
     contactName: row.contactName,
     phone: row.phone,
@@ -179553,8 +179595,22 @@ function supplierRow(row) {
     updatedAt: row.updatedAt.toISOString()
   };
 }
-var listInventorySuppliers = withPermission("inventory:stock_list", async (_session, filters = {}) => {
-  const conditions3 = [];
+async function supplierVisibility(session4) {
+  const scoped = await scopedLocationIds(session4);
+  if (scoped === null)
+    return;
+  const locations = scoped.length === 0 ? [] : await db2.select({ locationId: inventoryLocations.locationId, locationType: inventoryLocations.locationType, parentLocationId: inventoryLocations.parentLocationId }).from(inventoryLocations).where(import_drizzle_orm58.inArray(inventoryLocations.locationId, scoped));
+  const markets = [...new Set(locations.flatMap((location) => {
+    if (location.locationType === "市场")
+      return [location.locationId];
+    if (location.locationType === "门店" && location.parentLocationId)
+      return [location.parentLocationId];
+    return [];
+  }))];
+  return markets.length ? import_drizzle_orm58.or(import_drizzle_orm58.isNull(inventorySuppliers.ownerMarketId), import_drizzle_orm58.inArray(inventorySuppliers.ownerMarketId, markets)) : import_drizzle_orm58.isNull(inventorySuppliers.ownerMarketId);
+}
+var listInventorySuppliers = withPermission("inventory:stock_list", async (session4, filters = {}) => {
+  const conditions3 = [await supplierVisibility(session4)];
   if (filters.onlyActive === true)
     conditions3.push(import_drizzle_orm58.eq(inventorySuppliers.isActive, true));
   else if (filters.onlyActive === false)
@@ -179567,8 +179623,9 @@ var listInventorySuppliers = withPermission("inventory:stock_list", async (_sess
   const [totalRow] = await db2.select({ total: import_drizzle_orm58.sql`cast(count(*) as int)` }).from(inventorySuppliers).where(whereClause);
   const query = db2.select({
     supplier: inventorySuppliers,
+    ownerMarketName: orgNodes.name,
     linkedSkuCount: import_drizzle_orm58.sql`cast(count(${inventorySkus.skuId}) as int)`
-  }).from(inventorySuppliers).leftJoin(inventorySkus, import_drizzle_orm58.eq(inventorySkus.supplierId, inventorySuppliers.supplierId)).where(whereClause).groupBy(inventorySuppliers.supplierId).orderBy(import_drizzle_orm58.asc(inventorySuppliers.name));
+  }).from(inventorySuppliers).leftJoin(orgNodes, import_drizzle_orm58.eq(orgNodes.id, inventorySuppliers.ownerMarketId)).leftJoin(inventorySkus, import_drizzle_orm58.eq(inventorySkus.supplierId, inventorySuppliers.supplierId)).where(whereClause).groupBy(inventorySuppliers.supplierId, orgNodes.name).orderBy(import_drizzle_orm58.asc(inventorySuppliers.name), import_drizzle_orm58.asc(inventorySuppliers.supplierId));
   const paged = filters.pageSize === undefined ? null : resolvePaging({
     page: filters.page,
     pageSize: filters.pageSize,
@@ -179577,24 +179634,44 @@ var listInventorySuppliers = withPermission("inventory:stock_list", async (_sess
   });
   const rows = paged ? await query.limit(paged.pageSize).offset(paged.offset) : await query;
   return {
-    data: rows.map((row) => supplierRow({ ...row.supplier, linkedSkuCount: row.linkedSkuCount })),
+    data: rows.map((row) => supplierRow({ ...row.supplier, linkedSkuCount: row.linkedSkuCount, ownerMarketName: row.ownerMarketName }, session4)),
     total: totalRow?.total ?? 0
   };
 });
-var listInventorySupplierOptions = withPermission("inventory:stock_list", async () => {
-  return db2.select({ supplierId: inventorySuppliers.supplierId, name: inventorySuppliers.name }).from(inventorySuppliers).where(import_drizzle_orm58.eq(inventorySuppliers.isActive, true)).orderBy(import_drizzle_orm58.asc(inventorySuppliers.name));
+var listInventorySupplierOptions = withPermission("inventory:stock_list", async (session4) => {
+  const visibility = await supplierVisibility(session4);
+  const options = await db2.select({ supplierId: inventorySuppliers.supplierId, name: inventorySuppliers.name, ownerMarketName: orgNodes.name }).from(inventorySuppliers).leftJoin(orgNodes, import_drizzle_orm58.eq(orgNodes.id, inventorySuppliers.ownerMarketId)).where(import_drizzle_orm58.and(import_drizzle_orm58.eq(inventorySuppliers.isActive, true), visibility)).orderBy(import_drizzle_orm58.asc(inventorySuppliers.name), import_drizzle_orm58.asc(inventorySuppliers.supplierId));
+  return options.map((option) => ({ supplierId: option.supplierId, name: supplierDisplayName(option.name, option.ownerMarketName) }));
 });
-var countInventorySkusBySupplier = withPermission("inventory:stock_list", async (_session, supplierIdInput) => {
+var countInventorySkusBySupplier = withPermission("inventory:stock_list", async (session4, supplierIdInput) => {
   const supplierId = normalizeRequired(supplierIdInput, "供应商");
+  const visibility = await supplierVisibility(session4);
+  const [visible] = await db2.select({ supplierId: inventorySuppliers.supplierId }).from(inventorySuppliers).where(import_drizzle_orm58.and(import_drizzle_orm58.eq(inventorySuppliers.supplierId, supplierId), visibility)).limit(1);
+  if (!visible)
+    throw new ApiError("NOT_FOUND", "供应商不存在或无权查看");
   const [row] = await db2.select({ count: import_drizzle_orm58.sql`cast(count(*) as int)` }).from(inventorySkus).where(import_drizzle_orm58.eq(inventorySkus.supplierId, supplierId));
   return row?.count ?? 0;
 });
-var createInventorySupplier = withPermission("inventory:supply_chain_master_data_manage", async (session4, input) => {
+var createInventorySupplier = withAnyPermission(SUPPLIER_MANAGE_ACTIONS, async (session4, input) => {
+  const ownerMarketId = supplierCreationOwner(session4);
+  if (input.ownerMarketId !== undefined && input.ownerMarketId !== ownerMarketId) {
+    throw new ApiError("PERMISSION_DENIED", "不能指定其它市场的供应商归属");
+  }
+  let ownerMarketName = null;
+  if (ownerMarketId) {
+    await syncInventoryLocations();
+    await assertLocationVisible(session4, ownerMarketId);
+    const [market] = await db2.select({ name: orgNodes.name }).from(orgNodes).where(import_drizzle_orm58.and(import_drizzle_orm58.eq(orgNodes.id, ownerMarketId), import_drizzle_orm58.eq(orgNodes.type, "市场"), import_drizzle_orm58.eq(orgNodes.isActive, true))).limit(1);
+    if (!market)
+      throw new ApiError("NOT_FOUND", "本市场不存在或已停用");
+    ownerMarketName = market.name;
+  }
   const supplierId = `INV-SUP-${crypto.randomUUID()}`;
   const name = normalizeRequired(input.name, "供应商名称");
   try {
     await db2.insert(inventorySuppliers).values({
       supplierId,
+      ownerMarketId,
       name,
       contactName: normalizeText(input.contactName),
       phone: normalizeText(input.phone),
@@ -179603,23 +179680,26 @@ var createInventorySupplier = withPermission("inventory:supply_chain_master_data
       remark: normalizeText(input.remark)
     });
   } catch (error) {
-    throw supplierNameConflict(error, name);
+    throw supplierNameConflict(error, name, ownerMarketId);
   }
-  await logOperation(session4, "inventory.supplier.create", "inventory_suppliers", supplierId, { name });
+  await logOperation(session4, "inventory.supplier.create", "inventory_suppliers", supplierId, { name, ownerMarketId });
   import_cache11.revalidatePath("/inventory/suppliers");
-  return { supplierId };
+  return { supplierId, name: supplierDisplayName(name, ownerMarketName) };
 });
-var updateInventorySupplier = withPermission("inventory:supply_chain_master_data_manage", async (session4, supplierIdInput, input) => {
+var updateInventorySupplier = withAnyPermission(SUPPLIER_MANAGE_ACTIONS, async (session4, supplierIdInput, input) => {
   const supplierId = normalizeRequired(supplierIdInput, "供应商");
-  const [current] = await db2.select({ supplierId: inventorySuppliers.supplierId, name: inventorySuppliers.name }).from(inventorySuppliers).where(import_drizzle_orm58.eq(inventorySuppliers.supplierId, supplierId)).limit(1);
-  if (!current)
-    throw new ApiError("NOT_FOUND", "供应商不存在");
+  const [current] = await db2.select({ supplierId: inventorySuppliers.supplierId, name: inventorySuppliers.name, ownerMarketId: inventorySuppliers.ownerMarketId }).from(inventorySuppliers).where(import_drizzle_orm58.eq(inventorySuppliers.supplierId, supplierId)).limit(1);
+  if (!current || !canManageSupplier(session4, current.ownerMarketId))
+    throw new ApiError("NOT_FOUND", "供应商不存在或无权维护");
+  if (input.ownerMarketId !== undefined && input.ownerMarketId !== current.ownerMarketId) {
+    throw new ApiError("PERMISSION_DENIED", "供应商归属市场不可修改");
+  }
   const nextName = input.name === undefined ? undefined : normalizeRequired(input.name, "供应商名称");
   try {
     await db2.transaction(async (tx) => {
-      const [locked] = await tx.select({ name: inventorySuppliers.name }).from(inventorySuppliers).where(import_drizzle_orm58.eq(inventorySuppliers.supplierId, supplierId)).limit(1).for("update");
-      if (!locked)
-        throw new ApiError("NOT_FOUND", "供应商不存在");
+      const [locked] = await tx.select({ name: inventorySuppliers.name, ownerMarketId: inventorySuppliers.ownerMarketId }).from(inventorySuppliers).where(import_drizzle_orm58.eq(inventorySuppliers.supplierId, supplierId)).limit(1).for("update");
+      if (!locked || !canManageSupplier(session4, locked.ownerMarketId))
+        throw new ApiError("NOT_FOUND", "供应商不存在或无权维护");
       await tx.update(inventorySuppliers).set({
         name: nextName,
         contactName: input.contactName === undefined ? undefined : normalizeText(input.contactName),
@@ -179634,7 +179714,7 @@ var updateInventorySupplier = withPermission("inventory:supply_chain_master_data
       }
     });
   } catch (error) {
-    throw supplierNameConflict(error, nextName ?? current.name);
+    throw supplierNameConflict(error, nextName ?? current.name, current.ownerMarketId);
   }
   await logOperation(session4, "inventory.supplier.update", "inventory_suppliers", supplierId, input);
   import_cache11.revalidatePath("/inventory/suppliers");
