@@ -11,12 +11,14 @@
           <van-icon name="arrow-down" size="24rpx" color="#C0322A" />
         </view>
         <mgmt-scope-picker
+          id="scopePicker"
           default-scope="{{ defaultScope }}"
           applied-inactive="{{ scope.inactive }}"
           auto-correct="{{ scopeAutoCorrect }}"
           resolve-default="{{ scopeResolveDefault }}"
           bind:change="onScopeChange"
           bind:defaultresolved="onScopeDefaultResolved"
+          bind:optionsfailed="onScopeOptionsFailed"
         />
       </view>
 

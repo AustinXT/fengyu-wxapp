@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 // ── mock 依赖 ──
-const dbRows = { value: [] as Array<{ name: string }> }
+const dbRows = { value: [] as Array<{ id?: string; name: string }> }
+const { mockLoadClosedStoreIds } = vi.hoisted(() => ({ mockLoadClosedStoreIds: vi.fn<(ids: string[]) => Promise<Set<string>>>() }))
+vi.mock('@/lib/store-closed-label', () => ({ loadClosedStoreIds: mockLoadClosedStoreIds }))
 vi.mock('@/db', () => ({
   db: {
     select: () => ({ from: () => ({ where: () => ({ limit: () => dbRows.value }) }) }),
@@ -48,6 +50,8 @@ function makeSession(
 beforeEach(() => {
   mockIsAdminScope.mockReset()
   mockExpandVisibleMarketIds.mockReset()
+  mockLoadClosedStoreIds.mockReset()
+  mockLoadClosedStoreIds.mockResolvedValue(new Set())
   dbRows.value = []
 })
 
@@ -133,6 +137,15 @@ describe('resolveScopeName', () => {
   it('store → stores 名称；查不到回退', async () => {
     dbRows.value = []
     expect(await resolveScopeName({ type: 'store', id: 'S9' })).toBe('未知门店')
+    dbRows.value = [{ name: '蓝莱店' }]
+    mockLoadClosedStoreIds.mockResolvedValue(new Set(['S1']))
+    expect(await resolveScopeName({ type: 'store', id: 'S1' })).toBe('蓝莱店（已关店）')
+  })
+  it('关店标签查询失败时保留单店和多店名称', async () => {
+    dbRows.value = [{ id: 'S1', name: '蓝莱店' }]
+    mockLoadClosedStoreIds.mockRejectedValue(new Error('timeout'))
+    expect(await resolveScopeName({ type: 'store', id: 'S1' })).toBe('蓝莱店')
+    expect(await resolveScopeName({ type: 'stores', ids: ['S1'] })).toBe('蓝莱店')
   })
 })
 
@@ -244,6 +257,11 @@ describe('resolveScopeName · 多店（#376）', () => {
   it('按所选顺序列店名，查不到的记「未知门店」', async () => {
     dbRows.value = [{ id: 'S2', name: '绿湖店' }, { id: 'S1', name: '蓝莱店' }] as unknown as Array<{ name: string }>
     await expect(resolveScopeName({ type: 'stores', ids: ['S1', 'S2', 'S9'] })).resolves.toBe('蓝莱店、绿湖店、未知门店')
+  })
+  it('已关店门店在多店元信息中带标记', async () => {
+    dbRows.value = [{ id: 'S1', name: '蓝莱店' }, { id: 'S2', name: '绿湖店' }]
+    mockLoadClosedStoreIds.mockResolvedValue(new Set(['S1']))
+    await expect(resolveScopeName({ type: 'stores', ids: ['S1', 'S2'] })).resolves.toBe('蓝莱店（已关店）、绿湖店')
   })
 })
 

@@ -24,7 +24,8 @@ function isGrantedEmptyMarket(market: DataCenterScopeOptions['markets'][number])
  * 两者都没有才返回 null，由页面展示空状态。
  *
  * ⚠️ staff 端有独立副本 `fengyu-staff/miniprogram/utils/mgmt-scope.ts` resolveDefaultMgmtScope（#424，staff 无 authorized），
- * 改档位须同步，并跑 staff 小程序 `__tests__/pages/mgmt-no-store-market-scope.test.ts` 的跨端对照用例。
+ * 改档位须核对 staff 副本，并跑 staff 小程序 `__tests__/pages/mgmt-no-store-market-scope.test.ts` 的跨端对照用例。
+ * #473 仅 staff 默认/自动替代跳过已关店门店；admin 默认范围仍沿用现有规则，关店标签两端一致。
  */
 export function resolveDefaultDataCenterScope(
   scopeOptions: DataCenterScopeOptions,
@@ -102,7 +103,7 @@ export function scopeLabel(scopeOptions: DataCenterScopeOptions, scope: DataCent
   if (scope.type === 'stores') return multiStoreName(scope.ids.map((id) => storeNameIn(scopeOptions, id)))
   for (const market of scopeOptions.markets) {
     const store = market.stores.find((s) => s.storeId === scope.id)
-    if (store) return store.storeName
+    if (store) return storeOptionLabel(store)
   }
   return '未知门店'
 }
@@ -164,7 +165,7 @@ export function multiStoreName(names: readonly string[]): string {
 function storeNameIn(scopeOptions: DataCenterScopeOptions, storeId: string): string {
   for (const market of scopeOptions.markets) {
     const store = market.stores.find((s) => s.storeId === storeId)
-    if (store) return store.storeName
+    if (store) return storeOptionLabel(store)
   }
   return scopeOptions.inactiveStores.find((s) => s.storeId === storeId)?.storeName ?? '未知门店'
 }
