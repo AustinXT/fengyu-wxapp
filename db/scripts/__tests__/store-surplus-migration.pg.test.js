@@ -1,4 +1,4 @@
-/** #353 正式候选的真 PG 回归；仅本会话 54405 私有库，逐例事务回滚。 */
+/** #353 真 PG 回归；仅 54405 私有库或 CI 5432/test，逐例事务回滚。 */
 const test = require('node:test')
 const assert = require('node:assert/strict')
 const { Client } = require('pg')
@@ -10,14 +10,15 @@ if (!connectionString) {
 } else {
   const url = new URL(connectionString)
   assert.ok(['localhost', '127.0.0.1'].includes(url.hostname))
-  assert.equal(url.port, '54405')
-  assert.ok(['/verify_353_handoff', '/verify_353_empty'].includes(url.pathname))
+  const privateTarget = url.port === '54405' && ['/verify_353_handoff', '/verify_353_empty'].includes(url.pathname)
+  const ciTarget = process.env.CI === 'true' && url.port === '5432' && url.pathname === '/test'
+  assert.ok(privateTarget || ciTarget, '仅接受本会话私有库或 CI service 测试库')
   assert.equal(url.search, '')
   const client = new Client({ connectionString })
   test.before(async () => {
     await client.connect()
     const { rows } = await client.query('SELECT current_database() AS db')
-    assert.ok(['verify_353_handoff', 'verify_353_empty'].includes(rows[0].db))
+    assert.equal(rows[0].db, url.pathname.slice(1))
   })
   test.after(() => client.end())
 
@@ -83,7 +84,9 @@ if (!connectionString) {
       await link(source, a, 3)
       const b = await item(await doc(targetType, { node: p + nodeSuffix }), 2, { price: 12.5 })
       const { rows } = await link(source, b, 2)
+      // 已累计5：若UPDATE未排除本条，重验时会误算成7；不是无判别力的同值操作。
       await client.query('UPDATE inventory_doc_links SET quantity=2 WHERE id=$1', [rows[0].id])
+      await reject(() => client.query('UPDATE inventory_doc_links SET quantity=1 WHERE id=$1', [rows[0].id]), /INVALID_PARAMS: 盘点盘溢来源/)
       const extra = await item(await doc(targetType, { node: p + nodeSuffix }), 1)
       await reject(() => link(source, extra, 1), /CONFLICT: 盘溢数量超出/)
     }))
