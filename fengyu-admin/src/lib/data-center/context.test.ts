@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 // ── mock 依赖 ──
-const dbRows = { value: [] as Array<{ id?: string; name: string; closed?: boolean }> }
+const dbRows = { value: [] as Array<{ id?: string; name: string }> }
+const { mockLoadClosedStoreIds } = vi.hoisted(() => ({ mockLoadClosedStoreIds: vi.fn<(ids: string[]) => Promise<Set<string>>>() }))
+vi.mock('@/lib/store-closed-label', () => ({ loadClosedStoreIds: mockLoadClosedStoreIds }))
 vi.mock('@/db', () => ({
   db: {
     select: () => ({ from: () => ({ where: () => ({ limit: () => dbRows.value }) }) }),
@@ -9,7 +11,7 @@ vi.mock('@/db', () => ({
 }))
 vi.mock('@db/org', () => ({
   orgNodes: { id: 'id', name: 'name', parentId: 'parent_id', type: 'type' },
-  stores: { storeId: 'store_id', storeName: 'store_name', isClosed: 'is_closed', orgNodeId: 'org_node_id' },
+  stores: { storeId: 'store_id', storeName: 'store_name', orgNodeId: 'org_node_id' },
 }))
 
 const { mockIsAdminScope, mockExpandVisibleMarketIds, FakePermissionError } = vi.hoisted(() => {
@@ -48,6 +50,8 @@ function makeSession(
 beforeEach(() => {
   mockIsAdminScope.mockReset()
   mockExpandVisibleMarketIds.mockReset()
+  mockLoadClosedStoreIds.mockReset()
+  mockLoadClosedStoreIds.mockResolvedValue(new Set())
   dbRows.value = []
 })
 
@@ -133,7 +137,8 @@ describe('resolveScopeName', () => {
   it('store → stores 名称；查不到回退', async () => {
     dbRows.value = []
     expect(await resolveScopeName({ type: 'store', id: 'S9' })).toBe('未知门店')
-    dbRows.value = [{ name: '蓝莱店', closed: true }]
+    dbRows.value = [{ name: '蓝莱店' }]
+    mockLoadClosedStoreIds.mockResolvedValue(new Set(['S1']))
     expect(await resolveScopeName({ type: 'store', id: 'S1' })).toBe('蓝莱店（已关店）')
   })
 })
@@ -248,7 +253,8 @@ describe('resolveScopeName · 多店（#376）', () => {
     await expect(resolveScopeName({ type: 'stores', ids: ['S1', 'S2', 'S9'] })).resolves.toBe('蓝莱店、绿湖店、未知门店')
   })
   it('已关店门店在多店元信息中带标记', async () => {
-    dbRows.value = [{ id: 'S1', name: '蓝莱店', closed: true }, { id: 'S2', name: '绿湖店', closed: false }] as unknown as Array<{ name: string }>
+    dbRows.value = [{ id: 'S1', name: '蓝莱店' }, { id: 'S2', name: '绿湖店' }]
+    mockLoadClosedStoreIds.mockResolvedValue(new Set(['S1']))
     await expect(resolveScopeName({ type: 'stores', ids: ['S1', 'S2'] })).resolves.toBe('蓝莱店（已关店）、绿湖店')
   })
 })

@@ -25,7 +25,7 @@ function isGrantedEmptyMarket(market: DataCenterScopeOptions['markets'][number])
  *
  * ⚠️ staff 端有独立副本 `fengyu-staff/miniprogram/utils/mgmt-scope.ts` resolveDefaultMgmtScope（#424，staff 无 authorized），
  * 改档位须核对 staff 副本，并跑 staff 小程序 `__tests__/pages/mgmt-no-store-market-scope.test.ts` 的跨端对照用例。
- * #473 仅 staff 默认/自动替代跳过 closed；admin 默认范围仍沿用现有规则，关店标签两端一致。
+ * #473 仅 staff 默认/自动替代跳过已关店门店；admin 默认范围仍沿用现有规则，关店标签两端一致。
  */
 export function resolveDefaultDataCenterScope(
   scopeOptions: DataCenterScopeOptions,
