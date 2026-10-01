@@ -22,6 +22,7 @@ import { DataTable, type Column } from '@/components/ui/data-table'
 import { Dialog, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Input } from '@/components/ui/input'
+import { InventoryNumberInput } from './inventory-number-input'
 import { Pagination } from '@/components/ui/pagination'
 import { Select } from '@/components/ui/select'
 import { InventorySkuSearchSelect } from './inventory-sku-search-select'
@@ -592,17 +593,17 @@ export default function InventoryPromotionsPage({
                     </div>
                     <label className="block space-y-2">
                       <span className="block text-sm font-medium">{form.ruleType === '组合' ? '组合数量下限 *' : '数量下限'}</span>
-                      <Input type="number" min="0" step="1" max="9999999999.99" placeholder={form.ruleType === '组合' ? '必填' : '留空不限'} value={item.reportMinQuantity} readOnly={readOnly} disabled={saving} onChange={(event) => updateItem(index, { reportMinQuantity: event.target.value })} />
+                      <InventoryNumberInput type="number" min="0" step="1" max="9999999999.99" placeholder={form.ruleType === '组合' ? '必填' : '留空不限'} value={item.reportMinQuantity} readOnly={readOnly} disabled={saving} onChange={(event) => updateItem(index, { reportMinQuantity: event.target.value })} />
                     </label>
                     <label className="block space-y-2">
                       <span className="block text-sm font-medium">数量上限</span>
-                      <Input type="number" min="0" step="1" max="9999999999.99" placeholder="留空不限" value={item.reportMaxQuantity} readOnly={readOnly} disabled={saving} onChange={(event) => updateItem(index, { reportMaxQuantity: event.target.value })} />
+                      <InventoryNumberInput type="number" min="0" step="1" max="9999999999.99" placeholder="留空不限" value={item.reportMaxQuantity} readOnly={readOnly} disabled={saving} onChange={(event) => updateItem(index, { reportMaxQuantity: event.target.value })} />
                     </label>
                     {canViewPrice && (
                       <>
                         <label className="block space-y-2">
                           <span className="block text-sm font-medium">单价优惠 *</span>
-                          <Input type="number" min="0" step="0.01" max="9999999999.99" value={item.marketUnitDiscount} readOnly={readOnly} disabled={saving} onChange={(event) => updateItem(index, { marketUnitDiscount: event.target.value })} />
+                          <InventoryNumberInput type="number" min="0" step="0.01" max="9999999999.99" value={item.marketUnitDiscount} readOnly={readOnly} disabled={saving} onChange={(event) => updateItem(index, { marketUnitDiscount: event.target.value })} />
                         </label>
                       </>
                     )}

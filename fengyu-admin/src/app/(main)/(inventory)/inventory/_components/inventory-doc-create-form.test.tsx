@@ -82,6 +82,23 @@ describe('共享建单表单的清场行为（#191）', () => {
     mockCreateDoc.mockResolvedValue({ success: true, id: 'FY-CK-260919-0001' })
   })
 
+  it('#469 外部 type=button 提交仍拦住负数、超上限与非法步长', async () => {
+    renderForm()
+    const quantity = fillOneLine() as HTMLInputElement
+    for (const raw of ['-1', '99999999999', '1.005']) {
+      fireEvent.change(quantity, { target: { value: raw } })
+      fireEvent.blur(quantity)
+      expect(screen.getByRole('alert')).toHaveTextContent(/不能小于|不能大于|步长/)
+      fireEvent.click(screen.getByRole('button', { name: '提交' }))
+      expect(mockCreateDoc).not.toHaveBeenCalled()
+    }
+    fireEvent.change(quantity, { target: { value: '1' } })
+    fireEvent.blur(quantity)
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '提交' }))
+    await waitFor(() => expect(mockCreateDoc).toHaveBeenCalledTimes(1))
+  })
+
   it('提交成功后明细、备注、主体、日期全部回到初始草稿', async () => {
     const { onSuccess } = renderForm()
     const quantity = fillOneLine()

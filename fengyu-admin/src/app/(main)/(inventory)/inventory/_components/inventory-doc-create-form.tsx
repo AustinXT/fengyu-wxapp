@@ -19,6 +19,7 @@ import { actionErrorMessage } from '@/lib/action-error'
 import { Button } from '@/components/ui/button'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Input } from '@/components/ui/input'
+import { InventoryNumberInput } from './inventory-number-input'
 import { Select } from '@/components/ui/select'
 import InventorySubjectSelect from '@/components/inventory-subject-select'
 import { InventorySkuSearchSelect } from './inventory-sku-search-select'
@@ -343,6 +344,17 @@ export function InventoryDocCreateForm({
         return
       }
     }
+    // 按钮由办理台/单据中心外部渲染为 button，必须在提交前校验原始值。
+    const invalidQuantityIndex = items.findIndex((item) => {
+      const raw = item.quantity.trim()
+      const quantity = Number(raw)
+      return raw !== '' && (!Number.isFinite(quantity) || quantity < 0 || quantity > 9999999999.99
+        || Number(quantity.toFixed(2)) !== quantity)
+    })
+    if (invalidQuantityIndex >= 0) {
+      toast.error(`明细 ${invalidQuantityIndex + 1} 数量须为 0 至 9999999999.99，且最多两位小数`)
+      return
+    }
     setSubmitting(true)
     try {
       const payload: CreateInventoryDocInput = {
@@ -565,7 +577,7 @@ export function InventoryDocCreateForm({
             />
             <Input placeholder="批号" value={item.batchNo} onChange={(e) => updateItem(index, { batchNo: e.target.value })} />
             <DatePicker value={item.expiryDate} onValueChange={(value) => updateItem(index, { expiryDate: value })} aria-label={`明细 ${index + 1} 效期`} />
-            <Input type="number" min="0" step="0.01" max="9999999999.99" placeholder="数量" value={item.quantity} onChange={(e) => updateItem(index, { quantity: e.target.value })} />
+            <InventoryNumberInput type="number" min="0" step="0.01" max="9999999999.99" placeholder="数量" value={item.quantity} onChange={(e) => updateItem(index, { quantity: e.target.value })} />
             <Input placeholder="原因" value={item.reason} onChange={(e) => updateItem(index, { reason: e.target.value })} />
             <Button
               variant="outline"

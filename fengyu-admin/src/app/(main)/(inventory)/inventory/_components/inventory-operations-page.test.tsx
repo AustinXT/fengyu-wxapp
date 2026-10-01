@@ -2971,6 +2971,26 @@ describe('市场报货草稿（#348）', () => {
     await waitFor(() => expect(saveMarketReplenishmentDraft).toHaveBeenLastCalledWith(expect.objectContaining({ draftId: 'MBH-D9' })))
   })
 
+  it('#469 市场报货存草稿拒绝非法步长，修正后可保存', async () => {
+    mockDocs({})
+    vi.mocked(summarizeStoreReplenishmentRequests).mockResolvedValue({ marketId: 'M1', items: [summaryLine('SKU-1', [11], 4)] })
+    renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1] })
+    fireEvent.click(await screen.findByRole('button', { name: '汇总门店报货' }))
+    const quantity = await screen.findByRole('spinbutton', { name: '实际采购 商品SKU-1 SKU-1' })
+    await waitFor(() => expect(screen.getByText('无匹配福利，按标准价')).toBeInTheDocument())
+    fireEvent.change(quantity, { target: { value: '1.005' } })
+    fireEvent.blur(quantity)
+    expect(screen.getByRole('alert')).toHaveTextContent('步长')
+    fireEvent.click(screen.getByRole('button', { name: '存草稿' }))
+    expect(saveMarketReplenishmentDraft).not.toHaveBeenCalled()
+    fireEvent.change(quantity, { target: { value: '1' } })
+    fireEvent.blur(quantity)
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.getByText('无匹配福利，按标准价')).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: '存草稿' }))
+    await waitFor(() => expect(saveMarketReplenishmentDraft).toHaveBeenCalled())
+  })
+
   it('草稿里有、当前已无待汇总门店需求的商品：仍列出可存草稿，但提交前拦下', async () => {
     const lines = mergeMarketReportDraftLines([], [{ skuId: 'SKU-X', skuName: '商品X', specName: null, quantity: 2 }])
     expect(lines).toEqual([expect.objectContaining({ skuId: 'SKU-X', requestItemIds: [], selected: true, purchaseQuantity: '2' })])
@@ -3156,6 +3176,19 @@ describe('门店报货草稿（#348 · 348a）', () => {
     await waitFor(() => expect(saveStoreReplenishmentDraft).toHaveBeenCalledWith(expect.objectContaining({ draftId: 'DBH-D1', storeId: 'S1' })))
     expect(createStoreReplenishmentRequest).not.toHaveBeenCalled()
     expect(screen.getByRole('button', { name: '提交门店报货单' })).toBeInTheDocument()
+  })
+
+  it('门店报货草稿的非法数量不能绕过提交约束', async () => {
+    mockDocs({ inbox: segment([draftRow()]) })
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue(draftDetail())
+    renderPage({ level: 'store', operation: 'store-request', locations: [M1, S1] })
+    await openDocsTab()
+    fireEvent.click(screen.getByRole('button', { name: '继续编辑 DBH-D1' }))
+    await screen.findByText('DBH-D1', { selector: 'span.font-mono' })
+    fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '-1' } })
+    fireEvent.click(screen.getByRole('button', { name: '存草稿' }))
+    expect(saveStoreReplenishmentDraft).not.toHaveBeenCalled()
+    expect(toast.error).toHaveBeenCalledWith('报货数量须为 0.01 至 9999999999.99，且最多两位小数')
   })
 
   it('删除草稿按业务分派到门店报货的 action，不串到市场报货', async () => {
