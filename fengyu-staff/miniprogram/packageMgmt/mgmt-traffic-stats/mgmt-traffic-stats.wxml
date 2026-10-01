@@ -19,16 +19,16 @@
       <!-- Section 1：注册情况 -->
       <view class="tf-section-title">注册情况（截至当天）</view>
       <view class="tf-grid-4">
-        <mgmt-stat-card size="md" count="{{display.registration.regTotal}}"  label="总注册数" />
-        <mgmt-stat-card size="md" count="{{display.registration.regOnly}}"   label="仅注册用户" />
-        <mgmt-stat-card size="md" count="{{display.registration.regTrial}}"  label="体验客" />
-        <mgmt-stat-card size="md" count="{{display.registration.regMember}}" label="会员客" />
+        <mgmt-stat-card class="tf-grid-item" size="md" count="{{display.registration.regTotal}}"  label="总注册数" />
+        <mgmt-stat-card class="tf-grid-item" size="md" count="{{display.registration.regOnly}}"   label="仅注册用户" />
+        <mgmt-stat-card class="tf-grid-item" size="md" count="{{display.registration.regTrial}}"  label="体验客" />
+        <mgmt-stat-card class="tf-grid-item" size="md" count="{{display.registration.regMember}}" label="会员客" />
       </view>
 
       <!-- Section 2：到店客流数据 -->
       <view class="tf-section-title">到店客流数据（区间内）</view>
       <view class="tf-grid-4">
-        <view class="tf-traffic-card" wx:for="{{display.traffic}}" wx:key="type">
+        <view class="tf-traffic-card tf-grid-item" wx:for="{{display.traffic}}" wx:key="type">
           <view class="tf-traffic-title">{{item.label}}</view>
           <view class="tf-traffic-metric"><text class="lbl">客流</text><text class="val">{{item.count}}</text></view>
           <view class="tf-traffic-metric"><text class="lbl">对应人数</text><text class="val">{{item.users}}</text></view>
@@ -103,10 +103,10 @@
       <!-- Section 5：新会员经营 -->
       <view class="tf-section-title">新会员经营</view>
       <view class="tf-grid-4">
-        <mgmt-stat-card size="md" count="{{display.newMembers.count}}"     label="新增会员数" />
-        <mgmt-stat-card size="md" count="{{display.newMembers.spend}}"     label="对应消费" />
-        <mgmt-stat-card size="md" count="{{display.newMembers.avgTicket}}" label="新会员客单价" />
-        <mgmt-stat-card size="md" count="{{display.newMembers.convRate}}"  label="新会员成交率" />
+        <mgmt-stat-card class="tf-grid-item" size="md" count="{{display.newMembers.count}}"     label="新增会员数" />
+        <mgmt-stat-card class="tf-grid-item" size="md" count="{{display.newMembers.spend}}"     label="对应消费" />
+        <mgmt-stat-card class="tf-grid-item" size="md" count="{{display.newMembers.avgTicket}}" label="新会员客单价" />
+        <mgmt-stat-card class="tf-grid-item" size="md" count="{{display.newMembers.convRate}}"  label="新会员成交率" />
       </view>
     </view>
   </mgmt-data-state>
