@@ -21,8 +21,13 @@ const session = (actions: string[], scopeOrgNodeIds = ['M1', 'M1-S1']) => ({
   permissions: { actions, scopeOrgNodeIds, scopeStoreIds: [] },
 })
 
-const MARKET_PRICE_SESSION = session(['inventory:list', 'inventory:market_price_view'])
-const NO_PRICE_SESSION = session(['inventory:list'])
+const MARKET_PRICE_SESSION = session(['inventory:list', 'inventory:market_price_view'], ['M1', 'M1-S1'])
+const NO_PRICE_SESSION = session(['inventory:list'], ['M1', 'M1-S1'])
+const ADMIN_SESSION = {
+  employeeId: 'E-ADMIN',
+  roles: [{ role: 'admin', scopeType: '总部', scopeId: 'HQ', scopeOrgNodeIds: ['HQ'], scopeStoreIds: [], actions: ['inventory:list'], isSuperAdmin: true }],
+  permissions: { actions: ['inventory:list'], scopeOrgNodeIds: ['HQ'], scopeStoreIds: [] },
+}
 
 const raw = (over: Record<string, unknown> = {}) => ({
   id: '9007199254740993',
@@ -113,6 +118,34 @@ describe('#349 汇总单来源明细：映射与价格档', () => {
     expect(rows[0].promotionPlanNo).toBe('FA-1')
     // 非价格字段不受影响。
     expect(rows[0].quantity).toBe(3)
+  })
+
+  it('价格档收窄按**行**判定：同一张跨市场汇总单里，只有本市场档绑定内的来源行带价', async () => {
+    // 市场档会话（scope = M1/S1）打开一张同时汇总 M1 与 M9 的汇总单：
+    // M9 不在它的档位绑定里 —— 若只按会话级 visibility 放行，就会泄漏 M9 的进货价（§9.5）。
+    execute.mockResolvedValue([
+      raw({ id: '1', market_id: 'M1', quantity: '3.00', market_actual_unit_price: '1000.00', market_standard_unit_price: '1200.00' }),
+      raw({ id: '2', market_id: 'M9', quantity: '5.00', market_actual_unit_price: '777.00', market_standard_unit_price: '888.00' }),
+    ])
+    const { rows } = await listMarketReportSummarySourcesForSession(MARKET_PRICE_SESSION as never, { docId: 'SUM-1' })
+
+    expect(rows[0].marketActualUnitPrice).toBe(1000)
+    expect(rows[0].amount).toBe(3000)
+    expect(rows[1].marketActualUnitPrice).toBeNull()
+    expect(rows[1].marketStandardUnitPrice).toBeNull()
+    expect(rows[1].amount).toBeNull()
+    // 非价格字段照常返回（行本身可见，只是价格被剥离）
+    expect(rows[1].quantity).toBe(5)
+  })
+
+  it('admin（档位不受限）两行都带价', async () => {
+    execute.mockResolvedValue([
+      raw({ id: '1', market_id: 'M1' }),
+      raw({ id: '2', market_id: 'M9', market_actual_unit_price: '777.00' }),
+    ])
+    const { rows } = await listMarketReportSummarySourcesForSession(ADMIN_SESSION as never, { docId: 'SUM-1' })
+    expect(rows[0].marketActualUnitPrice).toBe(1000)
+    expect(rows[1].marketActualUnitPrice).toBe(777)
   })
 
   it('缺价行金额为 null 而不是 0，"没价格"与"合计为 0"可区分', async () => {

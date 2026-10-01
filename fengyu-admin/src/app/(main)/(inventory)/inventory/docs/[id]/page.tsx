@@ -8,6 +8,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { fmtDateTime } from '@/lib/datetime'
 import { getSession } from '@/lib/auth'
 import { requireAllUiPageCapabilities } from '@/lib/page-capability'
+import { hasUiCapability } from '@/lib/permission-contract'
 import { canOpenOrderDetail } from '@/lib/order-detail-access'
 import { isStocktakeDocType, stocktakeDiff, stocktakeSummary } from '@/lib/inventory/stocktake'
 import { resolveInventoryDocReturn } from '@/lib/inventory/operation-return'
@@ -330,6 +331,7 @@ export default async function Page({
           query={query ?? {}}
           marketFilter={sourceMarketFilter}
           canViewPrice={canViewSourcePrice}
+          canExport={hasUiCapability(session.permissions.actions, 'inventory:export')}
           truncated={summarySources.truncated}
         />
       )}

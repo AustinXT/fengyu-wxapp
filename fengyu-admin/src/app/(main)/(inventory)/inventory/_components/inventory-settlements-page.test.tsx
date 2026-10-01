@@ -21,6 +21,7 @@ const BASE_REPORT: InventorySettlementReport = {
   startDate: '2026-09-01',
   endDate: '2026-09-02',
   priceVisibility: 'market',
+  marketOptions: [{ id: 'M1', name: '南昌市场' }, { id: 'M2', name: '九江市场' }],
   canViewMarketSettlement: true,
   canViewStoreSettlement: true,
   marketRows: [{

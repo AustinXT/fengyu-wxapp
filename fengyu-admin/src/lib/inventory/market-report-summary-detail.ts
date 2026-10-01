@@ -9,7 +9,12 @@ import {
   type ExportBatchOptions,
   type ExportBatchResult,
 } from '@/lib/export-pagination'
-import { inventoryPriceVisibility, inventoryScopedOrgNodeIds } from './access'
+import {
+  inventoryPriceScopeByTier,
+  inventoryPriceVisibility,
+  inventoryScopedOrgNodeIds,
+  inventoryTierRestrictedOrgNodeIds,
+} from './access'
 import type {
   MarketReportSummarySourceFilters,
   MarketReportSummarySourceRow,
@@ -45,6 +50,24 @@ export function normalizeMarketReportSummarySourceFilters(
     throw new ApiError('INVALID_PARAMS', '查询条件格式不正确')
   }
   return { market: optionalText(input.market, '市场') }
+}
+
+/**
+ * 价格可见的**市场集合**（行级，§9.3 / §9.5）。
+ *
+ * 汇总单是跨市场的（单头 `market_id` 为 NULL），来源行天然含多个市场 —— 只按会话级
+ * `inventoryPriceVisibility !== 'none'` 放行，会让某市场财务在端点命中的汇总单上
+ * 看到**其它市场**的进货价。所以按档位绑定逐行判定，与结算侧
+ * （`settlement-details.ts` 的 `settlementDetailScope`）同一套收窄函数、同一口径。
+ *
+ * - `null` = 不受限（admin 全量）；
+ * - `[]` = 档位不覆盖任何市场（视为不可见，不是"全可见"）；
+ * - 非空数组 = 仅这些市场节点参与的价格可见。
+ */
+export function marketReportSummaryPriceScope(session: AuthSession): string[] | null {
+  if (inventoryPriceVisibility(session) === 'none') return []
+  const tiers = inventoryPriceScopeByTier(session)
+  return inventoryTierRestrictedOrgNodeIds(null, [tiers.supplyChain, tiers.market])
 }
 
 /**
@@ -120,11 +143,14 @@ function numericOrNull(value: string | null): number | null {
 const round2 = (value: number) => Number(value.toFixed(2))
 
 /**
- * 价格档为 none 时三个单价一律映射成 null（服务端剥离，前端据此裁列）——
- * 与 engine.ts 单据明细"用 undefined/null 表达不可见"的既有约定一致，拦在服务端而非只靠前端不渲染。
+ * 价格档不可见（或该行所属市场不在档位绑定内）时，三个单价一律映射成 null（服务端剥离，
+ * 前端据此裁列）—— 与 engine.ts 单据明细"用 undefined/null 表达不可见"的既有约定一致，
+ * 拦在服务端而非只靠前端不渲染。**判定按行**：同一张汇总单的不同市场来源行可以一个可见一个不可见。
  */
-function mapRow(row: RawRow, canViewPrice: boolean): MarketReportSummarySourceRow {
+function mapRow(row: RawRow, priceScopedMarketIds: string[] | null): MarketReportSummarySourceRow {
   const quantity = Number(row.quantity)
+  const canViewPrice = row.market_id !== null
+    && (priceScopedMarketIds === null || priceScopedMarketIds.includes(row.market_id))
   const actualUnitPrice = canViewPrice ? numericOrNull(row.market_actual_unit_price) : null
   return {
     id: row.id,
@@ -145,8 +171,8 @@ function mapRow(row: RawRow, canViewPrice: boolean): MarketReportSummarySourceRo
   }
 }
 
-async function queryRows(query: SQL, canViewPrice: boolean): Promise<MarketReportSummarySourceRow[]> {
-  return (await db.execute(query) as unknown as RawRow[]).map((row) => mapRow(row, canViewPrice))
+async function queryRows(query: SQL, priceScopedMarketIds: string[] | null): Promise<MarketReportSummarySourceRow[]> {
+  return (await db.execute(query) as unknown as RawRow[]).map((row) => mapRow(row, priceScopedMarketIds))
 }
 
 /** 详情页用：一次取全部来源行，超出上限时由调用方按 truncated 提示导出查看。 */
@@ -156,9 +182,11 @@ export async function listMarketReportSummarySourcesForSession(
 ): Promise<{ rows: MarketReportSummarySourceRow[]; truncated: boolean }> {
   const docId = requireDocId(input.docId)
   const filters = normalizeMarketReportSummarySourceFilters(input)
-  const canViewPrice = inventoryPriceVisibility(session) !== 'none'
   const where = marketReportSummarySourceWhereSql(docId, filters, inventoryScopedOrgNodeIds(session))
-  const rows = await queryRows(marketReportSummarySourceSelectSql(where, MAX_PAGE_ROWS + 1), canViewPrice)
+  const rows = await queryRows(
+    marketReportSummarySourceSelectSql(where, MAX_PAGE_ROWS + 1),
+    marketReportSummaryPriceScope(session),
+  )
   return { rows: rows.slice(0, MAX_PAGE_ROWS), truncated: rows.length > MAX_PAGE_ROWS }
 }
 
@@ -181,7 +209,7 @@ export async function exportMarketReportSummarySourcesForSession(
   }
   const limit = resolveExportBatchLimit(options?.limit)
   if (limit == null) throw new ApiError('INVALID_STATE', '汇总单来源明细导出只支持分批取数')
-  const canViewPrice = inventoryPriceVisibility(session) !== 'none'
+  const canViewPrice = marketReportSummaryPriceScope(session)
   const where = marketReportSummarySourceWhereSql(docId, filters, inventoryScopedOrgNodeIds(session))
   const fetched = await queryRows(marketReportSummarySourceSelectSql(where, limit + 1, cursor), canViewPrice)
   const page = resolveExportKeysetPage(fetched, limit, (row) => row.id)
@@ -189,7 +217,8 @@ export async function exportMarketReportSummarySourcesForSession(
     rows: page.pageRows,
     truncated: false,
     hasMore: page.hasMore,
-    canViewPrice,
+    // 导出列按段固定，这里只回传"是否存在任何可见价格市场"（空集时列也不含价格）
+    canViewPrice: canViewPrice === null || canViewPrice.length > 0,
     ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }),
   }
 }

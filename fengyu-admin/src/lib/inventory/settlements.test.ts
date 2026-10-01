@@ -10,7 +10,7 @@ const { execute, mockGetSession } = vi.hoisted(() => ({
 vi.mock('@/db', () => ({ db: { execute } }))
 vi.mock('@/lib/auth', () => ({ getSession: mockGetSession }))
 
-import { listInventorySettlements, settlementDocKinds, settlementProjectionSql } from './settlements'
+import { listInventorySettlements, normalizeSettlementPeriod, settlementDocKinds, settlementProjectionSql } from './settlements'
 
 const compile = (query: SQL) => new PgDialect().sqlToQuery(query)
 /** 第 n 次 execute 的编译结果（语法树 → sql + params）。 */
@@ -98,15 +98,18 @@ describe('货款结算只读报表', () => {
 
   it('供应链价格档只见市场结算，不见门店结算', async () => {
     mockGetSession.mockResolvedValue(SUPPLY_CHAIN_SESSION)
-    execute.mockResolvedValue([summaryRow()])
+    // 调用 0 = 市场选项（DISTINCT market_id），调用 1 = 市场段聚合
+    execute
+      .mockResolvedValueOnce([{ id: 'M1', name: '南昌市场' }])
+      .mockResolvedValueOnce([summaryRow()])
 
     const report = await listInventorySettlements({ startDate: '2026-09-01', endDate: '2026-09-02' })
 
     expect(report.canViewMarketSettlement).toBe(true)
     expect(report.canViewStoreSettlement).toBe(false)
-    // 只发起市场结算一条聚合查询，门店结算不落库查询。
-    expect(execute).toHaveBeenCalledTimes(1)
-    const query = callOf(0)
+    // 调用序列：0=市场选项，1=市场段聚合；门店段不可见，不落库查询。
+    expect(execute).toHaveBeenCalledTimes(2)
+    const query = callOf(1)
     // 条件不许放宽：单据类型 + 状态白名单 + 日期区间 + scope 双端点。
     expect(query.params).toContain('市场报货')
     expect(query.params).toContain('已完成')
@@ -136,6 +139,7 @@ describe('货款结算只读报表', () => {
   it('市场价格档同时汇总市场结算与门店结算', async () => {
     mockGetSession.mockResolvedValue(MARKET_SESSION)
     execute
+      .mockResolvedValueOnce([{ id: 'M1', name: '南昌市场' }])  // 0 = 市场选项
       .mockResolvedValueOnce([summaryRow({ payable_amount: '500.00', total_quantity: '10.00' })])
       .mockResolvedValueOnce([summaryRow({
         party_node: 'S1', party_name: '红谷滩店', doc_count: 3, total_quantity: '12.00', payable_amount: '888.00',
@@ -145,8 +149,9 @@ describe('货款结算只读报表', () => {
 
     expect(report.canViewMarketSettlement).toBe(true)
     expect(report.canViewStoreSettlement).toBe(true)
-    expect(execute).toHaveBeenCalledTimes(2)
-    const [marketQuery, storeQuery] = [callOf(0), callOf(1)]
+    // 调用序列：0=市场选项，1=市场段，2=分院段
+    expect(execute).toHaveBeenCalledTimes(3)
+    const [marketQuery, storeQuery] = [callOf(1), callOf(2)]
     // 市场段：市场报货 + 已完成白名单；分院段：分院配货 + 待收货/已完成两态。
     expect(marketQuery.params).toContain('市场报货')
     expect(marketQuery.params).toContain('已完成')
@@ -163,6 +168,8 @@ describe('货款结算只读报表', () => {
       expect(query.params).toContain('S1')
       expect(query.params).toContain('S2')
     }
+    // 选项由服务端下发，不受期间/筛选影响
+    expect(report.marketOptions).toEqual([{ id: 'M1', name: '南昌市场' }])
     expect(report.marketRows[0].payableAmount).toBe(500)
     expect(report.storeRows[0]).toMatchObject({
       targetOrgNodeId: 'S1',
@@ -202,8 +209,8 @@ describe('货款结算只读报表', () => {
 
     // 两段结算查询的 scope 都必须收敛到市场 B 绑定覆盖的 org；
     // 门店 A 节点绝不允许进入金额聚合条件（整行即金额）。
-    expect(execute).toHaveBeenCalledTimes(2)
-    for (const index of [0, 1]) {
+    expect(execute).toHaveBeenCalledTimes(3)
+    for (const index of [1, 2]) {
       const query = callOf(index)
       expect(query.params).toContain('MKT-B')
       expect(query.params).toContain('NODE-B1')
@@ -235,6 +242,7 @@ describe('货款结算只读报表', () => {
   it('净额与退货分列：金额取净额、数量与单据数不净额化', async () => {
     mockGetSession.mockResolvedValue(MARKET_SESSION)
     execute
+      .mockResolvedValueOnce([])  // 0 = 市场选项
       .mockResolvedValueOnce([summaryRow({
         doc_count: 2, return_doc_count: 1, total_quantity: '30.00', returned_quantity: '5.00', payable_amount: '-1500.00',
       })])
@@ -270,6 +278,35 @@ describe('货款结算只读报表', () => {
         .rejects.toThrow('INVALID_PARAMS')
     }
     expect(execute).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * #453 的运行时类型守卫：非字符串日期必须在进 SQL 之前被拒。
+ * 重写测试时这组一度被漏掉 —— 守卫还在（`typeof !== 'string'`），但没有测试钉住它，
+ * 后续若有人把它放宽成"只靠 SQL 的 ::date 转换"，22008 类回归不会变红。
+ */
+describe('#453 结算日期运行时类型', () => {
+  beforeEach(() => {
+    vi.resetAllMocks()
+    mockGetSession.mockResolvedValue(MARKET_SESSION)
+  })
+
+  it.each([123, {}, ['2026-09-01'], false])('非字符串日期 %s 在查询前报 INVALID_PARAMS', async (value) => {
+    for (const filters of [{ startDate: value }, { endDate: value }]) {
+      await expect(listInventorySettlements(filters as never))
+        .rejects.toThrow('INVALID_PARAMS: 结算期间日期格式必须为 YYYY-MM-DD')
+    }
+    expect(execute).not.toHaveBeenCalled()
+  })
+
+  it('闰日与库存宽年份照常放行', () => {
+    expect(normalizeSettlementPeriod({ startDate: '2024-02-29', endDate: '2024-02-29' }))
+      .toEqual({ startDate: '2024-02-29', endDate: '2024-02-29' })
+    expect(normalizeSettlementPeriod({ startDate: '0001-01-01', endDate: '9999-12-31' }))
+      .toEqual({ startDate: '0001-01-01', endDate: '9999-12-31' })
+    // 空串回落默认期间（本月），不是报错
+    expect(normalizeSettlementPeriod({ startDate: '', endDate: '  ' })).toMatchObject({ startDate: expect.stringMatching(/^\d{4}-\d{2}-01$/) })
   })
 })
 

@@ -364,6 +364,12 @@ export interface InventorySettlementReport {
   startDate: string
   endDate: string
   priceVisibility: InventoryPriceVisibility
+  /**
+   * 市场筛选下拉的选项（scope 内的全部市场，**不受期间与当前 market 筛选影响**）。
+   * 由服务端下发而非从 `marketRows` 派生 —— 报表行已按 market 过滤，再从它派生选项
+   * 会导致"筛一次就只剩当前市场、回不去"。
+   */
+  marketOptions: Array<{ id: string; name: string }>
   /** 市场应付供应链（供应链档 / 市场档 / 全档可见）。 */
   canViewMarketSettlement: boolean
   /** 门店应付市场（仅市场档 / 全档可见）。 */

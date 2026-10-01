@@ -176,6 +176,34 @@ export function settlementProjectionSql(params: SettlementProjectionParams): SQL
   `
 }
 
+const SETTLEMENT_DOC_TYPES = [...new Set(SETTLEMENT_DOC_KINDS.map((kind) => kind.docType))]
+
+/**
+ * 市场筛选下拉的选项：scope 内的全部市场，**不受期间与当前 market 筛选影响**。
+ *
+ * 不能从 `marketRows` 派生 —— 报表行已按 market 过滤，再从它派生会让「筛一次就只剩当前市场、
+ * 回不去」（来源明细组件用 `marketOptions` 取自全量行的写法规避了同一坑，这里走服务端下发）。
+ */
+async function listSettlementMarketOptions(scopedOrgNodeIds: string[] | null): Promise<Array<{ id: string; name: string }>> {
+  if (scopedOrgNodeIds !== null && scopedOrgNodeIds.length === 0) return []
+  const conditions: SQL[] = [
+    sql`d.market_id IS NOT NULL`,
+    sql`d.doc_type IN (${sql.join(SETTLEMENT_DOC_TYPES.map((docType) => sql`${docType}`), sql`, `)})`,
+  ]
+  if (scopedOrgNodeIds !== null) {
+    const ids = sql.join(scopedOrgNodeIds.map((id) => sql`${id}`), sql`, `)
+    conditions.push(sql`(d.source_org_node_id IN (${ids}) OR d.target_org_node_id IN (${ids}))`)
+  }
+  const rows = await db.execute(sql`
+    SELECT DISTINCT d.market_id AS id, COALESCE(loc.name, d.market_id) AS name
+      FROM inventory_docs d
+      LEFT JOIN inventory_locations loc ON loc.org_node_id = d.market_id
+     WHERE ${sql.join(conditions, sql` AND `)}
+     ORDER BY name
+  `) as unknown as Array<{ id: string; name: string }>
+  return rows.map((row) => ({ id: row.id, name: row.name }))
+}
+
 interface RawSummaryRow {
   market_node: string | null
   market_name: string | null
@@ -245,6 +273,7 @@ export const listInventorySettlements = withPermission(
         startDate,
         endDate,
         priceVisibility,
+        marketOptions: [],
         canViewMarketSettlement: false,
         canViewStoreSettlement: false,
         marketRows: [],
@@ -264,7 +293,8 @@ export const listInventorySettlements = withPermission(
       scopedOrgNodeIds,
       [priceTiers.market],
     )
-    const [marketRows, storeRows] = await Promise.all([
+    const [marketOptions, marketRows, storeRows] = await Promise.all([
+      listSettlementMarketOptions(scopedOrgNodeIds),
       canViewMarketSettlement
         ? summarizeSettlementDocs({ segment: 'market', startDate, endDate, scopedOrgNodeIds: marketScopedOrgNodeIds, market })
         : Promise.resolve([]),
@@ -276,6 +306,7 @@ export const listInventorySettlements = withPermission(
       startDate,
       endDate,
       priceVisibility,
+      marketOptions,
       canViewMarketSettlement,
       canViewStoreSettlement,
       marketRows,

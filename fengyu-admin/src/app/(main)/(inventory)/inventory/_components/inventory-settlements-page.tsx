@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Landmark, Store as StoreIcon } from 'lucide-react'
 import type { InventorySettlementReport, InventorySettlementRow } from '@/lib/inventory/types'
 import type { SettlementDetailRow, SettlementDetailSegment } from '@/lib/inventory/settlement-detail-types'
@@ -50,6 +50,7 @@ function detailColumnsFor(segment: SettlementDetailSegment): Column<SettlementDe
       ),
     },
     { key: 'skuName', header: '商品', cell: (row) => row.skuName },
+    { key: 'specName', header: '规格', cell: (row) => row.specName ?? '—' },
     ...(segment === 'store'
       ? [{ key: 'batchNo', header: '批号', cell: (row: SettlementDetailRow) => row.batchNo || '—' }]
       : []),
@@ -95,6 +96,15 @@ function SettlementSection({
   const [detail, setDetail] = useState<{ key: string; label: string; rows: SettlementDetailRow[]; truncated: boolean } | null>(null)
   const [loadingKey, setLoadingKey] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+
+  /*
+   * 筛选变化后丢弃展开的明细：detail 的状态键只有行端点，不含期间/市场 ——
+   * 不重置的话，改了筛选仍显示上一期间/上一市场的旧明细，且标题里也看不出这一点。
+   */
+  useEffect(() => {
+    setDetail(null)
+    setError(null)
+  }, [startDate, endDate, market])
 
   async function toggleDetail(row: InventorySettlementRow) {
     const key = rowKeyOf(row)
@@ -210,6 +220,16 @@ function SettlementSection({
               <p className="mb-2 text-xs text-[#D4820A]">明细超过 500 行，仅显示前 500 行；完整明细请用导出。</p>
             )}
             <DataTable columns={detailColumnsFor(segment)} data={detail.rows} emptyText="该行期间内没有明细" />
+            {detail.rows.length > 0 && (
+              // issue 验收「明细合计必须等于汇总行」：不留合计行的话，用户只能靠导出对账
+              <div className="mt-2 flex justify-end gap-4 text-xs text-[#666666]">
+                <span>{detail.truncated ? '可见行合计（已截断）' : '合计'}</span>
+                <span className="text-right">数量 {detail.rows.reduce((sum, row) => sum + row.quantity, 0)}</span>
+                <span className="text-right">
+                  {formatSignedCurrency(detail.rows.reduce((sum, row) => sum + row.signedAmount, 0))}
+                </span>
+              </div>
+            )}
           </div>
         )}
       </CardContent>
@@ -230,19 +250,12 @@ export default function InventorySettlementsPage({
   const market = get('market') ?? ''
 
   /*
-   * 市场下拉的选项从报表行派生，不额外查一次 locations —— 那需要 `listInventoryLocations`，
-   * 它的闸是 `inventory:stock_list`，而店长（#364 之后）只持 `inventory:store_settlement_view`，
-   * 调它会直接 403。报表行里的市场名与服务端 scope 同源，本来就是对的范围。
+   * 市场下拉选项**由服务端下发**（`report.marketOptions`，不受期间与当前筛选影响）。
+   * 早前版本从 `marketRows` 派生，结果是"筛一次就只剩当前市场、回不去"；
+   * 也不能改调 `listInventoryLocations` —— 它的闸是 `inventory:stock_list`，
+   * 而店长（#364 之后）只持 `inventory:store_settlement_view`，会直接 403。
    */
-  const marketOptions = (() => {
-    const seen = new Map<string, string>()
-    for (const row of [...report.marketRows, ...report.storeRows]) {
-      if (row.sourceOrgNodeId) seen.set(row.sourceOrgNodeId, row.sourceOrgNodeName ?? row.sourceOrgNodeId)
-    }
-    return [...seen.entries()]
-      .map(([id, name]) => ({ id, name }))
-      .sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
-  })()
+  const marketOptions = report.marketOptions
 
   return (
     <div className="space-y-4">

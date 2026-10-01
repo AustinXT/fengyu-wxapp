@@ -46,7 +46,9 @@ function groupSources(rows: MarketReportSummarySourceRow[]): MarketGroup[] {
         marketId: marketKey,
         marketName: row.marketName ?? (row.marketId ?? '未知市场'),
         quantity: 0,
-        amount: 0,
+        // 初值必须与"该市场一行有价的行都没有"区分开：下面只在 row.amount 非 null 时累加，
+        // 全缺价时保持 null → 页面显示「—」，而不是把"没价格"渲染成"合计为 0"。
+        amount: null,
         docs: new Map(),
       }
       markets.set(marketKey, market)
@@ -89,6 +91,7 @@ export function MarketReportSummarySources({
   query,
   marketFilter,
   canViewPrice,
+  canExport,
   truncated,
 }: {
   rows: MarketReportSummarySourceRow[]
@@ -97,6 +100,8 @@ export function MarketReportSummarySources({
   query: Record<string, string | undefined>
   marketFilter?: string
   canViewPrice: boolean
+  /** 与页面闸同源下发（`hasUiCapability(session.permissions.actions, 'inventory:export')`）。 */
+  canExport: boolean
   truncated: boolean
 }) {
   const visibleRows = marketFilter ? rows.filter((row) => row.marketId === marketFilter) : rows
@@ -104,7 +109,7 @@ export function MarketReportSummarySources({
   const totalQuantity = visibleRows.reduce((sum, row) => sum + row.quantity, 0)
   const totalAmount = visibleRows.reduce<number | null>(
     (sum, row) => (row.amount === null ? sum : round2((sum ?? 0) + row.amount)),
-    canViewPrice ? 0 : null,
+    null,
   )
   // 选项取自**全量**行：筛选后仍能看到其它市场，否则筛一次就回不去。
   const marketOptions = [...new Map(rows.map((row) => [
@@ -117,13 +122,16 @@ export function MarketReportSummarySources({
       <CardContent className="p-5">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-base font-medium">来源明细</h2>
-          {/* 导出是辅助入口（会计凭证的主入口在货款结算-市场段）；带当前市场筛选，行集与页面一致 */}
-          <ExportButton
-            exportRequest={{
-              exportType: 'market-report-summary-sources',
-              payload: { docId, ...(marketFilter ? { market: marketFilter } : {}) },
-            }}
-          />
+          {/* 导出是辅助入口（会计凭证的主入口在货款结算-市场段）；带当前市场筛选，行集与页面一致。
+              按 inventory:export 门控 —— 能打开汇总单详情不等于能导出，否则按钮点了才在任务侧被拒。 */}
+          {canExport && (
+            <ExportButton
+              exportRequest={{
+                exportType: 'market-report-summary-sources',
+                payload: { docId, ...(marketFilter ? { market: marketFilter } : {}) },
+              }}
+            />
+          )}
         </div>
         <p className="mb-3 text-xs text-[#888888]">
           本汇总单由下列报货明细构成，按市场 → 来源报货单 → 商品展开；数量为本次汇总分摊量，价格取来源行快照，不随 SKU 现价变动。

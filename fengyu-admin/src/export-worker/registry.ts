@@ -574,7 +574,17 @@ const settlementDetailColumns = (segment: 'market' | 'store') => mapColumns([
   { header: '商品', width: 28, key: 'skuName' },
   { header: '规格', width: 16, key: 'specName' },
   ...(segment === 'store' ? [{ header: '批号', width: 16, key: 'batchNo' }] : []),
-  { header: '数量', width: 10, key: 'quantity', map: (row) => numberOrEmpty(row, 'quantity') },
+  // 退货冲减行与页面同口径：数量带负号、显式标「退货」列（只靠单据类型辨认不够直观）
+  {
+    header: '数量',
+    width: 10,
+    key: 'quantity',
+    map: (row) => {
+      const quantity = Number(value(row, 'quantity') ?? 0)
+      return row.isReturn ? -quantity : quantity
+    },
+  },
+  { header: '退货', width: 8, key: 'isReturn', map: (row) => boolLabel(row, 'isReturn') },
   ...(segment === 'market'
     ? [
         { header: '市场单价', width: 14, key: 'marketStandardUnitPrice', map: (row: Row) => numberOrEmpty(row, 'marketStandardUnitPrice') },
