@@ -180066,7 +180066,7 @@ async function listSettlementMarketOptions(scopedOrgNodeIds) {
     return [];
   const conditions3 = [
     import_drizzle_orm59.sql`d.market_id IS NOT NULL`,
-    import_drizzle_orm59.sql`d.doc_type IN (${import_drizzle_orm59.sql.join(SETTLEMENT_DOC_TYPES.map((docType) => import_drizzle_orm59.sql`${docType}`), import_drizzle_orm59.sql`, `)})`
+    import_drizzle_orm59.sql`(d.doc_type, d.status) IN (${import_drizzle_orm59.sql.join(SETTLEMENT_DOC_KINDS.map((kind) => import_drizzle_orm59.sql`(${kind.docType}, ${kind.status})`), import_drizzle_orm59.sql`, `)})`
   ];
   if (scopedOrgNodeIds !== null) {
     const ids = import_drizzle_orm59.sql.join(scopedOrgNodeIds.map((id) => import_drizzle_orm59.sql`${id}`), import_drizzle_orm59.sql`, `);
@@ -180630,6 +180630,7 @@ async function listMarketReportSummarySourcesForSession(session4, input) {
   return {
     rows: rows.slice(0, MAX_PAGE_ROWS),
     truncated: rows.length > MAX_PAGE_ROWS,
+    limit: MAX_PAGE_ROWS,
     priceVisible: priceScope === null || priceScope.length > 0
   };
 }
@@ -180853,6 +180854,21 @@ function mapRow3(row) {
 async function queryRows3(query) {
   return (await db2.execute(query)).map(mapRow3);
 }
+async function sumSettlementDetails(projection, marketNode2, partyNode) {
+  const rows = await db2.execute(import_drizzle_orm63.sql`
+    SELECT COALESCE(SUM(CASE WHEN p.sign > 0 THEN p.quantity ELSE 0 END), 0) AS forward_quantity,
+           COALESCE(SUM(CASE WHEN p.sign < 0 THEN p.quantity ELSE 0 END), 0) AS returned_quantity,
+           COALESCE(SUM(p.signed_amount), 0) AS amount
+      FROM (${projection}) AS p
+     WHERE p.market_node = ${marketNode2} AND p.party_node = ${partyNode}
+  `);
+  const row = rows[0];
+  return {
+    forwardQuantity: Number(row?.forward_quantity ?? 0),
+    returnedQuantity: Number(row?.returned_quantity ?? 0),
+    amount: Number(row?.amount ?? 0)
+  };
+}
 function normalizeSettlementSegmentFilters(input) {
   if (typeof input !== "object" || input === null || Array.isArray(input)) {
     throw new ApiError("INVALID_PARAMS", "查询条件格式不正确");
@@ -180878,14 +180894,20 @@ function projectionFor(session4, filters) {
 }
 async function listSettlementDetailsForSession(session4, input) {
   const filters = normalizeSettlementDetailFilters(input);
+  const emptyTotals = { forwardQuantity: 0, returnedQuantity: 0, amount: 0 };
   const projection = projectionFor(session4, filters);
-  if (projection === null)
-    return { rows: [], truncated: false, limit: DETAIL_PAGE_LIMIT };
-  const rows = await queryRows3(settlementDetailSelectSql(projection, filters.segment, filters.marketNode, filters.partyNode, DETAIL_PAGE_LIMIT + 1));
+  if (projection === null) {
+    return { rows: [], truncated: false, limit: DETAIL_PAGE_LIMIT, totals: emptyTotals };
+  }
+  const [rows, totals] = await Promise.all([
+    queryRows3(settlementDetailSelectSql(projection, filters.segment, filters.marketNode, filters.partyNode, DETAIL_PAGE_LIMIT + 1)),
+    sumSettlementDetails(projection, filters.marketNode, filters.partyNode)
+  ]);
   return {
     rows: rows.slice(0, DETAIL_PAGE_LIMIT),
     truncated: rows.length > DETAIL_PAGE_LIMIT,
-    limit: DETAIL_PAGE_LIMIT
+    limit: DETAIL_PAGE_LIMIT,
+    totals
   };
 }
 async function exportSettlementSegmentDetailsForSession(session4, input, options) {
