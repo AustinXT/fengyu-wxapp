@@ -180612,14 +180612,26 @@ function mapRow2(row, priceScopedMarketIds) {
 async function queryRows2(query, priceScopedMarketIds) {
   return (await db2.execute(query)).map((row) => mapRow2(row, priceScopedMarketIds));
 }
+function requireObject(input) {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    throw new ApiError("INVALID_PARAMS", "查询条件格式不正确");
+  }
+}
 async function listMarketReportSummarySourcesForSession(session4, input) {
+  requireObject(input);
   const docId = requireDocId(input.docId);
   const filters = normalizeMarketReportSummarySourceFilters(input);
   const where = marketReportSummarySourceWhereSql(docId, filters, inventoryScopedOrgNodeIds(session4));
-  const rows = await queryRows2(marketReportSummarySourceSelectSql(where, MAX_PAGE_ROWS + 1), marketReportSummaryPriceScope(session4));
-  return { rows: rows.slice(0, MAX_PAGE_ROWS), truncated: rows.length > MAX_PAGE_ROWS };
+  const priceScope = marketReportSummaryPriceScope(session4);
+  const rows = await queryRows2(marketReportSummarySourceSelectSql(where, MAX_PAGE_ROWS + 1), priceScope);
+  return {
+    rows: rows.slice(0, MAX_PAGE_ROWS),
+    truncated: rows.length > MAX_PAGE_ROWS,
+    priceVisible: priceScope === null || priceScope.length > 0
+  };
 }
 async function listMarketReportSummarySourceMarkets(session4, input) {
+  requireObject(input);
   const docId = requireDocId(input.docId);
   const where = marketReportSummarySourceWhereSql(docId, {}, inventoryScopedOrgNodeIds(session4));
   const rows = await db2.execute(import_drizzle_orm62.sql`
@@ -180633,6 +180645,7 @@ async function listMarketReportSummarySourceMarkets(session4, input) {
   return rows.map((row) => ({ id: row.id, name: row.name }));
 }
 async function exportMarketReportSummarySourcesForSession(session4, input, options) {
+  requireObject(input);
   const docId = requireDocId(input.docId);
   const filters = normalizeMarketReportSummarySourceFilters(input);
   const cursor = options?.cursor;
@@ -180726,7 +180739,7 @@ init_db2();
 init_api_error();
 var import_drizzle_orm63 = __toESM(require_drizzle_orm(), 1);
 import"server-only";
-var DETAIL_PAGE_LIMIT = 500;
+var DETAIL_PAGE_LIMIT = 2000;
 function requiredText(value, label) {
   if (typeof value !== "string" || !value.trim()) {
     throw new ApiError("INVALID_PARAMS", `${label}不正确`);
