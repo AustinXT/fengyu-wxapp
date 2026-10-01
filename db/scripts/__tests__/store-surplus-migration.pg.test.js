@@ -120,4 +120,12 @@ if (!connectionString) {
     const { rows } = await client.query('SELECT amount::text AS amount FROM inventory_doc_items WHERE id=$1', [row.id])
     assert.equal(rows[0].amount, '14.00')
   }))
+
+  test('数据库先行时旧市场盘溢的明确实际价仍优先；旧价格全空仍为 NULL', () => fixture(async ({ doc, item }) => {
+    // 当前 dev 的通用建单会从批次算出实际价并明确写 actual_unit_price。
+    const oldStyle = await item(await doc('市场产品盘溢'), 2, { price: 18.25, actual: 12.5 })
+    assert.equal(oldStyle.amount, '25.00')
+    const missingPrice = await item(await doc('市场产品盘溢'), 2)
+    assert.equal(missingPrice.amount, null)
+  }))
 }
