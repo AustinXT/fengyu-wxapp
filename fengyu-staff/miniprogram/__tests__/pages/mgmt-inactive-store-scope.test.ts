@@ -250,6 +250,18 @@ describe('hub · 默认关店空态与手选历史（#473）', () => {
     expect(hub.data.summaryEmptyText).toContain('已关店')
   })
 
+  test('同店既停用又关店时按停用口径取服务端空态', async () => {
+    const hub = instantiate('hub')
+    hub.data.selectedDate = today()
+    hub.data.scope = { scopeType: 'store', scopeId: 'closed', scopeName: '蓝湾店', inactive: true, closed: true }
+    mocked.mockResolvedValueOnce(summaryResp({ type: 'store', id: 'closed', name: '蓝湾店', inactive: true, hasActiveAlternative: false }))
+    await hub.loadSummary()
+    expect(mocked).toHaveBeenCalledWith('mgmtDashboard.summary', expect.objectContaining({ scopeId: 'closed' }))
+    expect(hub.data.summaryState).toBe('empty')
+    expect(hub.data.summaryEmptyText).toContain('已停用')
+    expect(hub.data.summaryEmptyHint).not.toContain('可选择关店前日期')
+  })
+
   test('手选已关店门店后仍可查历史日期', async () => {
     const hub = instantiate('hub')
     hub.data.selectedDate = '2026-07-01'

@@ -422,7 +422,7 @@ Page({
     const seq = ++summarySeq
     const today = new Date()
     const todayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
-    if (this.data.scope.scopeType === 'store' && this.data.scope.closed && !this.data.scopeUserPicked && this.data.selectedDate === todayKey) {
+    if (this.data.scope.scopeType === 'store' && this.data.scope.closed && !this.data.scope.inactive && !this.data.scopeUserPicked && this.data.selectedDate === todayKey) {
       this.setData({
         loading: false,
         display: null,
