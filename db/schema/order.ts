@@ -1005,7 +1005,8 @@ export const saleItemPerformanceEvents = pgView(
 `);
 
 /**
- * 子项可计业绩：按同一笔款项的最终可计金额拆分，最后一行吸收分币尾差。
+ * 子项可计业绩：现金款按最终可计金额拆分，储值卡抵扣保留普通品项价值；
+ * 最后一条普通子项吸收分币尾差，零分母款项留给未分类兜底。
  * 无款项的历史残差沿原归属日期保留普通品项，拓客残差归零。
  */
 export const saleReportableItemEvents = pgView(
@@ -1030,7 +1031,11 @@ export const saleReportableItemEvents = pgView(
   WITH receipt_base AS (
     SELECT sipe.receipt_id, sipe.sale_payment_id, sipe.amount::numeric AS amount,
            si.product_kind_at_sale,
-           spe.performance_amount::numeric AS payment_performance_amount,
+           spe.amount::numeric AS payment_amount,
+           spe.change_type AS payment_change_type,
+           spe.performance_amount::numeric AS cash_performance_amount,
+           SUM(sipe.amount::numeric)
+             OVER (PARTITION BY sipe.sale_payment_id) AS receipt_total,
            SUM(CASE WHEN si.product_kind_at_sale IS DISTINCT FROM '拓客引流卡'
                THEN sipe.amount::numeric ELSE 0 END)
              OVER (PARTITION BY sipe.sale_payment_id) AS eligible_total,
@@ -1042,17 +1047,28 @@ export const saleReportableItemEvents = pgView(
     JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id
     WHERE sipe.receipt_id IS NOT NULL
   ),
+  receipt_scaled AS (
+    SELECT rb.*,
+           CASE WHEN rb.payment_change_type = '储值卡抵扣'
+                THEN CASE WHEN rb.receipt_total = 0 THEN rb.payment_amount
+                          ELSE ROUND(rb.payment_amount * LEAST(1::numeric, GREATEST(0::numeric,
+                            rb.eligible_total / rb.receipt_total)), 2)
+                     END
+                ELSE rb.cash_performance_amount
+           END AS payment_performance_amount
+    FROM receipt_base rb
+  ),
   receipt_rounded AS (
     SELECT rb.*,
            CASE WHEN rb.product_kind_at_sale = '拓客引流卡' OR rb.eligible_total = 0
                 THEN 0::numeric
                 ELSE ROUND(rb.payment_performance_amount * rb.amount / rb.eligible_total, 2)
            END AS rounded_amount
-    FROM receipt_base rb
+    FROM receipt_scaled rb
   ),
   receipt_final AS (
     SELECT rr.receipt_id,
-           CASE WHEN rr.receipt_id = rr.last_eligible_receipt_id
+           CASE WHEN rr.eligible_total <> 0 AND rr.receipt_id = rr.last_eligible_receipt_id
                 THEN rr.payment_performance_amount
                    - SUM(rr.rounded_amount) OVER (PARTITION BY rr.sale_payment_id)
                    + rr.rounded_amount

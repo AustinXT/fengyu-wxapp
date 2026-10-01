@@ -13,20 +13,20 @@
  *     - salesData: 分客型业绩（小美/新增会员/老会员）+ 分客型实耗
  *
  * ★ 口径红线（consistency.sales.test.ts 字面量守护，禁止偏离）：
- *   - 组织层级业绩 = SUM(sale_order_performance_events.amount) ∩ status='已支付'
+ *   - 组织层级业绩 = SUM(sale_reportable_payment_events.performance_amount) ∩ status='已支付'
  *     ∩ change_type IN ('首次支付','回款','退款') ∩ sale_order_type IN ('销售单','转换单','充值单')
  *     ∩ performance_date（**一律直读款项归属日期，无回退分支**；#137 收敛 / 迁移 0041。
  *     原「首次按订单归属日、后续流水按真实发生日」表述已失效）
- *   - 生美 = sale_item_performance_events 行级 SUM(amount) WHERE is_shengmei=TRUE
+ *   - 生美 = sale_reportable_item_events 行级 SUM(performance_amount) WHERE is_shengmei=TRUE
  *   - 实耗 = SUM(unit_real_price * session_used) ∩ service_orders.status='已完成' ∩ service_date；
  *     生美实耗加 is_shengmei=TRUE
  *   - 新增会员（newCustomerRevenue）= customer_type='会员客' AND became_member_at::date >= 区间起
- *     （metrics.md 销售数据页「新增会员」分型），SUM(付款流水 amount)
+ *     （metrics.md 销售数据页「新增会员」分型），SUM(可计款项 performance_amount)
  *   - 员工数 skills && ARRAY['美容师','养生师'] + hired_at/resigned_at 历史化
  *   - 门店数：当前门店节点启用 + opening_date/closed_at 历史化
  *
  * 流量客业绩（trafficCustomerRevenue，2026-05-26 用户拍板）：
- *   trafficCustomerRevenue = SUM(付款流水 amount) WHERE customer_type = '流量客'
+ *   trafficCustomerRevenue = SUM(可计款项 performance_amount) WHERE customer_type = '流量客'
  *   （仅纯流量客，不含体验客/小美客）。已登记 metrics.md §「销售数据页 — 分客型业绩」。
  */
 

@@ -43,11 +43,11 @@ if (!url) {
       VALUES ($1,$2,'T494_ST',$3,'疗程卡',$4,ABS($5::numeric),ABS($5::numeric),$5,$5,true)`,
     [id, orderId, sku, amount < 0 ? '转出' : '购买', amount])
   }
-  async function payment(orderId, amount, changeType = '首次支付', date = '2026-09-08') {
+  async function payment(orderId, amount, changeType = '首次支付', date = '2026-09-08', method = '线下') {
     const { rows } = await db.query(`INSERT INTO sale_order_payments
       (sale_order_id,change_type,amount,payment_method,status,source_end,paid_at)
-      VALUES ($1,$2,$3,'线下','已支付','staff',$4::date + TIME '12:00:00') RETURNING id`,
-    [orderId, changeType, amount, date])
+      VALUES ($1,$2,$3,$5,'已支付','staff',$4::date + TIME '12:00:00') RETURNING id`,
+    [orderId, changeType, amount, date, method])
     return rows[0].id
   }
   async function receipt(paymentId, orderId, itemId, amount) {
@@ -111,6 +111,52 @@ if (!url) {
     assert.equal(result.items[0].performance_amount, '4300.00')
   })
 
+  test('储值卡抵扣只进普通子项，不进组织现金业绩；拓客卡抵扣仍为零', async () => {
+    await order('T494_SO_CARD', 120)
+    await item('T494_IT_CARD_N', 'T494_SO_CARD', 'T494_SK_N', 120)
+    const card = await payment('T494_SO_CARD', 30, '储值卡抵扣', '2026-09-08', '储值卡')
+    await receipt(card, 'T494_SO_CARD', 'T494_IT_CARD_N', 30)
+    const cardResult = await amounts(card)
+    assert.equal(cardResult.p.performance_amount, '0.00')
+    assert.equal(cardResult.items[0].performance_amount, '30.00')
+    const cash = await payment('T494_SO_CARD', 90)
+    await receipt(cash, 'T494_SO_CARD', 'T494_IT_CARD_N', 90)
+    assert.equal((await amounts(cash)).p.performance_amount, '90.00')
+    assert.equal((await amounts(cash)).items[0].performance_amount, '90.00')
+
+    await order('T494_SO_CARD_T', 20)
+    await item('T494_IT_CARD_T', 'T494_SO_CARD_T', 'T494_SK_T', 20)
+    const tuokeCard = await payment('T494_SO_CARD_T', 20, '储值卡抵扣', '2026-09-08', '储值卡')
+    await receipt(tuokeCard, 'T494_SO_CARD_T', 'T494_IT_CARD_T', 20)
+    assert.equal((await amounts(tuokeCard)).p.performance_amount, '0.00')
+    assert.equal((await amounts(tuokeCard)).items[0].performance_amount, '0.00')
+
+    await order('T494_SO_CARD_M', 100, '转换单')
+    await item('T494_IT_CARD_MN', 'T494_SO_CARD_M', 'T494_SK_N', 120)
+    await item('T494_IT_CARD_MT', 'T494_SO_CARD_M', 'T494_SK_T', -20)
+    const mixedCard = await payment('T494_SO_CARD_M', 100, '储值卡抵扣', '2026-09-08', '储值卡')
+    await receipt(mixedCard, 'T494_SO_CARD_M', 'T494_IT_CARD_MN', 120)
+    await receipt(mixedCard, 'T494_SO_CARD_M', 'T494_IT_CARD_MT', -20)
+    const mixed = await amounts(mixedCard)
+    assert.equal(mixed.p.performance_amount, '0.00')
+    assert.equal(mixed.items.find(row => row.sale_item_id === 'T494_IT_CARD_MN').performance_amount, '100.00')
+    assert.equal(mixed.items.find(row => row.sale_item_id === 'T494_IT_CARD_MT').performance_amount, '0.00')
+  })
+
+  test('缺失一级品项按未分类保留实收；零分母差额显式归未分类', async () => {
+    await db.query("INSERT INTO product_categories(category_id,category_name,product_kind) VALUES ('T494_U','待归类',NULL)")
+    await db.query("INSERT INTO product_skus(sku_id,category_id,product_type,spec_name,price,session_count) VALUES ('T494_SK_U','T494_U','疗程卡','待归类',50,1)")
+    await order('T494_SO_U', 50)
+    await item('T494_IT_U', 'T494_SO_U', 'T494_SK_U', 50)
+    const id = await payment('T494_SO_U', 50)
+    await receipt(id, 'T494_SO_U', 'T494_IT_U', 50)
+    const result = await amounts(id)
+    assert.equal(result.p.attribution_mode, 'missing_category')
+    assert.equal(result.p.performance_amount, '50.00')
+    assert.equal(result.items[0].performance_amount, '50.00')
+    assert.equal(result.items[0].product_kind_at_sale, null)
+  })
+
   test('充值及无明细款项显式兜底；零分母不会静默丢款', async () => {
     await order('T494_SO_C', 2000, '充值单')
     const recharge = await payment('T494_SO_C', 2000)
@@ -128,6 +174,9 @@ if (!url) {
     await receipt(zero, 'T494_SO_E', 'T494_IT_E2', -100)
     assert.equal((await amounts(zero)).p.attribution_mode, 'zero_denominator')
     assert.equal((await amounts(zero)).p.performance_amount, '50.00')
+    const classified = (await amounts(zero)).items.reduce((sum, row) => sum + Number(row.performance_amount), 0)
+    assert.equal(classified, 0)
+    assert.equal(Number((await amounts(zero)).p.performance_amount) - classified, 50)
   })
 
   test('下单品项冻结；分类后来调整不改历史，归属日期按款项走', async () => {

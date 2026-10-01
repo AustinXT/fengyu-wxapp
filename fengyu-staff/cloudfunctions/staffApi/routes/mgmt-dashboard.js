@@ -10,8 +10,8 @@
  * mgmtDashboard.summary — 数据中心首页 8 卡片汇总
  *   一次返回 4 张大卡（业绩/实耗，含月店均）+ 4 张小卡（客流/客量/新会员/项目数）
  *   口径定义：notes/references/metrics.md
- *   2026-08 业绩归属日期：组织层级业绩按 sale_order_performance_events 的
- *   performance_date 统计。
+ *   组织层级业绩按 sale_reportable_payment_events.performance_amount 汇总，
+ *   按该视图的 performance_date 归期；原始付款金额仍在 amount。
  *   ⚠ 2026-09-14 订正（#137 / #140）：原文「首次收款跟随订单归属日期，后续回款/退款仍按
  *   真实发生日」**已失效**。迁移 0041 起视图的 performance_date 一律直读
  *   `sale_order_payments.performance_attribution_date`，回款/退款同样按归属日期；
