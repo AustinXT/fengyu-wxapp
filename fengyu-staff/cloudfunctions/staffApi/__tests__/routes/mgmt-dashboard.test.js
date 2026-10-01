@@ -2639,7 +2639,7 @@ describe('mgmtDashboard.salesData SQL 形态断言', () => {
     await salesData(ctx)
 
     const sqls = pg.query.mock.calls.map(([s]) => s)
-    const saleSqls = sqls.filter((s) => /FROM sale_orders o\b/.test(s) || /FROM sale_reportable_payment_events spe\b/.test(s) || /FROM sale_reportable_item_events sipe\b/.test(s))
+    const saleSqls = sqls.filter((s) => /FROM sale_orders o\b/.test(s) || /FROM sale_reportable_payment_events spe\b/.test(s) || /FROM sale_reportable_item_events sipe\b/.test(s) || /FROM sale_item_performance_events sipe\b/.test(s))
     const svcSqls = sqls.filter((s) => /FROM service_orders so\b/.test(s) || /FROM service_items sit/.test(s))
 
     for (const s of saleSqls) {
@@ -2678,7 +2678,7 @@ describe('mgmtDashboard.salesData SQL 形态断言', () => {
     expect(custRevSql).not.toMatch(/o\.status\s*=/)
   })
 
-  test('产品出库 SQL 含 product_type = 家居产品', async () => {
+  test('产品出库按原始出库金额统计，且只含家居产品', async () => {
     setupFullMocks()
     const ctx = makeHqCtx({ period: 'month', scope: { type: 'all' } })
     await salesData(ctx)
@@ -2688,6 +2688,9 @@ describe('mgmtDashboard.salesData SQL 形态断言', () => {
     expect(prodSql).toBeDefined()
     expect(prodSql).toContain('JOIN client_wechat_users c')
     expect(prodSql).toMatch(/FILTER/)
+    expect(prodSql).toContain('FROM sale_item_performance_events sipe')
+    expect(prodSql).toMatch(/SUM\(sipe\.amount::numeric\)/)
+    expect(prodSql).not.toContain('performance_amount')
   })
 
   test('经营类型 4 行硬骨架 — SQL 缺失值补 "0.00"，pgEnum 顺序固定', async () => {
