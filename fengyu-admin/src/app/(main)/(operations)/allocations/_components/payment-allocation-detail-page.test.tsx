@@ -29,6 +29,7 @@ function payment(ratio = '0.250') {
     paymentMethod: '线下',
     changeType: '回款',
     allocationStatus: '已分配',
+    frozen: false,
     marketName: 'M',
     items,
     existingAllocations: items.flatMap((item) => employees.map((employeeId, index) => ({

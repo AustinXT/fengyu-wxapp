@@ -36,6 +36,9 @@ vi.mock('@db/service', () => ({
     serviceOrderId: 'service_order_id',
     storeId: 'store_id',
     commissionStatus: 'commission_status',
+    status: 'status',
+    completedAt: 'completed_at',
+    remark: 'remark',
   },
   serviceItems: {
     serviceOrderId: 'service_order_id',
@@ -73,6 +76,8 @@ import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { isAdminScope } from '@/lib/permissions'
 import { DEPOSIT_REFUND_REMARK } from '@/lib/service-remark'
+import { logOperation } from '@/lib/operation-log'
+import { hasPendingRefundByServiceOrder } from '@/lib/refund-cascade'
 
 const mockSession = {
   employeeId: 'MGR-001',
@@ -93,6 +98,106 @@ function makeSelectChain(result: any[]) {
   return vi.fn().mockReturnValue({ from })
 }
 
+describe('服务提成冻结权限 #480', () => {
+  const oldOrder = {
+    storeId: 'store-1', status: '已完成', remark: null,
+    completedAt: new Date(Date.now() - 4 * 86400000).toISOString(),
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    ;(isAdminScope as any).mockReturnValue(false)
+  })
+
+  function mockOrder(order = oldOrder) {
+    ;(db.select as any)
+      .mockImplementationOnce(makeSelectChain([{ storeId: 'store-1' }]))
+      .mockImplementationOnce(makeSelectChain([order]))
+  }
+
+  it('店长直调冻结服务单，保存和清空都在事务前拒绝', async () => {
+    for (const commissions of [[], [{ serviceItemId: 'si-1', employeeId: 'EMP-001', roleType: '美容师', allocationRatio: '1', commissionRate: '0', commissionAmount: '0' }]]) {
+      mockOrder()
+      const result = await batchSaveServiceCommissions('so-1', commissions)
+      expect(result).toMatchObject({ success: false, message: expect.stringContaining('已冻结') })
+    }
+    expect(db.transaction).not.toHaveBeenCalled()
+    expect(logOperation).not.toHaveBeenCalled()
+  })
+
+  it('店长在未冻结窗口内仍可清空并记录操作', async () => {
+    mockOrder({ ...oldOrder, completedAt: new Date(Date.now() - 2 * 86400000).toISOString() })
+    ;(db.transaction as any).mockImplementation(async (fn: any) => fn({
+      execute: vi.fn().mockResolvedValue({}),
+      update: vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({}) }) }),
+    }))
+    const result = await batchSaveServiceCommissions('so-1', [])
+    expect(result.success).toBe(true)
+    expect(logOperation).toHaveBeenCalledOnce()
+  })
+
+  it.each(['finance', 'admin'] as const)('%s 在冻结后可清空并记录操作', async (role) => {
+    ;(getSession as any).mockResolvedValue({
+      ...mockSession,
+      roles: [{ role, scopeId: 'store-1', scopeType: '门店', actions: ['allocation:save'], scopeStoreIds: ['store-1'], scopeOrgNodeIds: ['store-1'] }],
+    })
+    mockOrder()
+    ;(db.transaction as any).mockImplementation(async (fn: any) => fn({
+      execute: vi.fn().mockResolvedValue({}),
+      update: vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({}) }) }),
+    }))
+    const result = await batchSaveServiceCommissions('so-1', [])
+    expect(result.success).toBe(true)
+    expect(logOperation).toHaveBeenCalledOnce()
+  })
+
+  it('财务冻结后可调整非空服务提成，提成金额由服务端重算并留日志', async () => {
+    ;(getSession as any).mockResolvedValue({
+      ...mockSession,
+      roles: [{ role: 'finance', scopeId: 'store-1', scopeType: '门店', actions: ['allocation:save'], scopeStoreIds: ['store-1'], scopeOrgNodeIds: ['store-1'] }],
+    })
+    mockOrder()
+    ;(db.select as any)
+      .mockImplementationOnce(makeSelectChain([{ serviceItemId: 'si-1' }]))
+      .mockImplementationOnce(makeSelectChain([{
+        serviceItemId: 'si-1', unitRealPrice: '100', sessionUsed: 1,
+        salesCategory: '自销自耗', serviceFee: '10',
+      }]))
+    const inserted: any[] = []
+    ;(db.transaction as any).mockImplementation(async (fn: any) => fn({
+      execute: vi.fn().mockResolvedValue({}),
+      update: vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({}) }) }),
+      insert: vi.fn().mockReturnValue({ values: vi.fn().mockImplementation((rows: any[]) => { inserted.push(...rows) }) }),
+      select: makeSelectChain([{ commissionRate: '0.2', priceThreshold: null }]),
+    }))
+    const result = await batchSaveServiceCommissions('so-1', [{
+      serviceItemId: 'si-1', employeeId: 'EMP-001', roleType: '美容师',
+      allocationRatio: '0.5', commissionRate: '999', commissionAmount: '9999',
+    }])
+    expect(result.success).toBe(true)
+    expect(inserted).toMatchObject([{ fixedFee: '5', consumeAmount: '10', commissionAmount: '15' }])
+    expect(logOperation).toHaveBeenCalledOnce()
+  })
+
+  it('未完成服务单对财务仍不能分配', async () => {
+    ;(getSession as any).mockResolvedValue({ ...mockSession, roles: [{ ...mockSession.roles[0], role: 'finance', actions: ['allocation:save'], scopeStoreIds: ['store-1'] }] })
+    mockOrder({ ...oldOrder, status: '服务中' })
+    const result = await batchSaveServiceCommissions('so-1', [])
+    expect(result.message).toContain('仅已完成')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('财务仍受关联订单待审批退款守卫限制', async () => {
+    ;(getSession as any).mockResolvedValue({ ...mockSession, roles: [{ ...mockSession.roles[0], role: 'finance', actions: ['allocation:save'], scopeStoreIds: ['store-1'] }] })
+    mockOrder()
+    ;(hasPendingRefundByServiceOrder as any).mockResolvedValueOnce(true)
+    const result = await batchSaveServiceCommissions('so-1', [])
+    expect(result.message).toContain('退款审批中')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+})
+
 // ============================================================
 // batchSaveServiceCommissions 的池校验（P2-14 Q5 镜像 allocations）
 // ============================================================
@@ -106,7 +211,7 @@ describe('batchSaveServiceCommissions — 技能标签池校验（P2-14）', () 
   function mockScopeAndItems(items: Array<{ serviceItemId: string }>) {
     // 生产 batchSaveServiceCommissions 的 db.select 调用序（4 步，须与生产逐一对齐）：
     //   call1: verifyServiceOrderScope → [{ storeId }]
-    //   call2: remark 反查（service-commissions.ts:103）→ [{ remark: null }] 建模正常消费核销单
+    //   call2: 服务单状态/冻结/remark 反查 → 已完成的正常消费核销单
     //          （含寄存单正常核销；remark 字段非 DEPOSIT_REFUND_REMARK → 不命中退款专用拦截）
     //   call3: validItems 校验（:116）→ items
     //   call4: pricing JOIN serviceItems × saleItems（:176）→ pricingRows
@@ -125,7 +230,7 @@ describe('batchSaveServiceCommissions — 技能标签池校验（P2-14）', () 
     ;(db.select as any).mockImplementation(() => {
       callCount++
       if (callCount === 1) return makeSelectChain([{ storeId: 'store-1' }])()
-      if (callCount === 2) return makeSelectChain([{ remark: null }])()
+      if (callCount === 2) return makeSelectChain([{ remark: null, storeId: 'store-1', status: '已完成', completedAt: null }])()
       if (callCount === 3) return makeSelectChain(items)()
       // 4th call: pricing JOIN serviceItems × saleItems
       return makeSelectChain(pricingRows)()
@@ -176,7 +281,7 @@ describe('batchSaveServiceCommissions — 技能标签池校验（P2-14）', () 
     ;(db.select as any).mockImplementation(() => {
       callCount++
       if (callCount === 1) return makeSelectChain([{ storeId: 'store-1' }])() // scope
-      return makeSelectChain([{ remark: DEPOSIT_REFUND_REMARK }])() // remark 反查
+      return makeSelectChain([{ remark: DEPOSIT_REFUND_REMARK, storeId: 'store-1', status: '已完成', completedAt: null }])() // remark 反查
     })
 
     const result = await batchSaveServiceCommissions('so-dep', [
@@ -257,13 +362,13 @@ describe('batchSaveServiceCommissions — per-session consumeBase', () => {
    * 捕获最终 INSERT 的 values 数组以验证 consume/commission 金额。
    */
   function setupCardScenario(pricingRow: any, rate: string | null = '0.3000', priceThreshold: string | null = null) {
-    // 4 步调用序对齐 mockScopeAndItems：scope → remark(null) → items → pricing
+    // 4 步调用序对齐 mockScopeAndItems：scope → 服务单状态 → items → pricing
     const items = [{ serviceItemId: pricingRow.serviceItemId }]
     let selectCalls = 0
     ;(db.select as any).mockImplementation(() => {
       selectCalls++
       if (selectCalls === 1) return makeSelectChain([{ storeId: 'store-1' }])()
-      if (selectCalls === 2) return makeSelectChain([{ remark: null }])()
+      if (selectCalls === 2) return makeSelectChain([{ remark: null, storeId: 'store-1', status: '已完成', completedAt: null }])()
       if (selectCalls === 3) return makeSelectChain(items)()
       return makeSelectChain([pricingRow])()
     })

@@ -303,7 +303,7 @@ function SaleAllocationTable({
                       {canSave && (
                         <PreserveListContextLink href={`/allocations/payments/${p.salePaymentId}`}>
                           <Button size="sm" variant="outline">
-                            {p.allocationStatus === "已分配" ? "查看分配" : "分配"}
+                            分配详情
                           </Button>
                         </PreserveListContextLink>
                       )}
@@ -376,7 +376,7 @@ function ServiceCommissionTable({
                       {canSave && (
                         <PreserveListContextLink href={`/allocations/service/${so.serviceOrderId}`}>
                           <Button size="sm" variant="outline">
-                            {so.commissionStatus === "已分配" ? "查看分配" : "分配"}
+                            分配详情
                           </Button>
                         </PreserveListContextLink>
                       )}

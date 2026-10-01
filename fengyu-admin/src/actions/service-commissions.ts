@@ -15,6 +15,7 @@ import { logOperation } from '@/lib/operation-log'
 import { hasPendingRefundByServiceOrder } from '@/lib/refund-cascade'
 import { DEPOSIT_REFUND_REMARK } from '@/lib/service-remark'
 import { getInvalidEmployeeAssignmentId } from '@/lib/employee-assignment-server'
+import { canAdjustFrozenAllocation, isAllocationFrozen } from '@/lib/allocation-freeze'
 
 /** 校验服务单是否在用户 scope 内 */
 async function verifyServiceOrderScope(serviceOrderId: string, session: AuthSession): Promise<boolean> {
@@ -66,6 +67,20 @@ export const getServiceOrderCommissions = withPermission(
   },
 )
 
+/** 详情页只读冻结状态，时间锚点与保存动作同取服务单 completed_at。 */
+export const getServiceCommissionFreezeStatus = withPermission(
+  'allocation:list',
+  async (session, serviceOrderId: string): Promise<boolean | null> => {
+    if (!(await verifyServiceOrderScope(serviceOrderId, session))) return null
+    const [order] = await db
+      .select({ completedAt: serviceOrders.completedAt })
+      .from(serviceOrders)
+      .where(eq(serviceOrders.serviceOrderId, serviceOrderId))
+      .limit(1)
+    return order ? isAllocationFrozen(order.completedAt) : null
+  },
+)
+
 /** 技能标签池键：每个 roleType 独立建池（P2-14 Q5：池间互不约束） */
 function getPoolKey(roleType: string): string {
   return roleType
@@ -90,6 +105,27 @@ export const batchSaveServiceCommissions = withPermission(
     return { success: false, message: '无权操作该服务单的提成分配' }
   }
 
+  const [svcOrder] = await db
+    .select({
+      remark: serviceOrders.remark,
+      storeId: serviceOrders.storeId,
+      status: serviceOrders.status,
+      commissionStatus: serviceOrders.commissionStatus,
+      completedAt: serviceOrders.completedAt,
+    })
+    .from(serviceOrders)
+    .where(eq(serviceOrders.serviceOrderId, serviceOrderId))
+    .limit(1)
+  if (!svcOrder || svcOrder.status !== '已完成') {
+    return { success: false, message: '仅已完成服务单可分配提成' }
+  }
+  if (svcOrder.commissionStatus != null && !['待分配', '已分配'].includes(svcOrder.commissionStatus)) {
+    return { success: false, message: '服务单提成状态异常' }
+  }
+  if (isAllocationFrozen(svcOrder.completedAt) && !canAdjustFrozenAllocation(session, svcOrder.storeId)) {
+    return { success: false, message: '分配结果已冻结，服务单完成超过 3 天不可修改' }
+  }
+
   // 冻结闭环（Bug I）：关联订单有待审批退款时禁止改提成（与 staff serviceCommission.save 对齐；
   // 退款 cascade 通道2 会作废服务提成，待审批期改提成会被随后 approve 静默作废）
   if (await hasPendingRefundByServiceOrder(db, serviceOrderId)) {
@@ -98,17 +134,12 @@ export const batchSaveServiceCommissions = withPermission(
 
   // 寄存单退款专用服务单不参与提成分配（顾客退寄存卡次数，员工未实际提供服务）。
   // 正常寄存消费核销单照常参与服务提成（寄存单仍不计营业额分成，由 ALLOCATABLE_ORDER_TYPES 守卫）。
-  const [svcRemark] = await db
-    .select({ remark: serviceOrders.remark, storeId: serviceOrders.storeId })
-    .from(serviceOrders)
-    .where(eq(serviceOrders.serviceOrderId, serviceOrderId))
-    .limit(1)
-  if (svcRemark?.remark === DEPOSIT_REFUND_REMARK) {
+  if (svcOrder.remark === DEPOSIT_REFUND_REMARK) {
     return { success: false, message: '寄存单退款专用服务单不参与提成分配' }
   }
-  if (!svcRemark || await getInvalidEmployeeAssignmentId(
+  if (await getInvalidEmployeeAssignmentId(
     commissions.map((commission) => commission.employeeId),
-    svcRemark.storeId,
+    svcOrder.storeId,
     { assignmentScope: 'allocationSupport' },
   )) {
     return { success: false, message: '所选员工不属于本门店且未开启出差支援' }
