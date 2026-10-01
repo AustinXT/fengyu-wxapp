@@ -3982,3 +3982,45 @@ describe('#341 提货冻结出库金额：两端副本一致', () => {
     return src.slice(start, next === -1 ? src.length : next)
   }
 })
+
+// #182 D2：防止某一站点退回单判据；转入排除必须对合取整体取反。
+describe('#182 已退出判据所有站点同源', () => {
+  function exited(alias) {
+    return `(EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = ${alias}.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭') AND (CASE WHEN ${alias}.product_type = '疗程卡' THEN COALESCE(${alias}.remaining_sessions, 0) = 0 ELSE (COALESCE(${alias}.picked_up_quantity, 0) + COALESCE(${alias}.refunded_quantity, 0) + COALESCE(${alias}.converted_quantity, 0)) >= ${alias}.quantity END))`
+  }
+  const count = (source, fragment) => source.split(fragment).length - 1
+  test('四端paid-sessions：BranchB三处+STEP1.6三处完整合取', () => {
+    const files = ['../../utils/paid-sessions.js',
+      '../../../../../fengyu-client/cloudfunctions/clientApi/utils/paid-sessions.js',
+      '../../../../../fengyu-client/cloudfunctions/payNotify/paid-sessions.js',
+      '../../../../../fengyu-admin/src/lib/paid-sessions.ts']
+    for (const file of files) {
+      const source = readFile(path.resolve(__dirname,file))
+      expect(count(source, `CASE WHEN ${exited('si')}`)).toBe(3)
+      expect(count(source, `AND NOT ${exited('in_item')}`)).toBe(1)
+      expect(count(source, `AND ${exited('in_item')}`)).toBe(1)
+      expect(count(source, `AND NOT ${exited('si')}`)).toBe(1)
+      expect(source).not.toContain('CASE WHEN si.waived_amount::numeric > 0')
+    }
+  })
+  test('四端款项捕获：销售单converted_out与#300三处都使用合取', () => {
+    for (const file of [FILES.staffPaymentAllocatableJs,FILES.clientPaymentAllocatableJs,FILES.payNotifyPaymentAllocatableJs,FILES.adminPaymentAllocatableTs]) {
+      const source = readFile(file)
+      expect(source).toContain(`${exited('si')} AS converted_out`)
+      expect(count(source, `AND NOT ${exited('in_item')}`)).toBe(1)
+      expect(count(source, `AND ${exited('in_item')}`)).toBe(1)
+      expect(count(source, `AND NOT ${exited('si')}`)).toBe(1)
+      expect(source).toContain('if (!fallback) return []')
+    }
+  })
+  test('两端定向回款保护与Δ0钉住、关单正金额源行一致', () => {
+    for (const file of [FILES.staffOrderJs,FILES.adminOrdersTs]) {
+      const source = readFile(file)
+      expect(source).toContain(`WHEN ${exited('si')} THEN si.pending_received`)
+      expect(source).toMatch(/if \(!(?:out|d)\.waiveEligible\) continue/)
+      expect(source).not.toContain('HAVING SUM(waived_amount::numeric) > 0')
+      expect(source).toContain('has_positive_source === true')
+      expect(source).toContain('AND sale_items.sale_amount > 0')
+    }
+  })
+})
