@@ -30,15 +30,6 @@ export interface MarketReportSummarySourceRow {
   promotionPlanNo: string | null
 }
 
-export interface MarketReportSummarySourcePage {
-  rows: MarketReportSummarySourceRow[]
-  total: number
-  page: number
-  pageSize: number
-}
+// 每市场小计与末行合计由页面按 rows 派生 —— 与明细同源，不在这里再定义一个 totals 结构，
+// 否则「合计怎么算」就有两处实现（一处没人用、一处真在用）。
 
-/** 每市场小计与末行合计由页面按 rows 派生 —— 与明细同源，避免第二处实现漂移。 */
-export interface MarketReportSummarySourceTotals {
-  quantity: number
-  amount: number
-}
