@@ -172,7 +172,7 @@
 
 .purchase-order-no {
   font-size: 24rpx;
-  color: var(--color-text-hint);
+  color: var(--color-text-secondary);
   font-family: monospace;
 }
 
@@ -186,7 +186,7 @@
 }
 .purchase-store {
   font-size: 22rpx;
-  color: var(--color-text-hint);
+  color: var(--color-text-secondary);
 }
 .purchase-amount {
   font-size: 28rpx;
@@ -219,7 +219,7 @@
 
 .purchase-time {
   font-size: 22rpx;
-  color: var(--color-text-hint);
+  color: var(--color-text-secondary);
 }
 
 .purchase-link {
@@ -301,7 +301,7 @@
 
 .tc-order {
   font-size: 20rpx;
-  color: var(--color-text-hint);
+  color: var(--color-text-secondary);
   font-family: monospace;
 }
 
@@ -352,7 +352,7 @@
 
 .gift-order-no {
   font-size: 22rpx;
-  color: var(--color-text-hint);
+  color: var(--color-text-secondary);
   font-family: monospace;
 }
 
@@ -370,7 +370,7 @@
 
 .gift-item-spec {
   font-size: 22rpx;
-  color: var(--color-text-hint);
+  color: var(--color-text-secondary);
   background: var(--color-bg-warm);
   padding: 2rpx 10rpx;
   border-radius: 6rpx;
@@ -385,7 +385,7 @@
 .gift-card-time {
   display: block;
   font-size: 22rpx;
-  color: var(--color-text-hint);
+  color: var(--color-text-secondary);
   margin-top: 8rpx;
 }
 
@@ -407,7 +407,7 @@
 
 .refund-order-no {
   font-size: 22rpx;
-  color: var(--color-text-hint);
+  color: var(--color-text-secondary);
   font-family: monospace;
   flex: 1;
 }
@@ -419,7 +419,7 @@
 }
 
 .refund-reason-label {
-  color: var(--color-text-hint);
+  color: var(--color-text-secondary);
 }
 
 .refund-items {
@@ -462,7 +462,7 @@
 
 .refund-card-time {
   font-size: 22rpx;
-  color: var(--color-text-hint);
+  color: var(--color-text-secondary);
 }
 
 .refund-total {
@@ -537,14 +537,14 @@
 .home-product-meta {
   justify-content: space-between;
   margin-top: 14rpx;
-  color: var(--color-text-hint);
+  color: var(--color-text-secondary);
   font-size: 22rpx;
 }
 
 .home-product-order {
   display: block;
   margin-top: 8rpx;
-  color: #aaa;
+  color: var(--color-text-secondary);
   font-size: 20rpx;
 }
 
@@ -571,7 +571,7 @@
 .profile-stats-row:first-child .stat-item:first-child,
 .profile-stats-row:last-child .stat-item:last-child { background: var(--color-primary-light); }
 .purchase-card:nth-child(even), .treatment-card:nth-child(even),
-.gift-card:nth-child(even), .refund-card:nth-child(even),
+.gift-card:nth-child(odd), .refund-card:nth-child(even),
 .home-product-card:nth-child(even) { background: var(--color-primary-light); }
 .purchase-amount, .refund-total, .refund-item-amount { font-variant-numeric: tabular-nums; word-break: break-all; }
 .purchase-order-no, .gift-order-no, .refund-order-no, .tc-order { word-break: break-all; min-width: 0; }
