@@ -180034,9 +180034,13 @@ function settlementProjectionSql(params) {
           i.store_actual_unit_price,
           -- 市场退货按市场价计价；其余按触发器算好的 amount（赠送行为 0）。
           -- 市场价缺失时回退供应链成本价，都缺则记 0（不冲减），绝不回落到门店价。
+          -- 赠送行一律不冲减：与「赠送行 amount = 0」的不变量对齐（市场退货也要判 is_gift，
+          -- 否则它会按市场价×数量算出非零冲减，而对应的正向赠送行金额是 0）。
           kind.sign * (
             CASE WHEN kind.market_price
-                 THEN COALESCE(i.market_actual_unit_price, i.supply_chain_unit_cost, 0) * i.quantity
+                 THEN CASE WHEN i.is_gift THEN 0
+                           ELSE COALESCE(i.market_actual_unit_price, i.supply_chain_unit_cost, 0) * i.quantity
+                      END
                  ELSE COALESCE(i.amount, 0) END
           ) AS signed_amount,
           CASE WHEN kind.swapped OR kind.market_price
@@ -180126,8 +180130,9 @@ var listInventorySettlements = withPermission("inventory:list", async (session4,
   const priceTiers = inventoryPriceScopeByTier(session4);
   const marketScopedOrgNodeIds = inventoryTierRestrictedOrgNodeIds(scopedOrgNodeIds, [priceTiers.supplyChain, priceTiers.market]);
   const storeScopedOrgNodeIds = inventoryTierRestrictedOrgNodeIds(scopedOrgNodeIds, [priceTiers.market]);
+  const optionScopedOrgNodeIds = marketScopedOrgNodeIds === null || storeScopedOrgNodeIds === null ? null : [...new Set([...marketScopedOrgNodeIds, ...storeScopedOrgNodeIds])];
   const [marketOptions, marketRows, storeRows] = await Promise.all([
-    listSettlementMarketOptions(scopedOrgNodeIds),
+    listSettlementMarketOptions(optionScopedOrgNodeIds),
     canViewMarketSettlement ? summarizeSettlementDocs({ segment: "market", startDate, endDate, scopedOrgNodeIds: marketScopedOrgNodeIds, market }) : Promise.resolve([]),
     canViewStoreSettlement ? summarizeSettlementDocs({ segment: "store", startDate, endDate, scopedOrgNodeIds: storeScopedOrgNodeIds, market }) : Promise.resolve([])
   ]);
@@ -180534,10 +180539,13 @@ function normalizeMarketReportSummarySourceFilters(input) {
   return { market: optionalText3(input.market, "市场") };
 }
 function marketReportSummaryPriceScope(session4) {
-  if (inventoryPriceVisibility(session4) === "none")
+  const visibility = inventoryPriceVisibility(session4);
+  if (visibility === "none")
     return [];
+  if (visibility === "supply_chain" || visibility === "all")
+    return null;
   const tiers = inventoryPriceScopeByTier(session4);
-  return inventoryTierRestrictedOrgNodeIds(null, [tiers.supplyChain, tiers.market]);
+  return inventoryTierRestrictedOrgNodeIds(null, [tiers.market]);
 }
 function marketReportSummarySourceWhereSql(docId, filters, scoped) {
   const conditions3 = [
@@ -180610,6 +180618,19 @@ async function listMarketReportSummarySourcesForSession(session4, input) {
   const where = marketReportSummarySourceWhereSql(docId, filters, inventoryScopedOrgNodeIds(session4));
   const rows = await queryRows2(marketReportSummarySourceSelectSql(where, MAX_PAGE_ROWS + 1), marketReportSummaryPriceScope(session4));
   return { rows: rows.slice(0, MAX_PAGE_ROWS), truncated: rows.length > MAX_PAGE_ROWS };
+}
+async function listMarketReportSummarySourceMarkets(session4, input) {
+  const docId = requireDocId(input.docId);
+  const where = marketReportSummarySourceWhereSql(docId, {}, inventoryScopedOrgNodeIds(session4));
+  const rows = await db2.execute(import_drizzle_orm62.sql`
+    SELECT DISTINCT i.market_id AS id, COALESCE(market.name, i.market_id) AS name
+      FROM inventory_doc_links l
+      JOIN inventory_doc_items i ON i.id = l.from_item_id
+      LEFT JOIN inventory_locations market ON market.org_node_id = i.market_id
+     WHERE ${where} AND i.market_id IS NOT NULL
+     ORDER BY name
+  `);
+  return rows.map((row) => ({ id: row.id, name: row.name }));
 }
 async function exportMarketReportSummarySourcesForSession(session4, input, options) {
   const docId = requireDocId(input.docId);
@@ -180693,6 +180714,7 @@ var listStoreUnallocatedRequestSkus2 = withPermission("inventory:list", async (_
 var getInventoryCoreDocById2 = withPermission("inventory:list", async (_session, id) => getInventoryCoreDocById(id));
 var getInventoryCoreDocsByIds2 = withPermission("inventory:list", async (_session, ids) => getInventoryCoreDocsByIds(ids));
 var listMarketReportSummarySources = withPermission("inventory:list", async (session4, input) => listMarketReportSummarySourcesForSession(session4, input ?? {}));
+var listMarketReportSummarySourceMarkets2 = withPermission("inventory:list", async (session4, input) => listMarketReportSummarySourceMarkets(session4, input ?? {}));
 var exportMarketReportSummarySources = withPermission("inventory:export", async (session4, params = {}, options) => exportMarketReportSummarySourcesForSession(session4, params, options));
 var createInventoryCoreDoc2 = withAnyPermission(["inventory:supply_chain_operate", "inventory:market_operate", "inventory:store_operate"], async (_session, input) => createInventoryCoreDoc(input));
 var approveInventoryCoreDoc2 = withAnyPermission(["inventory:supply_chain_approve", "inventory:market_approve"], async (_session, id, auditRemark) => approveInventoryCoreDoc(id, auditRemark));
@@ -180857,7 +180879,7 @@ async function exportSettlementSegmentDetailsForSession(session4, input, options
     throw new ApiError("INVALID_STATE", "结算明细导出只支持分批取数");
   const projection = projectionFor(session4, filters);
   if (projection === null)
-    return { rows: [], truncated: false, hasMore: false };
+    throw new ApiError("PERMISSION_DENIED", "当前账号无权导出该结算段");
   const fetched = await queryRows3(settlementSegmentDetailSelectSql(projection, filters.segment, limit + 1, cursor));
   const page = resolveExportKeysetPage(fetched, limit, (row) => row.id);
   return {
