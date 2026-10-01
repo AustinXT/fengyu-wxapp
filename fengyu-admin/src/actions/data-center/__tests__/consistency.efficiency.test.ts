@@ -9,7 +9,7 @@
  * staff 用 period 锚 NOW），完整 SQL snapshot 不可行。守护策略 = "关键不变量字面量匹配"
  * （stripComments 后，排除注释里的反例引用）：
  *   1. 业绩**两套口径，按聚合粒度分**（#285，2026-09-23）：
- *      1a. Part A/B 全局大卡 + by store = SUM(sale_order_performance_events.amount) 门店现金流，
+ *      1a. Part A/B 全局大卡 + by store = SUM(sale_reportable_payment_events.amount) 门店现金流，
  *          与 Part C 门店排名榜 / sales.ts runStoreRevenue / staff queryStoreRevenue 同源
  *      1b. Part D/E 员工榜 + 技师明细 = SUM(spia.allocated_amount) 归 employee_id
  *      ⚠️ 断言必须按 Part 分段（sliceOrFail()），文件级 toMatch 分不清两者 —— 2026-07-27
@@ -22,7 +22,7 @@
  *   5. 新会员 = became_member_at 归 bound_employee_id
  *   6. 项目数 = session_used ∩ sales_category IN ('自销自耗','他销自耗')
  *   7. 产能员工 producer_employees：hired_at/resigned_at 历史化
- *   8. sale_payment_item_allocations 按 sale_order_performance_events.performance_date 归期
+ *   8. sale_payment_item_allocations 按 sale_reportable_payment_events.performance_date 归期
  *
  * ★ 额外守护（本板块改造）：efficiency.ts 的 ranking 必须用 BETWEEN 区间，
  *   而非 staff 的 date_trunc period（timeWindowPeriod）。任一端漂移则数字对不上。
@@ -67,7 +67,7 @@ function sliceOrFail(src: string, start: string, end: string): string {
 }
 
 /**
- * 「门店现金流口径」= SUM(sale_order_performance_events.amount) 那一整套谓词。
+ * 「门店现金流口径」= SUM(sale_reportable_payment_events.amount) 那一整套谓词。
  *
  * 用于三处同源查询：admin Part A/B 全局大卡与 by store（#285 起）、admin Part C 门店排名榜、
  * staff 大卡 queryStoreRevenue。任一处漂移，KPI 就会和同页门店榜对不上账。
@@ -84,8 +84,8 @@ function expectStoreRankCashflow(
   statusDateVia: 'literal' | 'helper' = 'literal',
 ): void {
   const n = sliceOrFail(src, start, end)
-  expect(n).toMatch(/(?:FROM|LEFT JOIN)\s+sale_order_performance_events\s+spe/i)
-  expect(n).toMatch(/SUM\(spe\.amount::numeric\)/i)
+  expect(n).toMatch(/(?:FROM|LEFT JOIN)\s+sale_reportable_payment_events\s+spe/i)
+  expect(n).toMatch(/SUM\(spe\.performance_amount::numeric\)/i)
   expect(n).toMatch(/spe\.change_type\s+IN\s*\(\s*'首次支付'\s*,\s*'回款'\s*,\s*'退款'\s*\)/)
   expect(n).toMatch(/spe\.sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*,\s*'充值单'\s*\)/)
   expect(n).toMatch(/legacy_source\s+IS\s+DISTINCT\s+FROM\s+'workfine'/i)
@@ -137,7 +137,7 @@ function assertHelperBody(adminSrc: string): void {
  * 的谓词集做**集合相等**比较，而不只是逐条 `toMatch` 证明「存在」。
  *
  * ⚠️ 为什么必须比集合：闸门 2 两个谱系**独立**证明了同一个漏洞 ——
- *   - codex：给 Part C 单独加聚合级 `FILTER (WHERE spe.amount > 0)` → 三层守护全绿
+ *   - codex：给 Part C 单独加聚合级 `FILTER (WHERE spe.performance_amount > 0)` → 三层守护全绿
  *   - GLM 变异测试：给 Part A **和** Part B 同时加 `AND spe.change_type <> '退款'`
  *     （保持 A 与 B 逐字相同、Part C 不动）→ 53 条断言全绿
  * 「逐条存在」证明不了「没有多出别的」；「A == B」在两边一起改时也失效。
@@ -178,11 +178,11 @@ function spePredicateSet(segment: string): string[] {
 
 /**
  * **fail-closed 收口**：每一个 `spe.<列>` 引用都必须有归属 ——
- * 要么在聚合 `SUM(spe.amount...)` 里，要么是 `spe.store_id` 的关联/范围条件，
+ * 要么在聚合 `SUM(spe.performance_amount...)` 里，要么是 `spe.store_id` 的关联/范围条件，
  * 要么是被 `spePredicatesRaw` 识别出的一条业务谓词。数不平就判红。
  *
  * ⚠️ 为什么需要这一层：闸门 2 round-4 codex 找到了第六种绕过 ——
- * 在 Part C 加 `AND COALESCE(spe.amount, 0) > 0`（剔除退款负行）。
+ * 在 Part C 加 `AND COALESCE(spe.performance_amount, 0) > 0`（剔除退款负行）。
  * 谓词正则要求 `spe.<列>` 后**紧跟**运算符，而这里跟的是逗号，
  * 该谓词被**静默丢弃**，于是三处谓词集依然"相等"，55 条断言全绿。
  * 实测复现属实 —— 任何把 `spe.*` 包进函数的写法都能逃掉。
@@ -191,13 +191,13 @@ function spePredicateSet(segment: string): string[] {
 function assertEverySpeRefClassified(segment: string, label: string): void {
   const expanded = expandSpeHelper(segment)
   const total = (expanded.match(/\bspe\.\w+/g) ?? []).length
-  const inAggregate = (expanded.match(/SUM\(\s*spe\.amount/g) ?? []).length
+  const inAggregate = (expanded.match(/SUM\(\s*spe\.performance_amount/g) ?? []).length
   const storeIdRefs = (expanded.match(/\bspe\.store_id\b/g) ?? []).length
   const classified = spePredicatesRaw(segment).length
   expect(
     total,
     `${label} 存在无法归类的 spe.* 引用（聚合 ${inAggregate} + store_id ${storeIdRefs} + 谓词 ${classified} ≠ 总计 ${total}）。` +
-      '把 spe.* 包进函数（如 COALESCE(spe.amount,0) > 0）就能骗过谓词正则，故此处 fail-closed。',
+      '把 spe.* 包进函数（如 COALESCE(spe.performance_amount,0) > 0）就能骗过谓词正则，故此处 fail-closed。',
   ).toBe(inAggregate + storeIdRefs + classified)
 }
 
@@ -207,7 +207,7 @@ function assertEverySpeRefClassified(segment: string, label: string): void {
  * ⚠️ 闸门 2 round-9 codex：为排行榜补一列「员工数」而加
  * `LEFT JOIN staff_wechat_users sw_rank ON sw_rank.store_id = s.store_id`
  * 是完全正常的开发行为，但它是 **1:N**，会在聚合前把 `spe` 行按员工数放大，
- * `SUM(spe.amount)` 随之虚高 —— 而前十层一条都不会红：
+ * `SUM(spe.performance_amount)` 随之虚高 —— 而前十层一条都不会红：
  * `spe` 谓词没变、裸 `SUM` 没变、WHERE 形状没变、没有 LIMIT/HAVING，
  * 单源纪律只禁本地 skills 白名单、不禁读 `staff_wechat_users`，
  * 而「12 行进 12 行出」喂的是 mock 结果、根本不执行 SQL。
@@ -258,7 +258,7 @@ function assertWhereShape(segment: string, kind: 'spe-table' | 'store-table', la
     // 在 ON 链尾偷挂 `AND s.closed_at IS NULL` 会静默剔除门店业绩、破坏等式，
     // 而 spe 谓词层 / WHERE 形状层**都不看 ON 子句**（GLM 实测 227 条全绿）。
     const speJoinOn = segment.slice(
-      segment.indexOf('LEFT JOIN sale_order_performance_events spe'),
+      segment.indexOf('LEFT JOIN sale_reportable_payment_events spe'),
       from,
     )
     expect(
@@ -280,15 +280,15 @@ function assertWhereShape(segment: string, kind: 'spe-table' | 'store-table', la
   }
 }
 
-/** 聚合表达式必须**逐字**是 `COALESCE(SUM(spe.amount::numeric), 0)`，不许挂 FILTER/DISTINCT/CASE */
+/** 聚合表达式必须**逐字**是 `COALESCE(SUM(spe.performance_amount::numeric), 0)`，不许挂 FILTER/DISTINCT/CASE */
 function assertPlainSumAggregate(segment: string, label: string): void {
-  const sums = segment.match(/SUM\(\s*spe\.amount::numeric\s*\)[^,)]*/g) ?? []
-  expect(sums.length, `${label} 找不到 SUM(spe.amount::numeric)`).toBeGreaterThan(0)
+  const sums = segment.match(/SUM\(\s*spe\.performance_amount::numeric\s*\)[^,)]*/g) ?? []
+  expect(sums.length, `${label} 找不到 SUM(spe.performance_amount::numeric)`).toBeGreaterThan(0)
   for (const frag of sums) {
     expect(
       frag.replace(/\s+/g, ''),
       `${label} 的聚合表达式被改过（FILTER / DISTINCT / CASE 都会让 KPI 与门店榜对不上）`,
-    ).toBe('SUM(spe.amount::numeric)')
+    ).toBe('SUM(spe.performance_amount::numeric)')
   }
   // ⚠️ 上面只锁住**内层** SUM。闸门 2 round-10 codex 指出注释比代码强，实测确认：
   // 把输出列包一层 `GREATEST(COALESCE(SUM(...), 0), 0)`（把负业绩门店钳到 0，
@@ -299,7 +299,7 @@ function assertPlainSumAggregate(segment: string, label: string): void {
   expect(
     segment.replace(/\s+/g, ' '),
     `${label} 的输出列被外层函数包过（如 GREATEST(...)），会把负业绩钳掉并破坏等式`,
-  ).toContain('COALESCE(SUM(spe.amount::numeric), 0) AS ')
+  ).toContain('COALESCE(SUM(spe.performance_amount::numeric), 0) AS ')
 }
 
 /**
@@ -427,6 +427,7 @@ const CTE_AGG_SHAPES = [
   /^COUNT\(\*\)$/, // 新会员榜
   /^COUNT\(DISTINCT [\w.]+\)$/, // staff 客流榜（admin 无此 metric）
 ]
+const REPORTABLE_ALLOCATION_SUM = /SUM\(ROUND\(spia\.allocated_amount::numeric\s*\*\s*COALESCE\(sipe\.performance_amount::numeric\s*\/\s*NULLIF\(spir\.amount::numeric,\s*0\),\s*0\),\s*2\)\)/
 // 注：两种 COUNT 形态恒非负，本就不存在「聚合前剔掉退款负行」的风险；
 // 收紧它们只是为了让白名单闭合 —— 换成 SUM 类聚合时必须回来改这条断言。
 
@@ -441,10 +442,13 @@ const AMOUNT_IN_PREDICATE_RE = new RegExp(
 const COND_IN_AGG_RE = /\b(?:CASE|WHEN|FILTER|NULLIF|GREATEST|LEAST|SIGN|ABS|ROUND|FLOOR|CEIL|CEILING)\b/i
 
 function assertCteAggregateShape(segment: string, label: string): void {
+  // #494 的分配额按可计品项占比缩放；仅将这一种精确公式归一化后交给旧的聚合形状守护。
+  // 公式变化会让下方 AS v 提取或白名单校验失败。
+  const normalizedSegment = segment.replace(new RegExp(REPORTABLE_ALLOCATION_SUM.source, 'g'), 'SUM(spia.allocated_amount::numeric)')
   // ⚠️ 起点必须锚到 `SELECT ` 或 `, `：否则 `[A-Za-z_][\w.]*\(` 会从片段最前面的
   // `db.execute(` / `pg.query(` 开始匹配，一路吞到 `AS v`，把整段当成"聚合表达式"。
   const outputs = [
-    ...segment.matchAll(/(?:SELECT|,)\s+([A-Za-z_][\w.]*\((?:[^()]|\([^()]*\))*\))\s+AS v\b/g),
+    ...normalizedSegment.matchAll(/(?:SELECT|,)\s+([A-Za-z_][\w.]*\((?:[^()]|\([^()]*\))*\))\s+AS v\b/g),
   ].map((m) => m[1].replace(/\s+/g, ' ').trim())
 
   // ★ 计数对账（闸门 2 round-2 codex P1）：提取器只支持两层括号嵌套，
@@ -894,15 +898,15 @@ describe('数据中心人效板块两端口径一致性守护', () => {
       assertHelperBody(adminSrc)
     })
 
-    it('admin efficiency.ts Part A qRevenueTotal 走 spe.amount 现金流', () => {
+    it('admin efficiency.ts Part A qRevenueTotal 走 spe.performance_amount 现金流', () => {
       expectStoreRankCashflow(adminSrc, 'const qRevenueTotal', 'const qConsumeTotal', 'helper')
     })
 
-    it('admin efficiency.ts Part B qRevenueByStore 走 spe.amount 现金流', () => {
+    it('admin efficiency.ts Part B qRevenueByStore 走 spe.performance_amount 现金流', () => {
       expectStoreRankCashflow(adminSrc, 'const qRevenueByStore', 'const qConsumeByStore', 'helper')
     })
 
-    it('staff mgmt-dashboard.js 大卡 queryStoreRevenue 走 spe.amount 现金流（两端同源）', () => {
+    it('staff mgmt-dashboard.js 大卡 queryStoreRevenue 走 spe.performance_amount 现金流（两端同源）', () => {
       expectStoreRankCashflow(
         staffSrc,
         'async function queryStoreRevenue',
@@ -926,7 +930,7 @@ describe('数据中心人效板块两端口径一致性守护', () => {
 
     it('⭐ Part A / Part B / Part C 的 spe 谓词集**完全相等**（不只是「都存在」）', () => {
       // 闸门 2 两个谱系独立打穿了旧守护：
-      //   codex —— 给 Part C 加聚合级 FILTER (WHERE spe.amount > 0) → 全绿
+      //   codex —— 给 Part C 加聚合级 FILTER (WHERE spe.performance_amount > 0) → 全绿
       //   GLM  —— 给 Part A 和 B **同时**加 AND spe.change_type <> '退款' → 全绿
       // 逐条 toMatch 证明不了「没多出别的」，A==B 在两边一起改时也失效。
       const a = spePredicateSet(sliceOrFail(adminSrc, 'const qRevenueTotal', 'const qConsumeTotal'))
@@ -961,18 +965,18 @@ describe('数据中心人效板块两端口径一致性守护', () => {
       // Part A/B 是 spe 单表，一个 JOIN 都不该有
       assertTableSkeleton(
         sliceOrFail(adminSrc, 'const qRevenueTotal', 'const qConsumeTotal'),
-        ['sale_order_performance_events'],
+        ['sale_reportable_payment_events'],
         'Part A',
       )
       assertTableSkeleton(
         sliceOrFail(adminSrc, 'const qRevenueByStore', 'const qConsumeByStore'),
-        ['sale_order_performance_events'],
+        ['sale_reportable_payment_events'],
         'Part B',
       )
       // Part C：stores 驱动 → 两级 org_nodes 拿市场名 → LEFT JOIN spe
       assertTableSkeleton(
         sliceOrFail(adminSrc, 'const qStoreRankRevenue', 'const qStoreRankConsume'),
-        ['stores', 'org_nodes', 'org_nodes', 'sale_order_performance_events'],
+        ['stores', 'org_nodes', 'org_nodes', 'sale_reportable_payment_events'],
         'Part C',
       )
     })
@@ -984,12 +988,12 @@ describe('数据中心人效板块两端口径一致性守护', () => {
       //（它们只约束聚合、spe 谓词、WHERE 形状与分母单源，**不约束结果集基数**）。
       //
       // `HAVING` 是下一轮 GLM 补的同族逃逸，且它更隐蔽：
-      // `HAVING SUM(spe.amount) > 0`（**不带** `::numeric`）能让十层全绿 ——
+      // `HAVING SUM(spe.performance_amount) > 0`（**不带** `::numeric`）能让十层全绿 ——
       //   · 第 2 层谓词正则要求 `spe.<列>` 后紧跟运算符，这里跟的是 `)`，不被抽取
-      //   · 第 6 层 fail-closed 的 `SUM(\s*spe.amount` 不要求 cast，把它也算成合法聚合
+      //   · 第 6 层 fail-closed 的 `SUM(\s*spe.performance_amount` 不要求 cast，把它也算成合法聚合
       //   · 第 9 层 WHERE 形状切到 `GROUP BY` 就停，HAVING 在其后
       // 写成带 `::numeric` 反而会被第 3 层拦下 —— 缺口恰在最自然的手写形态上。
-      // 本仓 `product.ts` 曾有 `HAVING SUM(sipe.amount::numeric) > 0` 的先例（#288 已改为只剔除全零组）。
+      // 本仓 `product.ts` 曾有 `HAVING SUM(sipe.performance_amount::numeric) > 0` 的先例（#288 已改为只剔除全零组）。
       for (const [label, seg] of [
         ['Part A', sliceOrFail(adminSrc, 'const qRevenueTotal', 'const qConsumeTotal')],
         ['Part B', sliceOrFail(adminSrc, 'const qRevenueByStore', 'const qConsumeByStore')],
@@ -1008,8 +1012,8 @@ describe('数据中心人效板块两端口径一致性守护', () => {
       assertEverySpeRefClassified(sliceOrFail(adminSrc, 'const qStoreRankRevenue', 'const qStoreRankConsume'), 'Part C')
     })
 
-    it('⭐ 三处的聚合表达式都必须是裸 SUM(spe.amount::numeric)，不许挂 FILTER/CASE', () => {
-      // codex 的攻击路径：Part C 单独写成 SUM(...) FILTER (WHERE spe.amount > 0) 剔除退款负行，
+    it('⭐ 三处的聚合表达式都必须是裸 SUM(spe.performance_amount::numeric)，不许挂 FILTER/CASE', () => {
+      // codex 的攻击路径：Part C 单独写成 SUM(...) FILTER (WHERE spe.performance_amount > 0) 剔除退款负行，
       // WHERE 谓词一个没动 → 上面所有谓词类断言全绿，但门店榜合计不再等于 KPI。
       assertPlainSumAggregate(sliceOrFail(adminSrc, 'const qRevenueTotal', 'const qConsumeTotal'), 'Part A')
       assertPlainSumAggregate(sliceOrFail(adminSrc, 'const qRevenueByStore', 'const qConsumeByStore'), 'Part B')
@@ -1114,23 +1118,23 @@ describe('数据中心人效板块两端口径一致性守护', () => {
   describe('业绩 Part D/E（员工榜 + 技师明细）= 角色归属额，归 employee_id', () => {
     it('admin efficiency.ts revenue_by_emp 含 SUM(spia.allocated_amount) 归 spia.employee_id', () => {
       const n = sliceOrFail(adminSrc, 'revenue_by_emp AS (', 'consume_by_emp AS (')
-      expect(n).toMatch(/SUM\(\s*spia\.allocated_amount::numeric\s*\)/i)
+      expect(n).toMatch(REPORTABLE_ALLOCATION_SUM)
       expect(n).toMatch(/spia\.employee_id/i)
       expect(n).toMatch(/GROUP BY spia\.employee_id/i)
       expect(n).toMatch(/is_void\s*=\s*FALSE/i)
     })
     it('admin efficiency.ts Part E revenue_by_emp_cat 同为 allocation 口径', () => {
       // describe 标题写的是 Part D/E，就得真的覆盖 E —— Part E 是「按技师人效明细」，
-      // 它与 Part D 同源但多一个 sales_category 维度，同样**不得**被改成 spe.amount。
+      // 它与 Part D 同源但多一个 sales_category 维度，同样**不得**被改成 spe.performance_amount。
       const n = sliceOrFail(adminSrc, 'revenue_by_emp_cat AS (', 'consume_by_emp_cat AS (')
-      expect(n).toMatch(/SUM\(\s*spia\.allocated_amount::numeric\s*\)/i)
+      expect(n).toMatch(REPORTABLE_ALLOCATION_SUM)
       expect(n).toMatch(/spia\.employee_id/i)
       expect(n).toMatch(/is_void\s*=\s*FALSE/i)
-      expect(n).not.toMatch(/SUM\(spe\.amount::numeric\)/i)
+      expect(n).not.toMatch(/SUM\(spe\.performance_amount::numeric\)/i)
     })
     it('staff mgmt-dashboard.js staffRankingRevenue 含 SUM(spia.allocated_amount) 归 spia.employee_id', () => {
       const n = sliceOrFail(staffSrc, 'async function staffRankingRevenue', 'async function staffRankingConsume')
-      expect(n).toMatch(/SUM\(\s*spia\.allocated_amount::numeric\s*\)/i)
+      expect(n).toMatch(REPORTABLE_ALLOCATION_SUM)
       expect(n).toMatch(/spia\.employee_id/i)
       expect(n).toMatch(/is_void\s*=\s*FALSE/i)
     })
@@ -1140,7 +1144,7 @@ describe('数据中心人效板块两端口径一致性守护', () => {
     // ⚠️ 这条只约束 Part D/E。恢复白名单**不是** #285 的修法：
     // 实测（2026-09-01~09-21 集团）白名单只留美容师+养生师 = 3,515,204.60，
     // 距门店业绩 3,679,035.98 仍差 −4.45%，且偏差幅度随品项老师/推广部占比漂移，
-    // 是一次偶然的部分去重而非正确口径。真正的修法是 Part A/B 换成 spe.amount。
+    // 是一次偶然的部分去重而非正确口径。真正的修法是 Part A/B 换成 spe.performance_amount。
     it('admin efficiency.ts 员工榜段不含 spia.role_type IN (美容师, 养生师)', () => {
       const n = sliceOrFail(adminSrc, 'revenue_by_emp AS (', 'consume_by_emp AS (')
       expect(n).not.toMatch(/spia\.role_type\s+IN\s*\(\s*'美容师'\s*,\s*'养生师'\s*\)/i)
@@ -1155,7 +1159,7 @@ describe('数据中心人效板块两端口径一致性守护', () => {
     it('admin efficiency.ts 含 IN (销售单, 转换单) + 业绩事件归期', () => {
       expect(adminSrc).toMatch(/sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*\)/)
       expect(adminSrc).toMatch(/JOIN sale_payment_item_receipts spir ON spir\.id = spia\.sale_payment_item_receipt_id/)
-      expect(adminSrc).toMatch(/JOIN sale_order_performance_events spe ON spe\.sale_payment_id = spir\.sale_payment_id/)
+      expect(adminSrc).toMatch(/JOIN sale_reportable_payment_events spe ON spe\.sale_payment_id = spir\.sale_payment_id/)
       expect(adminSrc).toMatch(/function performanceEventDateBetween/)
       expect(adminSrc).toMatch(/eventAlias}\.status/)
       expect(adminSrc).toMatch(/eventAlias}\.performance_date/)
@@ -1164,7 +1168,7 @@ describe('数据中心人效板块两端口径一致性守护', () => {
     it('staff mgmt-dashboard.js 含 IN (销售单, 转换单) + 业绩事件归期', () => {
       expect(staffSrc).toMatch(/sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*\)/)
       expect(staffSrc).toMatch(/JOIN sale_payment_item_receipts spir ON spir\.id = spia\.sale_payment_item_receipt_id/)
-      expect(staffSrc).toMatch(/JOIN sale_order_performance_events spe ON spe\.sale_payment_id = spir\.sale_payment_id/)
+      expect(staffSrc).toMatch(/JOIN sale_reportable_payment_events spe ON spe\.sale_payment_id = spir\.sale_payment_id/)
       expect(staffSrc).toMatch(/spe\.status = '已支付'/)
       expect(staffSrc).toMatch(/spe\.performance_date/)
     })
@@ -1611,7 +1615,7 @@ describe('数据中心人效板块两端口径一致性守护', () => {
     })
     it('销售额与当月业绩同源（revenue_by_emp_cat 含 SUM(spia.allocated_amount) AS total）', () => {
       expect(adminBody).toMatch(/revenue_by_emp_cat\s+AS\s*\(/i)
-      expect(adminBody).toMatch(/COALESCE\(\s*SUM\(spia\.allocated_amount::numeric\)\s*,\s*0\)\s+AS\s+total/i)
+      expect(adminBody).toMatch(new RegExp('COALESCE\\(\\s*' + REPORTABLE_ALLOCATION_SUM.source + '\\s*,\\s*0\\)\\s+AS\\s+total', 'i'))
     })
     it('实耗端纳入 他销他耗/生态合作（员工维度放开，区别于门店口径排除）', () => {
       expect(adminSrc).toMatch(/FILTER\s*\(\s*WHERE\s+sit\.sales_category\s*=\s*'他销他耗'\s*\)/)

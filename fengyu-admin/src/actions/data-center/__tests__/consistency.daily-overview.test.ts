@@ -71,17 +71,16 @@ describe('业绩合计 = 销售板总业绩', () => {
     expect(split).toEqual(['充值单', '转换单', '销售单'].sort())
   })
 
-  it('拆分不丢钱：分母为 0 / 无 receipts 整笔进未分类，sale_items / product_skus 一律 LEFT JOIN', () => {
+  it('拆分不丢钱：商品可计额求和，残差进入未分类，品项维度一律 LEFT JOIN', () => {
     const body = sqlAfter(daily, '// 销售单 + 转换单业绩')
-    expect(body).toContain('JOIN receipt rc ON rc.sale_payment_id = pay.sale_payment_id AND rc.denominator <> 0')
+    expect(body).toContain('FROM sale_reportable_item_events r')
+    expect(body).toContain('r.performance_amount::numeric AS amount')
+    expect(body).toContain('JOIN receipt rc ON rc.sale_payment_id = pay.sale_payment_id')
     expect(body).toContain('LEFT JOIN sale_items si ON si.sale_item_id = rc.sale_item_id')
     expect(body).toContain('LEFT JOIN product_skus sku ON sku.sku_id = si.sku_id')
-    expect(body).toContain(
-      'WHERE NOT EXISTS ( SELECT 1 FROM receipt rc WHERE rc.sale_payment_id = pay.sale_payment_id AND rc.denominator <> 0 )',
-    )
-    // 缩放必须除以「该款项全部 receipts 之和」，不能用 NULLIF 把分母为 0 的整笔吞成 NULL
-    expect(body).toContain('SUM(r.amount::numeric) OVER (PARTITION BY r.sale_payment_id) AS denominator')
-    expect(body).toContain('SUM(rc.amount * pay.amount / rc.denominator)')
+    expect(body).toContain('LEFT JOIN receipt_total rt ON rt.sale_payment_id = pay.sale_payment_id')
+    expect(body).toContain('SUM(pay.amount - COALESCE(rt.amount, 0))::text AS amount')
+    expect(body).toContain('HAVING SUM(pay.amount - COALESCE(rt.amount, 0)) <> 0')
     expect(body).not.toMatch(/NULLIF/i)
   })
 })
@@ -114,10 +113,10 @@ describe('全文快照：拆分维度（SELECT / GROUP BY）同样是承重口�
   // 这里钉住整段 SQL 文本；有意改口径时连同 PR 说明一起改这三段期望值（实跑验证见 PR「未分类兜底实测」）。
   it.each([
     ['// 销售单 + 转换单业绩',
-    "WITH pay AS ( SELECT spe.sale_payment_id, spe.store_id, spe.amount::numeric AS amount FROM sale_order_performance_events spe WHERE ${scopeFilterSql(session, scope, 'spe.store_id')} AND spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款', '退款') AND spe.sale_order_type IN ('销售单', '转换单') AND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN ${start} AND ${end} ), receipt AS ( SELECT r.sale_payment_id, r.sale_item_id, r.amount::numeric AS amount, SUM(r.amount::numeric) OVER (PARTITION BY r.sale_payment_id) AS denominator FROM sale_payment_item_receipts r WHERE r.sale_payment_id IN (SELECT sale_payment_id FROM pay) ) SELECT 'total' AS kind, pay.store_id, NULL::text AS sales_category, NULL::text AS category_id, SUM(pay.amount)::text AS amount FROM pay GROUP BY pay.store_id UNION ALL SELECT 'part' AS kind, pay.store_id, si.sales_category::text AS sales_category, sku.category_id, SUM(rc.amount * pay.amount / rc.denominator)::text AS amount FROM pay JOIN receipt rc ON rc.sale_payment_id = pay.sale_payment_id AND rc.denominator <> 0 LEFT JOIN sale_items si ON si.sale_item_id = rc.sale_item_id LEFT JOIN product_skus sku ON sku.sku_id = si.sku_id GROUP BY pay.store_id, si.sales_category, sku.category_id UNION ALL SELECT 'part' AS kind, pay.store_id, NULL::text AS sales_category, NULL::text AS category_id, SUM(pay.amount)::text AS amount FROM pay WHERE NOT EXISTS ( SELECT 1 FROM receipt rc WHERE rc.sale_payment_id = pay.sale_payment_id AND rc.denominator <> 0 ) GROUP BY pay.store_id",
+    "WITH pay AS ( SELECT spe.sale_payment_id, spe.store_id, spe.performance_amount::numeric AS amount FROM sale_reportable_payment_events spe WHERE ${scopeFilterSql(session, scope, 'spe.store_id')} AND spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款', '退款') AND spe.sale_order_type IN ('销售单', '转换单') AND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN ${start} AND ${end} ), receipt AS ( SELECT r.sale_payment_id, r.sale_item_id, r.performance_amount::numeric AS amount FROM sale_reportable_item_events r WHERE r.receipt_id IS NOT NULL AND r.sale_payment_id IN (SELECT sale_payment_id FROM pay) ), receipt_total AS ( SELECT sale_payment_id, SUM(amount) AS amount FROM receipt GROUP BY sale_payment_id ) SELECT 'total' AS kind, pay.store_id, NULL::text AS sales_category, NULL::text AS category_id, SUM(pay.amount)::text AS amount FROM pay GROUP BY pay.store_id UNION ALL SELECT 'part' AS kind, pay.store_id, si.sales_category::text AS sales_category, sku.category_id, SUM(rc.amount)::text AS amount FROM pay JOIN receipt rc ON rc.sale_payment_id = pay.sale_payment_id LEFT JOIN sale_items si ON si.sale_item_id = rc.sale_item_id LEFT JOIN product_skus sku ON sku.sku_id = si.sku_id GROUP BY pay.store_id, si.sales_category, sku.category_id UNION ALL SELECT 'part' AS kind, pay.store_id, NULL::text AS sales_category, NULL::text AS category_id, SUM(pay.amount - COALESCE(rt.amount, 0))::text AS amount FROM pay LEFT JOIN receipt_total rt ON rt.sale_payment_id = pay.sale_payment_id GROUP BY pay.store_id HAVING SUM(pay.amount - COALESCE(rt.amount, 0)) <> 0",
     ],
     ['// 充值单：没有商品明细',
-    "SELECT spe.store_id, SUM(spe.amount::numeric)::text AS amount FROM sale_order_performance_events spe WHERE ${scopeFilterSql(session, scope, 'spe.store_id')} AND spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款', '退款') AND spe.sale_order_type = '充值单' AND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN ${start} AND ${end} GROUP BY spe.store_id",
+    "SELECT spe.store_id, SUM(spe.performance_amount::numeric)::text AS amount FROM sale_reportable_payment_events spe WHERE ${scopeFilterSql(session, scope, 'spe.store_id')} AND spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款', '退款') AND spe.sale_order_type = '充值单' AND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN ${start} AND ${end} GROUP BY spe.store_id",
     ],
     ['// 服务（实耗）按经营类型',
     "SELECT so.store_id, sit.sales_category::text AS sales_category, SUM(sit.unit_real_price::numeric * sit.session_used)::text AS amount FROM service_orders so JOIN service_items sit ON sit.service_order_id = so.service_order_id JOIN sale_items si ON si.sale_item_id = sit.sale_item_id WHERE ${scopeFilterSql(session, scope, 'so.store_id')} AND so.status = '已完成' AND so.service_date BETWEEN ${start} AND ${end} AND ${excludeDepositRefundSql('so')} GROUP BY so.store_id, sit.sales_category",
@@ -134,9 +133,9 @@ describe('横切约束', () => {
     expect(code()).not.toMatch(/so\.status\s*=\s*'已支付'/)
   })
 
-  it('不加 >0 / HAVING 过滤（#290/#288）：负数原样显示', () => {
-    expect(code()).not.toMatch(/HAVING/i)
-    // `<> 0` 是缩放分母判零（分母为 0 的款项走 NOT EXISTS 分支整笔进未分类），不是金额过滤
+  it('不加正数过滤（#290/#288）：负数原样显示', () => {
+    expect(code().match(/HAVING/gi)).toHaveLength(1)
+    expect(code()).toContain('HAVING SUM(pay.amount - COALESCE(rt.amount, 0)) <> 0')
     expect(code()).not.toMatch(/(?<![<])>=?\s*0\b/)
   })
 })

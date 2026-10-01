@@ -142,3 +142,8 @@ jobs:
         env:
           SHENGMEI_PG_TEST_URL: postgresql://postgres:test@localhost:5432/test
         run: NODE_PATH="$PWD/db/node_modules" node --test db/scripts/__tests__/shengmei-freeze.pg.test.js
+
+      - name: Run #494 tuoke performance regression
+        env:
+          TUOKE_PG_TEST_URL: postgresql://postgres:test@localhost:5432/test
+        run: NODE_PATH="$PWD/db/node_modules" node --test db/scripts/__tests__/tuoke-performance.pg.test.js

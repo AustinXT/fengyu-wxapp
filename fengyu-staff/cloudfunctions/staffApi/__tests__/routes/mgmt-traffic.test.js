@@ -130,7 +130,7 @@ function setupDefaultMocks({
  * 而不是把那组的正则放宽成 `(store_id|bound_store_id)` —— 放宽等于让整组断言失去区分力。
  */
 const isNewMemberSpendSql = (s) =>
-  (/COALESCE\(SUM\(spe\.amount::numeric\), 0\) AS v/.test(s) || /legacy_source\s*=\s*'workfine'/.test(s)) &&
+  (/COALESCE\(SUM\(spe\.performance_amount::numeric\), 0\) AS v/.test(s) || /legacy_source\s*=\s*'workfine'/.test(s)) &&
   /c\.became_member_at::date BETWEEN/.test(s)
 
 describe('mgmtTraffic.summary 入参/权限校验', () => {
@@ -384,9 +384,9 @@ describe('mgmtTraffic.summary 会员被经营 6 桶 SQL 形态', () => {
     expect(opsSql).toBeDefined()
     expect(opsSql).toMatch(/c\.customer_type\s*=\s*'会员客'/)
     // #138：spend 从「订单快照 received - refunded_amount @ paid_at」
-    // 改为「已入账款项流水 SUM(spe.amount) @ performance_date」，与业绩 KPI 同源
-    expect(opsSql).toMatch(/SUM\(spe\.amount::numeric\)\s+AS\s+spend/)
-    expect(opsSql).toMatch(/FROM sale_order_performance_events spe/)
+    // 改为「已入账款项流水 SUM(spe.performance_amount) @ performance_date」，与业绩 KPI 同源
+    expect(opsSql).toMatch(/SUM\(spe\.performance_amount::numeric\)\s+AS\s+spend/)
+    expect(opsSql).toMatch(/FROM sale_reportable_payment_events spe/)
     expect(opsSql).toMatch(/spe\.sale_order_type IN \('销售单',\s*'转换单'\)/)
     expect(opsSql).toMatch(/spe\.status\s*=\s*'已支付'/)
     expect(opsSql).toMatch(/spe\.change_type IN \('首次支付',\s*'回款',\s*'退款'\)/)
@@ -507,14 +507,14 @@ describe('mgmtTraffic.summary 新会员经营 + trialFootfall', () => {
     const sqlList = pg.query.mock.calls.map((c) => c[0])
     const spendSql = sqlList.find(
       (s) =>
-        /FROM sale_order_performance_events spe/.test(s) &&
+        /FROM sale_reportable_payment_events spe/.test(s) &&
         /JOIN client_wechat_users c/.test(s) &&
         /c\.became_member_at::date\s+BETWEEN/.test(s) &&
         /spe\.performance_date\s+BETWEEN/.test(s),
     )
     expect(spendSql).toBeDefined()
     // #138 同 memberOps：款项流水 @ 归属日期
-    expect(spendSql).toMatch(/SUM\(spe\.amount::numeric\)/)
+    expect(spendSql).toMatch(/SUM\(spe\.performance_amount::numeric\)/)
     expect(spendSql).toMatch(/spe\.sale_order_type IN \('销售单',\s*'转换单'\)/)
     expect(spendSql).toMatch(/spe\.status\s*=\s*'已支付'/)
     expect(spendSql).toMatch(/spe\.change_type IN \('首次支付',\s*'回款',\s*'退款'\)/)
@@ -619,7 +619,7 @@ describe('mgmtTraffic.summary 新会员经营 + trialFootfall', () => {
     const base = pg.query.getMockImplementation()
     const hits = { spe: 0, legacy: 0 }
     pg.query.mockImplementation(async (sql, params) => {
-      if (/FROM sale_order_performance_events spe/.test(sql) && /became_member_at::date BETWEEN/.test(sql)) {
+      if (/FROM sale_reportable_payment_events spe/.test(sql) && /became_member_at::date BETWEEN/.test(sql)) {
         hits.spe++
         return [{ v: '3000.105' }]
       }

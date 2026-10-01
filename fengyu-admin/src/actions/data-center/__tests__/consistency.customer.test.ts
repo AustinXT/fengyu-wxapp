@@ -13,7 +13,7 @@
  *   4. sales_category IN ('自销自耗','他销自耗')（项目数口径）
  *   5. 成交率分母 = 期初未达会员的到店活跃池 ∪ 本期全部新增会员（D-conv-denom=1c，#284；
  *      两端 KPI 侧走 `sqlInFunction` 切函数体断言，明细侧走 `adminSql` 块）
- *   6. spend = SUM(sale_order_performance_events.amount) @ performance_date（#138 起，与业绩 KPI 同源；
+ *   6. spend = SUM(sale_reportable_payment_events.amount) @ performance_date（#138 起，与业绩 KPI 同源；
  *      不再按父订单 status 过滤、排除储值卡抵扣；非 metrics.md 的 paid_amount）
  *   7. anchor 反推关键字面量（visits_90d_prev / 6 months / 12 months / 90 days）
  *   8. 一次/二次客活 = 到店天数，(顾客, service_date) 去重（#298）—— 跨定义：admin visitDaysSql /
@@ -121,7 +121,7 @@ function stripComments(src: string): string {
  *   - r3：改连续子串 → 因为串不含前导 `AND`，把**第一项**整行注释掉时串仍完整命中；
  *         `BETWEEN` 之后的实参完全没锁，`BETWEEN ${start} AND ${start}`、
  *         `WHERE TRUE OR (...)` 都能让过滤失效而文本不变
- *   - r4：块只从 `FROM` 起、截在 `GROUP BY` 前 → `SUM(spe.amount)` 外面套 `ABS()`/`GREATEST(...,0)`、
+ *   - r4：块只从 `FROM` 起、截在 `GROUP BY` 前 → `SUM(spe.performance_amount)` 外面套 `ABS()`/`GREATEST(...,0)`、
  *         改 `GROUP BY` 分组键（人→店）、追加 `HAVING FALSE` 三类改动全部不改块文本
  *
  * 每补一次就冒出下一种等价写法 —— 与 #140 得到的「黑名单证明不了『没有任何日期条件』」
@@ -140,26 +140,26 @@ function stripComments(src: string): string {
 const EXPECTED_SPE_BLOCKS: Record<'admin' | 'staff', string[]> = {
   admin: [
     // queryOperatedMembers（会员经营人数）
-    "SELECT o.client_user_id, SUM(spe.amount::numeric) AS spend FROM sale_order_performance_events spe JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id JOIN client_wechat_users c ON c.user_id = o.client_user_id WHERE ${sc} AND spe.sale_order_type IN ('销售单', '转换单') AND spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款', '退款') AND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN ${range.start} AND ${range.end} AND c.customer_type = '会员客' GROUP BY o.client_user_id )",
+    "SELECT o.client_user_id, SUM(spe.performance_amount::numeric) AS spend FROM sale_reportable_payment_events spe JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id JOIN client_wechat_users c ON c.user_id = o.client_user_id WHERE ${sc} AND spe.sale_order_type IN ('销售单', '转换单') AND spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款', '退款') AND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN ${range.start} AND ${range.end} AND c.customer_type = '会员客' GROUP BY o.client_user_id )",
     // queryMemberAvgTicket（会员客单价）—— CTE 与上一条同形，外层投影不同
-    "SELECT o.client_user_id, SUM(spe.amount::numeric) AS spend FROM sale_order_performance_events spe JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id JOIN client_wechat_users c ON c.user_id = o.client_user_id WHERE ${sc} AND spe.sale_order_type IN ('销售单', '转换单') AND spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款', '退款') AND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN ${range.start} AND ${range.end} AND c.customer_type = '会员客' GROUP BY o.client_user_id )",
+    "SELECT o.client_user_id, SUM(spe.performance_amount::numeric) AS spend FROM sale_reportable_payment_events spe JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id JOIN client_wechat_users c ON c.user_id = o.client_user_id WHERE ${sc} AND spe.sale_order_type IN ('销售单', '转换单') AND spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款', '退款') AND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN ${range.start} AND ${range.end} AND c.customer_type = '会员客' GROUP BY o.client_user_id )",
     // queryNewMemberSpend（新会员消费）—— 多 became_member_at 谓词，无 customer_type，无 GROUP BY
-    "SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v FROM sale_order_performance_events spe JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id JOIN client_wechat_users c ON c.user_id = o.client_user_id WHERE ${sc} AND c.became_member_at IS NOT NULL AND c.became_member_at::date BETWEEN ${range.start} AND ${range.end} AND spe.sale_order_type IN ('销售单', '转换单') AND spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款', '退款') AND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN ${range.start} AND ${range.end}",
+    "SELECT COALESCE(SUM(spe.performance_amount::numeric), 0) AS v FROM sale_reportable_payment_events spe JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id JOIN client_wechat_users c ON c.user_id = o.client_user_id WHERE ${sc} AND c.became_member_at IS NOT NULL AND c.became_member_at::date BETWEEN ${range.start} AND ${range.end} AND spe.sale_order_type IN ('销售单', '转换单') AND spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款', '退款') AND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN ${range.start} AND ${range.end}",
     // 门店/市场明细·会员消费分桶 —— 用 skel JOIN 代替 ${sc}
-    "SELECT ${groupId} AS group_id, o.client_user_id, SUM(spe.amount::numeric) AS spend FROM sale_order_performance_events spe JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id JOIN skel sk ON sk.store_id = o.store_id JOIN client_wechat_users c ON c.user_id = o.client_user_id WHERE spe.sale_order_type IN ('销售单', '转换单') AND spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款', '退款') AND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN ${start} AND ${end} AND c.customer_type = '会员客' GROUP BY ${groupId}, o.client_user_id )",
+    "SELECT ${groupId} AS group_id, o.client_user_id, SUM(spe.performance_amount::numeric) AS spend FROM sale_reportable_payment_events spe JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id JOIN skel sk ON sk.store_id = o.store_id JOIN client_wechat_users c ON c.user_id = o.client_user_id WHERE spe.sale_order_type IN ('销售单', '转换单') AND spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款', '退款') AND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN ${start} AND ${end} AND c.customer_type = '会员客' GROUP BY ${groupId}, o.client_user_id )",
     // 门店/市场明细·新会员消费
     // #439：归店从 `o.store_id`（订单店）改 `c.bound_store_id`（绑定店），与分母 newmem 归店 JOIN 逐字同源。
     // JOIN 次序随之调整（skel 要排在 c 之后，否则 c.bound_store_id 还不可见）。
     // ⚠ **刻意不补** `c.bound_store_id IS NOT NULL`（尽管分母 newmem 里有那句冗余的）：
     // 内连接已排除 NULL，而下方「明细·新会员消费的 WHERE 与 KPI 版一致」按逐字比对，
     // 差异只允许出现在 scope 段 —— 往这里补一句会直接打红那条。见 customer.ts 该 CTE 上方的说明。
-    "SELECT ${groupId} AS group_id, COALESCE(SUM(spe.amount::numeric), 0) AS new_spend FROM sale_order_performance_events spe JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id JOIN client_wechat_users c ON c.user_id = o.client_user_id JOIN skel sk ON sk.store_id = c.bound_store_id WHERE c.became_member_at IS NOT NULL AND c.became_member_at::date BETWEEN ${start} AND ${end} AND spe.sale_order_type IN ('销售单', '转换单') AND spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款', '退款') AND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN ${start} AND ${end} GROUP BY ${groupId} )",
+    "SELECT ${groupId} AS group_id, COALESCE(SUM(spe.performance_amount::numeric), 0) AS new_spend FROM sale_reportable_payment_events spe JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id JOIN client_wechat_users c ON c.user_id = o.client_user_id JOIN skel sk ON sk.store_id = c.bound_store_id WHERE c.became_member_at IS NOT NULL AND c.became_member_at::date BETWEEN ${start} AND ${end} AND spe.sale_order_type IN ('销售单', '转换单') AND spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款', '退款') AND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN ${start} AND ${end} GROUP BY ${groupId} )",
   ],
   staff: [
     // queryMemberOps（会员经营 + 6 档分桶）
-    "SELECT o.client_user_id, SUM(spe.amount::numeric) AS spend FROM sale_order_performance_events spe JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id JOIN client_wechat_users c ON c.user_id = o.client_user_id WHERE ${sc.sql} AND spe.sale_order_type IN ('销售单', '转换单') AND spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款', '退款') AND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN ${startDateExpr(period)} AND ${endDateExpr(period)} AND c.customer_type = '会员客' GROUP BY o.client_user_id )",
+    "SELECT o.client_user_id, SUM(spe.performance_amount::numeric) AS spend FROM sale_reportable_payment_events spe JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id JOIN client_wechat_users c ON c.user_id = o.client_user_id WHERE ${sc.sql} AND spe.sale_order_type IN ('销售单', '转换单') AND spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款', '退款') AND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN ${startDateExpr(period)} AND ${endDateExpr(period)} AND c.customer_type = '会员客' GROUP BY o.client_user_id )",
     // queryNewMemberSpend —— 无 GROUP BY，截到模板结束
-    "SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v FROM sale_order_performance_events spe JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id JOIN client_wechat_users c ON c.user_id = o.client_user_id WHERE ${sc.sql} AND c.became_member_at IS NOT NULL AND c.became_member_at::date BETWEEN ${startDateExpr(period)} AND ${endDateExpr(period)} AND spe.sale_order_type IN ('销售单', '转换单') AND spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款', '退款') AND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN ${startDateExpr(period)} AND ${endDateExpr(period)}",
+    "SELECT COALESCE(SUM(spe.performance_amount::numeric), 0) AS v FROM sale_reportable_payment_events spe JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id JOIN client_wechat_users c ON c.user_id = o.client_user_id WHERE ${sc.sql} AND c.became_member_at IS NOT NULL AND c.became_member_at::date BETWEEN ${startDateExpr(period)} AND ${endDateExpr(period)} AND spe.sale_order_type IN ('销售单', '转换单') AND spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款', '退款') AND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN ${startDateExpr(period)} AND ${endDateExpr(period)}",
   ],
 }
 
@@ -167,8 +167,8 @@ const EXPECTED_SPE_BLOCKS: Record<'admin' | 'staff', string[]> = {
  * 用 **TypeScript parser** 精确取出源码里的 SQL 模板串（只保留含 spe 的那些）。
  *
  * 为什么必须走 AST（round-5 codex P2）：此前用 `lastIndexOf('SELECT')` 在**整份源码**上
- * 找块起点，可被一行 SQL 注释劫持 —— 把真实投影改成 `AVG(spe.amount)`、再补一行
- * `-- SELECT o.client_user_id, SUM(spe.amount::numeric) AS spend`，
+ * 找块起点，可被一行 SQL 注释劫持 —— 把真实投影改成 `AVG(spe.performance_amount)`、再补一行
+ * `-- SELECT o.client_user_id, SUM(spe.performance_amount::numeric) AS spend`，
  * 提取出的块与原快照**逐字相同** → 全部断言绿。我复现确认了这条。
  *
  * AST 提取一步解决两件事：JS 注释/字符串天然不在模板串节点里；
@@ -187,7 +187,7 @@ function sqlTemplatesFromSource(src: string, fileName: string): string[] {
     if (ts.isTemplateExpression(n) || ts.isNoSubstitutionTemplateLiteral(n)) {
       // 去掉包裹的反引号，保留 `${...}` 占位原文
       const text = src.slice(n.getStart(sf) + 1, n.getEnd() - 1)
-      if (text.includes('sale_order_performance_events')) out.push(text)
+      if (text.includes('sale_reportable_payment_events')) out.push(text)
       // ⚠ 必须继续下钻（GLM r6）：`stripSqlComments` 把 `${...}` span 整段原样保留，
       // 所以 **inline 嵌套**的模板（`sql\`${flag ? sql\`…\` : sql\`…\`}\``）里的 SQL 注释不会被剥。
       // 早先命中后 `return` 不下钻，于是「内层放一个带 `-- SELECT …` 诱饵的分支、
@@ -358,7 +358,7 @@ function speBlocksFromSource(src: string, fileName: string): string[] {
   const out: string[] = []
   for (const tmpl of sqlTemplatesFromSource(src, fileName)) {
     const sql = normalize(stripSqlComments(tmpl))
-    const anchor = /FROM\s+sale_order_performance_events\s+spe/g
+    const anchor = /FROM\s+sale_reportable_payment_events\s+spe/g
     let m: RegExpExecArray | null
     while ((m = anchor.exec(sql)) !== null) {
       const start = sql.lastIndexOf('SELECT', m.index)
@@ -402,7 +402,7 @@ function sqlTextFromSource(src: string, fileName: string): string {
  * 能让全部断言照绿 —— 与 `EXPECTED_SPE_BLOCKS` 上方记载的假绿路径是同一条，换个位置复发了。
  * 红检只测了「删代码」，没测「删代码 + 用注释把字面量补回去」，所以没抓住。
  *
- * `sqlTemplatesFromSource` 帮不上：它按设计只收含 `sale_order_performance_events` 的模板
+ * `sqlTemplatesFromSource` 帮不上：它按设计只收含 `sale_reportable_payment_events` 的模板
  * （那是 `EXPECTED_SPE_BLOCKS` 块数断言的基底，放宽采集条件会连带改块数、动了另一套守护）。
  * 因此这里另起一个**按函数名定位**的 AST 采集器，复用同一个 `stripSqlComments` 词法状态机。
  *
@@ -723,7 +723,7 @@ describe('客量板块两端口径一致性守护', () => {
    * 旧断言只查「文件里存在 `customer_type IN ('体验客','小美客')`」—— 回退到旧口径后
    * 该字面量依然留在 ① 分支里，断言恒绿，是个**空转守护**。这里改为逐条锁两个分支的结构。
    *
-   * ⚠ KPI 侧的 `queryTrialFootfall` 不含 `sale_order_performance_events`，
+   * ⚠ KPI 侧的 `queryTrialFootfall` 不含 `sale_reportable_payment_events`，
    * 不在 `adminSql`/`staffSql` 的采集范围内（见 `sqlTemplatesFromSource` 的过滤条件），
    * 只能对源码原文断言；明细侧的同口径守护见「市场明细人数在市场内去重」，那条走 `adminSql`。
    */
@@ -914,7 +914,7 @@ describe('客量板块两端口径一致性守护', () => {
 
   /**
    * #138（2026-09-16）：spend 从「订单快照 `received - refunded_amount` @ `paid_at`」
-   * 改为「已入账款项流水 `SUM(spe.amount)` @ `performance_date`」，与业绩 KPI 同源。
+   * 改为「已入账款项流水 `SUM(spe.performance_amount)` @ `performance_date`」，与业绩 KPI 同源。
    *
    * 连带两个语义变化（都是有意的）：
    *   - **不再按父订单 status 过滤** —— 款项流水自带 status，部分支付订单的已到账款也计入
@@ -924,8 +924,8 @@ describe('客量板块两端口径一致性守护', () => {
    */
   describe('会员消费 spend = 已入账款项流水 @ 业绩归属日期（#138，两端同源）', () => {
     const SPEND_INVARIANTS: Array<[string, RegExp]> = [
-      ['金额取款项流水', /SUM\(spe\.amount::numeric\)/],
-      ['数据源是业绩事件视图', /FROM\s+sale_order_performance_events\s+spe/],
+      ['金额取款项流水', /SUM\(spe\.performance_amount::numeric\)/],
+      ['数据源是业绩事件视图', /FROM\s+sale_reportable_payment_events\s+spe/],
       ['JOIN 回订单表取 client_user_id', /JOIN\s+sale_orders\s+o\s+ON\s+o\.sale_order_id\s*=\s*spe\.sale_order_id/],
       ['订单类型限定', /spe\.sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*\)/],
       ['款项状态已支付', /spe\.status\s*=\s*'已支付'/],
@@ -947,7 +947,7 @@ describe('客量板块两端口径一致性守护', () => {
      * admin 有 5 个会员消费查询（3 个 KPI + 2 个明细），staff 有 2 个。
      * 删掉其中一处的 `change_type` 过滤，其余几处仍满足正则 —— 实测确认过这条漏网。
      *
-     * 这里按 `FROM sale_order_performance_events spe` 切块，**逐块**检查 WHERE 侧过滤：
+     * 这里按 `FROM sale_reportable_payment_events spe` 切块，**逐块**检查 WHERE 侧过滤：
      * 断言数随查询数自适应（用 `>=`，新增/合并查询不会在**本条**产生一堆假红），
      * 失败时能指出是第几个查询缺了哪一项。
      * 块尾截到 `GROUP BY` / 下一个查询，避免借用后文字符串造成假绿。
@@ -979,7 +979,7 @@ describe('客量板块两端口径一致性守护', () => {
       ]
       for (const [side, code, minBlocks] of SITES) {
         const blocks = code
-          .split(/FROM\s+sale_order_performance_events\s+spe/)
+          .split(/FROM\s+sale_reportable_payment_events\s+spe/)
           .slice(1)
           // 块尾截到 GROUP BY 或下一个 SELECT，避免借用后文内容假绿
           .map((b) => b.split(/GROUP BY|SELECT\s+COALESCE/)[0])
@@ -1039,7 +1039,7 @@ describe('客量板块两端口径一致性守护', () => {
     it('各种绕过形态注入源码后都会破坏块级逐字快照（反向验证主守护）', () => {
       const CHANGE_TYPE = "AND spe.change_type IN ('首次支付', '回款', '退款')"
       const ORDER_TYPE = "AND spe.sale_order_type IN ('销售单', '转换单')"
-      const AMOUNT = 'SUM(spe.amount::numeric) AS spend'
+      const AMOUNT = 'SUM(spe.performance_amount::numeric) AS spend'
       // ⚠ 必须带 `spe.performance_date` 前缀：裸的 `${range.start} AND ${range.end}`
       // 在源码里首次出现于 became_member_at 谓词（spe 块之外），replace 会打偏 →
       // 变异落在块外、块文本不变 → 用例误判成「未被拦下」。这条是本用例自己抓出来的。
@@ -1088,8 +1088,8 @@ describe('客量板块两端口径一致性守护', () => {
         ],
         // r4 codex：金额表达式被 clamp —— 块只从 FROM 起时完全漏网。
         // 这是**最可能真实发生**的一类（业务要求「不显示负数」）
-        ['ABS 抹平退款净额', rep(AMOUNT, 'ABS(SUM(spe.amount::numeric)) AS spend')],
-        ['GREATEST clamp', rep(AMOUNT, 'GREATEST(SUM(spe.amount::numeric), 0) AS spend')],
+        ['ABS 抹平退款净额', rep(AMOUNT, 'ABS(SUM(spe.performance_amount::numeric)) AS spend')],
+        ['GREATEST clamp', rep(AMOUNT, 'GREATEST(SUM(spe.performance_amount::numeric), 0) AS spend')],
         // r4 GLM：聚合粒度从「人」变「店」；r4 codex：HAVING 归零 —— 截在 GROUP BY 前时都漏网
         ['改 GROUP BY 分组键', rep('GROUP BY o.client_user_id', 'GROUP BY o.store_id')],
         ['追加 HAVING FALSE', rep('GROUP BY o.client_user_id', 'GROUP BY o.client_user_id HAVING FALSE')],
@@ -1211,8 +1211,8 @@ describe('客量板块两端口径一致性守护', () => {
       const CASES: Array<[string, string]> = [
         ['注释掉款项状态过滤', staffSrc.replace(anchor, `-- ${anchor}`)],
         ['clamp 掉退款净额', staffSrc.replace(
-          'SUM(spe.amount::numeric) AS spend',
-          'GREATEST(SUM(spe.amount::numeric), 0) AS spend',
+          'SUM(spe.performance_amount::numeric) AS spend',
+          'GREATEST(SUM(spe.performance_amount::numeric), 0) AS spend',
         )],
         // ⚠ 锚点必须唯一命中 queryNewMemberSpend（GLM r6 P3-1）：
         // 裸的 `AND spe.performance_date BETWEEN ...` 首次出现在 queryMemberOps（**有** GROUP BY），
@@ -1246,10 +1246,10 @@ describe('客量板块两端口径一致性守护', () => {
       const fake = [
         'const q = sql`',
         '  WITH m AS (${flag',
-        '    ? sql`SELECT AVG(spe.amount::numeric) AS spend',
-        '        FROM sale_order_performance_events spe GROUP BY o.client_user_id)`',
-        '    : sql`-- SELECT o.client_user_id, SUM(spe.amount::numeric) AS spend',
-        '        SELECT 1 FROM sale_order_performance_events spe GROUP BY o.client_user_id)`}',
+        '    ? sql`SELECT AVG(spe.performance_amount::numeric) AS spend',
+        '        FROM sale_reportable_payment_events spe GROUP BY o.client_user_id)`',
+        '    : sql`-- SELECT o.client_user_id, SUM(spe.performance_amount::numeric) AS spend',
+        '        SELECT 1 FROM sale_reportable_payment_events spe GROUP BY o.client_user_id)`}',
         '`',
       ].join('\n')
 
@@ -1268,13 +1268,13 @@ describe('客量板块两端口径一致性守护', () => {
      * 锁死两端 spe 表名的出现次数（GLM r6 P3-2）。
      *
      * 守护的可见性 = 「模板文本含字面表名」∧「锚点要求别名恰为 `spe`」。
-     * **新增**一个 `FROM sale_order_performance_events s`（别名不是 `spe`）的查询时，
+     * **新增**一个 `FROM sale_reportable_payment_events s`（别名不是 `spe`）的查询时，
      * 锚点不匹配 → 块数不变 → 静默全绿，而该端出数已经变了。
      * 就地改别名会被块快照拦下，所以这纯属「新增查询」通道 —— 这条把它也关掉。
      */
     it('两端 spe 表名出现次数锁死（防新增别名不同的查询绕过锚点）', () => {
       const countTable = (sql: string) =>
-        (sql.match(/sale_order_performance_events/g) ?? []).length
+        (sql.match(/sale_reportable_payment_events/g) ?? []).length
       expect(
         countTable(adminSql),
         'admin 的 spe 表引用次数变了：新增/删除了会员消费查询？' +
@@ -1344,8 +1344,8 @@ describe('客量板块两端口径一致性守护', () => {
         ['admin', adminCode, 5],
         ['staff', normalize(stripComments(staffSrc)), 2],
       ] as Array<[string, string, number]>) {
-        const hits = code.match(/SUM\(spe\.amount::numeric\)/g) ?? []
-        expect(hits.length, `${side} 的 SUM(spe.amount) 出现 ${hits.length} 次，期望 ${expected} 次`)
+        const hits = code.match(/SUM\(spe\.performance_amount::numeric\)/g) ?? []
+        expect(hits.length, `${side} 的 SUM(spe.performance_amount) 出现 ${hits.length} 次，期望 ${expected} 次`)
           .toBe(expected)
       }
     })
@@ -2247,8 +2247,8 @@ describe('客量板块两端口径一致性守护', () => {
       // ① admin KPI 分子回退
       const kpiBack = mutate(
         adminSrc,
-        "const sc = scopeFilterSql(session, scope, 'c.bound_store_id')\n  const rows = await db.execute(sql`\n    SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v",
-        "const sc = scopeFilterSql(session, scope, 'o.store_id')\n  const rows = await db.execute(sql`\n    SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v",
+        "const sc = scopeFilterSql(session, scope, 'c.bound_store_id')\n  const rows = await db.execute(sql`\n    SELECT COALESCE(SUM(spe.performance_amount::numeric), 0) AS v",
+        "const sc = scopeFilterSql(session, scope, 'o.store_id')\n  const rows = await db.execute(sql`\n    SELECT COALESCE(SUM(spe.performance_amount::numeric), 0) AS v",
       )
       expect(
         fnSource(kpiBack, ADMIN_CUSTOMER, 'queryNewMemberSpend').match(SCOPE_COL_RE)![1],
@@ -2268,8 +2268,8 @@ describe('客量板块两端口径一致性守护', () => {
       // ③ staff 分子回退
       const staffBack = mutate(
         staffSrc,
-        "const sc = buildClientScope(scopeType, scopeId, 'c', 1)\n  const rows = await pg.query(\n    `SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v",
-        "const sc = buildSaleScope(scopeType, scopeId, 'o', 1)\n  const rows = await pg.query(\n    `SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v",
+        "const sc = buildClientScope(scopeType, scopeId, 'c', 1)\n  const rows = await pg.query(\n    `SELECT COALESCE(SUM(spe.performance_amount::numeric), 0) AS v",
+        "const sc = buildSaleScope(scopeType, scopeId, 'o', 1)\n  const rows = await pg.query(\n    `SELECT COALESCE(SUM(spe.performance_amount::numeric), 0) AS v",
       )
       expect(
         fnSource(staffBack, STAFF_MGMT_TRAFFIC, 'queryNewMemberSpend').match(STAFF_SCOPE_RE)![1],

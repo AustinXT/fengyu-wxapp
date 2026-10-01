@@ -21,8 +21,8 @@ import type { DataCenterScope, ResolvedRange } from './types'
 /** 业绩合计（= 销售板总业绩，与 sales.ts runStoreRevenue 同一组过滤条件） */
 export function performanceTotalSql(session: AuthSession, scope: DataCenterScope, range: ResolvedRange) {
   return sql`
-    SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
-    FROM sale_order_performance_events spe
+    SELECT COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
+    FROM sale_reportable_payment_events spe
     WHERE ${scopeFilterSql(session, scope, 'spe.store_id')}
       AND spe.status = '已支付'
       AND spe.change_type IN ('首次支付', '回款', '退款')
@@ -66,8 +66,8 @@ export function dailyOverviewQueries(session: AuthSession, scope: DataCenterScop
     // 销售单 + 转换单业绩：kind='total' 是逐店款项精确合计，kind='part' 是按子项拆分的片段
     performance: sql`
       WITH pay AS (
-        SELECT spe.sale_payment_id, spe.store_id, spe.amount::numeric AS amount
-        FROM sale_order_performance_events spe
+        SELECT spe.sale_payment_id, spe.store_id, spe.performance_amount::numeric AS amount
+        FROM sale_reportable_payment_events spe
         WHERE ${scopeFilterSql(session, scope, 'spe.store_id')}
           AND spe.status = '已支付'
           AND spe.change_type IN ('首次支付', '回款', '退款')
@@ -76,10 +76,16 @@ export function dailyOverviewQueries(session: AuthSession, scope: DataCenterScop
           AND spe.performance_date BETWEEN ${range.start} AND ${range.end}
       ),
       receipt AS (
-        SELECT r.sale_payment_id, r.sale_item_id, r.amount::numeric AS amount,
-               SUM(r.amount::numeric) OVER (PARTITION BY r.sale_payment_id) AS denominator
-        FROM sale_payment_item_receipts r
-        WHERE r.sale_payment_id IN (SELECT sale_payment_id FROM pay)
+        SELECT r.sale_payment_id, r.sale_item_id,
+               r.performance_amount::numeric AS amount
+        FROM sale_reportable_item_events r
+        WHERE r.receipt_id IS NOT NULL
+          AND r.sale_payment_id IN (SELECT sale_payment_id FROM pay)
+      ),
+      receipt_total AS (
+        SELECT sale_payment_id, SUM(amount) AS amount
+        FROM receipt
+        GROUP BY sale_payment_id
       )
       SELECT 'total' AS kind, pay.store_id, NULL::text AS sales_category, NULL::text AS category_id,
              SUM(pay.amount)::text AS amount
@@ -87,25 +93,24 @@ export function dailyOverviewQueries(session: AuthSession, scope: DataCenterScop
       GROUP BY pay.store_id
       UNION ALL
       SELECT 'part' AS kind, pay.store_id, si.sales_category::text AS sales_category, sku.category_id,
-             SUM(rc.amount * pay.amount / rc.denominator)::text AS amount
+             SUM(rc.amount)::text AS amount
       FROM pay
-      JOIN receipt rc ON rc.sale_payment_id = pay.sale_payment_id AND rc.denominator <> 0
+      JOIN receipt rc ON rc.sale_payment_id = pay.sale_payment_id
       LEFT JOIN sale_items si ON si.sale_item_id = rc.sale_item_id
       LEFT JOIN product_skus sku ON sku.sku_id = si.sku_id
       GROUP BY pay.store_id, si.sales_category, sku.category_id
       UNION ALL
       SELECT 'part' AS kind, pay.store_id, NULL::text AS sales_category, NULL::text AS category_id,
-             SUM(pay.amount)::text AS amount
+             SUM(pay.amount - COALESCE(rt.amount, 0))::text AS amount
       FROM pay
-      WHERE NOT EXISTS (
-        SELECT 1 FROM receipt rc WHERE rc.sale_payment_id = pay.sale_payment_id AND rc.denominator <> 0
-      )
+      LEFT JOIN receipt_total rt ON rt.sale_payment_id = pay.sale_payment_id
       GROUP BY pay.store_id
+      HAVING SUM(pay.amount - COALESCE(rt.amount, 0)) <> 0
     `,
     // 充值单：没有商品明细，单列
     recharge: sql`
-      SELECT spe.store_id, SUM(spe.amount::numeric)::text AS amount
-      FROM sale_order_performance_events spe
+      SELECT spe.store_id, SUM(spe.performance_amount::numeric)::text AS amount
+      FROM sale_reportable_payment_events spe
       WHERE ${scopeFilterSql(session, scope, 'spe.store_id')}
         AND spe.status = '已支付'
         AND spe.change_type IN ('首次支付', '回款', '退款')

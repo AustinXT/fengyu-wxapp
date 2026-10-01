@@ -10,8 +10,8 @@
  * mgmtDashboard.summary — 数据中心首页 8 卡片汇总
  *   一次返回 4 张大卡（业绩/实耗，含月店均）+ 4 张小卡（客流/客量/新会员/项目数）
  *   口径定义：notes/references/metrics.md
- *   2026-08 业绩归属日期：组织层级业绩按 sale_order_performance_events 的
- *   performance_date 统计。
+ *   组织层级业绩按 sale_reportable_payment_events.performance_amount 汇总，
+ *   按该视图的 performance_date 归期；原始付款金额仍在 amount。
  *   ⚠ 2026-09-14 订正（#137 / #140）：原文「首次收款跟随订单归属日期，后续回款/退款仍按
  *   真实发生日」**已失效**。迁移 0041 起视图的 performance_date 一律直读
  *   `sale_order_payments.performance_attribution_date`，回款/退款同样按归属日期；
@@ -251,8 +251,8 @@ function timeWindow(col, mode, idx, isDateColumn) {
 async function queryStoreRevenue(scopeType, scopeId, date, mode) {
   const sc = buildSaleScope(scopeType, scopeId, 'spe', 2)
   const rows = await pg.query(
-    `SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
-       FROM sale_order_performance_events spe
+    `SELECT COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
+       FROM sale_reportable_payment_events spe
       WHERE ${sc.sql}
         AND spe.status = '已支付'
         AND spe.change_type IN ('首次支付', '回款', '退款')
@@ -267,8 +267,8 @@ async function queryStoreRevenue(scopeType, scopeId, date, mode) {
 async function queryShengmeiRevenue(scopeType, scopeId, date, mode) {
   const sc = buildSaleScope(scopeType, scopeId, 'so', 2)
   const rows = await pg.query(
-    `SELECT COALESCE(SUM(sipe.amount::numeric), 0) AS v
-       FROM sale_item_performance_events sipe
+    `SELECT COALESCE(SUM(sipe.performance_amount::numeric), 0) AS v
+       FROM sale_reportable_item_events sipe
        JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id
        JOIN sale_orders so ON so.sale_order_id = sipe.sale_order_id
       WHERE ${sc.sql}
@@ -912,11 +912,11 @@ async function rankingRevenue(period, storeFilter) {
        s.store_id,
        s.store_name,
        o.name AS market_name,
-       COALESCE(SUM(spe.amount::numeric), 0) AS value
+       COALESCE(SUM(spe.performance_amount::numeric), 0) AS value
      FROM stores s
      JOIN org_nodes o_store ON s.org_node_id = o_store.id
      JOIN org_nodes o ON o_store.parent_id = o.id
-     LEFT JOIN sale_order_performance_events spe
+     LEFT JOIN sale_reportable_payment_events spe
        ON spe.store_id = s.store_id
        AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
        AND spe.legacy_source IS DISTINCT FROM 'workfine'
@@ -1241,12 +1241,14 @@ async function staffRankingRevenue(period, storeFilter, orgScope) {
 revenue_by_emp AS (
   SELECT
     spia.employee_id,
-    COALESCE(SUM(spia.allocated_amount::numeric), 0) AS v
+    COALESCE(SUM(ROUND(spia.allocated_amount::numeric *
+      COALESCE(sipe.performance_amount::numeric / NULLIF(spir.amount::numeric, 0), 0), 2)), 0) AS v
   FROM sale_payment_item_allocations spia
   JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+  JOIN sale_reportable_item_events sipe ON sipe.receipt_id = spir.id
   JOIN sale_items si  ON si.sale_item_id  = spir.sale_item_id
   JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-  JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id
+  JOIN sale_reportable_payment_events spe ON spe.sale_payment_id = spir.sale_payment_id
   WHERE spia.is_void = FALSE
     AND so.sale_order_type IN ('销售单','转换单')
     AND ${performanceEventPeriodWindow('spe', period)}
@@ -1586,8 +1588,8 @@ async function salesData(ctx) {
       // SQL 1: 总业绩（一律按款项业绩归属日期 spe.performance_date；
       //        原注释「后续回款/退款按真实发生日」自 #137 收敛后已失效，见文件头）
       pg.query(
-        `SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
-           FROM sale_order_performance_events spe
+        `SELECT COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
+           FROM sale_reportable_payment_events spe
            JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
           WHERE ${scSale.sql}
             AND spe.status = '已支付'
@@ -1602,18 +1604,18 @@ async function salesData(ctx) {
       //   并把 became_member_at IS NULL（历史回填缺口）的"会员客"归到"老会员"（COALESCE 兜底）。
       pg.query(
         `SELECT
-            COALESCE(SUM(spe.amount::numeric) FILTER (
+            COALESCE(SUM(spe.performance_amount::numeric) FILTER (
               WHERE c.customer_type = '小美客'
             ), 0) AS xiaomei,
-            COALESCE(SUM(spe.amount::numeric) FILTER (
+            COALESCE(SUM(spe.performance_amount::numeric) FILTER (
               WHERE c.customer_type = '会员客'
                 AND COALESCE(c.became_member_at, '1970-01-01'::timestamptz)::date >= $1
             ), 0) AS new_member,
-            COALESCE(SUM(spe.amount::numeric) FILTER (
+            COALESCE(SUM(spe.performance_amount::numeric) FILTER (
               WHERE c.customer_type = '会员客'
                 AND COALESCE(c.became_member_at, '1970-01-01'::timestamptz)::date < $1
             ), 0) AS old_member
-           FROM sale_order_performance_events spe
+           FROM sale_reportable_payment_events spe
            JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
            JOIN client_wechat_users c ON c.user_id = o.client_user_id
           WHERE ${scSale.sql}
@@ -1688,8 +1690,8 @@ async function salesData(ctx) {
       // SQL 6: 按经营类型汇总
       pg.query(
         `SELECT si.sales_category AS label,
-                COALESCE(SUM(sipe.amount::numeric), 0) AS value
-           FROM sale_item_performance_events sipe
+                COALESCE(SUM(sipe.performance_amount::numeric), 0) AS value
+           FROM sale_reportable_item_events sipe
            JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id
            JOIN sale_orders o ON o.sale_order_id = sipe.sale_order_id
           WHERE ${scSale.sql}
@@ -1704,8 +1706,8 @@ async function salesData(ctx) {
       // SQL 7: 按一级品项汇总
       pg.query(
         `SELECT pc.product_kind AS label,
-                COALESCE(SUM(sipe.amount::numeric), 0) AS value
-           FROM sale_item_performance_events sipe
+                COALESCE(SUM(sipe.performance_amount::numeric), 0) AS value
+           FROM sale_reportable_item_events sipe
            JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id
            JOIN sale_orders o ON o.sale_order_id = sipe.sale_order_id
            JOIN product_skus sk ON sk.sku_id = si.sku_id
@@ -1723,8 +1725,8 @@ async function salesData(ctx) {
       pg.query(
         `SELECT pc.product_kind AS kind,
                 pc.category_name AS label,
-                COALESCE(SUM(sipe.amount::numeric), 0) AS value
-           FROM sale_item_performance_events sipe
+                COALESCE(SUM(sipe.performance_amount::numeric), 0) AS value
+           FROM sale_reportable_item_events sipe
            JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id
            JOIN sale_orders o ON o.sale_order_id = sipe.sale_order_id
            JOIN product_skus sk ON sk.sku_id = si.sku_id

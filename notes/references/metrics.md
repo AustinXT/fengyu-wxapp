@@ -4,14 +4,26 @@
 > 字段格式：`表名.列名`；筛选条件标准缩写见底部。
 > **术语备注**：以下指标定义中出现的 `product_type='院装产品'` 字面量已于 2026-04-25 在 PG enum 中重命名为 `'家居产品'`，业务口径与代码同步。
 
+> **2026-10-01 #494 拓客业绩口径**：以下成文历史中的 `sale_order_performance_events.amount`、
+> `sale_item_performance_events.amount`、`sale_payment_item_allocations.allocated_amount` 仍是**原始资金/子项/员工分配事实**，
+> 凡指标名为「业绩」或以业绩为金额分子，改读 `sale_reportable_payment_events.performance_amount`、
+> `sale_reportable_item_events.performance_amount`，员工业绩按后者与 receipt 原金额之比缩放既有分配额。
+> `sale_items.product_kind_at_sale='拓客引流卡'` 的款项不计业绩；正负混合款按款项实收封顶，
+> 一笔 5000 元、普通子项 5168 元、拓客子项 −168 元的转换款计 5000 元，子项尾差吸收后逐分勾稽。
+> 无 receipt / receipt 净额为零的款项保留本笔组织业绩并归未分类；充值单保留原业绩。
+> 储值卡抵扣不计组织现金业绩，但普通品项的卡抵扣价值仍计子项/生美业绩；拓客品项卡抵扣为 0。
+> 原始实付、退款、储值卡余额和**提成金额**不因此变化。老单的商品品项按迁移时分类回填一次，
+> 新单在下单时冻结；因此迁移会重算历史月份一次，未来商品改类不回溯已售订单。
+> 商品周期的历史残差没有对应款项，保留普通品项原归属日，拓客残差归零；它与现金款项单列对账。
+
 ---
 
 ## 业绩 / 实耗
 
 | 指标 | 公式 | 数据源 | 筛选条件 |
 |------|------|--------|----------|
-| 业绩（门店 / 市场 / 总部） | `SUM(spe.amount)` | `sale_order_performance_events spe` | `spe.status='已支付'` ∩ `spe.change_type IN ('首次支付','回款','退款')` ∩ `spe.sale_order_type IN ('销售单','转换单','充值单')` ∩ `spe.legacy_source IS DISTINCT FROM 'workfine'` ∩ `[spe.performance_date]` |
-| 生美业绩 | `SUM(sipe.amount)` | `sale_item_performance_events sipe` | JOIN sale_items + sale_orders；`sale_order_type IN ('销售单','转换单')` ∩ `is_shengmei=TRUE` ∩ `[sipe.performance_date]`；款项行不筛父单状态，残差行排除父单 `已关闭` |
+| 业绩（门店 / 市场 / 总部） | `SUM(spe.performance_amount)` | `sale_reportable_payment_events spe` | `spe.status='已支付'` ∩ `spe.change_type IN ('首次支付','回款','退款')` ∩ `spe.sale_order_type IN ('销售单','转换单','充值单')` ∩ `spe.legacy_source IS DISTINCT FROM 'workfine'` ∩ `[spe.performance_date]` |
+| 生美业绩 | `SUM(sipe.performance_amount)` | `sale_reportable_item_events sipe` | JOIN sale_items + sale_orders；`sale_order_type IN ('销售单','转换单')` ∩ `is_shengmei=TRUE` ∩ `[sipe.performance_date]`；款项行不筛父单状态，残差行排除父单 `已关闭` |
 | 实耗 | `SUM(unit_real_price * session_used)` | `service_items.unit_real_price` × `service_items.session_used` | JOIN service_orders；`status='已完成'` ∩ `[service_date]` |
 | 生美实耗 | `SUM(unit_real_price * session_used)` | 同上 | 加 `service_items.is_shengmei=TRUE` |
 
@@ -133,14 +145,15 @@
 
 | 指标（员工层） | 公式 | 归属字段 | 时间窗口 | 备注 |
 |------|------|---------|---------|------|
-| 业绩 | `SUM(spia.allocated_amount)` | `sale_payment_item_allocations.employee_id` | `[spe.performance_date_period]` | JOIN receipt + `sale_order_performance_events`；`is_void=FALSE` ∩ `sale_order_type IN ('销售单','转换单')` ∩ `spe.status='已支付'` |
+| 业绩 | `SUM(ROUND(spia.allocated_amount × sipe.performance_amount / NULLIF(spir.amount,0),2))` | `sale_payment_item_allocations.employee_id` | `[spe.performance_date_period]` | JOIN receipt + `sale_reportable_item_events`；`is_void=FALSE` ∩ `sale_order_type IN ('销售单','转换单')` ∩ `spe.status='已支付'`；零分母贡献 0 |
 | 实耗 | `SUM(service_items.unit_real_price * service_items.session_used * service_commissions.allocation_ratio)` | `service_commissions.employee_id` | `[service_date_period]` | `sc.is_void=FALSE` ∩ `service_orders.status='已完成'`；2026-09-03 归属变更见下 |
 | 客流 | `COUNT(DISTINCT service_orders.client_user_id)` | `service_commissions.employee_id` | `[service_date_period]` | 员工内去重，跨员工不去重；`sc.is_void=FALSE` ∩ `status='已完成'` ∩ `client_user_id IS NOT NULL` |
 | 项目数 | `SUM(session_used)`（先按 `(sc.employee_id, service_item_id)` DISTINCT） | `service_commissions.employee_id` | `[service_date_period]` | `sc.is_void=FALSE` ∩ `sales_category IN ('自销自耗','他销自耗')` ∩ `status='已完成'`；计数指标**不乘** `allocation_ratio` |
 | 新会员 | `COUNT(*)` | `client_wechat_users.bound_employee_id` | `[became_member_at_period]` | `became_member_at IS NOT NULL`；`bound_employee_id IS NULL` 的新会员不归属任何员工（与"无归属新会员"差额由监控关注） |
 | 收入 | 销售提成 + 服务提成 | 销售=`sale_payment_item_allocations.employee_id`；服务=`service_commissions.employee_id` | 销售按 `[spe.performance_date_period]`；服务按 `[service_date_period]` | `is_void=FALSE`；销售使用 `commission_amount`；服务使用 `service_commissions.commission_amount` |
 
-> **业绩 vs 收入区别**：业绩仅含销售部分（`sale_allocations`）；收入 = 销售 + 服务提成（`service_commissions`）。两者销售部分公式相同；收入因加服务提成而 ≥ 业绩。
+> **业绩 vs 收入区别**：业绩是剔除拓客的员工销售营业额份额；收入 = 原有销售提成 + 服务提成（`service_commissions`），提成金额不随本次报表业绩排除而变化，因此两者不可直接按比例比较。
+> staff `todayCommission` 的 `todayAmount` / `thisMonthAmount` / `lastMonthAmount` 虽沿用“分成”命名，历史公式是 `allocated_amount`（销售营业额分配份额），故按本次可计子项比例缩放；它们不是员工应发提成。真正的销售提成仍是 `commission_amount`，收入查看和提成结算不按拓客比例改写。
 >
 > **2026-09-03 员工归属口径变更（实耗 / 客流 / 项目数）**：归属字段从 `service_items.employee_id`
 > 改为 `service_commissions.employee_id`（`is_void=FALSE`），实耗额外乘 `allocation_ratio`。
@@ -517,7 +530,7 @@ WHERE c.customer_status IN ('保有会员-稳定','保有会员-有效')
 > 6 个消费分桶 × 2 列（人数 / 消费金额）+ 1 项会员客单价。
 >
 > **2026-09-16（#138）起改为款项流水口径，与组织层级业绩同源**：
-> `SUM(spe.amount)` ∩ `spe.status='已支付'` ∩ `spe.change_type IN ('首次支付','回款','退款')` ∩
+> `SUM(spe.performance_amount)`（`sale_reportable_payment_events spe`）∩ `spe.status='已支付'` ∩ `spe.change_type IN ('首次支付','回款','退款')` ∩
 > `spe.sale_order_type IN ('销售单','转换单')` ∩ `spe.legacy_source IS DISTINCT FROM 'workfine'` ∩ `[spe.performance_date]`。
 >
 > ⚠ 与组织层级业绩的**唯一差异**：客量侧**不含 `充值单`**（充值是预存，不是消费）。
@@ -532,8 +545,8 @@ WHERE c.customer_status IN ('保有会员-稳定','保有会员-有效')
 ```sql
 WITH member_spend AS (
   SELECT o.client_user_id,
-         SUM(spe.amount::numeric) AS spend
-  FROM sale_order_performance_events spe
+         SUM(spe.performance_amount::numeric) AS spend
+  FROM sale_reportable_payment_events spe
   JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
   JOIN client_wechat_users c ON c.user_id = o.client_user_id
   WHERE <scope on o.store_id>
@@ -595,7 +608,7 @@ admin 取 `fengyu-admin/src/lib/data-center/spend-buckets.ts` 的 `SPEND_BUCKET_
 | 指标 | 公式 | 数据源 | 筛选条件 |
 |------|------|--------|----------|
 | 新增会员数（newMemberCount） | `COUNT(*)` | `client_wechat_users` | `became_member_at::date BETWEEN $startDate AND $endDate` ∩ scope（`bound_store_id`） |
-| 新增会员对应消费（newMemberSpend） | `SUM(spe.amount)` | `sale_order_performance_events spe` JOIN `sale_orders` | JOIN 上面的新增会员；`spe.sale_order_type IN ('销售单','转换单')` ∩ `spe.status='已支付'` ∩ `spe.change_type IN ('首次支付','回款','退款')` ∩ `spe.legacy_source IS DISTINCT FROM 'workfine'` ∩ `[spe.performance_date]` ∩ scope（**`c.bound_store_id`，与分母「新增会员数」同源；#439 自 2026-09-26 起，此前是 `o.store_id`**）。**2026-09-16（#138）起同 §4 口径**，旧实现为 `SUM(o.received - COALESCE(o.refunded_amount,0)) @ o.paid_at::date` ∩ `o.status='已支付'`（旧文档误记为 `paid_amount`，该列已 DROP） |
+| 新增会员对应消费（newMemberSpend） | `SUM(spe.performance_amount)` | `sale_reportable_payment_events spe` JOIN `sale_orders` | JOIN 上面的新增会员；`spe.sale_order_type IN ('销售单','转换单')` ∩ `spe.status='已支付'` ∩ `spe.change_type IN ('首次支付','回款','退款')` ∩ `spe.legacy_source IS DISTINCT FROM 'workfine'` ∩ `[spe.performance_date]` ∩ scope（**`c.bound_store_id`，与分母「新增会员数」同源；#439 自 2026-09-26 起，此前是 `o.store_id`**）。**2026-09-16（#138）起同 §4 口径**，旧实现为 `SUM(o.received - COALESCE(o.refunded_amount,0)) @ o.paid_at::date` ∩ `o.status='已支付'`（旧文档误记为 `paid_amount`，该列已 DROP） |
 | 新增会员对应消费 · WorkFine 历史单分支（newMemberLegacySpend，#289） | 订单级，**有明细取明细**：`CASE WHEN EXISTS(sale_items) THEN SUM(si.received) ELSE o.received END` | `sale_orders o` JOIN `client_wechat_users c` | 人群同上（`became_member_at` 落区间）；`o.status IN ('已支付','部分支付','已完成')` ∩ `o.sale_order_type IN ('销售单','转换单')` ∩ `o.legacy_source='workfine'` ∩ `[o.performance_attribution_date]` ∩ scope（**`c.bound_store_id`，随 #439 归店同源**）。口径照搬 §staff 顾客档案消费指标「年度消费 · legacy 分支」 |
 | 新增会员客单价（newMemberAvgTicket） | `(newMemberSpend + newMemberLegacySpend) / newMemberCount` | 派生；防除零 → `--`。**#289 起分子含 WorkFine 历史单**，分母不动（故成交率不受影响）；**#439 起分子两分支都按 `c.bound_store_id` 归店，与分母同源**。admin KPI 两分支相加后除以人数再 `round2`；明细在 SQL 里相加、`round2(合计) ÷ 人数`（展示时再格式化）；staff 回传 `newMembers.spend = round2(两分支之和)`、前端 `spend / count` 格式化。三处在 .xx5 边界上可能差 1 分（既有舍入差异，非本单引入） |
 | 新增会员成交率（newMemberConvRate） | `newMemberCount / trialFootfall × 100%` | 派生；防除零 → `--` |
@@ -872,7 +885,7 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 | staff · **订单列表、营业额分配列表** 的日期筛选 | 列表筛选区间 | `[performance_attribution_date]` | **#139** |
 | admin · **工作台** | 今日实付、今日退款、昨日实付 | `[spe.performance_date]` | **#140** |
 | staff · **顾客档案年度消费 / 列表年消费** | 本年净消费、tier 徽章分档 | `[performance_attribution_date]` | **#141** |
-| admin / staff · 品项顾客周期（mgmt-product-cycle） | `purchase_date`（进入/复购达标日的时间轴） | `sale_item_performance_events.performance_date` | #137 |
+| admin / staff · 品项顾客周期（mgmt-product-cycle） | `purchase_date`（进入/复购达标日的时间轴） | `sale_reportable_item_events.performance_date` | #137、#494 |
 | admin / staff · 分客型业绩、分客型产品出库、品项维度汇总 | 这三项的金额指标（⚠ 同页的**分客型项目实耗**走 `[service_date]`，不在此列） | `[spe.performance_date]` / `[sipe.performance_date]` | #137 |
 
 ### 明确**不**走归属日期（范围外）
@@ -950,9 +963,9 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 
 | 缩写 | 含义 |
 |------|------|
-| `[spe.performance_date]` | 在所选日期/月份范围内（按 `sale_order_performance_events.performance_date`，**款项业绩归属日期**，`date` 类型、闭区间） |
+| `[spe.performance_date]` | 在所选日期/月份范围内（业绩金额读 `sale_reportable_payment_events.performance_date`，资金/提成仍读原款项视图；两者同为**款项业绩归属日期**，`date` 类型、闭区间） |
 | `[spe.performance_date_period]` | 同上，按 period 维度命中（`month` / `lastMonth` / `year`，锚点 `NOW()`） |
-| `[sipe.performance_date]` | 同上，但取自**子项**业绩事件视图 `sale_item_performance_events.performance_date`（品项 / 产品出库 / 品项顾客周期用） |
+| `[sipe.performance_date]` | 同上；子项业绩读 `sale_reportable_item_events.performance_date`，产品出库等原始金额仍可读 `sale_item_performance_events.performance_date`，日期语义一致 |
 | `[sipe.performance_date_period]` | 同上，按 period 维度命中 |
 | `[performance_attribution_date]` | 直读 `sale_order_payments.performance_attribution_date`（不经视图时用；语义同上） |
 | `[paid_at]` | 在所选日期/月份范围内（按 `paid_at::date`）—— **资金发生日**，与归属日期是两个口径，勿混 |
@@ -1080,10 +1093,10 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 
 | 指标 | 公式 | 数据源 | 筛选条件 |
 |------|------|--------|----------|
-| 小美客业绩 | `SUM(spe.amount)` | `sale_order_performance_events spe` JOIN `sale_orders so` JOIN `client_wechat_users c ON c.user_id = so.client_user_id` | 分型:小美客 ∩ `spe.status='已支付'` ∩ `spe.change_type IN ('首次支付','回款','退款')` ∩ `spe.sale_order_type IN ('销售单','转换单','充值单')` ∩ `spe.legacy_source IS DISTINCT FROM 'workfine'` ∩ `[spe.performance_date_period]`。**2026-09-14 订正**：原写 `sop.paid_at_period` 已失效 |
-| 新增会员业绩 | `SUM(spe.amount)` | 同上 | 分型:新增会员 ∩ 同上 |
-| 老会员业绩 | `SUM(spe.amount)` | 同上 | 分型:老会员 ∩ 同上 |
-| 流量客业绩（admin 数据中心销售板块） | `SUM(spe.amount)` | 同上 | `c.customer_type = '流量客'` ∩ 同上（**仅纯流量客**，不含体验客/小美客；2026-05-26 用户拍板）|
+| 小美客业绩 | `SUM(spe.performance_amount)` | `sale_reportable_payment_events spe` JOIN `sale_orders so` JOIN `client_wechat_users c ON c.user_id = so.client_user_id` | 分型:小美客 ∩ `spe.status='已支付'` ∩ `spe.change_type IN ('首次支付','回款','退款')` ∩ `spe.sale_order_type IN ('销售单','转换单','充值单')` ∩ `spe.legacy_source IS DISTINCT FROM 'workfine'` ∩ `[spe.performance_date_period]`。**2026-09-14 订正**：原写 `sop.paid_at_period` 已失效 |
+| 新增会员业绩 | `SUM(spe.performance_amount)` | 同上 | 分型:新增会员 ∩ 同上 |
+| 老会员业绩 | `SUM(spe.performance_amount)` | 同上 | 分型:老会员 ∩ 同上 |
+| 流量客业绩（admin 数据中心销售板块） | `SUM(spe.performance_amount)` | 同上 | `c.customer_type = '流量客'` ∩ 同上（**仅纯流量客**，不含体验客/小美客；2026-05-26 用户拍板）|
 
 ### 分客型项目实耗
 
@@ -1112,7 +1125,7 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 
 ## 品项维度汇总（销售数据页）
 
-> 公式：`SUM(sipe.amount)`，时间轴 `sale_item_performance_events.performance_date`，
+> 公式：`SUM(sipe.performance_amount)`，时间轴 `sale_reportable_item_events.performance_date`，
 > 基础过滤：`so.sale_order_type IN ('销售单','转换单')` ∩ `so.status='已支付'` ∩ `[sipe.performance_date_period]`。
 > ⚠ **2026-09-14 订正**：原写「`SUM(si.received)`，时间轴 `paid_at`」已失效（同产品出库）。
 > 一/二级品项 JOIN 链：`sale_items si → sale_orders so → product_skus sk (ON si.sku_id=sk.sku_id) → product_categories pc (ON sk.category_id=pc.category_id)`。
@@ -1135,8 +1148,8 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 
 | 指标 | 公式 | 说明 |
 |------|------|------|
-| ☆ 业绩合计 | = 销售板「总业绩」：`SUM(spe.amount)` ∩ 已支付 ∩ `change_type IN ('首次支付','回款','退款')` ∩ `sale_order_type IN ('销售单','转换单','充值单')` ∩ `legacy_source IS DISTINCT FROM 'workfine'` ∩ `[spe.performance_date]` | **含充值**（原型「合计 = 4 类之和」不含）。**不带**「父订单已结清」（`so.status='已支付'`）过滤，与 #300 同方向 |
-| 各经营类型 / 品项业绩 | 款项集合同上但只取销售单 + 转换单；每行 `receipt.amount × 款项金额 ÷ 该款项全部 receipts 之和` 后按 `sale_items.sales_category` / SKU 所挂二级品项汇总 | 储值卡抵扣份额、转换单折抵残差自然剔除（储值卡在充值时已计业绩）。分母为 0 / 款项无 receipts / `sku_id` 为空 / SKU 挂在一级 / 二级找不到一级 / `sales_category` 为空 → 进「未分类」，不丢钱 |
+| ☆ 业绩合计 | = 销售板「总业绩」：`SUM(spe.performance_amount)` ∩ 已支付 ∩ `change_type IN ('首次支付','回款','退款')` ∩ `sale_order_type IN ('销售单','转换单','充值单')` ∩ `legacy_source IS DISTINCT FROM 'workfine'` ∩ `[spe.performance_date]` | **含充值**（原型「合计 = 4 类之和」不含）。**不带**「父订单已结清」（`so.status='已支付'`）过滤，与 #300 同方向 |
+| 各经营类型 / 品项业绩 | 款项集合同上但只取销售单 + 转换单；直接汇总 `sale_reportable_item_events.performance_amount` 的 receipt 行，按 `sale_items.sales_category` / SKU 所挂二级品项分组；再以「款项可计额 − receipt 可计额」补未分类差额 | 拓客 receipt 为 0，普通 receipt 按款项金额封顶且不超过原普通分摊额；储值卡抵扣不进入此现金款项集。无 receipt、零分母及分摊缺口通过差额进入「未分类」，不丢钱。`sku_id` / `sales_category` 缺失时也归未分类 |
 | ☆ 充值 | 款项集合同上但只取充值单 | 充值单没有商品明细，单列在「生态合作业绩」与「业绩合计」之间 |
 | 服务（各经营类型 / 合计） | = 销售板「总实耗」：`SUM(sit.unit_real_price * sit.session_used)` ∩ `so.status='已完成'` ∩ `[service_date]` ∩ 剔除寄存单退款专用单，按 `service_items.sales_category` 分组 | 按核销门店。☆ **含寄存单老卡核销**：2026-08 服务合计 4,575,126.33 中寄存单核销 3,417,853.37（74.7%），服务合计约为业绩合计的 1.33 倍——数字正确，交付前向甲方说明 |
 | ☆ 自销自耗业绩占比 | 自销自耗业绩 ÷ 业绩合计 | 分母跟业绩口径走（含充值）：2026-08 含充值 33.3%、不含 35.6%。遇负数照常计算（验收要求，含业绩合计为负），**只有分母为 0 → `--`**；#310 的负基期规则只管增幅徽章，不管占比 |
@@ -1217,16 +1230,16 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 
 | 术语 | 定义 |
 |------|------|
-| **purchase_date（消费日期）** | `sale_item_performance_events.performance_date`（**子项业绩归属日期**）。<br>⚠ **2026-09-14 订正**：原写 `COALESCE(so.sale_order_datetime, so.paid_at)::date` 已失效——#137 起两端（`mgmt-product.js` / `data-center/product.ts`）都改走子项业绩事件视图，跨月部分支付因此按款项分摊到各自归属日 |
-| **entry qualifying day（进入达标日）** | 销售单/转换单/寄存单的 `SUM(sipe.amount)` 在 `(client_user_id, store_id, product_kind, purchase_date)` 分组下 ≥ `new_member_threshold`（从 `system_configs` 动态读取，默认 1980）|
-| **repurchase qualifying day（复购达标日）** | 同一分组下仅汇总销售单/转换单的 `SUM(sipe.amount)`，达到同一 threshold；寄存单金额不参与，不能触发复购 |
+| **purchase_date（消费日期）** | `sale_reportable_item_events.performance_date`（**子项业绩归属日期**）。<br>⚠ **2026-09-14 订正**：原写 `COALESCE(so.sale_order_datetime, so.paid_at)::date` 已失效——#137 起两端（`mgmt-product.js` / `data-center/product.ts`）都改走子项业绩事件视图，跨月部分支付因此按款项分摊到各自归属日 |
+| **entry qualifying day（进入达标日）** | 销售单/转换单/寄存单的 `SUM(sipe.performance_amount)` 在 `(client_user_id, store_id, product_kind, purchase_date)` 分组下 ≥ `new_member_threshold`（从 `system_configs` 动态读取，默认 1980）|
+| **repurchase qualifying day（复购达标日）** | 同一分组下仅汇总销售单/转换单的 `SUM(sipe.performance_amount)`，达到同一 threshold；寄存单金额不参与，不能触发复购 |
 | **entry_date（首次进入日）** | 某 client 在某 product_kind 下，全历史（截至 $endDate）中最早的进入达标日（跨门店合并） |
 | **品项进入（xinzeng/newEntry）** | entry_date 落在 `[startDate, endDate]` 内的顾客 |
 | **复购（fugou）** | 本期品项进入 cohort 中，entry_date 后在 `[startDate, endDate]` 内再次有复购达标日的顾客（threshold 与进入共用） |
 | **体验（tiyan）** | 在 `[startDate, endDate]` 内有销售单/转换单购买（当日净额 > 0 的正数购买日），但全历史（截至 endDate）从未有进入达标日的顾客 |
 
 > **同一天合并规则**：同一顾客 + 同一门店 + 同一 product_kind + 同一日期的多笔消费先合并；进入基线汇总三类订单，复购达标仅汇总销售单/转换单，再分别对比 threshold。
-> **金额口径**：使用 `sale_item_performance_events.amount` 逐笔子项业绩事件（该视图按 sale_item 汇总恒等于 `sale_items.received`，回款/退款已逐笔入账）。寄存单只用于进入基线，不计入体验/进入/复购的区间业绩。
+> **金额口径**：三类订单均读 `sale_reportable_item_events.performance_amount`，拓客品项为 0；寄存单只参与进入基线，不计入体验/进入/复购的区间业绩。
 > ⚠ **2026-09-14 订正**：原写「直接使用 `sale_items.received` 累计净实收」已失效——改走事件视图后，同一笔订单的跨月回款会分摊到各自归属日，而不是整单压在下单日。
 > **订单状态口径**：周期统计不要求 `so.status='已支付'`；排除 `已关闭/已作废/未审核/待审批/支付失败` 后，分别按进入金额列和真实购买金额列判断是否达标，部分支付订单也可能达标。
 > **三类关系**：体验 ∩ 品项进入 = ∅，体验 ∩ 复购 = ∅；品项进入当天本身不算复购，必须存在 entry_date 之后的达标日。
@@ -1237,12 +1250,12 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 WITH daily_agg AS (
   SELECT so.client_user_id, so.store_id,
          pc.product_kind,    sipe.performance_date        AS purchase_date,
-         SUM(sipe.amount::numeric)                        AS day_received,
+         SUM(sipe.performance_amount::numeric)            AS day_received,
          COALESCE(
-           SUM(sipe.amount::numeric) FILTER (WHERE so.sale_order_type IN ('销售单','转换单')),
+           SUM(sipe.performance_amount::numeric) FILTER (WHERE so.sale_order_type IN ('销售单','转换单')),
            0
          )                                                AS purchase_received
-  FROM sale_item_performance_events sipe
+  FROM sale_reportable_item_events sipe
   JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id
   JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
   JOIN product_skus sk ON sk.sku_id = si.sku_id
@@ -1315,7 +1328,7 @@ tiyan AS (                                    -- 体验：期内有正数购买�
 | 复购率（repurchaseRate） | `repurchaseCount / newCount` | 派生；防除零 → `--` |
 
 > **新增人数 = 品项进入总人数**：正常购买按"首次在该品项消费达标 | 首笔消费实收累计 ≥ new_member_threshold"；寄存单承载 WorkFine 历史实收时，只作为进入基线的兼容数据。
-> **各类业绩口径**：为该客群在 period 内该 product_kind 的销售单/转换单购买 `SUM(sipe.amount)`（非仅达标当日，排除寄存单），
+> **各类业绩口径**：为该客群在 period 内该 product_kind 的销售单/转换单购买 `SUM(sipe.performance_amount)`（非仅达标当日，排除寄存单），
 > 体现"该客群对期内收入的贡献"。
 > ⚠ **2026-09-14 订正**：原写 `SUM(received)` 已失效，与本节其余部分一样改走子项业绩事件视图。
 > ⚠ **2026-09-26 订正（#288）**：区间业绩是**净额** —— 退款走负数冲销、不删行，冲销逐笔抵减业绩。
@@ -1333,8 +1346,8 @@ tiyan AS (                                    -- 体验：期内有正数购买�
 > 2026-01-01~09-22 集团 prod 实测：新增业绩 818.29 万 → 730.69 万（原虚高 11.99%），复购业绩 439.28 万 → 410.80 万
 > （原虚高 6.93%），体验/新增/复购人数均不变；门店级最高南昌梦时代 +30.1%、自贡贡井店 +29.6%、南昌江信店虚高 9.40 万。
 > **性能注意**：`daily_agg` 全历史扫描（`purchase_date <= $endDate`，无下界），随运营时长增长。
-> 索引建议**只能建在底层表上**——`sale_item_performance_events` 是普通 `pgView`，不能直接建索引，
-> 且 `sale_item_performance_events.performance_date` 的**底表来源有两个分支**：
+> 索引建议**只能建在底层表上**——`sale_reportable_item_events` 及其底层 `sale_item_performance_events` 都是普通 `pgView`，不能直接建索引，
+> 且子项业绩视图的 `performance_date` 的**底表来源有两个分支**：
 > **receipt 分支**继承款项事件日期（→ `sale_order_payments.performance_attribution_date`）、
 > **legacy residual 分支**直读 `sale_orders.performance_attribution_date`。
 > 而 `client_user_id` / `status` **并不是该视图自身的列** —— 视图只输出
@@ -1397,18 +1410,18 @@ tiyan AS (                                    -- 体验：期内有正数购买�
 
 | 指标 | 板块 | 公式 | 说明 |
 |------|------|------|------|
-| 流量客业绩 | 销售 | `SUM(spe.amount)` WHERE `c.customer_type = '流量客'` | 仅纯流量客（不含体验/小美客）；按组织层级现金流口径（`[spe.performance_date]`），详见上方「分客型业绩」表。**2026-09-14 订正**：原写 `SUM(sop.amount)` 的别名已随口径切换失效 |
+| 流量客业绩 | 销售 | `SUM(spe.performance_amount)` WHERE `c.customer_type = '流量客'` | 仅纯流量客（不含体验/小美客）；按组织层级可计业绩口径（`[spe.performance_date]`），详见上方「分客型业绩」表。**2026-09-14 订正**：原写 `SUM(sop.amount)` 的别名已随口径切换失效 |
 | 单次客耗 | 客量 | `生美实耗 ÷ 服务人次` | 分子=`SUM(unit_real_price*session_used) WHERE is_shengmei`（已完成 ∩ service_date 区间）；分母=已完成 service_orders 行数（服务人次）。KPI 与明细表统一此口径（**不用** Excel 原稿"÷频率"，亦不用"÷会员人次"）|
 | 店长人数 | 人效 | `COUNT(在营启用门店)` | 每店一店长口径：按 `stores` JOIN `org_nodes(type='门店', is_active=TRUE)` 在营计数（`opening_date<=区间末 ∩ (closed_at IS NULL OR closed_at>区间末)`），**不依赖** `position_name`。故 `店长人均X = 每店平均 X`（含 店长人均收入 = 门店全部产能员工提成合计 ÷ 门店数）|
-| 员工/技师人均业绩分子 | 人效 | `SUM(spe.amount)`（门店现金流） | **2026-09-23 #285 订正**。`empAvgRevenue` 与 `byMarket.techAvgRevenue` 的分子 = 上方 §派生指标的 `storeRevenue`，与同页「门店排名榜-业绩」、销售板「总业绩」、staff `queryStoreRevenue` **四处同源**。详见下方「业绩两套口径」|
+| 员工/技师人均业绩分子 | 人效 | `SUM(spe.performance_amount)`（门店可计现金业绩） | **2026-09-23 #285 订正**。`empAvgRevenue` 与 `byMarket.techAvgRevenue` 的分子 = 上方 §派生指标的 `storeRevenue`，与同页「门店排名榜-业绩」、销售板「总业绩」、staff `queryStoreRevenue` **四处同源**。详见下方「业绩两套口径」|
 | 人均派生分母（技师数） | 人效 | 产能技师 ∩ 区间末在职 ∩ **含直挂市场/部门者** | **2026-09-23 #285 订正**。`skills && ARRAY['美容师','养生师']`，归属按 `COALESCE(sw.store_id, ds.store_id)`；回收后仍无门店的用 `anchor_market_id` 锚到市场。⚠️ **只按 `store_id` 过滤会漏人**：组织归属双轨（`store_id` + `org_node_id`），2026-09 实测 13 名在职产能技师 `store_id IS NULL`（12 人直挂各市场「养生部」、1 人直挂「品项公司」），产出进分子、人头不进分母 → 集团 150 vs 164、虚高 **+9.33%**。⚠️ **单店 scope 下直挂者不出现**（`orgAnchorScopeSql` 返回 FALSE），故 `集团技师数 ≠ Σ门店技师数`，与员工榜同语义。⚠️ 另有一条**潜在**缺口：「既无门店、又锚不到市场」的产能技师会进 KPI 总分母却进不了任何 byMarket 行（`orgAnchorScopeSql` 在超管或持总部范围 + 汇总范围时返回 `TRUE`，不要求锚得到市场），即 `KPI 技师数 ≥ Σ byMarket 技师数`。2026-09-23 实测该类人数为 **0**，当前两数恒等；不收紧是有意的——收紧会把真实技师从集团口径整个抹掉，且与 `producer_employees` 人池定义分叉 |
 
 > ### ⚠️ 业绩有两套口径，按**聚合粒度**分（2026-09-23 #285 订正）
 >
 > | 粒度 | 公式 | 用在哪 |
 > |---|---|---|
-> | 门店/全局（不分组到人） | `SUM(sale_order_performance_events.amount)` ∩ 已支付 ∩ `change_type IN ('首次支付','回款','退款')` ∩ `sale_order_type IN ('销售单','转换单','充值单')` ∩ `legacy_source IS DISTINCT FROM 'workfine'` ∩ `[spe.performance_date]` | 人效板 KPI 大卡、按市场人效、门店排名榜；销售板总业绩；staff 大卡 |
-> | 员工（`GROUP BY employee_id`，全域，不按 scope 过滤） | `SUM(sale_payment_item_allocations.allocated_amount)` ∩ `is_void=FALSE` ∩ 销售单/转换单 ∩ 已支付回款分配 | 员工排行榜、按技师人效明细（见上方 §员工排行榜归属，#299） |
+> | 门店/全局（不分组到人） | `SUM(sale_reportable_payment_events.performance_amount)` ∩ 已支付 ∩ `change_type IN ('首次支付','回款','退款')` ∩ `sale_order_type IN ('销售单','转换单','充值单')` ∩ `legacy_source IS DISTINCT FROM 'workfine'` ∩ `[spe.performance_date]` | 人效板 KPI 大卡、按市场人效、门店排名榜；销售板总业绩；staff 大卡 |
+> | 员工（`GROUP BY employee_id`，全域，不按 scope 过滤） | `SUM(ROUND(spia.allocated_amount × sipe.performance_amount / NULLIF(spir.amount,0),2))` ∩ `is_void=FALSE` ∩ 销售单/转换单 ∩ 已支付回款分配 | 员工排行榜、按技师人效明细（见上方 §员工排行榜归属，#299） |
 >
 > **为什么不能混用**：`allocated_amount` 是**角色归属额**不是钱。写入侧按 `(sale_item_id, role_type)`
 > **分池**校验「池内 Σratio ≤ 1」，单 receipt 挂几个角色就有几个独立的 100% 池 —— ratio 合计
@@ -1620,7 +1633,7 @@ tiyan AS (                                    -- 体验：期内有正数购买�
 | 列 | 列名 | 公式 | 说明 |
 |---|---|---|---|
 | D | 美容师人数 | `technicianByStoreSql(…, 月末, 'beautician')` | `skills && ARRAY['美容师']` ∩ 月末在职历史化；归属 `COALESCE(sw.store_id, ds.store_id)`，按**当前**归属门店计（调店不历史化）。直挂市场/部门者不属任何门店行，不计入（☆ 与人效板「技师人数」不是同一指标：后者含养生师、按市场并入直挂者，且 #297 定稿 164 口径不受本列影响）。合计 = Σ门店行 |
-| P | 当月完成 | = 销售板门店「总业绩」 | `SUM(spe.amount)` ∩ 已支付 ∩ `change_type IN ('首次支付','回款','退款')` ∩ `sale_order_type IN ('销售单','转换单','充值单')` ∩ 非 workfine ∩ `[spe.performance_date]` 在所选月。寄存单款项不进入 |
+| P | 当月完成 | = 销售板门店「总业绩」 | `SUM(spe.performance_amount)` ∩ 已支付 ∩ `change_type IN ('首次支付','回款','退款')` ∩ `sale_order_type IN ('销售单','转换单','充值单')` ∩ 非 workfine ∩ `[spe.performance_date]` 在所选月。寄存单款项不进入 |
 | R | 年度累计达成 | P 的同一 SQL，区间换成 `[当年-01-01, 所选月末]` | 故 R = 当年各月 P 之和、1 月 R = P。**不接 WorkFine 历史单**（与 #289 补 legacy 的做法不同）；2026 年内必早于各市场上线日，页面按业绩轴提示数据起点 |
 | V | 当月生美项目数 | `SUM(service_items.session_used)` | ∩ `service_orders.status='已完成'` ∩ `service_date` 在所选月 ∩ `service_items.is_shengmei=TRUE` ∩ 剔除寄存单退款专用单。⚠️ 与人效板/门店榜「项目数」（`sales_category IN ('自销自耗','他销自耗')`）**不同口径**，列名须写「生美项目数」 |
 | W | 当月总实耗 | = 销售板门店「总实耗」 | `SUM(unit_real_price * session_used)` ∩ 已完成 ∩ `service_date` ∩ 剔除寄存单退款；与人效板 `qConsumeByStore` 同谓词 |
@@ -1675,7 +1688,7 @@ tiyan AS (                                    -- 体验：期内有正数购买�
 | 行 / 统计顾客数 ☆ | 范围内**全部**绑店顾客（`scopeFilterSql` 作用在 `c.bound_store_id`），含本月 0 次到店。看历史月份也按当前绑定取人，会包含当月之后才建档或改绑的顾客；绑定门店已停用或未绑定的顾客不出现 |
 | 到店日 ☆ | `visitDaysSql({ axis: 'service_or_payment' })`：已完成服务单的 `service_date` ∪ 支付日。支付日 = 销售 / 转换 / 充值单已支付的首次支付、回款、储值卡抵扣的 `paid_at`（`AT TIME ZONE 'Asia/Shanghai'`，#291），不含退款、不含寄存单。**不按款项归属日期判到店**（可人工改期：2026-08 会多 30 个没来的 ✓、漏 67 个真实付款日）|
 | 到店次数 | = 到店**天数**，去重键 (顾客, 日期)，同一天多张服务单 / 多笔款项只算 1 次（沿用 #298）。寄存单退款专用服务单照常算到店 |
-| 当日消费 ☆ | `sale_order_performance_events.amount` 按**款项归属日期**，与销售板「总业绩」同一组过滤（`已支付` ∩ 首次支付 / 回款 / 退款 ∩ 销售 / 转换 / 充值单 ∩ 非 WorkFine），含充值、不含储值卡抵扣，退款按净额可为负。按分累加 |
+| 当日消费 ☆ | `sale_reportable_payment_events.performance_amount` 按**款项归属日期**，与销售板「总业绩」同一组过滤（`已支付` ∩ 首次支付 / 回款 / 退款 ∩ 销售 / 转换 / 充值单 ∩ 非 WorkFine），含充值、不含储值卡抵扣，退款按净额可为负。按分累加 |
 | 当日消耗 | 实耗 `SUM(unit_real_price × session_used)`，已完成 ∩ `service_date`，剔除寄存单退款专用单（`excludeDepositRefundSql`），与销售板「总实耗」同源 |
 | 单元格 | 到店且金额 ≠ 0：✓ + 金额；到店金额为 0：只打 ✓；没到店但净额 ≠ 0（只有退款 / 归属日与支付日不同天）：只显示金额（负数标红），计入行合计、不计到店次数；都没有：留空。悬停：当日消费、当日消耗、服务项目、发生门店（到店单据门店 ∪ 款项门店）|
 | 分档 ☆ | 常量 `CUSTOMER_FREQUENCY_TIERS`：低频 1~2 天 / 中频 3~4 天 / 高频 ≥5 天；0 天不入档，低 + 中 + 高 = 有到店顾客 |

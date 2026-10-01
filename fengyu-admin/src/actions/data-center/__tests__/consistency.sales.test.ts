@@ -7,9 +7,9 @@
  *
  * 因两端 ORM 不同（Drizzle sql`` vs 原生 pg）且查询拆分粒度不同，完整 SQL snapshot 不可行。
  * 守护策略 = "关键不变量字面量匹配"（stripComments 后，排除注释里的反例引用）：
- *   1. 组织层级业绩 = SUM(sale_order_performance_events.amount)，按 performance_date 归期
+ *   1. 组织层级业绩 = SUM(sale_reportable_payment_events.amount)，按 performance_date 归期
  *   2. 付款 change_type = 首次支付 / 回款 / 退款；sale_order_type 另含充值单
- *   3. 生美 = is_shengmei = TRUE 的行级 SUM(sale_item_performance_events.amount)
+ *   3. 生美 = is_shengmei = TRUE 的行级 SUM(sale_reportable_item_events.amount)
  *   4. 实耗 = unit_real_price * session_used ∩ status='已完成'
  *   5. 分客型：customer_type / became_member_at 分型字面量
  *   6. 员工数 skills && ARRAY['美容师','养生师'] + hired_at/resigned_at 历史化
@@ -105,8 +105,8 @@ function cashflowFragments(src: string, side: 'admin' | 'staff'): string[] {
 
 function expectCashflowFragment(src: string) {
   const n = normalize(stripComments(src))
-  expect(n).toMatch(/(?:FROM|LEFT JOIN)\s+sale_order_performance_events\s+spe/i)
-  expect(n).toMatch(/spe\.amount::numeric/i)
+  expect(n).toMatch(/(?:FROM|LEFT JOIN)\s+sale_reportable_payment_events\s+spe/i)
+  expect(n).toMatch(/spe\.performance_amount::numeric/i)
   expect(n).toMatch(/spe\.status\s*=\s*'已支付'/)
   expect(n).toMatch(/spe\.change_type\s+IN\s*\(\s*'首次支付'\s*,\s*'回款'\s*,\s*'退款'\s*\)/)
   expect(n).toMatch(/(?:spe|so|o)\.sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*,\s*'充值单'\s*\)/)
@@ -136,8 +136,8 @@ function shengmeiFragments(admin: string, staff: string): string[] {
   })
 }
 
-const SHENGMEI_SQL = "SELECT COALESCE(SUM(sipe.amount::numeric), 0) AS v " +
-  "FROM sale_item_performance_events sipe " +
+const SHENGMEI_SQL = "SELECT COALESCE(SUM(sipe.performance_amount::numeric), 0) AS v " +
+  "FROM sale_reportable_item_events sipe " +
   "JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id " +
   "JOIN sale_orders so ON so.sale_order_id = sipe.sale_order_id " +
   "WHERE __SCOPE__ AND so.sale_order_type IN ('销售单', '转换单') " +
@@ -208,7 +208,7 @@ describe('数据中心销售板块两端口径一致性守护', () => {
     it('任何一处额外过滤、JOIN 或金额表达式漂移都报红', () => {
       for (const [from,to] of [
         ['JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id','JOIN sale_items si ON si.sale_order_id = sipe.sale_order_id'],
-        ['SUM(sipe.amount::numeric)','SUM(ABS(sipe.amount::numeric))'],
+        ['SUM(sipe.performance_amount::numeric)','SUM(ABS(sipe.performance_amount::numeric))'],
         ["so.status <> '已关闭'", "so.status <> '已退款'"],
       ]) expect(() => expectShengmeiEqual(adminSrc.replace(from,to),staffSrc)).toThrow()
     })

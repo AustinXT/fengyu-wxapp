@@ -262,14 +262,14 @@ async function cycleStats(ctx) {
              so.store_id,
              pc.product_kind,
              sipe.performance_date       AS purchase_date,
-             SUM(sipe.amount::numeric)   AS day_received,
+             SUM(sipe.performance_amount::numeric)   AS day_received,
              COALESCE(
-               SUM(sipe.amount::numeric) FILTER (
+               SUM(sipe.performance_amount::numeric) FILTER (
                  WHERE so.sale_order_type IN ('销售单','转换单')
                ),
                0
              )                           AS purchase_received
-        FROM sale_item_performance_events sipe
+        FROM sale_reportable_item_events sipe
         JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id
         JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
         JOIN product_skus sk ON sk.sku_id = si.sku_id
@@ -283,8 +283,8 @@ async function cycleStats(ctx) {
        GROUP BY so.client_user_id, so.store_id, pc.product_kind, sipe.performance_date
       -- #288：只剔除两列都为 0 的空组；负数净额组必须保留（退款走负数冲销、不删行）。
       -- 只判 day_received <> 0 不够：寄存单恰好抵平销售单/转换单净额的日子会被误丢。
-      HAVING SUM(sipe.amount::numeric) <> 0
-          OR SUM(sipe.amount::numeric) FILTER (WHERE so.sale_order_type IN ('销售单','转换单')) <> 0
+      HAVING SUM(sipe.performance_amount::numeric) <> 0
+          OR SUM(sipe.performance_amount::numeric) FILTER (WHERE so.sale_order_type IN ('销售单','转换单')) <> 0
     ),
     qualifying_days AS (
       SELECT client_user_id, store_id, product_kind, purchase_date

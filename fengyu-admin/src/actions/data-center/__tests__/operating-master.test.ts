@@ -103,7 +103,7 @@ describe('getOperatingMaster', () => {
     expect(params.slice(0, 3)).toEqual([1990, 1990, '2026-08-01'])
     expect(params.slice(-2)).toEqual(['2026-01-01', '2026-08-31'])
     expect(flat).toMatch(/COUNT\(\*\) FILTER \(WHERE t\.year_amount >= \$1\) AS year_v, COUNT\(\*\) FILTER \(WHERE t\.month_amount >= \$2\) AS month_v/)
-    expect(flat).toMatch(/SUM\(spe\.amount::numeric\) FILTER \(WHERE spe\.performance_date >= \$3\) AS month_amount/)
+    expect(flat).toMatch(/SUM\(spe\.performance_amount::numeric\) FILTER \(WHERE spe\.performance_date >= \$3\) AS month_amount/)
     expect(flat).toContain("spe.sale_order_type IN ('销售单', '转换单')")
     expect(flat).not.toMatch(/充值单|寄存单|储值卡抵扣/)
     expect(flat).toContain("spe.change_type IN ('首次支付', '回款', '退款')")

@@ -223,7 +223,7 @@ describe('mgmtDashboard.summary scopeType=all', () => {
 
     const sqlList = pg.query.mock.calls.map((c) => c[0])
     const metricSqls = sqlList.filter((s) =>
-      /sale_orders|sale_order_performance_events|sale_item_performance_events|service_orders|client_wechat_users|staff_wechat_users/.test(s),
+      /sale_orders|sale_reportable_payment_events|sale_reportable_item_events|service_orders|client_wechat_users|staff_wechat_users/.test(s),
     )
     // 10 个时间相关指标 × 2（today + month）= 20；
     // + 截面：member(1)/retained(1)/employeeDay(1)/employeeMonth(1) = 4
@@ -286,7 +286,7 @@ describe('mgmtDashboard.summary scopeType=market', () => {
     // sale/service 表过滤：so.store_id IN (递归 descendants ...)
     // 排除 retainedMemberCount（FROM service_orders + JOIN client_wechat_users，scope 走 c.bound_store_id）
     const saleServiceSqls = sqlList.filter(
-      (s) => /sale_orders|sale_order_performance_events|sale_item_performance_events|service_orders/.test(s) && !/became_member_at/.test(s),
+      (s) => /sale_orders|sale_reportable_payment_events|sale_reportable_item_events|service_orders/.test(s) && !/became_member_at/.test(s),
     )
     expect(saleServiceSqls.length).toBeGreaterThanOrEqual(12)
     for (const s of saleServiceSqls) {
@@ -339,7 +339,7 @@ describe('mgmtDashboard.summary scopeType=store', () => {
 
     // 排除 retainedMemberCount（FROM service_orders + JOIN client_wechat_users，scope 走 c.bound_store_id）
     const saleServiceSqls = sqlList.filter(
-      (s) => /sale_orders|sale_order_performance_events|sale_item_performance_events|service_orders/.test(s) && !/became_member_at/.test(s),
+      (s) => /sale_orders|sale_reportable_payment_events|sale_reportable_item_events|service_orders/.test(s) && !/became_member_at/.test(s),
     )
     for (const s of saleServiceSqls) {
       expect(s).toMatch(/(?:so|spe)\.store_id = \$2/)
@@ -477,7 +477,7 @@ describe('mgmtDashboard.summary 时间窗口', () => {
 
     const metricSqls = pg.query.mock.calls
       .map((c) => c[0])
-      .filter((s) => /sale_orders|sale_order_performance_events|sale_item_performance_events|service_orders|client_wechat_users/.test(s))
+      .filter((s) => /sale_orders|sale_reportable_payment_events|sale_reportable_item_events|service_orders|client_wechat_users/.test(s))
       // 排除 retainedMemberCount：方案 B 实时计算用 90 天 BETWEEN 窗口，不属于 day/month 二选一
       .filter((s) => !/INTERVAL\s+'90 days'/.test(s))
       // 排除 memberCount（截面历史化：became_member_at::date <= $1::date，无 date_trunc，但属于"截面"非"day/month"）
@@ -662,7 +662,7 @@ describe('mgmtDashboard.summary 生美区分', () => {
     expect(shengmeiRevSqls.length).toBe(2) // today + month
 
     const storeRevSqls = sqlList.filter(
-      (s) => /FROM sale_order_performance_events spe\b/.test(s) && /SUM\(spe\.amount::numeric/.test(s),
+      (s) => /FROM sale_reportable_payment_events spe\b/.test(s) && /SUM\(spe\.performance_amount::numeric/.test(s),
     )
     expect(storeRevSqls.length).toBe(2)
     for (const s of storeRevSqls) {
@@ -1648,7 +1648,7 @@ describe('mgmtDashboard.storeRanking', () => {
 
       const sql = pg.query.mock.calls[0][0]
       expect(sql).toMatch(/FROM stores s/)
-      expect(sql).toMatch(/LEFT JOIN sale_order_performance_events spe\b/)
+      expect(sql).toMatch(/LEFT JOIN sale_reportable_payment_events spe\b/)
       expect(sql).toMatch(/spe\.performance_date/)
       expect(sql).toMatch(/date_trunc\('month',\s*spe\.performance_date\)\s*=\s*date_trunc\('month',\s*NOW\(\)::date\)/)
       expect(sql).toContain('销售单')
@@ -1656,7 +1656,7 @@ describe('mgmtDashboard.storeRanking', () => {
       expect(sql).toContain('充值单')
       expect(sql).toContain("spe.status = '已支付'")
       expect(sql).toContain("spe.change_type IN ('首次支付', '回款', '退款')")
-      expect(sql).toMatch(/SUM\(spe\.amount::numeric\)/)
+      expect(sql).toMatch(/SUM\(spe\.performance_amount::numeric\)/)
       expect(sql).toMatch(/ORDER BY value DESC, s\.store_name ASC/)
     })
 
@@ -2172,7 +2172,8 @@ describe('mgmtDashboard.staffRanking', () => {
       expect(sql).toContain('销售单')
       expect(sql).toContain('转换单')
       expect(sql).toContain("spe.status = '已支付'")
-      expect(sql).toMatch(/SUM\(spia\.allocated_amount/)
+      expect(sql).toMatch(/SUM\(ROUND\(spia\.allocated_amount::numeric \*/)
+      expect(sql).toContain('sipe.performance_amount::numeric / NULLIF(spir.amount::numeric, 0)')
       expect(sql).toMatch(/date_trunc\('month',\s*spe\.performance_date\)\s*=\s*date_trunc\('month',\s*NOW\(\)::date\)/)
     })
 
@@ -2492,11 +2493,11 @@ describe('mgmtDashboard.salesData 时间区间口径', () => {
       if (/si\.product_type\s*=\s*'家居产品'/.test(sql)) return [{ xiaomei: 0, new_member: 0, old_member: 0 }]
       if (/FROM service_items sit/.test(sql) && /JOIN client_wechat_users/.test(sql)) return [{ xiaomei: 0, new_member: 0, old_member: 0 }]
       if (/FROM service_items sit/.test(sql)) return [{ v: overrides.consValue || 0 }]
-      if (/FROM sale_order_performance_events spe/.test(sql) && /JOIN client_wechat_users/.test(sql)) {
+      if (/FROM sale_reportable_payment_events spe/.test(sql) && /JOIN client_wechat_users/.test(sql)) {
         return [{ xiaomei: 0, new_member: 0, old_member: 0 }]
       }
       if (/FROM sale_items si/.test(sql) && /JOIN client_wechat_users/.test(sql)) return [{ xiaomei: 0, new_member: 0, old_member: 0 }]
-      if (/FROM sale_order_performance_events spe/.test(sql) && /SUM\(spe\.amount::numeric/.test(sql)) {
+      if (/FROM sale_reportable_payment_events spe/.test(sql) && /SUM\(spe\.performance_amount::numeric/.test(sql)) {
         return [{ v: overrides.revValue || 0 }]
       }
       return [{ v: 0 }]
@@ -2514,7 +2515,7 @@ describe('mgmtDashboard.salesData 时间区间口径', () => {
     const m = String(now.getMonth() + 1).padStart(2, '0')
     const expectedStart = `${y}-${m}-01`
 
-    const totalRevCall = allCalls.find(([sql]) => /FROM sale_order_performance_events spe/.test(sql) && /AS v/.test(sql))
+    const totalRevCall = allCalls.find(([sql]) => /FROM sale_reportable_payment_events spe/.test(sql) && /AS v/.test(sql))
     expect(totalRevCall).toBeDefined()
     expect(totalRevCall[1][0]).toBe(expectedStart)
   })
@@ -2531,7 +2532,7 @@ describe('mgmtDashboard.salesData 时间区间口径', () => {
     const lastDay = new Date(Date.UTC(lmY, lmM, 0)).getUTCDate()
     const expectedEnd = `${lmY}-${String(lmM).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`
 
-    const totalRevCall = allCalls.find(([sql]) => /FROM sale_order_performance_events spe/.test(sql) && /AS v/.test(sql))
+    const totalRevCall = allCalls.find(([sql]) => /FROM sale_reportable_payment_events spe/.test(sql) && /AS v/.test(sql))
     expect(totalRevCall[1][1]).toBe(expectedEnd)
     // endDate 不是 today
     const today = new Date()
@@ -2546,7 +2547,7 @@ describe('mgmtDashboard.salesData 时间区间口径', () => {
 
     const allCalls = pg.query.mock.calls
     const expectedStart = `${new Date().getFullYear()}-01-01`
-    const totalRevCall = allCalls.find(([sql]) => /FROM sale_order_performance_events spe/.test(sql) && /AS v/.test(sql))
+    const totalRevCall = allCalls.find(([sql]) => /FROM sale_reportable_payment_events spe/.test(sql) && /AS v/.test(sql))
     expect(totalRevCall[1][0]).toBe(expectedStart)
   })
 })
@@ -2641,11 +2642,11 @@ describe('mgmtDashboard.salesData SQL 形态断言', () => {
       if (/si\.product_type\s*=\s*'家居产品'/.test(sql)) return [{ xiaomei: 100, new_member: 200, old_member: 300 }]
       if (/FROM service_items sit/.test(sql) && /JOIN client_wechat_users/.test(sql)) return [{ xiaomei: 50, new_member: 100, old_member: 150 }]
       if (/FROM service_items sit/.test(sql)) return [{ v: 5000 }]
-      if (/FROM sale_order_performance_events spe/.test(sql) && /JOIN client_wechat_users/.test(sql)) {
+      if (/FROM sale_reportable_payment_events spe/.test(sql) && /JOIN client_wechat_users/.test(sql)) {
         return [{ xiaomei: 200, new_member: 400, old_member: 600 }]
       }
       if (/FROM sale_items si/.test(sql) && /JOIN client_wechat_users/.test(sql)) return [{ xiaomei: 200, new_member: 400, old_member: 600 }]
-      if (/FROM sale_order_performance_events spe/.test(sql) && /SUM\(spe\.amount::numeric/.test(sql)) return [{ v: 10000 }]
+      if (/FROM sale_reportable_payment_events spe/.test(sql) && /SUM\(spe\.performance_amount::numeric/.test(sql)) return [{ v: 10000 }]
       return [{ v: 0 }]
     })
   }
@@ -2672,7 +2673,7 @@ describe('mgmtDashboard.salesData SQL 形态断言', () => {
     await salesData(ctx)
 
     const sqls = pg.query.mock.calls.map(([s]) => s)
-    const saleSqls = sqls.filter((s) => /FROM sale_orders o\b/.test(s) || /FROM sale_order_performance_events spe\b/.test(s) || /FROM sale_item_performance_events sipe\b/.test(s))
+    const saleSqls = sqls.filter((s) => /FROM sale_orders o\b/.test(s) || /FROM sale_reportable_payment_events spe\b/.test(s) || /FROM sale_reportable_item_events sipe\b/.test(s) || /FROM sale_item_performance_events sipe\b/.test(s))
     const svcSqls = sqls.filter((s) => /FROM service_orders so\b/.test(s) || /FROM service_items sit/.test(s))
 
     for (const s of saleSqls) {
@@ -2693,7 +2694,7 @@ describe('mgmtDashboard.salesData SQL 形态断言', () => {
     const sqls = pg.query.mock.calls.map(([s]) => s)
     // SQL 2 与 SQL 1 共用付款流水，充值单也能进入客群分桶
     const custRevSql = sqls.find((s) =>
-      /FROM sale_order_performance_events spe/.test(s) &&
+      /FROM sale_reportable_payment_events spe/.test(s) &&
       /JOIN client_wechat_users c/.test(s) &&
       /FILTER/.test(s) &&
       !/product_type/.test(s)
@@ -2704,14 +2705,14 @@ describe('mgmtDashboard.salesData SQL 形态断言', () => {
     // NULL 兜底：COALESCE(c.became_member_at, '1970-01-01'::timestamptz)
     expect(custRevSql).toMatch(/COALESCE\(c\.became_member_at,\s*'1970-01-01'::timestamptz\)::date\s*>=/)
     expect(custRevSql).toMatch(/COALESCE\(c\.became_member_at,\s*'1970-01-01'::timestamptz\)::date\s*</)
-    // 守恒：使用 spe.amount，与 SQL 1 总额同口径
-    expect(custRevSql).toMatch(/SUM\(spe\.amount::numeric\)/)
+    // 守恒：使用 spe.performance_amount，与 SQL 1 总额同口径
+    expect(custRevSql).toMatch(/SUM\(spe\.performance_amount::numeric\)/)
     expect(custRevSql).toMatch(/spe\.change_type IN \('首次支付',\s*'回款',\s*'退款'\)/)
     expect(custRevSql).toContain('充值单')
     expect(custRevSql).not.toMatch(/o\.status\s*=/)
   })
 
-  test('产品出库 SQL 含 product_type = 家居产品', async () => {
+  test('产品出库按原始出库金额统计，且只含家居产品', async () => {
     setupFullMocks()
     const ctx = makeHqCtx({ period: 'month', scope: { type: 'all' } })
     await salesData(ctx)
@@ -2721,6 +2722,9 @@ describe('mgmtDashboard.salesData SQL 形态断言', () => {
     expect(prodSql).toBeDefined()
     expect(prodSql).toContain('JOIN client_wechat_users c')
     expect(prodSql).toMatch(/FILTER/)
+    expect(prodSql).toContain('FROM sale_item_performance_events sipe')
+    expect(prodSql).toMatch(/SUM\(sipe\.amount::numeric\)/)
+    expect(prodSql).not.toContain('performance_amount')
   })
 
   test('经营类型 4 行硬骨架 — SQL 缺失值补 "0.00"，pgEnum 顺序固定', async () => {
@@ -2821,7 +2825,7 @@ describe('mgmtDashboard.salesData SQL 形态断言', () => {
 
   test('totalRevenue 从 v 映射，金额为字符串格式 "0.00"', async () => {
     pg.query.mockReset().mockImplementation(async (sql) => {
-      if (/FROM sale_order_performance_events spe/.test(sql) && /SUM\(spe\.amount::numeric/.test(sql)) {
+      if (/FROM sale_reportable_payment_events spe/.test(sql) && /SUM\(spe\.performance_amount::numeric/.test(sql)) {
         return [{ v: '12345.678' }]
       }
       if (/GROUP BY/.test(sql)) return []

@@ -77,7 +77,7 @@ describe('顾客频率表取数 SQL 口径守护（#370）', () => {
     expect(amount).toContain('spe.performance_date BETWEEN')
     expect(amount).not.toMatch(/paid_at/)
     // 同日多笔款项求和（净额），按 (顾客, 归属日) 聚合
-    expect(amount).toContain('SUM(spe.amount::numeric) AS amount')
+    expect(amount).toContain('SUM(spe.performance_amount::numeric) AS amount')
     expect(amount).toContain('GROUP BY so.client_user_id, spe.performance_date')
   })
 

@@ -50,7 +50,7 @@ vi.mock('@/db', async () => {
     if (/SELECT COUNT\(\*\)::int AS v FROM technician_scoped/.test(sql)) return { rows: [{ v: f.techCount }] }
     if (/FROM technician_scoped ts\s+WHERE store_id IS NOT NULL/.test(sql)) return { rows: f.techByStore }
     if (/WHERE store_id IS NULL AND anchor_market_id IS NOT NULL/.test(sql)) return { rows: f.techDirect }
-    if (/SELECT COALESCE\(SUM\(spe\.amount::numeric\), 0\) AS v\s+FROM sale_order_performance_events spe/.test(sql)) {
+    if (/SELECT COALESCE\(SUM\(spe\.performance_amount::numeric\), 0\) AS v\s+FROM sale_reportable_payment_events spe/.test(sql)) {
       return { rows: [{ v: String(f.revenueTotal) }] }
     }
     if (/FROM producer_employees pe\s+LEFT JOIN revenue_by_emp r/.test(sql)) return { rows: f.staffRevenue }
