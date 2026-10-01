@@ -96,7 +96,14 @@ function SettlementSection({
   market: string
   canExport: boolean
 }) {
-  const [detail, setDetail] = useState<{ key: string; label: string; rows: SettlementDetailRow[]; truncated: boolean; limit: number } | null>(null)
+  const [detail, setDetail] = useState<{
+    key: string
+    label: string
+    rows: SettlementDetailRow[]
+    truncated: boolean
+    limit: number
+    totals: { forwardQuantity: number; returnedQuantity: number; amount: number }
+  } | null>(null)
   const [loadingKey, setLoadingKey] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   // 快速连点两行时，先发的请求可能后返回并覆盖后发的结果 —— 只认最后一次请求
@@ -109,6 +116,8 @@ function SettlementSection({
   useEffect(() => {
     setDetail(null)
     setError(null)
+    // 同时失效在途请求：否则它在筛变后才返回，会把上一个筛选的明细重新贴回来
+    latestRequestKey.current = null
   }, [startDate, endDate, market])
 
   async function toggleDetail(row: InventorySettlementRow) {
@@ -137,6 +146,7 @@ function SettlementSection({
         rows: result.rows,
         truncated: result.truncated,
         limit: result.limit,
+        totals: result.totals,
       })
     } catch (err) {
       if (latestRequestKey.current !== key) return
@@ -238,17 +248,21 @@ function SettlementSection({
               </p>
             )}
             <DataTable columns={detailColumnsFor(segment)} data={detail.rows} emptyText="该行期间内没有明细" />
-            {/* issue 验收「明细合计必须等于汇总行」：不留合计行的话，用户只能靠导出对账 */}
+            {/*
+              issue 验收「明细合计必须等于汇总行」：合计取**服务端完整聚合**（不受展示上限影响），
+              与汇总行的「数量合计 / 退货冲减 / 应付货款」逐项同口径 —— 按 rows 累加的话，
+              超过上限时页面合计会小于汇总行，用户无从判断是数据问题还是截断。
+            */}
             {detail.rows.length > 0 && (
-              <div className="mt-2 flex justify-end gap-4 text-xs text-[#666666]">
-                <span>{detail.truncated ? '可见行合计（已截断）' : '合计'}</span>
-                {/* 退货行在表格里显示为负数量，合计必须同号 —— 否则「6 正 + 4 退」会被加成 10 */}
+              <div className="mt-2 flex flex-wrap justify-end gap-4 text-xs text-[#666666]">
                 <span className="text-right">
-                  数量 {detail.rows.reduce((sum, row) => sum + (row.isReturn ? -row.quantity : row.quantity), 0)}
+                  {detail.truncated ? `完整合计（该行共 ${detail.totals.forwardQuantity + detail.totals.returnedQuantity} 件，仅显示前 ${detail.limit} 行）` : '合计'}
                 </span>
                 <span className="text-right">
-                  {formatSignedCurrency(detail.rows.reduce((sum, row) => sum + row.signedAmount, 0))}
+                  数量 {detail.totals.forwardQuantity}
+                  {detail.totals.returnedQuantity > 0 && ` / 退货 ${detail.totals.returnedQuantity}`}
                 </span>
+                <span className="text-right">{formatSignedCurrency(detail.totals.amount)}</span>
               </div>
             )}
           </div>

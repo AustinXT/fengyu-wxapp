@@ -343,6 +343,7 @@ export default async function Page({
           canViewPrice={canViewSourcePrice}
           canExport={hasUiCapability(session.permissions.actions, 'inventory:export')}
           truncated={summarySourceData.sources.truncated}
+          limit={summarySourceData.sources.limit}
         />
       )}
 

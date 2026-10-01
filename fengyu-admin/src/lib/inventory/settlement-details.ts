@@ -230,6 +230,31 @@ async function queryRows(query: SQL): Promise<SettlementDetailRow[]> {
   return (await db.execute(query) as unknown as RawDetailRow[]).map(mapRow)
 }
 
+/**
+ * 该行的**完整**合计（与明细行同一投影、同一端点条件）—— 不受展示上限影响。
+ * 正向/退货分列，与汇总行的 `totalQuantity` / `returnedQuantity` 同口径，
+ * 页面才能拿它和汇总行逐项对账。
+ */
+async function sumSettlementDetails(
+  projection: SQL,
+  marketNode: string,
+  partyNode: string,
+): Promise<SettlementDetailResult['totals']> {
+  const rows = await db.execute(sql`
+    SELECT COALESCE(SUM(CASE WHEN p.sign > 0 THEN p.quantity ELSE 0 END), 0) AS forward_quantity,
+           COALESCE(SUM(CASE WHEN p.sign < 0 THEN p.quantity ELSE 0 END), 0) AS returned_quantity,
+           COALESCE(SUM(p.signed_amount), 0) AS amount
+      FROM (${projection}) AS p
+     WHERE p.market_node = ${marketNode} AND p.party_node = ${partyNode}
+  `) as unknown as Array<{ forward_quantity: string; returned_quantity: string; amount: string }>
+  const row = rows[0]
+  return {
+    forwardQuantity: Number(row?.forward_quantity ?? 0),
+    returnedQuantity: Number(row?.returned_quantity ?? 0),
+    amount: Number(row?.amount ?? 0),
+  }
+}
+
 /** 整段导出用的条件（不含端点）。 */
 export type NormalizedSettlementSegmentFilters = Omit<NormalizedSettlementDetailFilters, 'marketNode' | 'partyNode'>
 
@@ -264,15 +289,22 @@ export async function listSettlementDetailsForSession(
   input: SettlementDetailFilters,
 ): Promise<SettlementDetailResult> {
   const filters = normalizeSettlementDetailFilters(input)
+  const emptyTotals = { forwardQuantity: 0, returnedQuantity: 0, amount: 0 }
   const projection = projectionFor(session, filters)
-  if (projection === null) return { rows: [], truncated: false, limit: DETAIL_PAGE_LIMIT }
-  const rows = await queryRows(
-    settlementDetailSelectSql(projection, filters.segment, filters.marketNode, filters.partyNode, DETAIL_PAGE_LIMIT + 1),
-  )
+  if (projection === null) {
+    return { rows: [], truncated: false, limit: DETAIL_PAGE_LIMIT, totals: emptyTotals }
+  }
+  const [rows, totals] = await Promise.all([
+    queryRows(
+      settlementDetailSelectSql(projection, filters.segment, filters.marketNode, filters.partyNode, DETAIL_PAGE_LIMIT + 1),
+    ),
+    sumSettlementDetails(projection, filters.marketNode, filters.partyNode),
+  ])
   return {
     rows: rows.slice(0, DETAIL_PAGE_LIMIT),
     truncated: rows.length > DETAIL_PAGE_LIMIT,
     limit: DETAIL_PAGE_LIMIT,
+    totals,
   }
 }
 

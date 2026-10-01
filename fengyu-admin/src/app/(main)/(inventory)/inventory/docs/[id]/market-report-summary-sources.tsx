@@ -110,6 +110,7 @@ export function MarketReportSummarySources({
   canViewPrice,
   canExport,
   truncated,
+  limit,
 }: {
   /** 已按当前 market 筛选（服务端 SQL 层）后的行集。 */
   rows: MarketReportSummarySourceRow[]
@@ -123,6 +124,8 @@ export function MarketReportSummarySources({
   /** 与页面闸同源下发（`hasUiCapability(session.permissions.actions, 'inventory:export')`）。 */
   canExport: boolean
   truncated: boolean
+  /** 本次展示上限，服务端回传。 */
+  limit: number
 }) {
   /*
    * 不再在内存里过滤：行集由服务端按 market 过滤（与导出同一 where）。

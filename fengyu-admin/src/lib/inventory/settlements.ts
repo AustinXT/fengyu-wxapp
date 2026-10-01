@@ -190,9 +190,14 @@ const SETTLEMENT_DOC_TYPES = [...new Set(SETTLEMENT_DOC_KINDS.map((kind) => kind
  */
 async function listSettlementMarketOptions(scopedOrgNodeIds: string[] | null): Promise<Array<{ id: string; name: string }>> {
   if (scopedOrgNodeIds !== null && scopedOrgNodeIds.length === 0) return []
+  // 与投影同一张单据类型表（含状态白名单）：否则草稿 / 已驳回 / 已取消单据所属的市场
+  // 也会进选项，用户选中后得到空表。
   const conditions: SQL[] = [
     sql`d.market_id IS NOT NULL`,
-    sql`d.doc_type IN (${sql.join(SETTLEMENT_DOC_TYPES.map((docType) => sql`${docType}`), sql`, `)})`,
+    sql`(d.doc_type, d.status) IN (${sql.join(
+      SETTLEMENT_DOC_KINDS.map((kind) => sql`(${kind.docType}, ${kind.status})`),
+      sql`, `,
+    )})`,
   ]
   if (scopedOrgNodeIds !== null) {
     const ids = sql.join(scopedOrgNodeIds.map((id) => sql`${id}`), sql`, `)

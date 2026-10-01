@@ -79,7 +79,12 @@ describe('#349 结算下钻明细：参数与段可见性', () => {
   it('门店价格档两段都不可见，返回空集且不查库', async () => {
     for (const segment of ['market', 'store'] as const) {
       const result = await listSettlementDetailsForSession(NO_PRICE_SESSION as never, { ...baseFilters, segment })
-      expect(result).toEqual({ rows: [], truncated: false, limit: 2000 })
+      expect(result).toEqual({
+        rows: [],
+        truncated: false,
+        limit: 2000,
+        totals: { forwardQuantity: 0, returnedQuantity: 0, amount: 0 },
+      })
     }
     expect(execute).not.toHaveBeenCalled()
   })
@@ -91,7 +96,8 @@ describe('#349 结算下钻明细：参数与段可见性', () => {
     expect(execute).not.toHaveBeenCalled()
 
     await listSettlementDetailsForSession(SUPPLY_CHAIN_SESSION as never, baseFilters)
-    expect(execute).toHaveBeenCalledTimes(1)
+    // 明细 + 该行的完整合计（合计独立聚合，不受展示上限影响）
+    expect(execute).toHaveBeenCalledTimes(2)
   })
 
   it('分院段收窄到市场价格档绑定，供应链绑定不参与', async () => {
@@ -137,6 +143,17 @@ describe('#349 结算下钻明细：与汇总同源', () => {
     const result = await listSettlementDetailsForSession(MARKET_PRICE_SESSION as never, baseFilters)
     expect(result.rows[0]).toMatchObject({ isReturn: true, signedAmount: -1200, quantity: 1 })
     expect(result.truncated).toBe(false)
+  })
+
+  it('完整合计取服务端聚合，不受展示上限影响（验收「明细合计 = 汇总行」）', async () => {
+    execute
+      .mockResolvedValueOnce([rawDetail({ id: '1', quantity: '6.00', signed_amount: '6600.00' })])
+      .mockResolvedValueOnce([{ forward_quantity: '6.00', returned_quantity: '4.00', amount: '2600.00' }])
+    const result = await listSettlementDetailsForSession(MARKET_PRICE_SESSION as never, baseFilters)
+    // rows 只回了 1 行，但合计是整段的（正向 6 / 退货 4 / 净额 2600）—— 与汇总行同口径
+    expect(result.rows).toHaveLength(1)
+    expect(result.totals).toEqual({ forwardQuantity: 6, returnedQuantity: 4, amount: 2600 })
+    expect(execute).toHaveBeenCalledTimes(2)
   })
 
   it('超过展示上限时截断（上限 2000，与来源明细同量级）', async () => {

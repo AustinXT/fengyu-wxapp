@@ -70,4 +70,16 @@ export interface SettlementDetailResult {
    * 上一版页面文案写死"500 行"、后端上限后来提到 2000，两边就漂了（评审 R4 抓到）。
    */
   limit: number
+  /**
+   * 该行的**完整**合计（不受展示上限影响，用同一投影单独聚合）。
+   *
+   * 验收「明细合计必须等于汇总行」靠它核对：只按 `rows` 累加的话，超过 `limit` 时
+   * 页面合计小于汇总行，用户无从判断是数据问题还是截断 —— 这条正是 R5 评审报的验收缺口。
+   * 与汇总行同源（同一投影、同一端点条件），两边的正/退货拆分口径也一致。
+   */
+  totals: {
+    forwardQuantity: number
+    returnedQuantity: number
+    amount: number
+  }
 }

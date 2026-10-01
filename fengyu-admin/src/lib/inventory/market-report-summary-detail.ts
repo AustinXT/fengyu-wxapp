@@ -192,7 +192,7 @@ function requireObject(input: unknown): void {
 export async function listMarketReportSummarySourcesForSession(
   session: AuthSession,
   input: MarketReportSummarySourceFilters & { docId?: unknown },
-): Promise<{ rows: MarketReportSummarySourceRow[]; truncated: boolean; priceVisible: boolean }> {
+): Promise<{ rows: MarketReportSummarySourceRow[]; truncated: boolean; priceVisible: boolean; limit: number }> {
   requireObject(input)
   const docId = requireDocId(input.docId)
   const filters = normalizeMarketReportSummarySourceFilters(input)
@@ -205,10 +205,13 @@ export async function listMarketReportSummarySourcesForSession(
   return {
     rows: rows.slice(0, MAX_PAGE_ROWS),
     truncated: rows.length > MAX_PAGE_ROWS,
+    // 上限由服务端回传：前端写死会在后端调整时漂掉（结算下钻那边已经踩过一次）
+    limit: MAX_PAGE_ROWS,
     /*
-     * 页面裁列用的**行级**判据（不是会话级 `visibility !== 'none'`）：
-     * 市场档但档位绑定集合为空、或该单据来源行全在绑定之外时，行级会把价格全剥成 null ——
-     * 若页面还按会话级渲染表头，就会出现「有表头、整列 —」，且与同会话导出的列不一致。
+     * 页面裁列用的判据（**档位集合非空**，不是逐行、也不是会话级 `visibility !== 'none'`）：
+     * 市场档但档位绑定集合为空时，行级剥离会把每一行的价格都置 null ——
+     * 此时若页面按会话级渲染表头，就会出现「有表头、整列 —」，且与同会话导出的列不一致。
+     * 取"集合非空"是因为页面只能按列级决策；具体某一行是否带价仍由 mapRow 逐行判定。
      */
     priceVisible: priceScope === null || priceScope.length > 0,
   }
