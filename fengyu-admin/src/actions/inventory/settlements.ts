@@ -23,7 +23,11 @@ export const listSettlementDetails = withPermission(
   async (session, filters: SettlementDetailFilters) => listSettlementDetailsForSession(session, filters),
 )
 
-/** 整段导出（#349）：走 worker 注入的会话，段不可见时取数侧返回空集。 */
+/**
+ * 整段导出（#349）：走 worker 注入的会话。
+ * ⚠️ 段不可见时取数侧**抛 PERMISSION_DENIED**（fail-fast），不是返回空集 ——
+ * 任务路径没有页面那道 404 收口，静默产出只有表头的 xlsx 会变成「成功但无意义」的任务。
+ */
 export const exportSettlementSegmentDetails = withPermission(
   'inventory:export',
   async (session, filters: SettlementSegmentFilters = {}, options?: ExportBatchOptions<string>) =>

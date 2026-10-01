@@ -117,6 +117,9 @@ function SettlementSection({
   useEffect(() => {
     setDetail(null)
     setError(null)
+    // 旧请求的 finally 会因序号前进而跳过 setLoadingKey(null)，这里必须一并清，
+    // 否则按钮会永久停在 loading（R7 抓到）
+    setLoadingKey(null)
     // 令序号前进：筛变后在途的旧响应全部失效，不再贴回上一个筛选的明细
     requestSeq.current += 1
   }, [startDate, endDate, market])

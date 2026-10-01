@@ -180,8 +180,6 @@ export function settlementProjectionSql(params: SettlementProjectionParams): SQL
   `
 }
 
-const SETTLEMENT_DOC_TYPES = [...new Set(SETTLEMENT_DOC_KINDS.map((kind) => kind.docType))]
-
 /**
  * 市场筛选下拉的选项：scope 内的全部市场，**不受期间与当前 market 筛选影响**。
  *
