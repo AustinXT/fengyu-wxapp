@@ -338,17 +338,25 @@ export interface InventoryPromotionPlanRow {
   updatedAt: string
 }
 
-/** 货款结算汇总行：市场结算＝(市场→供应链)，分院结算＝(市场→门店)。 */
+/**
+ * 货款结算汇总行：市场结算＝(市场→供应链)，分院结算＝(市场→门店)。
+ * 金额为**净额**（正向单 − 期间内已完成的退货单），可为负；数量与单据数不净额化。
+ */
 export interface InventorySettlementRow {
-  /** 出库/发起主体（市场结算=市场；分院结算=配货市场）。 */
+  /** 市场侧主体（市场结算=市场；分院结算=配货市场）。 */
   sourceOrgNodeId: string | null
   sourceOrgNodeName: string | null
-  /** 接收主体（市场结算=供应链总部；分院结算=门店）。 */
+  /** 对方主体（市场结算=供应链主体；分院结算=门店）。 */
   targetOrgNodeId: string | null
   targetOrgNodeName: string | null
+  /** 正向单据数（市场报货 / 分院配货）。 */
   docCount: number
+  /** 期间内已冲减的退货单数（市场段=市场退货，分院段=院退货）。 */
+  returnDocCount: number
   totalQuantity: number
-  /** 应付货款合计；仅在对应结算段价格档可见时返回。 */
+  /** 期间内已冲减的退货数量合计。 */
+  returnedQuantity: number
+  /** 应付货款**净额**；仅在对应结算段价格档可见时返回。 */
   payableAmount: number
 }
 
