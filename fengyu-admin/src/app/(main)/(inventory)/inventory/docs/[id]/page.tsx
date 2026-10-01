@@ -326,6 +326,7 @@ export default async function Page({
       {summarySources && (
         <MarketReportSummarySources
           rows={summarySources.rows}
+          docId={doc.id}
           query={query ?? {}}
           marketFilter={sourceMarketFilter}
           canViewPrice={canViewSourcePrice}

@@ -18,7 +18,8 @@ import { INVENTORY_CORE_RECEIVE_ACTIONS } from '@/lib/inventory/business-level'
 import { resolveOperationDocQuery } from '@/lib/inventory/operation-doc-types'
 import type { InventoryOperationDocFilter } from '@/lib/inventory/operation-doc-types'
 import type { InventoryDocCandidateFilters } from '@/lib/inventory/doc-candidates'
-import { listMarketReportSummarySourcesForSession } from '@/lib/inventory/market-report-summary-detail'
+import { exportMarketReportSummarySourcesForSession, listMarketReportSummarySourcesForSession } from '@/lib/inventory/market-report-summary-detail'
+import type { ExportBatchOptions } from '@/lib/export-pagination'
 import { ApiError } from '@/lib/api-error'
 import { withAnyPermission, withPermission } from '@/lib/with-permission'
 
@@ -172,6 +173,19 @@ export const listMarketReportSummarySources = withPermission(
   'inventory:list',
   async (session, input: { docId?: string; market?: string }) =>
     listMarketReportSummarySourcesForSession(session, input ?? {}),
+)
+
+/**
+ * 导出走真正的会话（export-worker 注入的 `getExportSession()` 快照），
+ * 不像 `exportInventoryLots` 那样从 params 重建 scope —— 本表没有独立的 scope 入参可重建。
+ */
+export const exportMarketReportSummarySources = withPermission(
+  'inventory:export',
+  async (
+    session,
+    params: { docId?: string; market?: string } = {},
+    options?: ExportBatchOptions<string>,
+  ) => exportMarketReportSummarySourcesForSession(session, params, options),
 )
 
 export const createInventoryCoreDoc = withAnyPermission(

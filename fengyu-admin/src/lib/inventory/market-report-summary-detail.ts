@@ -162,12 +162,16 @@ export async function listMarketReportSummarySourcesForSession(
   return { rows: rows.slice(0, MAX_PAGE_ROWS), truncated: rows.length > MAX_PAGE_ROWS }
 }
 
-/** 导出用：keyset 分批，游标是 link 的不可变主键。 */
+/**
+ * 导出用：keyset 分批，游标是 link 的不可变主键。
+ * `canViewPrice` 随批次回传（与 exportInventoryLots 同构）：worker 需要它在**建列时**决定
+ * 是否带价格列，而不是从首页行数据反推 —— 首页恰无价时会误判成"档位不可见"。
+ */
 export async function exportMarketReportSummarySourcesForSession(
   session: AuthSession,
   input: MarketReportSummarySourceFilters & { docId?: unknown },
   options?: ExportBatchOptions<string>,
-): Promise<ExportBatchResult<MarketReportSummarySourceRow, string>> {
+): Promise<ExportBatchResult<MarketReportSummarySourceRow, string> & { canViewPrice: boolean }> {
   const docId = requireDocId(input.docId)
   const filters = normalizeMarketReportSummarySourceFilters(input)
   const cursor = options?.cursor
@@ -185,6 +189,7 @@ export async function exportMarketReportSummarySourcesForSession(
     rows: page.pageRows,
     truncated: false,
     hasMore: page.hasMore,
+    canViewPrice,
     ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }),
   }
 }

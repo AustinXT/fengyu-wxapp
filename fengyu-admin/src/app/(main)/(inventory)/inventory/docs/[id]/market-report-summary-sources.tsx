@@ -1,6 +1,7 @@
 import { Fragment } from 'react'
 import Link from 'next/link'
 import { Card, CardContent } from '@/components/ui/card'
+import { ExportButton } from '@/components/ui/export-button'
 import type { MarketReportSummarySourceRow } from '@/lib/inventory/market-report-summary-detail-types'
 
 /**
@@ -84,12 +85,14 @@ function buildHref(query: Record<string, string | undefined>, market?: string): 
 
 export function MarketReportSummarySources({
   rows,
+  docId,
   query,
   marketFilter,
   canViewPrice,
   truncated,
 }: {
   rows: MarketReportSummarySourceRow[]
+  docId: string
   /** 当前 URL 的 searchParams，用于构造保留返回上下文的筛选链接。 */
   query: Record<string, string | undefined>
   marketFilter?: string
@@ -112,7 +115,16 @@ export function MarketReportSummarySources({
   return (
     <Card>
       <CardContent className="p-5">
-        <h2 className="mb-4 text-base font-medium">来源明细</h2>
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-base font-medium">来源明细</h2>
+          {/* 导出是辅助入口（会计凭证的主入口在货款结算-市场段）；带当前市场筛选，行集与页面一致 */}
+          <ExportButton
+            exportRequest={{
+              exportType: 'market-report-summary-sources',
+              payload: { docId, ...(marketFilter ? { market: marketFilter } : {}) },
+            }}
+          />
+        </div>
         <p className="mb-3 text-xs text-[#888888]">
           本汇总单由下列报货明细构成，按市场 → 来源报货单 → 商品展开；数量为本次汇总分摊量，价格取来源行快照，不随 SKU 现价变动。
         </p>

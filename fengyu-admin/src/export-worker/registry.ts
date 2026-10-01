@@ -22,6 +22,7 @@ import { exportCards } from '@/actions/cards'
 import { exportInventoryLots } from '@/actions/inventory/stocks'
 import { exportInventoryMovements } from '@/actions/inventory/movements'
 import { exportPendingReceipts } from '@/actions/inventory/pending-receipts'
+import { exportMarketReportSummarySources } from '@/actions/inventory/docs'
 import { exportPickupRecords } from '@/actions/pickup-records'
 import { getSalesBoard } from '@/actions/data-center/sales'
 import { getCustomerBoard } from '@/actions/data-center/customer'
@@ -543,6 +544,25 @@ function pendingReceiptColumns(kind: string | undefined) {
   ])
 }
 
+// 汇总单来源明细（#349）：列与详情页「来源明细」一致；价格三列 + 金额按价格档裁剪。
+const marketReportSummarySourceColumns = (canViewPrice: boolean) => mapColumns([
+  { header: '市场', width: 20, key: 'marketName' },
+  { header: '报货单号', width: 26, key: 'sourceDocId' },
+  { header: '报货日期', width: 14, key: 'sourceDocDate' },
+  { header: '商品', width: 28, key: 'skuName' },
+  { header: '规格', width: 16, key: 'specName' },
+  { header: '数量', width: 10, key: 'quantity', map: (row) => numberOrEmpty(row, 'quantity') },
+  ...(canViewPrice
+    ? [
+        { header: '市场单价', width: 14, key: 'marketStandardUnitPrice', map: (row: Row) => numberOrEmpty(row, 'marketStandardUnitPrice') },
+        { header: '单价优惠', width: 14, key: 'marketUnitDiscount', map: (row: Row) => numberOrEmpty(row, 'marketUnitDiscount') },
+        { header: '实际单价', width: 14, key: 'marketActualUnitPrice', map: (row: Row) => numberOrEmpty(row, 'marketActualUnitPrice') },
+        { header: '金额', width: 14, key: 'amount', map: (row: Row) => numberOrEmpty(row, 'amount') },
+      ]
+    : []),
+  { header: '福利方案', width: 16, key: 'promotionPlanNo' },
+])
+
 const inventoryMovementColumns = mapColumns([
   { header: '时间', width: 20, key: 'createdAt' },
   { header: '单据类型', width: 16, key: 'docType' },
@@ -949,6 +969,15 @@ export async function createExportContent(
         columns: pickupRecordColumns,
         rows: pagedRows((options: ExportBatchOptions<number>) => exportPickupRecords(params, options)),
       }
+    case 'market-report-summary-sources': {
+      // 价格档从首页批次带回（不从行数据反推：首页恰无价时会误判成"档位不可见"）
+      const firstPage = await exportMarketReportSummarySources(params, { limit: EXPORT_WORKER_BATCH_SIZE })
+      return {
+        sheetName: '汇总单来源明细',
+        columns: marketReportSummarySourceColumns(firstPage.canViewPrice),
+        rows: pagedRows((options: ExportBatchOptions<string>) => exportMarketReportSummarySources(params, options), firstPage),
+      }
+    }
     case 'products':
       return queryProducts(params)
     case 'mall-products':
