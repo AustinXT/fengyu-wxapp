@@ -57,6 +57,7 @@ export interface RoleDefinitionInput {
   expectedUpdatedAt?: string
 }
 
+// inventory:store_settlement_view 为独立只读动作，不强制角色只能绑定门店（#364 D4）。
 const INVENTORY_TIER_ACTIONS = {
   总部: [
     'inventory:supply_chain_operate', 'inventory:supply_chain_approve',

@@ -46,7 +46,7 @@ import {
 import type { AuthSession } from './types'
 import { INVENTORY_ENTRY_ENABLED, INVENTORY_LINKAGE_ENABLED } from './inventory-feature-flags'
 import { isAdminScope } from './session-role-guards'
-import { scopeSessionToAllActions } from './action-scope'
+import { scopeSessionToActions, scopeSessionToAllActions } from './action-scope'
 import {
   DATA_CENTER_DASHBOARD_ACTION,
   DATA_CENTER_REPORT_LIST,
@@ -201,9 +201,8 @@ export const MENU_CONFIG: MenuNode[] = [
         label: '货款结算',
         icon: Landmark,
         href: '/inventory/settlements',
-        // 只读报表全部是金额字段：门店价格档（无任一价格查看权限）不暴露入口。
-        requiredActions: ['inventory:supply_chain_price_view', 'inventory:market_price_view'],
-        requiredAllActions: ['inventory:list'],
+        requiredActions: ['inventory:store_settlement_view'],
+        allowedScopeTypes: ['门店'],
       },
       {
         label: '资料配置',
@@ -271,7 +270,10 @@ export function hasMenuItemAccess(
   return item.hidden !== true
     && item.requiredActions.some((action) => actions.includes(action))
     && (item.requiredAllActions?.every((action) => actions.includes(action)) ?? true)
-    && (!item.allowedScopeTypes || !scopeTypes || item.allowedScopeTypes.some((scope) => scopeTypes.includes(scope)))
+    && (!item.allowedScopeTypes || !scopeTypes || item.allowedScopeTypes.some((scope) => scopeTypes.includes(scope))
+      // 保留供应链/市场的既有结算入口；新动作本身不向这两个层级授金额权。
+      || (item.href === '/inventory/settlements'
+        && ['inventory:supply_chain_price_view', 'inventory:market_price_view'].some((action) => actions.includes(action))))
 }
 
 export function flattenMenuItems(nodes: readonly MenuNode[] = MENU_CONFIG): MenuItem[] {
@@ -304,6 +306,10 @@ export function getVisibleMenuItems(session: AuthSession): MenuNode[] {
     : session.roles.map((role) => role.scopeType)
   // 同角色判定复用 withAllPermissions 的收窄函数，菜单与页面闸门不会各算各的
   const visibleItem = (item: MenuItem) => hasMenuItemAccess(item, actions, scopeTypes)
+    && (item.href !== '/inventory/settlements' || isAdminScope(session)
+      || scopeSessionToActions(session, ['inventory:store_settlement_view']).roles.some((role) =>
+        role.scopeType === '门店'
+        || role.actions?.some((action) => ['inventory:supply_chain_price_view', 'inventory:market_price_view'].includes(action))))
     && (!item.allActionsFromSameRole || !item.requiredAllActions
       || scopeSessionToAllActions(session, item.requiredAllActions).roles.length > 0)
   return MENU_CONFIG.reduce<MenuNode[]>((visible, node) => {

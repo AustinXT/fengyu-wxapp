@@ -212,3 +212,29 @@ describe('MENU_CONFIG 完整性', () => {
     }
   })
 })
+
+describe('#364 独立结算菜单', () => {
+  function settlementSession(scopeType: '总部' | '市场' | '门店', actions: string[]): AuthSession {
+    return { employeeId: 'E364', name: '店长', phone: '13800000000',
+      roles: [{ role: 'manager', scopeId: 'S1', scopeType, actions,
+        scopeStoreIds: ['S1'], scopeOrgNodeIds: ['S1'] }],
+      permissions: { actions, scopeStoreIds: ['S1'], scopeOrgNodeIds: ['S1'] } }
+  }
+  it('只持结算权限的门店店长只点亮货款结算，不点亮收货/单据入口', () => {
+    const labels = visibleLabels(settlementSession('门店', ['inventory:store_settlement_view']))
+    expect(labels).toEqual(['货款结算'])
+  })
+  it.each(['总部', '市场'] as const)('只读动作绑%s不显示入口', (scopeType) => {
+    expect(visibleLabels(settlementSession(scopeType, ['inventory:store_settlement_view']))).toEqual([])
+  })
+  it('既有市场价格角色持新页闸仍可见结算', () => {
+    expect(visibleLabels(settlementSession('市场', ['inventory:store_settlement_view', 'inventory:market_price_view'])))
+      .toContain('货款结算')
+  })
+  it('不同绑定不得拼接门店类型与结算动作来显示入口', () => {
+    const value = settlementSession('市场', ['inventory:store_settlement_view'])
+    value.roles.push({ role: 'manager', scopeId: 'S2', scopeType: '门店', actions: ['inventory:list'],
+      scopeStoreIds: ['S2'], scopeOrgNodeIds: ['S2'] })
+    expect(visibleLabels(value)).not.toContain('货款结算')
+  })
+})
