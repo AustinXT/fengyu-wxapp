@@ -406,6 +406,12 @@ Page({
   async loadSummary() {
     if (!this.data.selectedDate) return
     if (this.data.scopeResolveDefault) return
+    if (this.data.scope.scopeType === 'store' && !this.data.scope.scopeId) {
+      ++summarySeq
+      this.setData({ loading: false, display: null, displayKey: '', summaryState: 'empty',
+        summaryEmptyText: '当前账号没有可用的在营门店', summaryEmptyHint: '请联系管理员检查门店授权' })
+      return
+    }
     // 只认最后一次请求：切 scope / 日期后，迟到的旧响应（含失败）一律丢弃
     const seq = ++summarySeq
     const today = new Date()
@@ -474,6 +480,12 @@ Page({
   },
 
   onSummaryRetry() {
+    if (this.data.scopeResolveDefault) {
+      const picker = this.selectComponent('#scopePicker') as WechatMiniprogram.Component.TrivialInstance & { loadOptions?: () => Promise<void> }
+      picker?.loadOptions?.()
+      this.setData({ summaryState: 'loading' })
+      return
+    }
     this.loadSummary()
   },
 

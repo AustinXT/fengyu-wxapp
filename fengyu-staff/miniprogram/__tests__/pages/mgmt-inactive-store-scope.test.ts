@@ -139,6 +139,43 @@ describe('hub · 默认关店空态与手选历史（#473）', () => {
     expect(mocked).not.toHaveBeenCalledWith('mgmtDashboard.summary', expect.anything())
   })
 
+  test('范围选项先返回、页面后打开默认纠正开关时仍结束 loading', async () => {
+    setGlobalData({ roleBindings: [{ role: 'admin', scopeType: '总部', scopeId: 'hq' }] })
+    const picker = instantiate('picker')
+    mocked.mockResolvedValueOnce({ allowAll: true, allowedMarketIds: [], markets: [], inactiveStores: [] })
+    await picker.loadOptions()
+    expect(picker.events).not.toContainEqual(expect.objectContaining({ name: 'defaultresolved' }))
+    const hub = instantiate('hub')
+    hub.initDashboard()
+    picker.properties.defaultScope = hub.data.defaultScope
+    picker.properties.resolveDefault = true
+    definitions.picker.observers.resolveDefault.call(picker, true)
+    expect(picker.events.at(-1)?.name).toBe('defaultresolved')
+  })
+
+  test('范围首次加载失败后点击重试重新拉取范围选项', async () => {
+    const hub = instantiate('hub')
+    hub.data.scopeResolveDefault = true
+    hub.data.summaryState = 'error'
+    const picker = instantiate('picker')
+    hub.selectComponent = () => picker
+    mocked.mockResolvedValueOnce({ allowAll: true, allowedMarketIds: [], markets: [], inactiveStores: [] })
+    hub.onSummaryRetry()
+    await Promise.resolve()
+    expect(mocked).toHaveBeenCalledWith('mgmtDashboard.scopeOptions', {})
+    expect(hub.data.summaryState).toBe('loading')
+  })
+
+  test('无授权范围完成默认纠正后保持空态，不发送空门店请求', async () => {
+    const hub = instantiate('hub')
+    hub.data.selectedDate = today()
+    hub.data.scopeResolveDefault = true
+    hub.data.scope = { scopeType: 'store', scopeId: '', scopeName: '' }
+    hub.onScopeDefaultResolved()
+    expect(hub.data.summaryState).toBe('empty')
+    expect(mocked).not.toHaveBeenCalledWith('mgmtDashboard.summary', expect.anything())
+  })
+
   test('picker 默认纠正事件传到页面：有在营替代时只查询替代门店', async () => {
     const hub = instantiate('hub')
     hub.data.selectedDate = today()

@@ -98,6 +98,11 @@ Component({
       // 再派发 observers」，此处读到的 resolveDefault 已是新值。若 optionsLoaded 此刻为 false，纠正在首次 loadOptions 里做
       if (this.data.optionsLoaded) this._normalizeApplied()
     },
+    resolveDefault(resolve: boolean) {
+      // scopeOptions 可能先于页面 initDashboard 返回，此时 defaultScope 仍是占位的「全部市场」。
+      // 页面随后打开纠正开关时，即使范围 ID 没变，也必须完成首次归一化并回报页面。
+      if (resolve && this.data.optionsLoaded && !this.data.userPicked) this._normalizeApplied()
+    },
     appliedInactive(inactive: boolean) {
       const applied = this.data.applied as Scope
       if (applied.scopeType !== 'store' || !!applied.inactive === !!inactive) return

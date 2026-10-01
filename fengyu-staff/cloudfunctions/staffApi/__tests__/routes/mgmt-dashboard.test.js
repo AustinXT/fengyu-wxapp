@@ -2870,17 +2870,13 @@ describe('mgmtDashboard.scopeOptions · 已关店标记', () => {
     expect(closedCall[1]).toEqual([['store-A1', 'store-A2']])
   })
 
-  test('关店查询失败 → 不打标、下拉照常返回', async () => {
+  test('关店查询失败 → 范围加载失败，不能误判关店门店为在营', async () => {
     routeQueries(() => { throw new Error('boom') })
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
     const ctx = marketCtx()
-    await scopeOptions(ctx)
+    await expect(scopeOptions(ctx)).rejects.toThrow('boom')
     spy.mockRestore()
-
-    expect(ctx.result.markets[0].stores).toEqual([
-      { storeId: 'store-A1', storeName: '上海A店' },
-      { storeId: 'store-A2', storeName: '上海B店' },
-    ])
+    expect(ctx.result).toBeNull()
   })
 
   test('没有可见门店 → 不发关店查询', async () => {
