@@ -421,6 +421,13 @@
       "when": 1790904222525,
       "tag": "0059_market_supplier_owner",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1790906092154,
+      "tag": "0060_summary_void_store_settlement",
+      "breakpoints": true
     }
   ]
 }
