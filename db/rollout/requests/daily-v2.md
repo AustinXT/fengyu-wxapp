@@ -12,7 +12,7 @@
 
 ## 2026-10-03 继续实施的验证
 
-- daily-v2 已合并回 daily，候选结构未改动、未迁共享库。日报46项测试、后台真实PG配置及菜单26项测试、两端类型检查通过。
+- daily-v2 已合并回 daily，候选结构未改动、未迁共享库。日报47项测试、后台真实PG配置及菜单26项测试、两端类型检查通过。
 - 微信开发者工具 UI 使用模拟接口；后台 UI 使用本机一次性私有 PG。截图 `_tmp/daily-ui/`，不视为真实云端验收。
 - 工作树迁移扫描未发现其他两个工作树的 schema/migrations 未提交改动；尚缺全部 open PR 的迁移核验（gh 未登录），正式集成不能开始。
 - GLM/DeepSeek 探测未通过：本机缺 opencode 和 DeepSeek 配置。证据 `_tmp/daily-review/probe-1/summary.json`；未冒充已评审。

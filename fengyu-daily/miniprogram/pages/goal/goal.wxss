@@ -1,1 +1,3 @@
 .goal-input{border:1rpx solid #e4e6eb;border-radius:12rpx;padding:22rpx;font-size:32rpx;background:#fff}.amount{font-size:40rpx;font-weight:700;margin:12rpx 0}.reference{margin:24rpx 0}.week-values{font-size:24rpx;text-align:right;max-width:42%}
+.goal-error{color:#c0322a;font-size:24rpx;margin-top:20rpx;line-height:1.6}
+.month-summary{display:grid;grid-template-columns:1fr 1fr;gap:20rpx;margin-top:24rpx}.month-summary>view{background:#faf9f8;border-radius:14rpx;padding:24rpx;min-width:0}.month-summary .amount{font-size:36rpx;overflow-wrap:anywhere}

@@ -394,6 +394,21 @@ test("真实 PG 最小闭环、归属、并发和门店权限", { skip: !url }, 
         await pg.query('DELETE FROM daily_operating_periods WHERE id=$1', [periodId]);
       }
     });
+    await t.test('空市场授权沿用员工端入口规则，只返回授权空范围', async () => {
+      await pg.query("INSERT INTO org_nodes(id,name,type,parent_id) VALUES($1,$1,'市场',$2)", [prefix + 'empty-market', prefix + 'hq']);
+      await pg.query("INSERT INTO permission_role_definitions(role_key,name,actions) VALUES($1,$1,$2::text[])", [prefix + 'market-role', ['data_center:dashboard']]);
+      await pg.query('DELETE FROM permission_roles WHERE employee_id=$1', [a]);
+      await pg.query('INSERT INTO permission_roles(employee_id,role,scope_id) VALUES($1,$2,$3)', [a, prefix + 'market-role', prefix + 'empty-market']);
+      require('../utils/permission-matrix').invalidatePermissionMatrixCache();
+      const empty = await auth.requireUser(ident);
+      assert.deepEqual(empty.availableWorkspaces, ['employee', 'management']);
+      assert.equal(empty.scopedStores.length, 0);
+      const overview = await run(require('../routes/management').read, {}, empty);
+      assert.equal(overview.summary.due, 0);
+      assert.equal(overview.stores.length, 0);
+      assert.deepEqual(overview.nodes.map((node) => node.id), [prefix + 'empty-market']);
+      await assert.rejects(run(require('../routes/management').read, { nodeId: prefix + 'market' }, empty), /PERMISSION_DENIED/);
+    });
     await t.test("角色撤销立即生效；离职立即禁止登录", async () => {
       await pg.query("DELETE FROM permission_roles WHERE employee_id=$1", [a]);
       assert.equal((await auth.requireUser(ident)).managerStores.length, 0);

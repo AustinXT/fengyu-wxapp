@@ -29,6 +29,7 @@ const automator = require("miniprogram-automator");
       confirm: false,
       cancel: true,
     }));
+    await mp.mockWxMethod('showToast', () => ({}));
     await mp.mockWxMethod("cloud.callFunction", (options) => {
       const date = new Date(Date.now() + 8 * 3600000)
         .toISOString()
@@ -41,7 +42,7 @@ const automator = require("miniprogram-automator");
         managerStores: [{ store_id: "UI-STORE", store_name: "测试门店" }],
         scopedStores: [{ store_id: "UI-STORE", store_name: "测试门店" }],
         availableWorkspaces: ["employee", "manager", "management"],
-        staffLevel: "headquarters", positionName: "顾问", orgName: "测试总部",
+        staffLevel: globalThis.__dailyUiMarket ? 'market' : "headquarters", positionName: "顾问", orgName: "测试总部",
         roleBindings: [{role:"manager",roleName:"店长",scopeType:"门店",scopeName:"测试门店"}],
       };
       const entry = {
@@ -63,7 +64,11 @@ const automator = require("miniprogram-automator");
       let data;
       switch (options.data.action) {
         case 'period.list': data = { periods: [period], period, week: period.weeks[0] }; break;
-        case 'target.read': data = { period, week: period.weeks[0], target: null, reference: null }; break;
+        case 'target.read': data = { period, week: period.weeks[0], target: globalThis.__dailyUiTarget || null, reference: null }; break;
+        case 'target.confirmMonth':
+          globalThis.__dailyUiTarget = { sales: 10000, consumption: 20000, penalty: '认真复盘', month_confirmed: true, version: 1,
+            weeks: { w1: { sales: null, consumption: null }, w2: { sales: null, consumption: null }, w3: { sales: null, consumption: null }, w4: { sales: null, consumption: null } } };
+          data = {}; break;
         case 'contacts.list': data = { contacts: [] }; break;
         case 'business.list': data = { entries: [] }; break;
         case 'pk.classes': data = { period, classes: [{ id: 'UI-CLASS', name: '测试班级', members: 1, stores: 1 }], scopeLabel: '排名仅统计授权门店' }; break;
@@ -91,7 +96,7 @@ const automator = require("miniprogram-automator");
           break;
         case "report.history":
           data = {
-            own: true, employee: { name: user.name }, summary,
+            own: true, employee: { name: user.name, position_name: '顾问', store_name: '测试门店' }, summary,
             reports: [
               { id: "UI-REPORT", report_date: date, status: "submitted" },
             ],
@@ -161,7 +166,28 @@ const automator = require("miniprogram-automator");
     const goal = await mp.navigateTo('/pages/goal/goal');
     await wait(() => goal.data('ready'), "goal");
     assert.equal(await goal.data('title'), '我的经营目标');
+    assert.match(await goal.data('monthError'), /大于0/);
+    for (const [field, value] of [['sales', '100'], ['consumption', '200'], ['penalty', '认真复盘']])
+      await goal.callMethod('input', { currentTarget: { dataset: { field } }, detail: { value } });
+    assert.equal(await goal.data('monthError'), '');
+    await mp.mockWxMethod('showModal', () => ({ confirm: true, cancel: false }));
+    await goal.callMethod('save', { currentTarget: { dataset: { kind: 'month' } } });
+    assert.equal(await goal.data('confirmed'), true);
+    assert.match(await goal.data('weekError'), /非负/);
+    for (const [field, value] of [['weekSales', '120'], ['weekConsumption', '40']])
+      await goal.callMethod('input', { currentTarget: { dataset: { field } }, detail: { value } });
+    assert.match(await goal.data('weekError'), /不能超过/);
+    await goal.callMethod('input', { currentTarget: { dataset: { field: 'weekSales' } }, detail: { value: '20.01' } });
+    assert.equal(await goal.data('weekError'), '');
+    assert.equal(await goal.data('weekSalesPercent'), '20.0%');
+    await mp.mockWxMethod('showModal', () => ({ confirm: false, cancel: true }));
     await mp.screenshot({ path: path.join(output, 'goal.png') });
+    const history = await mp.navigateTo('/pages/history/history?employeeId=UI-EMP');
+    await wait(() => history.data('ready'), 'history');
+    assert.equal((await history.data('employee')).position_name, '顾问');
+    assert.equal((await history.data('summary')).rate, 50);
+    await mp.screenshot({ path: path.join(output, 'history.png') });
+    await mp.navigateBack();
     const pk = await mp.navigateTo('/pages/pk/pk');
     await wait(() => pk.data('ready'), "pk");
     assert.equal((await pk.data('classes')).length, 1);
@@ -184,6 +210,12 @@ const automator = require("miniprogram-automator");
     await wait(() => overview.data('overview'), "overview");
     assert.equal((await overview.data('overview')).markets[0].missing, 1);
     await mp.screenshot({ path: path.join(output, 'management.png') });
+    await mp.evaluate(() => { globalThis.__dailyUiMarket = true; });
+    const marketOverview = await mp.reLaunch('/pages/home/home');
+    await wait(() => marketOverview.data('overview'), '市场角色总览');
+    assert.equal((await marketOverview.data('user')).staffLevel, 'market');
+    await mp.screenshot({ path: path.join(output, 'market-overview.png') });
+    await mp.evaluate(() => { delete globalThis.__dailyUiMarket; });
     const org = await mp.reLaunch('/pages/workbench/workbench');
     await wait(() => org.data('ready'), "org");
     await org.callMethod('orgChange', { currentTarget: { dataset: { view: 'people' } } });
@@ -215,13 +247,14 @@ const automator = require("miniprogram-automator");
     await wait(async () => (await mp.currentPage()).path === 'pages/detail/detail', '取消修改返回只读');
     assert.deepEqual(exceptions, []);
     console.log(
-      "UI 验证通过：三套工作台、填写保存、只读详情、目标、PK双榜、组织筛选和市场详情（模拟接口）",
+      "UI 验证通过：三套工作台、市场角色、填写保存、只读详情、目标校验、个人记录、PK双榜、组织筛选和市场详情（模拟接口）",
     );
   } finally {
-    await mp.evaluate(() => { delete globalThis.__dailyUiSubmitted; });
+    await mp.evaluate(() => { delete globalThis.__dailyUiSubmitted; delete globalThis.__dailyUiTarget; delete globalThis.__dailyUiMarket; });
     await mp.evaluate((workspace) => wx.setStorageSync("dailyWorkspace", workspace), savedWorkspace);
     await mp.restoreWxMethod("cloud.callFunction");
     await mp.restoreWxMethod("showModal");
+    await mp.restoreWxMethod('showToast');
     await mp.reLaunch("/pages/home/home");
     mp.disconnect();
   }

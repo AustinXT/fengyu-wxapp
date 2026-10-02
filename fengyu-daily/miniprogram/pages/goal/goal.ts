@@ -6,6 +6,12 @@ interface Target { sales: number; consumption: number; penalty: string; month_co
   weeks: Record<string, { sales: number | null; consumption: number | null }> }
 interface Result { reference?: { period: { start: string; end: string }; month: { sales: number; consumption: number }; week: { start: string; end: string; sales: number; consumption: number } | null } | null; period: Period | null; week: Period['weeks'][number] | null; target: Target | null }
 const amount = (value: number | null | undefined) => value == null ? '未设置' : (value / 100).toFixed(2);
+const parseAmount = (raw: string): number | null => {
+  if (!/^\d+(\.\d{1,2})?$/.test(raw.trim())) return null;
+  const [whole, fraction = ''] = raw.trim().split('.');
+  const value = Number(whole) * 100 + Number(fraction.padEnd(2, '0'));
+  return Number.isSafeInteger(value) ? value : null;
+};
 Page({
   data: { scope: 'personal', scopeId: '', title: '我的经营目标', user: null as Employee | null,
     periods: [] as Period[], periodIndex: 0, scopes: [] as { id: string; name: string }[], scopeIndex: 0,
@@ -13,7 +19,7 @@ Page({
     weeks: [] as { id: string; name: string; dates: string; current: boolean; automatic: boolean; sales: string; consumption: string }[],
     sales: '', consumption: '', penalty: '', weekSales: '', weekConsumption: '',
     monthSales: '', monthConsumption: '', monthReference: '', weekReference: '', weekSalesPercent: '—', weekConsumptionPercent: '—', confirmed: false, editable: false, automatic: false,
-    loading: false, saving: false, ready: false },
+    monthError: '', weekError: '', loading: false, saving: false, ready: false },
   onLoad(options: Record<string, string | undefined>) {
     this.setData({ scope: ['personal', 'store', 'market'].includes(options.scope || '') ? options.scope! : 'personal', scopeId: options.scopeId || '' });
     void this.initialize();
@@ -62,8 +68,29 @@ Page({
   },
   percent() {
     const sales = Number(this.data.weekSales), consumption = Number(this.data.weekConsumption);
-    this.setData({ weekSalesPercent: this.data.weekSales !== '' && this.data.target && Number.isFinite(sales) ? (sales * 10000 / this.data.target.sales).toFixed(1) + '%' : '—',
-      weekConsumptionPercent: this.data.weekConsumption !== '' && this.data.target && Number.isFinite(consumption) ? (consumption * 10000 / this.data.target.consumption).toFixed(1) + '%' : '—' });
+    let monthError = '', weekError = '';
+    const monthSales = parseAmount(this.data.sales), monthConsumption = parseAmount(this.data.consumption);
+    if (monthSales === null || monthConsumption === null || monthSales <= 0 || monthConsumption <= 0)
+      monthError = '请填写大于0的月度业绩与消耗目标，最多两位小数。';
+    else if (this.data.scope === 'personal' && !this.data.penalty.trim()) monthError = '请填写本月负激励。';
+    if (!this.data.confirmed) weekError = '请先确认本月目标。';
+    else if (!this.data.week) weekError = '当前经营月没有可设置的经营周。';
+    else if (this.data.automatic) weekError = '第4周由剩余目标自动生成。';
+    else {
+      for (const metric of ['sales', 'consumption'] as const) {
+        const raw = metric === 'sales' ? this.data.weekSales : this.data.weekConsumption;
+        const value = parseAmount(raw);
+        if (value === null) { weekError = '请填写非负的本周业绩与消耗目标，最多两位小数。'; break; }
+        const used = (this.data.period?.weeks.slice(0, 3) || []).reduce((sum, week) =>
+          sum + (week.id === this.data.week?.id ? value : this.data.target?.weeks[week.id]?.[metric] ?? 0), 0);
+        if (!Number.isSafeInteger(used) || used > (this.data.target?.[metric] ?? 0)) {
+          weekError = `${metric === 'sales' ? '业绩' : '消耗'}前三周目标累计不能超过月目标。`; break;
+        }
+      }
+    }
+    this.setData({ monthError, weekError,
+      weekSalesPercent: this.data.weekSales !== '' && this.data.target && this.data.target.sales > 0 && Number.isFinite(sales) ? (sales * 10000 / this.data.target.sales).toFixed(1) + '%' : '—',
+      weekConsumptionPercent: this.data.weekConsumption !== '' && this.data.target && this.data.target.consumption > 0 && Number.isFinite(consumption) ? (consumption * 10000 / this.data.target.consumption).toFixed(1) + '%' : '—' });
   },
   async selection(e: WechatMiniprogram.CustomEvent<{ value: string }>) {
     if (this.data.saving || this.data.loading) return;
@@ -76,6 +103,9 @@ Page({
   async save(e: WechatMiniprogram.CustomEvent) {
     if (!this.data.ready || !this.data.editable || this.data.saving || !this.data.period) return;
     const month = e.currentTarget.dataset.kind === 'month';
+    this.percent();
+    const error = month ? this.data.monthError : this.data.weekError;
+    if (error) { wx.showToast({ title: error, icon: 'none' }); return; }
     this.setData({ saving: true });
     try {
       if (month) {

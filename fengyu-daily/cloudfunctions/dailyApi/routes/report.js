@@ -177,8 +177,9 @@ async function history(ctx) {
   const own = employeeId === ctx.auth.employeeId;
   const { reportStores } = require('../utils/report-scope');
   const storeIds = reportStores(ctx.auth).map((s) => s.store_id);
-  const [employee] = await pg.query(`SELECT employee_id,name,store_id FROM staff_wechat_users
-    WHERE employee_id=$1 AND ($2::boolean OR store_id=ANY($3::text[]))`, [employeeId, own, storeIds]);
+  const [employee] = await pg.query(`SELECT u.employee_id,u.name,u.store_id,u.position_name,s.store_name
+    FROM staff_wechat_users u LEFT JOIN stores s ON s.store_id=u.store_id
+    WHERE u.employee_id=$1 AND ($2::boolean OR u.store_id=ANY($3::text[]))`, [employeeId, own, storeIds]);
   if (!employee) throw Error('NOT_FOUND: 员工不存在或无权查看');
   const resolved = payload.periodId ? await require('./period').resolve(pg.query, payload) : null;
   if (payload.periodId && !resolved.period) throw Error('NOT_FOUND: 经营周期不存在');

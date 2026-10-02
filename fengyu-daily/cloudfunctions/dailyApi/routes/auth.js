@@ -66,6 +66,7 @@ async function load(id) {
     staffLevel,
     scopeStoreIds,
     hasDashboard,
+    roleBindings,
   );
   const availableWorkspaces = ["employee"];
   if (managerStores.length) availableWorkspaces.push("manager");
