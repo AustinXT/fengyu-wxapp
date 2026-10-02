@@ -20,9 +20,15 @@ Page({
     recent: [] as Report[],
     overview: null as Management | null,
     date: today(),
+    period: "today",
+    scopes: [{ id: "", name: "全部授权范围" }],
+    scopeIndex: 0,
     status: "未填写",
     button: "填写日报",
     error: false,
+    goalTitle: '经营目标',
+    goalLabel: '设置月目标',
+    goalPeriod: '尚未配置经营周期',
   },
   onShow() {
     this.setData({
@@ -38,11 +44,23 @@ Page({
       this.setData({ user, workspace });
       syncTabs(this, workspace, 0);
       if (user) {
+        if (workspace !== 'management') {
+          const scope = workspace === 'manager' ? 'store' : 'personal';
+          const scopeId = scope === 'store' ? user.managerStores[0]?.store_id : user.employeeId;
+          const goal = await callApi<{ period: { name: string } | null; week: { id: string; name: string; start: string; end: string } | null;
+            target: { month_confirmed: boolean; weeks: Record<string, { sales: number | null; consumption: number | null }> } | null }>('target.read', { scope, scopeId });
+          this.setData({ goalTitle: scope === 'store' ? '本店经营目标' : '经营目标',
+            goalPeriod: goal.week ? `${goal.week.name}（${goal.week.start.slice(5)} 至 ${goal.week.end.slice(5)}）` : goal.period?.name || '尚未配置经营周期',
+            goalLabel: !goal.target?.month_confirmed ? '设置月目标' : goal.week && goal.target.weeks[goal.week.id]?.sales == null ? '设置本周目标' : '查看经营目标' });
+        }
         if (workspace === "management") {
           const overview = await callApi<Management>("management.read", {
             date: this.data.date,
+            period: this.data.period,
+            nodeId: this.data.scopes[this.data.scopeIndex]?.id || undefined,
           });
-          this.setData({ overview });
+          const scopes = [{ id: '', name: '全部授权范围' }, ...overview.nodes.filter((n) => n.type === '市场').map((n) => ({ id: n.id, name: n.name }))];
+          this.setData({ overview, scopes });
           return;
         }
         const { report } = await callApi<Editor>("report.read", {
@@ -138,6 +156,19 @@ Page({
       wx.switchTab({ url: "/pages/workbench/workbench" });
     else wx.navigateTo({ url: "/pages/history/history" });
   },
+  scopeChange(e: WechatMiniprogram.CustomEvent<{ value: string }>) {
+    if (this.data.loading) return;
+    this.setData({ scopeIndex: Number(e.detail.value) }); void this.load();
+  },
+  periodChange(e: WechatMiniprogram.CustomEvent) {
+    if (this.data.loading) return;
+    this.setData({ period: e.currentTarget.dataset.period }); void this.load();
+  },
+  pk() { wx.navigateTo({ url: '/pages/pk/pk' }); },
+  goal() {
+    const scope = this.data.workspace === 'management' ? 'market' : this.data.workspace === 'manager' ? 'store' : 'personal';
+    wx.navigateTo({ url: '/pages/goal/goal?scope=' + scope });
+  },
   manager() {
     wx.switchTab({ url: "/pages/workbench/workbench" });
   },
@@ -152,6 +183,9 @@ Page({
         "/pages/manager/manager?storeId=" +
         encodeURIComponent(e.currentTarget.dataset.id),
     });
+  },
+  person(e: WechatMiniprogram.CustomEvent) {
+    wx.navigateTo({ url: '/pages/history/history?employeeId=' + encodeURIComponent(e.currentTarget.dataset.id) });
   },
   openDetail(e: WechatMiniprogram.CustomEvent) {
     if (e.currentTarget.dataset.id)

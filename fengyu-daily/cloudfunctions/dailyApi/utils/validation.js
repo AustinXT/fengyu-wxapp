@@ -48,8 +48,10 @@ function body(payload) {
       businessId: e.businessId,
       feedback: text(e.feedback, 300),
       followUp: text(e.followUp, 300),
+      businessDate: e.businessDate === undefined ? reportDate : date(e.businessDate),
     };
   });
+  if (entries.some((e) => e.businessDate > reportDate)) fail('不能添加日报日期之后的业务');
   return {
     reportDate,
     version: payload.version,
@@ -57,6 +59,8 @@ function body(payload) {
     action: text(payload.action, 500),
     growth: text(payload.growth, 500),
     plan: text(payload.plan, 500),
+    mentorEmployeeId: payload.mentorEmployeeId == null ? '' : text(payload.mentorEmployeeId, 30),
+    peerEmployeeId: payload.peerEmployeeId == null ? '' : text(payload.peerEmployeeId, 30),
   };
 }
 module.exports = { today, date, text, body };

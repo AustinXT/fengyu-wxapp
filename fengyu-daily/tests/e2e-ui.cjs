@@ -46,8 +46,18 @@ const automator = require("miniprogram-automator");
         feedback: "顾客体验良好",
         followUp: "三天后回访",
       };
+      const period = { id: 'UI-PERIOD', name: '测试经营月', start: date.slice(0, 8) + '01', end: date.slice(0, 8) + '28', version: 1,
+        weeks: [0, 1, 2, 3].map((i) => ({ id: 'w' + (i + 1), name: '第' + (i + 1) + '周', start: date.slice(0, 8) + String(i * 7 + 1).padStart(2, '0'), end: date.slice(0, 8) + String((i + 1) * 7).padStart(2, '0') })) };
+      const summary = { due: 2, submitted: 1, missing: 1, rate: 50 }, range = { label: '今日', start: date, end: date, kind: 'today' };
       let data;
       switch (options.data.action) {
+        case 'period.list': data = { periods: [period], period, week: period.weeks[0] }; break;
+        case 'target.read': data = { period, week: period.weeks[0], target: null, reference: null }; break;
+        case 'contacts.list': data = { contacts: [] }; break;
+        case 'business.list': data = { entries: [] }; break;
+        case 'pk.classes': data = { period, classes: [{ id: 'UI-CLASS', name: '测试班级', members: 1, stores: 1 }], scopeLabel: '排名仅统计授权门店' }; break;
+        case 'pk.read': data = { period, week: period.weeks[0], scopeLabel: '排名仅统计授权门店', rows: [{ employeeId: user.employeeId, name: user.name, area: '测试市场', legion: '测试军团', group: '测试小组', mentor: '测试指导员', rank: 1,
+          sales: { weekTarget: 10000, weekDone: 5000, monthTarget: 10000, monthDone: 5000 }, consumption: { weekTarget: 10000, weekDone: 6000, monthTarget: 10000, monthDone: 6000 } }] }; break;
         case "auth.login":
           data = { user };
           break;
@@ -66,6 +76,7 @@ const automator = require("miniprogram-automator");
           break;
         case "report.history":
           data = {
+            own: true, employee: { name: user.name }, summary,
             reports: [
               { id: "UI-REPORT", report_date: date, status: "submitted" },
             ],
@@ -81,7 +92,7 @@ const automator = require("miniprogram-automator");
                 employee_name: user.name,
               },
             ],
-            unsubmitted: [],
+            unsubmitted: [], summary, range, employees: [{ employee_id: user.employeeId, name: user.name, due: 2, submitted: 1 }],
           };
           break;
         case "manager.detail":
@@ -131,9 +142,25 @@ const automator = require("miniprogram-automator");
     assert.equal((await detail.data("entries"))[0].feedback, "顾客体验良好");
     assert.equal((await detail.$$("textarea")).length, 0);
     await mp.screenshot({ path: path.join(output, "detail.png") });
+    const goal = await mp.navigateTo('/pages/goal/goal');
+    await goal.waitFor(() => goal.data('ready'));
+    assert.equal(await goal.data('title'), '我的经营目标');
+    await mp.screenshot({ path: path.join(output, 'goal.png') });
+    const pk = await mp.navigateTo('/pages/pk/pk');
+    await pk.waitFor(() => pk.data('ready'));
+    assert.equal((await pk.data('classes')).length, 1);
+    await mp.screenshot({ path: path.join(output, 'pk-classes.png') });
+    await pk.callMethod('openClass', { currentTarget: { dataset: { index: 0 } } });
+    await pk.waitFor(() => pk.data('ready'));
+    assert.equal((await pk.data('rows'))[0].weekRate, '50.0%');
+    await mp.screenshot({ path: path.join(output, 'pk-sales.png') });
+    await pk.callMethod('metricChange', { currentTarget: { dataset: { metric: 'consumption' } } });
+    await pk.waitFor(() => pk.data('ready'));
+    assert.equal((await pk.data('rows'))[0].weekRate, '60.0%');
+    await mp.screenshot({ path: path.join(output, 'pk-consumption.png') });
     assert.deepEqual(exceptions, []);
     console.log(
-      "UI 验证通过：四个页面编译、本人填写和保存、店长只读详情（模拟接口）",
+      "UI 验证通过：首页、填写保存、店长只读、经营目标、PK班级和双榜（模拟接口）",
     );
   } finally {
     await mp.restoreWxMethod("cloud.callFunction");

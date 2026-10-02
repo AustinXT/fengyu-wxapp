@@ -1,6 +1,7 @@
 const pg = require("../db/pg");
 const v = require("../utils/validation");
 const { reportStores } = require('../utils/report-scope');
+const submissions = require('../utils/submission-range');
 function assertStore(ctx, storeId) {
   if (
     typeof storeId !== "string" ||
@@ -9,25 +10,23 @@ function assertStore(ctx, storeId) {
     throw new Error("PERMISSION_DENIED: 无权查看该门店日报");
 }
 async function list(ctx) {
-  const date = v.date(ctx.event.payload?.date),
-    storeId = ctx.event.payload?.storeId;
+  const storeId = ctx.event.payload?.storeId;
   assertStore(ctx, storeId);
+  const range = await submissions.range(pg.query, ctx.event.payload), date = range.date;
   // 草稿内容、版本、是否存在均不向店长暴露。
   const reports = await pg.query(
-    `SELECT r.id,r.employee_id,r.employee_name,r.submitted_at
-    FROM daily_reports r WHERE r.store_id=$1 AND r.report_date=$2 AND r.status='submitted' ORDER BY r.submitted_at DESC`,
-    [storeId, date],
+    `SELECT r.id,r.employee_id,r.employee_name,r.report_date,r.submitted_at
+    FROM daily_reports r WHERE r.store_id=$1 AND r.report_date BETWEEN $2 AND $3 AND r.status='submitted' ORDER BY r.report_date DESC,r.submitted_at DESC`,
+    [storeId, range.start, range.end],
   );
-  const employees = await pg.query(
-    `SELECT u.employee_id,u.name FROM staff_wechat_users u WHERE u.store_id=$1 AND NOT u.is_resigned ORDER BY u.name`,
-    [storeId],
-  );
+  const employees = await submissions.people(pg.query, [storeId], range);
   ctx.result = {
     date,
+    range,
     reports,
-    unsubmitted: employees.filter(
-      (e) => !reports.some((r) => r.employee_id === e.employee_id),
-    ),
+    employees,
+    summary: submissions.summary(employees),
+    unsubmitted: employees.filter((e) => e.submitted < e.due),
   };
 }
 async function detail(ctx) {

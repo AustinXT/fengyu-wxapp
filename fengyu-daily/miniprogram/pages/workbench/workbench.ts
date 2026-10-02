@@ -15,7 +15,12 @@ Page({
     loading: false,
     ready: false,
     date: today(),
+    period: "today",
+    summary: null as Management["summary"] | null,
+    range: null as Management["range"] | null,
     reports: [] as Report[],
+    periods: [] as { id: string; name: string }[], periodIndex: 0,
+    personalSummary: null as Management['summary'] | null,
     overview: null as Management | null,
     storeIndex: 0,
     search: "",
@@ -46,10 +51,13 @@ Page({
         return;
       }
       if (workspace === "employee") {
-        const { reports } = await callApi<{ reports: Report[] }>(
-          "report.history",
-        );
-        this.setData({ reports });
+        if (!this.data.periods.length) {
+          const data = await callApi<{ periods: { id: string; name: string }[]; period: { id: string } | null }>('period.list');
+          this.setData({ periods: data.periods, periodIndex: Math.max(0, data.periods.findIndex((p) => p.id === data.period?.id)) });
+        }
+        const { reports, summary } = await callApi<{ reports: Report[]; summary: Management['summary'] | null }>('report.history',
+          { periodId: this.data.periods[this.data.periodIndex]?.id });
+        this.setData({ reports, personalSummary: summary });
       } else if (workspace === "manager") {
         const index = Math.min(
           this.data.storeIndex,
@@ -58,18 +66,22 @@ Page({
         const data = await callApi<{
           reports: { id: string; employee_id: string; employee_name: string }[];
           unsubmitted: { employee_id: string; name: string }[];
+          summary: Management["summary"]; range: Management["range"];
         }>("manager.list", {
           date: this.data.date,
+          period: this.data.period,
           storeId: user.managerStores[index].store_id,
         });
         this.setData({
           storeIndex: index,
           storeReports: data.reports,
           unsubmitted: data.unsubmitted,
+          summary: data.summary, range: data.range,
         });
       } else {
         const overview = await callApi<Management>("management.read", {
           date: this.data.date,
+          period: this.data.period,
         });
         this.setData({ overview });
         this.filter();
@@ -122,6 +134,18 @@ Page({
       ),
     });
   },
+  periodChange(e: WechatMiniprogram.CustomEvent) {
+    if (this.data.loading) return;
+    this.setData({ period: e.currentTarget.dataset.period }); void this.load();
+  },
+  person(e: WechatMiniprogram.CustomEvent) {
+    wx.navigateTo({ url: '/pages/history/history?employeeId=' + encodeURIComponent(e.currentTarget.dataset.id) });
+  },
+  monthChange(e: WechatMiniprogram.CustomEvent<{ value: string }>) {
+    if (this.data.loading) return;
+    this.setData({ periodIndex: Number(e.detail.value) }); void this.load();
+  },
+  monthlyHistory() { wx.navigateTo({ url: '/pages/history/history' }); },
   orgChange(e: WechatMiniprogram.CustomEvent) {
     this.setData({ orgView: e.currentTarget.dataset.view });
   },

@@ -57,7 +57,7 @@ test("PHONE_REQUIRED 和权限拒绝通过 errorType 区分", () => {
   );
 });
 test("员工端工具独立副本保持一致", () => {
-  for (const file of ["db/pg.js", "utils/error-codes.js", "utils/scope.js", "utils/permission-matrix.js"]) {
+  for (const file of ["db/pg.js", "utils/error-codes.js", "utils/scope.js", "utils/permission-matrix.js", "utils/consume-filter.js"]) {
     assert.equal(
       fs.readFileSync(path.join(__dirname, "..", file), "utf8"),
       fs.readFileSync(
