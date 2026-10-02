@@ -12,7 +12,7 @@ import { withPermission } from '@/lib/with-permission'
 // lib 侧的 listInventorySettlements 自身也是 withPermission 包装（session 由它自己的 HOF 注入），
 // 这里只转发业务参数。
 export const listInventorySettlements = withPermission(
-  'inventory:list',
+  'inventory:store_settlement_view',
   async (_session, filters: { startDate?: string; endDate?: string; market?: string } = {}) =>
     listInventorySettlementsImpl(filters),
 )

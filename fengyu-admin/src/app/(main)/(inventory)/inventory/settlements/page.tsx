@@ -15,13 +15,13 @@ export default async function Page({
 }) {
   const params = await searchParams
   const session = await getSession()
-  requireAllUiPageCapabilities(session, ['inventory:list'])
+  requireAllUiPageCapabilities(session, ['inventory:store_settlement_view'])
   const report = await listInventorySettlements({
     startDate: params.start,
     endDate: params.end,
     market: params.market,
   })
-  // 门店价格档（none）不可见货款结算页：服务端不返回金额，页面按 404 收口。
+  // 无价格权且没有同绑定门店结算权时，页面按 404 收口。
   if (!report.canViewMarketSettlement && !report.canViewStoreSettlement) notFound()
 
   return (

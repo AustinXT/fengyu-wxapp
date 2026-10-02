@@ -51,6 +51,7 @@ vi.mock('@/lib/permissions', () => ({
     'inventory:supply_chain_operate',
     'inventory:market_operate',
     'inventory:store_operate',
+    'inventory:store_settlement_view',
   ],
 }))
 
@@ -506,6 +507,18 @@ describe('normalizeAllowedScopeTypes — 进销存层级与可绑定范围', () 
       ...overrides,
     }
   }
+
+  it('只读门店结算动作不强制收敛绑定层级、不补库存或价格权限', async () => {
+    const before = beforeRow({ actions: ['inventory:store_settlement_view'] })
+    ;(db.select as ReturnType<typeof vi.fn>).mockReturnValueOnce(mockSelectOnce([before]))
+    const tx = mockTxCapturingSet()
+    await expect(updateRoleDefinition(before.roleKey, {
+      name: before.name, actions: before.actions,
+      allowedScopeTypes: ['总部', '市场', '门店'],
+    })).resolves.toEqual({ success: true, message: '角色已保存' })
+    expect(tx.setValues().allowedScopeTypes).toEqual(['总部', '市场', '门店'])
+    expect(tx.setValues().actions).toEqual(['inventory:store_settlement_view'])
+  })
 
   it('持市场层级进销存动作的角色可绑定层级被锁定为市场，忽略传入的多层级', async () => {
     const before = beforeRow({ actions: ['dashboard:view', 'inventory:market_operate'] })

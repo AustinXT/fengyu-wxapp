@@ -13,6 +13,7 @@ import {
   cleanupInventoryFixture, ensureInventoryFixture, insertSeedLot, lotQuantity,
   docHeader, docItems, locationLots,
   marketASession, marketBSession, storeA1Session, storeA2Session, supplyChainSession,
+  storeSettlementManagerSession,
 } from './helpers/inventory-fixtures.mjs'
 
 const __filename = new URL(import.meta.url).pathname
@@ -592,12 +593,50 @@ try {
       && settlementAsSupply.marketRows.some((row) => row.payableAmount === 5700),
     JSON.stringify({ market: settlementAsSupply.marketRows.length, store: settlementAsSupply.storeRows.length }))
 
+  /*
+   * #364：action 闸已从 `inventory:list` 换成 `inventory:store_settlement_view`，
+   * 所以「门店库存员」现在**在闸门处就被拒**，而不是拿到一份空报表。
+   * （单测里对应的一条也从「不返回金额」改成了「抛 PERMISSION_DENIED」，这里同步。）
+   */
   setSession(storeA1Session())
-  const settlementAsStore = await settle.listInventorySettlements({})
-  check('门店档结算报表不返回任何金额行(§9.5)',
-    settlementAsStore.canViewMarketSettlement === false && settlementAsStore.canViewStoreSettlement === false
-      && settlementAsStore.marketRows.length === 0 && settlementAsStore.storeRows.length === 0,
-    JSON.stringify(settlementAsStore.marketRows))
+  await expectThrow('门店库存员无本店结算权限在闸门处被拒(#364)', /PERMISSION_DENIED/, () =>
+    settle.listInventorySettlements({}))
+
+  /*
+   * #364：门店**独立结算授权**下，本院的退货冲减必须可见。
+   * 造一张最小「院退货」（门店 → 所属市场、已完成；数量 2 × 门店价 1200 = 2400），
+   * 与夹具里正向的分院配货 5500 落在同一行：5500 − 2400 = 3100。
+   *
+   * ⚠️ 收窄若按原始 `target_org_node_id`，这笔冲减**必落空** —— 院退货的原始端点
+   * 是反的（source=门店、target=市场），它的 target 压根不是门店。必须按**投影的
+   * `party_node`**（= swapped ? source : target）收窄才能落到店长这一行。
+   * 私有库实测过这个差异：老写法 5500（只剩正向）/ 新写法 3100。
+   */
+  const storeManagerEmployeeId = storeA1Session().employeeId
+  await pgQuery(
+    `INSERT INTO inventory_docs (id, doc_type, status, source_org_node_id, target_org_node_id, market_id,
+                                 doc_date, created_by, total_quantity, approved_by, approved_at)
+     VALUES ('YTH-364-E2E', '院退货', '已完成', $1, $2, $2, '2026-09-29', $3, 0, $3, now())`,
+    [STA1_ORG, MKA_ORG, storeManagerEmployeeId],
+  )
+  await pgQuery(
+    `INSERT INTO inventory_doc_items (doc_id, sku_id, sku_name, quantity, store_actual_unit_price)
+     VALUES ('YTH-364-E2E', $1, 'TE2AI_364退货品', 2, 1200)`,
+    [SKU_SUPPLY],
+  )
+  setSession(storeSettlementManagerSession())
+  const settlementAsStoreManager = await settle.listInventorySettlements({})
+  const managerRow = settlementAsStoreManager.storeRows.find((row) => row.targetOrgNodeId === STA1_ORG)
+  check('#364 店长独立结算授权可见本院退货冲减（按投影 party_node 收窄）',
+    settlementAsStoreManager.canViewMarketSettlement === false
+      && settlementAsStoreManager.canViewStoreSettlement === true
+      && managerRow?.returnDocCount === 1 && managerRow?.returnedQuantity === 2
+      && managerRow?.payableAmount === 3100,
+    JSON.stringify(settlementAsStoreManager.storeRows))
+  await pgQuery(`DELETE FROM inventory_doc_items WHERE doc_id = 'YTH-364-E2E'`)
+  await pgQuery(`DELETE FROM inventory_docs WHERE id = 'YTH-364-E2E'`)
+  // 还原会话：本段切成了「只持本店结算只读」的店长，后续步骤仍按门店库存员跑
+  setSession(storeA1Session())
 
   // 建预留（quantity 3 − fulfilled 1 − released 1 = 活动预留 1）后查可用量 = 5 − 1 = 4
   await pgQuery(

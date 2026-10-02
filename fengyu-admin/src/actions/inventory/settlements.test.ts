@@ -22,10 +22,10 @@ const INVENTORY_SESSION = {
     scopeType: '市场',
     scopeStoreIds: [],
     scopeOrgNodeIds: ['M1'],
-    actions: ['inventory:list', 'inventory:market_price_view'],
+    actions: ['inventory:store_settlement_view', 'inventory:market_price_view'],
   }],
   permissions: {
-    actions: ['inventory:list', 'inventory:market_price_view'],
+    actions: ['inventory:store_settlement_view', 'inventory:market_price_view'],
     scopeStoreIds: [],
     scopeOrgNodeIds: ['M1'],
   },
@@ -41,9 +41,9 @@ const NO_INVENTORY_SESSION = {
     scopeType: '门店',
     scopeStoreIds: ['S1'],
     scopeOrgNodeIds: ['S1'],
-    actions: ['sale_order:list'],
+    actions: ['inventory:list'],
   }],
-  permissions: { actions: ['sale_order:list'], scopeStoreIds: ['S1'], scopeOrgNodeIds: ['S1'] },
+  permissions: { actions: ['inventory:list'], scopeStoreIds: ['S1'], scopeOrgNodeIds: ['S1'] },
 } as never
 
 describe('货款结算 Server Action 薄壳', () => {
@@ -51,7 +51,7 @@ describe('货款结算 Server Action 薄壳', () => {
     vi.clearAllMocks()
   })
 
-  it('持 inventory:list 时转发筛选参数给实现层', async () => {
+  it('持 inventory:store_settlement_view 时转发筛选参数给实现层', async () => {
     mockGetSession.mockResolvedValue(INVENTORY_SESSION)
     mockImpl.mockResolvedValue({ marketRows: [], storeRows: [] })
 
@@ -60,7 +60,7 @@ describe('货款结算 Server Action 薄壳', () => {
     expect(mockImpl).toHaveBeenCalledWith({ startDate: '2026-09-01', endDate: '2026-09-02' })
   })
 
-  it('缺 inventory:list 抛 PERMISSION_DENIED 且不触达实现层', async () => {
+  it('缺 inventory:store_settlement_view 抛 PERMISSION_DENIED 且不触达实现层', async () => {
     mockGetSession.mockResolvedValue(NO_INVENTORY_SESSION)
 
     await expect(listInventorySettlements()).rejects.toThrow('PERMISSION_DENIED')
