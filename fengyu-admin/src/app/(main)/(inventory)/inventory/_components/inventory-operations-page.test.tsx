@@ -1417,7 +1417,7 @@ describe('待办行内动作的失败与防重（#192）', () => {
     renderTab({ operation: 'store-return-approval' })
     await screen.findByText('待我处理')
 
-    fireEvent.click(screen.getByRole('button', { name: '通过 D-15' }))
+    fireEvent.click(await screen.findByRole('button', { name: '通过 D-15' }))
     fireEvent.click(screen.getByRole('button', { name: '确认通过' }))
     await waitFor(() => expect(screen.getByRole('button', { name: '处理中…' })).toBeDisabled())
 
