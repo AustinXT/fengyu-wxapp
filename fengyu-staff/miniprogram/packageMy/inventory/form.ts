@@ -1,9 +1,12 @@
 // packageMy/inventory/form.ts — 门店库存业务办理
 import { callStaffApi } from '../../utils/cloud'
 import { getCurrentStoreId, requireInventoryStoreOperate } from '../../utils/role'
+import { ReportableSkuSearch, SKU_PAGE_SIZE } from '../utils/reportable-sku-search'
+import { isValidStocktakeQuantity } from '../utils/stocktake'
 
-type OperateDocType = '门店报货' | '分院调货出库' | '院退货' | '院产品报损'
-type ItemMode = 'reportableSku' | 'stockLot'
+type OperateDocType = '门店报货' | '分院调货出库' | '院退货' | '院产品报损' | '分院库存盘点'
+// stocktakeSku（#352）：门店盘点按 SKU 录实盘数，账面数由 createDoc 在提交时汇总写入，前端不传
+type ItemMode = 'reportableSku' | 'stockLot' | 'stocktakeSku'
 
 interface FormConfig {
   title: string
@@ -19,7 +22,10 @@ interface ReportableSku {
   specName: string | null
   supplier: string | null
   productSeries: string | null
+  /** 门店报货：本店库存参考；盘点不下发（盲盘），恒 0 且不展示 */
   stockReference: number
+  /** 盘点：本店是否有货（只用于排序提示，不含数量） */
+  inStock: boolean
   displayName: string
 }
 
@@ -51,6 +57,8 @@ interface DraftItem {
   quantity: number
   stockReference: number
   reason: string
+  /** 行备注：门店报货草稿回填时保留（admin 代建的行备注不能被小程序存一次就清掉，#348） */
+  remark?: string
 }
 
 const FORM_CONFIG: Record<OperateDocType, FormConfig> = {
@@ -78,13 +86,19 @@ const FORM_CONFIG: Record<OperateDocType, FormConfig> = {
     needsTargetStore: false,
     needsReason: true,
   },
+  '分院库存盘点': {
+    title: '门店盘点',
+    itemMode: 'stocktakeSku',
+    needsTargetStore: false,
+    needsReason: false,
+  },
 }
 
 function validDocType(value: string): value is OperateDocType {
   return Object.prototype.hasOwnProperty.call(FORM_CONFIG, value)
 }
 
-function displaySku(item: Omit<ReportableSku, 'displayName'>): string {
+function displaySku(item: Pick<ReportableSku, 'skuName' | 'specName' | 'productCode'>): string {
   return [item.skuName, item.specName, item.productCode].filter(Boolean).join(' · ')
 }
 
@@ -100,12 +114,12 @@ Page({
     sourceStoreId: '',
     sourceStoreName: '',
     itemMode: 'stockLot' as ItemMode,
+    isStocktake: false,
     needsTargetStore: false,
     needsReason: false,
     skuOptions: [] as ReportableSku[],
     stockOptions: [] as StockLot[],
     storeOptions: [] as StoreOption[],
-    selectedSkuIndex: -1,
     selectedLotIndex: -1,
     selectedStoreIndex: -1,
     selectedSku: null as ReportableSku | null,
@@ -115,11 +129,29 @@ Page({
     reasonInput: '',
     remark: '',
     items: [] as DraftItem[],
+    // 盘点：已加入明细的 SKU（WXML 不能调方法，选品弹层据此标「已添加」）
+    addedSkuIds: {} as Record<string, boolean>,
     loadingOptions: false,
     submitting: false,
+    // 门店报货草稿（#348）：canDraft = 本业务支持存草稿；draftId 非空 = 正在编辑这张草稿
+    canDraft: false,
+    draftId: '',
+    // 草稿版本（updatedAt）：保存 / 提交时回传做乐观锁，别人改过云端报 CONFLICT
+    draftVersion: '',
+    loadingDraft: false,
+    // 门店报货选品弹层（#339）：服务端检索 + 分页，替换原来只拉前 100 条的原生 picker
+    showSkuPicker: false,
+    skuKeyword: '',
+    skuPage: 0,
+    skuTotal: 0,
+    skuHasMore: true,
+    skuLoading: false,
+    skuError: '',
   },
 
-  onLoad(query: { docType?: string }) {
+  _skuSearch: null as ReportableSkuSearch<ReportableSku> | null,
+
+  onLoad(query: { docType?: string; id?: string }) {
     if (!requireInventoryStoreOperate()) {
       setTimeout(() => wx.navigateBack(), 500)
       return
@@ -142,8 +174,10 @@ Page({
       sourceStoreId,
       sourceStoreName,
       itemMode: config.itemMode,
+      isStocktake: config.itemMode === 'stocktakeSku',
       needsTargetStore: config.needsTargetStore,
       needsReason: config.needsReason,
+      canDraft: docType === '门店报货',
     })
     wx.setNavigationBarTitle({ title: config.title })
     if (!sourceStoreId) {
@@ -151,24 +185,62 @@ Page({
       return
     }
     this.loadOptions()
+    const draftId = decodeURIComponent(query.id || '')
+    if (draftId && docType === '门店报货') this.loadDraft(draftId)
+  },
+
+  /** 继续编辑门店报货草稿（#348）：回填明细与备注；是否本店、是否仍是草稿由云端 updateDraft/submitDraft 再校验 */
+  async loadDraft(id: string) {
+    this.setData({ loadingDraft: true })
+    try {
+      const detail = await callStaffApi<{
+        id: string
+        docType: string
+        status: string
+        remark: string | null
+        sourceLocationId: string | null
+        updatedAt: string | null
+        items: Array<{ skuId: string; skuName: string; specName: string | null; quantity: number; remark?: string | null }>
+      }>('inventory.docDetail', { id })
+      if (!detail || detail.docType !== '门店报货' || detail.status !== '草稿') {
+        wx.showToast({ title: '该单据已不是可编辑的草稿', icon: 'none' })
+        setTimeout(() => wx.navigateBack(), 800)
+        return
+      }
+      // 草稿属于别的门店：云端会按「报货门店不能修改」拒，先在这里说清楚该怎么办
+      if (detail.sourceLocationId && detail.sourceLocationId !== this.data.sourceStoreId) {
+        wx.showToast({ title: '该草稿属于其它门店，请切换到该门店后再编辑', icon: 'none', duration: 2500 })
+        setTimeout(() => wx.navigateBack(), 1500)
+        return
+      }
+      const items: DraftItem[] = (detail.items || []).map((item) => ({
+        key: item.skuId,
+        skuId: item.skuId,
+        skuName: item.skuName,
+        specName: item.specName,
+        batchNo: '',
+        quantity: Number(item.quantity),
+        stockReference: 0,
+        reason: '',
+        remark: item.remark || '',
+      }))
+      this.setData({ draftId: detail.id, draftVersion: detail.updatedAt || '', items, remark: detail.remark || '' })
+      wx.setNavigationBarTitle({ title: '编辑门店报货草稿' })
+    } catch (err: any) {
+      // 加载失败别停在空表单：那样提交会走 createDoc 另建一张单，原草稿成了孤儿
+      wx.showToast({ title: err?.message || '草稿加载失败', icon: 'none' })
+      setTimeout(() => wx.navigateBack(), 1200)
+    } finally {
+      this.setData({ loadingDraft: false })
+    }
   },
 
   async loadOptions() {
     if (!this.data.sourceStoreId) return
     this.setData({ loadingOptions: true })
     try {
-      if (this.data.itemMode === 'reportableSku') {
-        const res = await callStaffApi<{ items: Omit<ReportableSku, 'displayName'>[] }>(
-          'inventory.reportableSkuOptions',
-          { locationId: this.data.sourceStoreId, pageSize: 100 },
-        )
-        const skuOptions = (res.items || []).map((item) => ({
-          ...item,
-          stockReference: Number(item.stockReference || 0),
-          displayName: displaySku(item),
-        }))
-        this.setData({ skuOptions })
-      } else {
+      // 可报货产品不在这里预拉：打开选品弹层时按关键词分页检索（packageMy/utils/reportable-sku-search）
+      if (this.data.itemMode === 'stockLot') {
         const res = await callStaffApi<{ items: Omit<StockLot, 'displayName'>[] }>(
           'inventory.stockList',
           { locationId: this.data.sourceStoreId, onlyPositive: true, pageSize: 100 },
@@ -193,10 +265,105 @@ Page({
     }
   },
 
-  onSkuChange(e: WechatMiniprogram.PickerChange) {
-    const index = Number(e.detail.value)
-    const selectedSku = this.data.skuOptions[index] || null
-    this.setData({ selectedSkuIndex: index, selectedSku })
+  onUnload() {
+    // 取消防抖并作废在途检索：页面卸载后回来的结果不再 setData
+    this._skuSearch?.dispose()
+  },
+
+  /** 选品检索状态机（懒创建：只有门店报货与门店盘点用得到） */
+  skuSearch(): ReportableSkuSearch<ReportableSku> {
+    if (!this._skuSearch) {
+      this._skuSearch = new ReportableSkuSearch<ReportableSku>({
+        fetchPage: async (keyword, page) => {
+          if (this.data.itemMode === 'stocktakeSku') {
+            // 盘点候选不限可报货（#352），且不带账面数
+            const res = await callStaffApi<{ items: Omit<ReportableSku, 'displayName' | 'stockReference'>[]; total: number }>(
+              'inventory.stocktakeSkuOptions',
+              { locationId: this.data.sourceStoreId, keyword: keyword || undefined, page, pageSize: SKU_PAGE_SIZE },
+            )
+            return {
+              total: res.total,
+              items: (res.items || []).map((item) => ({
+                ...item,
+                stockReference: 0,
+                inStock: Boolean(item.inStock),
+                displayName: displaySku(item),
+              })),
+            }
+          }
+          const res = await callStaffApi<{ items: Omit<ReportableSku, 'displayName' | 'inStock'>[]; total: number }>(
+            'inventory.reportableSkuOptions',
+            { locationId: this.data.sourceStoreId, keyword: keyword || undefined, page, pageSize: SKU_PAGE_SIZE },
+          )
+          return {
+            total: res.total,
+            items: (res.items || []).map((item) => ({
+              ...item,
+              stockReference: Number(item.stockReference || 0),
+              inStock: false,
+              displayName: displaySku(item),
+            })),
+          }
+        },
+        onState: (patch) => this.setData(patch),
+      })
+    }
+    return this._skuSearch
+  },
+
+  onOpenSkuPicker() {
+    if (!this.data.sourceStoreId) {
+      wx.showToast({ title: '请先在门店模式选择门店', icon: 'none' })
+      return
+    }
+    this.setData({ showSkuPicker: true })
+    // 关掉再开保留上次的关键词与结果
+    this.skuSearch().open()
+  },
+
+  onRetrySkuPage() {
+    this.skuSearch().retry()
+  },
+
+  onLoadMoreSku() {
+    this.skuSearch().loadMore()
+  },
+
+  onCloseSkuPicker() {
+    this.setData({ showSkuPicker: false })
+  },
+
+  onSkuKeywordChange(e: WechatMiniprogram.CustomEvent) {
+    // van-search 边缘事件形态下 detail 可能不是字符串
+    const value = typeof e.detail === 'string' ? e.detail : ''
+    this.setData({ skuKeyword: value })
+    this.skuSearch().onKeyword(value)
+  },
+
+  onSkuKeywordClear() {
+    this.setData({ skuKeyword: '' })
+    this.skuSearch().clearKeyword()
+  },
+
+  onSkuListReachBottom() {
+    this.skuSearch().loadMore()
+  },
+
+  onSelectSku(e: WechatMiniprogram.CustomEvent) {
+    const index = Number(e.currentTarget.dataset.index)
+    const sku = this.data.skuOptions[index]
+    if (!sku) return
+    // 盘点一个 SKU 只能一行（账面数按 主体+SKU 汇总，重复行会重复计差异）：选的时候就挡住
+    if (this.data.itemMode === 'stocktakeSku' && this.data.addedSkuIds[sku.skuId]) {
+      wx.showToast({ title: '该产品已在盘点明细中，请先删除原行', icon: 'none' })
+      return
+    }
+    // 已选产品独立保存一份：之后换关键词、列表里不再有它，展示名称也不受影响
+    this.setData({ selectedSku: { ...sku }, showSkuPicker: false })
+  },
+
+  onClearSelectedSku() {
+    this.setData({ selectedSku: null, quantityInput: '' })
   },
 
   onLotChange(e: WechatMiniprogram.PickerChange) {
@@ -224,6 +391,10 @@ Page({
   },
 
   onAddItem() {
+    if (this.data.itemMode === 'stocktakeSku') {
+      this.addStocktakeItem()
+      return
+    }
     const quantity = Number(this.data.quantityInput)
     if (!Number.isFinite(quantity) || quantity <= 0) {
       wx.showToast({ title: '请输入大于 0 的数量', icon: 'none' })
@@ -292,22 +463,71 @@ Page({
       items,
       quantityInput: '',
       reasonInput: '',
-      selectedSkuIndex: -1,
       selectedLotIndex: -1,
       selectedSku: null,
       selectedLot: null,
     })
   },
 
+  /**
+   * 盘点明细（#352）：实盘数可以是 0（货架上没有 = 盘亏），但**留空不行**——
+   * Number('') 是 0，不拦就把「没填」当成「实盘 0」。同一 SKU 不合并、直接拒绝：
+   * 两次录入是「补录」还是「改数」说不清，让用户删掉原行重录。
+   */
+  addStocktakeItem() {
+    const sku = this.data.selectedSku
+    if (!sku) {
+      wx.showToast({ title: '请选择盘点产品', icon: 'none' })
+      return
+    }
+    if (this.data.addedSkuIds[sku.skuId]) {
+      wx.showToast({ title: '该产品已在盘点明细中，请先删除原行', icon: 'none' })
+      return
+    }
+    const input = this.data.quantityInput.trim()
+    if (!isValidStocktakeQuantity(input)) {
+      wx.showToast({ title: '请填写实盘数（0 或正数，最多两位小数）', icon: 'none' })
+      return
+    }
+    const items: DraftItem[] = [...this.data.items, {
+      key: sku.skuId,
+      skuId: sku.skuId,
+      skuName: sku.skuName,
+      specName: sku.specName,
+      batchNo: '',
+      quantity: Number(input),
+      stockReference: 0,
+      reason: '',
+    }]
+    this.setData({
+      items,
+      addedSkuIds: { ...this.data.addedSkuIds, [sku.skuId]: true },
+      quantityInput: '',
+      selectedSku: null,
+    })
+  },
+
   onRemoveItem(e: WechatMiniprogram.CustomEvent) {
     const index = Number(e.currentTarget.dataset.index)
     if (!Number.isInteger(index) || index < 0 || index >= this.data.items.length) return
+    const removed = this.data.items[index]
     const items = this.data.items.filter((_, itemIndex) => itemIndex !== index)
-    this.setData({ items })
+    const addedSkuIds = { ...this.data.addedSkuIds }
+    delete addedSkuIds[removed.skuId]
+    this.setData({ items, addedSkuIds })
   },
 
-  async onSubmit() {
-    if (this.data.submitting) return
+  /** 存草稿（#348，仅门店报货）：不进入市场汇总与分院配货；存完留在本页，可继续改或提交 */
+  onSaveDraft() {
+    this.submitDoc(true)
+  },
+
+  onSubmit() {
+    this.submitDoc(false)
+  },
+
+  async submitDoc(asDraft: boolean) {
+    if (this.data.submitting || this.data.loadingDraft) return
     if (this.data.items.length === 0) {
       wx.showToast({ title: '请至少添加一条明细', icon: 'none' })
       return
@@ -316,9 +536,20 @@ Page({
       wx.showToast({ title: '请选择接收门店', icon: 'none' })
       return
     }
+    // 盘点：选了产品、填了实盘却没点「添加明细」，提交会把这一行静默丢掉——
+    // 漏掉的 SKU 既不算盘亏也不算相符，结论就偏了（#352）
+    if (this.data.isStocktake && this.data.selectedSku) {
+      wx.showToast({ title: '还有未加入的盘点产品，请先点「添加明细」或清除', icon: 'none' })
+      return
+    }
     this.setData({ submitting: true })
+    const draftId = this.data.draftId
+    // 草稿四条路：新建草稿 createDoc(draft) / 覆盖 updateDraft / 提交草稿 submitDraft / 直接建单 createDoc
+    const action = draftId
+      ? (asDraft ? 'inventory.updateDraft' : 'inventory.submitDraft')
+      : 'inventory.createDoc'
     try {
-      const result = await callStaffApi<{ id: string }>('inventory.createDoc', {
+      const result = await callStaffApi<{ id: string; updatedAt?: string | null }>(action, {
         docType: this.data.docType,
         storeId: this.data.sourceStoreId,
         targetOrgNodeId: this.data.selectedStore?.orgNodeId || undefined,
@@ -328,18 +559,33 @@ Page({
           skuId: item.skuId,
           quantity: item.quantity,
           reason: item.reason || undefined,
+          remark: item.remark || undefined,
         })),
+        draftId: draftId || undefined,
+        expectedUpdatedAt: draftId ? this.data.draftVersion || undefined : undefined,
+        draft: asDraft && !draftId ? true : undefined,
       })
+      if (asDraft) {
+        this.setData({ submitting: false, draftId: result.id, draftVersion: result.updatedAt || '' })
+        wx.setNavigationBarTitle({ title: '编辑门店报货草稿' })
+        wx.showToast({ title: '草稿已保存', icon: 'success' })
+        return
+      }
       wx.showToast({ title: '提交成功', icon: 'success' })
+      // 成功后保持 submitting=true 直到跳走：跳转前的 700ms 里按钮若恢复可点，
+      // 再点一次就会建出第二张单（盘点单会有两个不同时点的账面快照）
       setTimeout(() => {
         wx.redirectTo({
           url: `/packageMy/inventory/detail?id=${encodeURIComponent(result.id)}`,
+          // 跳转失败（页面栈满等）时单据已建成，恢复按钮只会引出重复建单；提示去列表查看
+          fail: () => {
+            wx.showToast({ title: '已提交，请返回库存记录查看', icon: 'none', duration: 3000 })
+          },
         })
       }, 700)
     } catch (err: any) {
-      wx.showToast({ title: err?.message || '提交失败', icon: 'none' })
-    } finally {
       this.setData({ submitting: false })
+      wx.showToast({ title: err?.message || '提交失败', icon: 'none' })
     }
   },
 })

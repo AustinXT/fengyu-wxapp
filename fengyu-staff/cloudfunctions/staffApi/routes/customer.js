@@ -1651,7 +1651,7 @@ async function refundHistory(ctx) {
     JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
     WHERE sop.change_type = '退款'
       AND ${refundWhere}
-    ORDER BY sop.created_at DESC
+    ORDER BY sop.created_at DESC, sop.id DESC
     LIMIT $${refundParams.length - 1} OFFSET $${refundParams.length}
   `, refundParams)
 
@@ -2157,7 +2157,7 @@ async function phoneChangeLogs(ctx) {
       OR (action = 'customer.update' AND target_type = 'customer' AND target_id = $1
           AND (detail -> 'changes' ? 'phone'))
     )
-    ORDER BY created_at DESC
+    ORDER BY created_at DESC, id DESC
     LIMIT $2 OFFSET $3
   `, [cuid, safePageSize, offset])
 

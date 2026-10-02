@@ -17,6 +17,7 @@ import { DataTable, type Column } from "@/components/ui/data-table";
 import { Pagination } from "@/components/ui/pagination";
 import { formatPhone, formatDate } from "@/lib/utils";
 import { computeCardStatus, STATUS_LABEL_MAP, TYPE_BADGE_MAP } from "../_lib/card-status";
+import { normalizePage } from "@/lib/paging";
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50];
 
@@ -55,7 +56,7 @@ export default function CardsPage({ cards, filterOptions, cardFilterOptions, tot
 	const statusFilter = (get("status") as CardStatusValue) || "";
 	const productKindFilter = get("productKind");
 	const categoryFilter = get("category");
-	const currentPage = Math.max(1, Number(get("page", "1")) || 1);
+	const currentPage = normalizePage(get("page", "1"));
 	const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20;
 	const categoryOptions = cardFilterOptions.categories.filter(
 		(category) => !productKindFilter || category.productKind === productKindFilter,

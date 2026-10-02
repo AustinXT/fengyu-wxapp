@@ -15,9 +15,11 @@ import { logOperation } from '@/lib/operation-log'
 import { hasPendingRefund, hasSettledRefundForPayment } from '@/lib/refund-cascade'
 import { rowsAffected } from '@/lib/pg-rows'
 import { refreshOrderAllocationRollup } from '@/lib/payment-allocatable'
-import { nowTs, beijingBoundaryTs, beijingNextDayBoundaryTs } from '@/lib/db-time'
+import { beijingBoundaryTs, beijingNextDayBoundaryTs } from '@/lib/db-time'
 import { storeInMarketCondition } from '@/lib/market-store-sql'
 import { getInvalidEmployeeAssignmentId } from '@/lib/employee-assignment-server'
+import { resolvePaging } from '@/lib/paging'
+import { canAdjustFrozenAllocation, isAllocationFrozen } from '@/lib/allocation-freeze'
 
 /**
  * 销售提成率查找（销售提成固化快照用）。
@@ -189,39 +191,9 @@ export const saveAllocation = withPermission(
 
 export const deleteAllocation = withPermission(
   'allocation:save',
-  async (session, id: number): Promise<{ success: boolean; message: string }> => {
-  const [alloc] = (await db.execute(sql`
-    SELECT spir.sale_item_id, spia.is_void
-      FROM sale_payment_item_allocations spia
-      JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
-     WHERE spia.id = ${id}
-     LIMIT 1
-  `)) as any[]
-
-  if (!alloc) return { success: false, message: '分配记录不存在' }
-  if (alloc.is_void) return { success: false, message: '分配记录已被删除' }
-
-  if (!(await verifySaleItemScope(alloc.sale_item_id, session))) {
-    return { success: false, message: '无权操作该订单的分配' }
-  }
-
-  // 冻结闭环（Bug I）：退款审批中禁止删除营业额分配
-  const [delItemRow] = (await db.execute(sql`
-    SELECT sale_order_id FROM sale_items WHERE sale_item_id = ${alloc.sale_item_id} LIMIT 1
-  `)) as any[]
-  if (delItemRow?.sale_order_id && (await hasPendingRefund(db, delItemRow.sale_order_id as string))) {
-    return { success: false, message: '该订单退款审批中，暂不可删除分配' }
-  }
-
-  await db
-    .update(salePaymentItemAllocations)
-    .set({ isVoid: true, voidedAt: nowTs() })
-    .where(eq(salePaymentItemAllocations.id, id))
-
-  await logOperation(session, 'allocation.delete', 'sale_payment_item_allocation', String(id))
-
-  revalidatePath('/allocations')
-  return { success: true, message: '分配已删除' }
+  async (_session, _id: number): Promise<{ success: boolean; message: string }> => {
+    // 无页面调用的旧单行入口缺少回款级事务与汇总，统一由回款详情整笔保存完成删除。
+    return { success: false, message: '单条分配删除入口已下线，请从回款详情保存分配' }
   },
 )
 
@@ -298,9 +270,15 @@ export const getPendingPayments = withPermission(
   }> => {
     // allocationStatus 缺省（「全部状态」）时不按状态过滤，只限定 allocation_status IS NOT NULL
     // 命中主流水行（走 partial index idx_sop_alloc_status，排除退款/储值卡抵扣从行/待支付等 NULL 行）。
-    const page = Math.max(1, Number(params.page) || 1)
-    const pageSize = Math.min(100, Math.max(1, Number(params.pageSize) || 20))
-    const offset = (page - 1) * pageSize
+    // clamp 型（非白名单）：这一支的 pageSize 允许 1~100 任意整数，不走列表白名单。
+    // 归一必须走 resolvePaging —— 原先的 `Math.min(100, Math.max(1, …))` 对 `?pageSize=2.5`
+    // 两个夹子双双失效（2.5 > 1 且 2.5 < 100），2.5 原样进 `.limit()` → PG int8in 报错。
+    const { page, pageSize, offset } = resolvePaging({
+      page: params.page,
+      pageSize: params.pageSize,
+      defaultPageSize: 20,
+      maxPageSize: 100,
+    })
 
     const scopeIds = session.permissions.scopeStoreIds
     // 缺省口径与 URL 解析（parseDateBasis）保持一致，避免「页面默认归属、直调默认下单」的双口径
@@ -436,6 +414,7 @@ export const getPaymentAllocatables = withPermission(
     paymentMethod: string
     changeType: string
     allocationStatus: string | null
+    frozen: boolean
     marketName: string | null
     items: Array<{
       saleItemId: string
@@ -460,7 +439,7 @@ export const getPaymentAllocatables = withPermission(
   } | null> => {
     const [pay] = (await db.execute(sql`
       SELECT sop.id, sop.sale_order_id, sop.amount, sop.payment_method, sop.change_type,
-             sop.allocation_status, so.store_id, so.market_name, so.sale_order_type, so.legacy_source
+             sop.allocation_status, sop.paid_at, so.store_id, so.market_name, so.sale_order_type, so.legacy_source
       FROM sale_order_payments sop
       JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
       WHERE sop.id = ${salePaymentId} LIMIT 1
@@ -500,6 +479,7 @@ export const getPaymentAllocatables = withPermission(
       paymentMethod: pay.payment_method,
       changeType: pay.change_type,
       allocationStatus: pay.allocation_status ?? null,
+      frozen: isAllocationFrozen(pay.paid_at),
       marketName: pay.market_name ?? null,
       items: items.map((i: any) => ({
         saleItemId: i.sale_item_id,
@@ -525,7 +505,7 @@ export const getPaymentAllocatables = withPermission(
   },
 )
 
-/** 保存某笔回款的营业额分配（镜像 staff savePayment；档位按本回款额；池 ≤3，池内 Σ ≤ 该项可分配额） */
+/** 保存某笔回款的营业额分配（镜像 staff savePayment；档位按本回款额；池内 Σ ≤ 该项可分配额） */
 export const savePaymentAllocations = withPermission(
   'allocation:save',
   async (
@@ -541,7 +521,7 @@ export const savePaymentAllocations = withPermission(
     }>,
   ): Promise<{ success: boolean; message: string }> => {
     const [pay] = (await db.execute(sql`
-      SELECT sop.id, sop.sale_order_id, sop.allocation_status, sop.change_type, so.store_id, so.market_name,
+      SELECT sop.id, sop.sale_order_id, sop.allocation_status, sop.change_type, sop.paid_at, so.store_id, so.market_name,
              so.sale_order_type, so.legacy_source
       FROM sale_order_payments sop
       JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
@@ -565,6 +545,9 @@ export const savePaymentAllocations = withPermission(
     }
     if (pay.change_type === '退款') {
       return { success: false, message: '退款赤字分配由系统自动生成，不可手动修改' }
+    }
+    if (isAllocationFrozen(pay.paid_at) && !canAdjustFrozenAllocation(session, pay.store_id as string)) {
+      return { success: false, message: '分配结果已冻结，回款到账超过 3 天不可修改' }
     }
     // 冻结闭环（Bug I）：退款审批中禁止改分配
     if (await hasPendingRefund(db, pay.sale_order_id as string)) {
@@ -643,7 +626,7 @@ export const savePaymentAllocations = withPermission(
       })
     }
 
-    // 按 (saleItemId, roleType) 分池校验：≤3 人、池内 Σ ≤ 该项可分配额、同员工不重复
+    // 按 (saleItemId, roleType) 分池校验：池内 Σ ≤ 该项可分配额、同员工不重复
     const pools = new Map<string, typeof enriched>()
     for (const a of enriched) {
       const key = `${a.saleItemId}|${getPoolKey(a.roleType)}`
@@ -652,9 +635,6 @@ export const savePaymentAllocations = withPermission(
       pools.set(key, pool)
     }
     for (const [, pool] of pools) {
-      if (pool.length > 3) {
-        return { success: false, message: '每个商品每个技能标签最多分配 3 人' }
-      }
       // 池内分配比例合计 ≤ 100%（容差 0.0001：仅吸收浮点漂移，不放过 ≥0.1% 真实超额）。回款级 base 恒正，比例校验与原金额校验等价；
       // 改用比例校验避免对负数 received（转换单转出行等）方向反转误报，与订单级/前端统一「只看比例」。
       const ratioSum = pool.reduce((s, a) => s + Number(a.allocationRatio), 0)

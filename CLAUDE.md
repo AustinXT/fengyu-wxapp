@@ -138,7 +138,9 @@ cd .tree/feat/xxx && claude             # 独立 Claude 会话
 git worktree remove .tree/feat/xxx      # 完成后清理
 ```
 
-所有 worktree 共享同一个 PG，同一时间只能有一个 worktree 执行 db:migrate。
+DB 变更按 `db/rollout/README.md` **独立开发、集中集成**：issue worktree 登记迁移请求，继续代码验证/评审，不在开发期持令牌或生成正式迁移。集中集成会话基于最新 dev 串行生成、私有库验证、提交，期间持短锁；未集成条目标「待迁移集成」，不阻塞其他 issue 发车，未过完整闸门只能 draft。
+
+业务库迁移仅在已授权发版中执行，同一目标库串行；dev/prod 使用同一套 Drizzle 历史，分别在 `db/rollout/dev.md`、`prod.md` 登记待执行迁移/脚本、执行顺序与独立结果。不得在 issue 开发阶段迁共享库。
 
 ### 远程部署
 

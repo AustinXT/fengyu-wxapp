@@ -28,9 +28,8 @@ export const INVENTORY_OPERATION_IDS = [
   'supply-chain-staff-purchase',
   'self-purchase',
   'external-outbound',
+  // 库存转换仅供应链可做（#343）：市场 / 门店两张转换卡已下线
   'supply-chain-conversion',
-  'market-conversion',
-  'store-conversion',
   'shipment-cancel',
   'shipment-cancel-approval',
 ] as const
@@ -46,15 +45,14 @@ export interface InventoryOperationDocFilter {
   /** 本段要查的单据类型。多个时合并展示（转换类一次产出出库 + 入库两张）。 */
   docTypes: readonly InventoryDocType[]
   /**
-   * 状态收窄。produced 侧只给「本身不产出新单、只改目标单状态」的业务用
-   * （关闭采购、审批撤回），其余业务不限状态 —— 产出单从草稿到已完成都该在自己的 Tab 里
-   * 看得到。inbox 侧则**必须**带（见 `InventoryOperationDocQuery.inbox` 的不变量 1）。
+   * 状态收窄。produced 侧给「本身不产出新单、只改目标单状态」的业务用（关闭采购、审批撤回），
+   * 以及可存草稿的报货类（市场报货 / 门店报货，#348：produced 只列已完成，草稿在 inbox）；
+   * 其余业务不限状态。inbox 侧则**必须**带（见 `InventoryOperationDocQuery.inbox` 的不变量 1）。
    */
   statuses?: readonly InventoryCoreDocStatus[]
   /**
-   * 层级收窄。`库存转换出库` / `库存转换入库` 是供应链、市场、门店三层**共用**的
-   * docType（`business.ts` 的 createInventoryConversion 不按层级分单据类型），
-   * 只按 docType 查会让市场办理台看到门店的转换单。
+   * 层级收窄。`库存转换出库` / `库存转换入库` 不按层级分单据类型；#343 起新建只在总部，
+   * 但市场 / 门店的存量转换单仍在（只禁新建），只按 docType 查会让供应链办理台看到它们。
    */
   locationType?: InventoryLocationType
   /**
@@ -80,21 +78,16 @@ export interface InventoryOperationDocFilter {
    */
   cancellationRequested?: true
   /**
-   * 仅保留**还有未履约明细**的单据，并按明细的市场归属分流：
-   * `'supply-chain'` = 存在一条 `market_id IS NULL` 且 `COALESCE(fulfilled_quantity,0) < quantity`
-   * 的明细；`'market'` = 同样的未履约条件但 `market_id IS NOT NULL`。
+   * 仅保留**还有未入库明细**的采购订单：存在 `COALESCE(fulfilled_quantity,0) < quantity` 的明细。
    *
-   * 为什么必须有：#194 把「供应链采购订单」并进「采购订单」之后，一张单可以同时含
-   * 市场行与供应链行，而完结判定要求**所有**行都履约满
-   * （`business.ts` 的 `completePurchaseOrderIfFullyFulfilled`）。所以「供应链行已收完、
-   * 市场行还没发」的混合单会长期停在「待收货」，把它列进供应链收货待办，
-   * 操作员点一次就吃一次 `INVALID_STATE`（`receiveSupplyChainPurchaseOrder` 对
-   * `orderItem.marketId` 非空的行直接抛）。
+   * #194 时它按 market_id 分流，因为那时市场行不经供应链入库、混合单会长期停在「待收货」。
+   * #335 起所有行都经供应链采购入库、完结只由入库推动，正常数据下这条不再收窄结果集，
+   * 保留作防御（见 engine 同名字段注释）。
    *
-   * 类型是两个字面量而不是 `boolean` / 开放字符串：与 `cancellationRequested` 同理，
+   * 类型是字面量而不是 `boolean` / 开放字符串：与 `cancellationRequested` 同理，
    * 这个条件只有收窄一个方向，别留出能写进去却退化成不过滤的值。
    */
-  pendingItemScope?: 'supply-chain' | 'market'
+  pendingItemScope?: 'supply-chain' | 'company-shipment'
 }
 
 /**
@@ -113,6 +106,10 @@ export interface InventoryOperationDocQuery {
    * 1. **必须带 `statuses`，且只能是可操作态**（`待审批` / `待收货`）。不限状态会把
    *    已完成 / 已驳回 / 已取消的终态单倒进待办区 —— 用户点进去每一张都报
    *    `INVALID_STATE`，待办区反而成了噪音源。
+   *    唯一例外是 `company-shipment` 的「待发货」段（#336）：市场报货单的「已完成」
+   *    是**可发货态**（createItemCompanyShipment 只认已完成的报货单），可操作性由
+   *    `pendingItemScope: 'company-shipment'`（仍有正常未发量）收窄，二者必须同时出现。
+   *    另一类是报货草稿（#348）：`草稿` 本身就是可操作态（继续编辑 / 提交 / 删除）。
    * 2. inbox 与 produced **允许同 docType，但 statuses 必须互斥**。
    *    命中两条，都是「本身不产出新单、只改目标单状态」的业务（两段自然同 docType）：
    *    `shipment-cancel-approval`（品项公司发货：已取消 vs 待审批）与
@@ -120,9 +117,12 @@ export interface InventoryOperationDocQuery {
    *    同一张单在两段里表达的是两件事（本业务处理过 vs 待我处理），
    *    状态一旦有交集，同一张单会在两个区块同时出现。
    * 3. **只给「动作归属在本办理台、单据由上游产出」的业务写。** 建单类业务
-   *    （purchase-order / company-shipment / store-allocation / market-report…）的
-   *    上游来源单**不进** inbox：它们在建单表单的 DocPicker 里已经可选，
+   *    （purchase-order / store-allocation / market-report…）的
+   *    上游来源单**不进** inbox：它们在建单表单的候选单选择器（#338 服务端检索）里已经可选，
    *    而待办区没有任何行内动作可对它们做，列出来只是重复。
+   *    例外同样只有 `company-shipment`（#336 会议 §2.8 与验收要求「待发货」待办段）：
+   *    它配「去发货」跳转动作，把报货单带回发货表单预选。
+   *    报货草稿（#348）不算上游来源单：它是本业务自己没提交的单，待办区配「继续编辑」「删除草稿」。
    * 4. **必须带 `scopeRole`**，值 = 对应动作在服务端拿哪一端做 scope 断言。
    *    engine 的可见性是双端 OR，而动作校验是单边，两者不一致就会把**对端**的单
    *    列成「待我处理」并渲染出行内按钮 —— 点了必 PERMISSION_DENIED，刷新后还在，
@@ -145,22 +145,42 @@ export const INVENTORY_OPERATION_DOC_QUERY: Record<InventoryOperationId, Invento
   // —— 供应链 ——
   'item-company-request': { produced: { docTypes: ['品项公司报货需求'] } },
   // 供应链跨市场汇总各市场报货需求（#193），是采购订单的来源之一。
-  'market-report-summary': { produced: { docTypes: ['市场报货汇总'] } },
+  'market-report-summary': {
+    produced: { docTypes: ['市场报货汇总'], statuses: ['已取消'] },
+    inbox: { docTypes: ['市场报货汇总'], statuses: ['已完成'], scopeRole: 'target' },
+  },
   /*
-   * `供应链采购订单` 已于 #194 并入 `采购订单`（migration 0043 收敛存量 / 0044 收紧约束）：
-   * 两条链路的分流改看明细行的 `market_id`（非空走品项公司发货、NULL 走供应链采购入库），
-   * 不再由单据类型区分。所以原先的 supply-chain-purchase-order 业务卡片也一并去掉了。
+   * `供应链采购订单` 已于 #194 并入 `采购订单`（migration 0043 收敛存量 / 0044 收紧约束），
+   * 原先的 supply-chain-purchase-order 业务卡片也一并去掉了。
+   * #335 起所有行都走供应链采购入库，`market_id` 只是来源追溯标记。
    */
   'purchase-order': { produced: { docTypes: ['采购订单'] } },
-  'company-shipment': { produced: { docTypes: ['品项公司发货'] } },
+  'company-shipment': {
+    produced: { docTypes: ['品项公司发货'] },
+    /*
+     * 「待发货」：仍有正常未发量的市场报货单（#336）。对齐 `createItemCompanyShipment`：
+     * `report.docType !== '市场报货' || report.status !== '已完成'` → INVALID_STATE；
+     * 未发量 = 报货数量 − 「市场报货发货」直连血缘（目标单未取消），与 pendingItemScope 同口径。
+     * 「已完成」是报货单的可发货态，不是终态待办（不变量 1 的唯一例外，靠 pendingItemScope 收窄）。
+     *
+     * scopeRole=target：`assertLocationWritable(session, source)` 断的是发货总部，
+     * 而服务端要求 `report.targetOrgNodeId === source.orgNodeId` —— 即报货单的 target 端。
+     * 不收窄的话报货发起方市场会在自己的待办里看到「去发货」，点进去必 PERMISSION_DENIED。
+     */
+    inbox: {
+      docTypes: ['市场报货'],
+      statuses: ['已完成'],
+      scopeRole: 'target',
+      pendingItemScope: 'company-shipment',
+    },
+  },
   'supply-chain-receipt': {
     produced: { docTypes: ['供应链采购入库'] },
     /*
      * 待我收的采购订单。对齐 `receiveSupplyChainPurchaseOrder`：
-     * `order.docType !== '采购订单' || order.status !== '待收货'` → INVALID_STATE，
-     * 且逐行 `if (orderItem.marketId) throw`。
-     * pendingItemScope 不是可选优化：混合单在供应链行收满后仍停留「待收货」
-     * （完结要求所有行满），不收窄就会长期挂一批「点了必报错」的待办。
+     * `order.docType !== '采购订单' || order.status !== '待收货'` → INVALID_STATE。
+     * 「部分入库」是「待收货」的派生标签（#335），同样在此列。
+     * pendingItemScope 只收窄到还有未入库行的单（#335 后正常数据下不改变结果集，保留作防御）。
      *
      * scopeRole=target：`assertLocationWritable(session, supplyChain)`，
      * 而 supplyChain 就是 `order.targetOrgNodeId`（同函数上方 `order.targetOrgNodeId
@@ -185,9 +205,9 @@ export const INVENTORY_OPERATION_DOC_QUERY: Record<InventoryOperationId, Invento
      * `order.docType !== '采购订单' || order.status !== '待收货'` → INVALID_STATE。
      *
      * ⚠️ 与上一条不同，这里**刻意不加 pendingItemScope**：关闭作用于整单，
-     * 真正的拒绝条件是「市场行已发货」（要算 `inventory_doc_links` 的
-     * 采购订单发货 / 采购订单赠送发货 血缘），SQL 表达不划算。而且排掉之后
+     * 关单的拒绝条件在事务内逐行判定，SQL 表达不划算。而且排掉之后
      * 操作员会找不到那张关不掉的单、也不知道为什么，比点一次拿到明确报错更难排障。
+     * （#336 起发货直连市场报货单，「发货量超过已入库量」这条关单障碍已随之删除。）
      *
      * scopeRole=target：`cancelSupplyChainPurchaseOrder` 里
      * `supplyChainLocationId = order.targetOrgNodeId` → `assertLocationWritable(supplyChain)`，
@@ -265,7 +285,19 @@ export const INVENTORY_OPERATION_DOC_QUERY: Record<InventoryOperationId, Invento
   'supply-chain-staff-purchase': { produced: { docTypes: ['供应链员工购出库'] } },
 
   // —— 市场 ——
-  'market-report': { produced: { docTypes: ['市场报货'] } },
+  'market-report': {
+    /*
+     * produced 只列「已完成」（#348）：草稿在 inbox 段，删除的草稿（草稿 → 已取消）不再出现在办理台里，
+     * 单据中心仍按全状态可查。与 inbox 的「草稿」互斥（不变量 2）。
+     */
+    produced: { docTypes: ['市场报货'], statuses: ['已完成'] },
+    /*
+     * 「草稿」（#348）：本市场存了未提交的市场报货单。对齐 `lockMarketReplenishmentDraft`：
+     * `draft.docType !== '市场报货' || draft.status !== '草稿'` → INVALID_STATE；
+     * 编辑 / 提交 / 删除都断 `assertLocationWritable(session, market)`，market 即单头 source ⇒ scopeRole=source。
+     */
+    inbox: { docTypes: ['市场报货'], statuses: ['草稿'], scopeRole: 'source' },
+  },
   'market-receipt': {
     produced: { docTypes: ['市场采购入库'] },
     /*
@@ -322,15 +354,18 @@ export const INVENTORY_OPERATION_DOC_QUERY: Record<InventoryOperationId, Invento
   'shipment-cancel': { produced: { docTypes: ['品项公司发货'], cancellationRequested: true } },
   'staff-purchase': { produced: { docTypes: ['员工购出库'] } },
   'self-purchase': { produced: { docTypes: ['自采产品入库'] } },
-  'market-conversion': {
-    produced: {
-      docTypes: ['库存转换出库', '库存转换入库'],
-      locationType: '市场',
-    },
-  },
 
   // —— 门店 ——
-  'store-request': { produced: { docTypes: ['门店报货'] } },
+  'store-request': {
+    // 同 market-report（#348）：produced 只列已完成，草稿在 inbox，删除的草稿（已取消）不回到办理台
+    produced: { docTypes: ['门店报货'], statuses: ['已完成'] },
+    /*
+     * 「草稿」（#348）：本门店存了未提交的门店报货单。对齐 `lockStoreReplenishmentDraft`：
+     * 非门店报货 NOT_FOUND、`draft.status !== '草稿'` → INVALID_STATE；
+     * 编辑 / 提交 / 删除都断 `assertLocationWritable(session, store)`，store 即单头 source ⇒ scopeRole=source。
+     */
+    inbox: { docTypes: ['门店报货'], statuses: ['草稿'], scopeRole: 'source' },
+  },
   'store-receipt': {
     produced: { docTypes: ['院入库'] },
     /*
@@ -351,18 +386,12 @@ export const INVENTORY_OPERATION_DOC_QUERY: Record<InventoryOperationId, Invento
     inbox: { docTypes: ['分院配货'], statuses: ['待收货'], scopeRole: 'target' },
   },
   'store-return': { produced: { docTypes: ['院退货'] } },
-  'store-conversion': {
-    produced: {
-      docTypes: ['库存转换出库', '库存转换入库'],
-      locationType: '门店',
-    },
-  },
 }
 
 /*
  * ────────── 通用建单业务（#191） ──────────
  *
- * 10 张「通用业务」卡片（内部领用 / 报损 / 盘点 / 调货 / 顾客产品出入库）与上面 24 个
+ * 10 张「通用业务」卡片（内部领用 / 报损 / 盘点 / 调货 / 顾客产品出入库）与上面 22 个
  * 内置业务的区别：它们没有专属的业务函数，就是**直接建一张某类型的单**。
  * 所以 id 直接由 docType 派生、映射天然为「查这一种单据」，零维护。
  *
@@ -383,7 +412,7 @@ export function genericOperationId(docType: InventoryDocType): InventoryGenericO
 
 /**
  * 解析通用业务 id → docType。**白名单校验在这里**：
- * 只认 `INVENTORY_GENERIC_DOC_TYPES`（那 10 种无需上游血缘的类型），
+ * 只认 `INVENTORY_GENERIC_DOC_TYPES`（那 9 种无需上游血缘的类型，#350 移出院顾客产品出库），
  * 拼一个 `generic:品项公司发货` 进来会被拒 —— 否则就能从通用入口绕过
  * 专用服务的数量、价格、批次校验去建业务单。
  */
@@ -409,7 +438,8 @@ export type InventoryAnyOperationId = InventoryOperationId | InventoryGenericOpe
  * 它要回答的是「这个类型的单在哪个状态下轮到本层级动手」，那是业务语义不是类型语义。
  * 所以这里是一张显式的小表，键必须是 `INVENTORY_GENERIC_DOC_TYPES` 的成员。
  *
- * 当前只有一条：`分院调货出库` 在门店层有 6 条「待收货」（dev 库统计），是门店层最大的一批
+ * 当前两条：门店调拨（下）与市场间调货（#340，见下文）。
+ * `分院调货出库` 在门店层有 6 条「待收货」（dev 库统计），是门店层最大的一批
  * 待办，收货走通用的 `confirmInventoryCoreReceive`（`分院调货出库` 在
  * `INVENTORY_GENERIC_DOC_TYPES` 里，是少数能用 generic 三件套的场景）。
  *
@@ -429,13 +459,18 @@ export type InventoryAnyOperationId = InventoryOperationId | InventoryGenericOpe
  * 上级市场账号不受影响（两端都在它 scope 里，它本来就能替门店收货）。
  * produced 段不加 scopeRole，发货方仍在产出区看得见自己的单，这是对的。
  *
- * 其余三种同样带流转状态的通用类型（`市场间调货出库` 待收货、
- * `市场产品报损` / `院产品报损` 待审批）**本期刻意不登记**：甲方 2026-09-21 只点名了
- * 门店调货这一批，要不要一并铺开是待拍板项。补的时候连同
- * `INVENTORY_GENERIC_OPERATION_INBOX_ACTIONS` 一起补，两张表由单测钉住键集合一致。
+ * `市场间调货出库 · 待收货`（#340，用户 2026-09-24 拍板进待办）与门店调拨同构：
+ * 市场办理台「市场间调货」卡既建单又收货，收货同样走 `confirmInventoryCoreReceive`，
+ * 同样只断 target —— 所以 scopeRole 同为 `'target'`。缺了它，调出市场会在自己的待办里
+ * 看到发出去的单并拿到一个点了必 PERMISSION_DENIED 的「确认收货」。
+ *
+ * 其余两种带流转状态的通用类型（`市场产品报损` / `院产品报损` 待审批）**仍未登记**：
+ * 要不要一并铺开是待拍板项。补的时候连同 `INVENTORY_GENERIC_OPERATION_INBOX_ACTIONS`
+ * 一起补，两张表由单测钉住键集合一致；⚠️ 审批类的方向是 `'source'`，别照抄上面两条。
  */
 export const INVENTORY_GENERIC_OPERATION_INBOX = {
   分院调货出库: { docTypes: ['分院调货出库'], statuses: ['待收货'], scopeRole: 'target' },
+  市场间调货出库: { docTypes: ['市场间调货出库'], statuses: ['待收货'], scopeRole: 'target' },
 } as const satisfies Partial<Record<InventoryGenericDocType, InventoryOperationDocFilter>>
 
 /**
@@ -469,13 +504,10 @@ export function resolveOperationDocQuery(operationId: string): InventoryOperatio
 /**
  * 待办区一行上可能出现的动作种类。
  *
- * ⚠️ **「草稿 → 取消」刻意不实现**，两个原因缺一不可：
- * (a) 没有任何业务产出草稿单 —— `business.ts` 的 `insertDocHeader` 每次都显式传 status，
- *     `engine.ts` 的 `defaultStatusForDoc` 只返回 待审批 / 待收货 / 已完成，
- *     `草稿` 只是 `db/schema/inventory.ts` 的列默认值；
- * (b) 全仓没有任何「取消草稿」的 Server Action。
- * 单测会断言 `INVENTORY_INBOX_ACTION_STATUS` 的值域不含 `草稿`；哪天真有业务产出草稿单，
- * 那条会红并提醒补这个动作。
+ * 草稿（#348）：市场报货与门店报货可存草稿，配「继续编辑」（跳回表单回填）与「删除草稿」（草稿 → 已取消）。
+ * 两个动作按业务分派到各自的 Server Action（办理台 `DRAFT_DELETE_ACTIONS`），不能跨业务复用同一个 action。
+ * 草稿只由专用服务产出（`saveMarketReplenishmentDraft` / `createStoreReplenishmentRequest(asDraft)`），通用建单（engine `defaultStatusForDoc`）
+ * 仍然只产出 待审批 / 待收货 / 已完成，单测钉住。
  */
 export const INVENTORY_INBOX_ACTION_KINDS = [
   'return-approve',
@@ -486,7 +518,11 @@ export const INVENTORY_INBOX_ACTION_KINDS = [
   'shipment-receive-goto',
   'purchase-receive-goto',
   'purchase-close',
+  'summary-void',
   'generic-receive',
+  'report-ship-goto',
+  'draft-edit-goto',
+  'draft-delete',
 ] as const
 export type InventoryInboxActionKind = (typeof INVENTORY_INBOX_ACTION_KINDS)[number]
 
@@ -506,7 +542,12 @@ export const INVENTORY_INBOX_ACTION_STATUS: Record<InventoryInboxActionKind, Inv
   'shipment-receive-goto': '待收货',
   'purchase-receive-goto': '待收货',
   'purchase-close': '待收货',
+  'summary-void': '已完成',
   'generic-receive': '待收货',
+  // 市场报货单「已完成」即可发货（#336，见 company-shipment 的 inbox 注释）
+  'report-ship-goto': '已完成',
+  'draft-edit-goto': '草稿',
+  'draft-delete': '草稿',
 }
 
 /** 内置业务 → 待办行内动作。键集合必须与「有 inbox 的内置业务」完全一致（单测钉住）。 */
@@ -516,15 +557,22 @@ export const INVENTORY_OPERATION_INBOX_ACTIONS = {
   'shipment-cancel-approval': ['cancellation-approve', 'cancellation-reject'],
   'market-receipt': ['shipment-receive-full', 'shipment-receive-goto'],
   'store-receipt': ['shipment-receive-full', 'shipment-receive-goto'],
-  // 供应链采购入库要逐行填批号/效期，留空会让实物并进「无批号」批次（实质性数据损失），
+  // 供应链采购入库要逐行核对效期（批号留空已自动生成，#345；效期推断不出来），
   // 所以只给「去收货」跳转，没有一键整单收货。
   'supply-chain-receipt': ['purchase-receive-goto'],
   'supply-chain-purchase-cancel': ['purchase-close'],
+  'market-report-summary': ['summary-void'],
+  // 发货要逐行选批次，只给「去发货」跳转（#336）
+  'company-shipment': ['report-ship-goto'],
+  // 草稿编辑要回表单重新汇总门店需求、重新取价，只能跳转；删除走确认弹窗（#348）
+  'market-report': ['draft-edit-goto', 'draft-delete'],
+  'store-request': ['draft-edit-goto', 'draft-delete'],
 } as const satisfies Partial<Record<InventoryOperationId, readonly InventoryInboxActionKind[]>>
 
 /** 通用业务 → 待办行内动作。键集合必须与 `INVENTORY_GENERIC_OPERATION_INBOX` 一致（单测钉住）。 */
 export const INVENTORY_GENERIC_OPERATION_INBOX_ACTIONS = {
   分院调货出库: ['generic-receive'],
+  市场间调货出库: ['generic-receive'],
 } as const satisfies Partial<Record<InventoryGenericDocType, readonly InventoryInboxActionKind[]>>
 
 /**

@@ -19,7 +19,7 @@ export const INVENTORY_DOC_TYPES = [
   '市场报货汇总',
   '品项公司报货需求',
   // `供应链采购订单` 已于 #194 并入 `采购订单`（migration 0043 收敛存量、0044 收紧约束）。
-  // 市场链路与供应链链路的分流改看明细行 `market_id`：非空走品项公司发货、NULL 走供应链采购入库。
+  // 明细行 `market_id` 只是来源追溯标记：#335 起所有行都走供应链采购入库，#336 起发货直接引用市场报货单。
   '采购订单',
   '供应链采购入库',
   '品项公司发货',
@@ -56,12 +56,17 @@ export type InventoryDocType = (typeof INVENTORY_DOC_TYPES)[number]
  * 无需上游业务血缘的库存动作。
  * 报货、采购、发货、收货、配货、退货、员工购、自采和转换必须进入专用服务，
  * 不能从通用建单窗口绕过数量、价格和批次校验。
+ *
+ * #350：`院顾客产品出库` 已移出 —— 顾客出库必须绑定销售单，只能由提货服务产生
+ * （admin `createPickupRecord` / staffApi `order.createPickup`）。通用入口建出的 GCK
+ * 不回写 `sale_items.picked_up_quantity`、不写 `pickup_records`，顾客权益仍显示「待提」，
+ * 联动开启后还会与提货服务重复扣库存。staffApi `STAFF_CREATE_DOC_TYPES` 同步移除，
+ * 两端取舍由 `cross-end-inventory-snapshot.test.js` 钉住。
  */
 export const INVENTORY_GENERIC_DOC_TYPES = [
   '分院调货出库',
   '市场间调货出库',
   '内部领用',
-  '院顾客产品出库',
   '院顾客退货',
   '市场产品报损',
   '院产品报损',
@@ -118,6 +123,30 @@ export interface InventorySkuInput {
   isReportable?: boolean
   isActive?: boolean
   remark?: string | null
+}
+
+/**
+ * SKU 候选检索的业务过滤（#339）。三个口径分别对齐建单时的服务端校验，
+ * 候选与提交判据同源，才不会出现「下拉里选得到、提交被拒」或反过来「合法却选不到」：
+ *   - `reportable`          ↔ business.ts `loadSku(tx, id, true)`（门店报货 / 品项公司需求 / 市场报货）
+ *   - `availableToMarketId` ↔ business.ts `assertSkuAvailableToMarket`（供应链放行，其余须归属该市场）
+ *   - `ownedByMarketId`     ↔ 自采入库只收本市场的非供应链商品
+ * 与 session 的 scope 过滤叠加生效，不能拿它越权看别的市场。
+ */
+export interface InventorySkuOptionFilters {
+  keyword?: string
+  sourceType?: InventorySkuSourceType
+  reportable?: boolean
+  availableToMarketId?: string
+  ownedByMarketId?: string
+}
+
+export interface InventorySkuListFilters extends InventorySkuOptionFilters {
+  onlyActive?: boolean
+  /** 按 sku_id 精确取（回显已选商品、按明细取价），最多 100 个；传空数组直接返回空。 */
+  skuIds?: string[]
+  page?: number
+  pageSize?: number
 }
 
 export interface InventorySkuRow extends Required<Pick<InventorySkuInput, 'productName'>> {
@@ -204,6 +233,15 @@ export interface InventoryLocationRow {
   isActive: boolean
 }
 
+/**
+ * 「市场间调货出库」接收主体候选（#340）。越过了操作人 scope，所以字段刻意只有这两个 ——
+ * 别往里加 locationId / storeId / 上级关系，见 engine 的 `listInventoryMarketTransferTargets`。
+ */
+export interface InventoryMarketTransferTarget {
+  orgNodeId: string
+  name: string
+}
+
 export interface InventoryLocationFilterHeadquarters {
   locationId: string
   name: string
@@ -232,6 +270,8 @@ export interface InventoryLocationFilterOptions {
 }
 
 export interface InventorySupplierInput {
+  /** 仅校验归属不变；建档归属由账号绑定推导。 */
+  ownerMarketId?: string | null
   name: string
   contactName?: string | null
   phone?: string | null
@@ -241,6 +281,9 @@ export interface InventorySupplierInput {
 }
 
 export interface InventorySupplierRow {
+  ownerMarketId: string | null
+  ownerMarketName: string | null
+  canManage: boolean
   supplierId: string
   name: string
   contactName: string | null
@@ -300,17 +343,25 @@ export interface InventoryPromotionPlanRow {
   updatedAt: string
 }
 
-/** 货款结算汇总行：市场结算＝(市场→供应链)，分院结算＝(市场→门店)。 */
+/**
+ * 货款结算汇总行：市场结算＝(市场→供应链)，分院结算＝(市场→门店)。
+ * 金额为**净额**（正向单 − 期间内已完成的退货单），可为负；数量与单据数不净额化。
+ */
 export interface InventorySettlementRow {
-  /** 出库/发起主体（市场结算=市场；分院结算=配货市场）。 */
+  /** 市场侧主体（市场结算=市场；分院结算=配货市场）。 */
   sourceOrgNodeId: string | null
   sourceOrgNodeName: string | null
-  /** 接收主体（市场结算=供应链总部；分院结算=门店）。 */
+  /** 对方主体（市场结算=供应链主体；分院结算=门店）。 */
   targetOrgNodeId: string | null
   targetOrgNodeName: string | null
+  /** 正向单据数（市场报货 / 分院配货）。 */
   docCount: number
+  /** 期间内已冲减的退货单数（市场段=市场退货，分院段=院退货）。 */
+  returnDocCount: number
   totalQuantity: number
-  /** 应付货款合计；仅在对应结算段价格档可见时返回。 */
+  /** 期间内已冲减的退货数量合计。 */
+  returnedQuantity: number
+  /** 应付货款**净额**；仅在对应结算段价格档可见时返回。 */
   payableAmount: number
 }
 
@@ -318,12 +369,72 @@ export interface InventorySettlementReport {
   startDate: string
   endDate: string
   priceVisibility: InventoryPriceVisibility
+  /**
+   * 市场筛选下拉的选项（scope 内的全部市场，**不受期间与当前 market 筛选影响**）。
+   * 由服务端下发而非从 `marketRows` 派生 —— 报表行已按 market 过滤，再从它派生选项
+   * 会导致"筛一次就只剩当前市场、回不去"。
+   */
+  marketOptions: Array<{ id: string; name: string }>
   /** 市场应付供应链（供应链档 / 市场档 / 全档可见）。 */
   canViewMarketSettlement: boolean
   /** 门店应付市场（仅市场档 / 全档可见）。 */
   canViewStoreSettlement: boolean
   marketRows: InventorySettlementRow[]
   storeRows: InventorySettlementRow[]
+}
+
+export type InventoryMovementDirection = '入库' | '出库' | '调整'
+
+/** 进出明细页长白名单（前后端共用；lib/inventory/movements.ts 是 server-only，客户端不能引）。 */
+export const INVENTORY_MOVEMENT_PAGE_SIZES = [20, 50, 100] as const
+export const INVENTORY_MOVEMENT_DEFAULT_PAGE_SIZE = 20
+
+/** 进出明细查询条件（#360）：主体必选，商品编号 / 批号二选一，日期按上海自然日闭区间。 */
+export interface InventoryMovementFilters {
+  locationId?: string
+  skuCode?: string
+  batchNo?: string
+  startDate?: string
+  endDate?: string
+}
+
+/** 进出明细行（#360）。结存是**批次结存**（流水自带 before/after），不是主体合计。 */
+export interface InventoryMovementRow {
+  id: number
+  lotId: number
+  skuId: string
+  skuName: string | null
+  specName: string | null
+  batchNo: string | null
+  /** 为空 = 无单据流水，单号列留空 */
+  docId: string | null
+  docType: string | null
+  direction: InventoryMovementDirection
+  /** 带符号：出库为负 */
+  quantityDelta: number
+  quantityBefore: number
+  quantityAfter: number
+  /** 对方主体：单据 source / target 中不是本主体的一方；外部方回落供应商 / 顾客 / 外部对象 / 员工名称快照 */
+  counterpartyName: string | null
+  operatorId: string | null
+  operatorName: string | null
+  remark: string | null
+  /** 上海时间 `YYYY-MM-DD HH:mm:ss` */
+  createdAt: string
+}
+
+/** 列表查询入参：条件 + keyset 游标（after / before 二选一）+ 页长（白名单外回落默认值） */
+export interface InventoryMovementListParams extends InventoryMovementFilters {
+  after?: string
+  before?: string
+  pageSize?: number
+}
+
+export interface InventoryMovementPage {
+  rows: InventoryMovementRow[]
+  total: number
+  hasPrev: boolean
+  hasNext: boolean
 }
 
 export interface InventoryLotRow {
@@ -358,6 +469,7 @@ export interface InventoryDocItemInput {
   isGift?: boolean
   quantity: number
   requestQuantity?: number | null
+  /** @deprecated #358 起服务端忽略（已收 / 已履约量只由收货路径回写），传了也不落库 */
   fulfilledQuantity?: number | null
   standardUnitPrice?: number | null
   unitDiscount?: number | null
@@ -433,7 +545,17 @@ export interface InventoryDocRow {
   cancelledAt: string | null
   createdAt: string
   updatedAt: string
+  /** 采购订单「部分入库」派生标签（#335）：待收货且已有入库。不是单据状态。 */
+  partiallyReceived?: boolean
+  processProgress?: InventoryDocProcessProgress | null
 }
+
+/** 列表展示用派生进度，不参与单据状态机。 */
+export type InventoryDocProcessProgress =
+  | '未提交' | '未汇总' | '部分汇总' | '已汇总'
+  | '未采购' | '部分采购' | '已采购'
+  | '部分配货' | '已配货'
+  | '部分发货' | '已发货' | '部分入库' | '已入库'
 
 export interface InventoryDocItemRow {
   id: number
@@ -446,7 +568,7 @@ export interface InventoryDocItemRow {
   supplier: string | null
   /** 行级供应商档案关联（#194）。 */
   supplierId: string | null
-  /** 行级市场归属（#194）。NULL = 品项公司自用行，走供应链采购入库。 */
+  /** 行级市场归属（#194）。NULL = 品项公司自用行；#335 起采购订单所有行都走供应链采购入库，本列只作来源追溯。 */
   marketId: string | null
   /** 行级市场名称，由 `marketId` 解析；解析不到时回落为 id 本身。 */
   marketName: string | null
@@ -463,6 +585,9 @@ export interface InventoryDocItemRow {
   actualUnitPrice?: number | null
   amount?: number | null
   supplyChainUnitCost?: number | null
+  marketStandardUnitPrice?: number | null
+  marketUnitDiscount?: number | null
+  storeStandardUnitPrice?: number | null
   marketActualUnitPrice?: number | null
   storeActualUnitPrice?: number | null
   promotionPlanId: string | null
@@ -481,6 +606,9 @@ export interface InventoryDocItemRow {
  */
 export interface InventoryDocLineageRow {
   direction: '上游' | '下游'
+  /** 从当前单据出发的跳数；viaDocId 是本跳相邻的前一个单据。 */
+  depth: number
+  viaDocId: string
   relationType: string
   docId: string
   docType: InventoryDocType
@@ -488,6 +616,8 @@ export interface InventoryDocLineageRow {
   docDate: string
   totalQuantity: number
   linkedQuantity: number
+  /** 关联单据 source_org_node_id 对应的发起主体；缺失时留空。 */
+  sourceOrgNodeName?: string | null
 }
 
 /** 报货单按明细展示从需求到下游发货、收货的数量快照。 */
@@ -533,12 +663,21 @@ export interface InventoryItemCompanyRequestFulfillmentProgress {
   items: InventoryItemCompanyRequestFulfillmentItem[]
 }
 
-/** 供应链采购订单按明细展示分批入库的实收与待收入库数量。 */
+export interface InventoryMarketSummaryFulfillmentProgress {
+  kind: '市场汇总采购'
+  items: Array<{ itemId: number; orderedQuantity: number; outstandingQuantity: number }>
+}
+
+/** 采购订单按明细展示分批入库的实收与待收入库数量（#335 起统计所有行）。 */
 export interface InventorySupplyChainPurchaseReceiptProgressItem {
   itemId: number
   purchasedQuantity: number
   receivedQuantity: number
   outstandingQuantity: number
+  /** 已入库金额 = Σ各入库明细金额（按入库实际进价，#346）；价格不可见时不返回 */
+  receivedAmount?: number
+  /** 入库后实际金额 = 已入库金额 +（仍待收货时）未入库数量 × 下单价；价格不可见时不返回 */
+  actualAmount?: number
 }
 
 export interface InventorySupplyChainPurchaseReceiptProgress {
@@ -550,6 +689,7 @@ export type InventoryDocFulfillmentProgress =
   | InventoryReportFulfillmentProgress
   | InventoryShipmentReceiptProgress
   | InventoryItemCompanyRequestFulfillmentProgress
+  | InventoryMarketSummaryFulfillmentProgress
   | InventorySupplyChainPurchaseReceiptProgress
 
 export interface InventoryDocDetail extends InventoryDocRow {

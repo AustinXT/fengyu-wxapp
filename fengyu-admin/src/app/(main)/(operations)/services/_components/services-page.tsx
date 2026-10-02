@@ -23,6 +23,7 @@ import type { MarketStoreFilterOptions } from "@/lib/market-store-filter-types"
 import MarketStoreFilter from "@/components/market-store-filter"
 import { formatDate as fmtDate } from "@/lib/utils"
 import { SERVICE_ORDER_STATUS_FILTER_OPTIONS, parseServiceOrderStatusFilters } from "@/lib/list-filters"
+import { normalizePage } from "@/lib/paging"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
@@ -168,7 +169,7 @@ export default function ServicesPageClient({
   const storeFilter = get("store")
   const dateFrom = get("from")
   const dateTo = get("to")
-  const currentPage = Math.max(1, Number(get("page", "1")) || 1)
+  const currentPage = normalizePage(get("page", "1"))
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
 
   return (

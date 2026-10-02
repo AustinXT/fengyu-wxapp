@@ -15,7 +15,11 @@ export function resolveReturnTo(raw: string | null | undefined, fallback: string
   try {
     const target = new URL(raw, INTERNAL_ORIGIN)
     if (target.origin !== INTERNAL_ORIGIN) return fallback
-    return `${target.pathname}${target.search}${target.hash}`
+    // 点段归一化会把 `/..//evil.com`、`/.//evil.com`、`/%2e%2e//evil.com` 折成 pathname `//evil.com`，
+    // 原样返回就是协议相对 URL（浏览器解析到站外）。入口的 `//` 检查只看原始串，这里再挡一次。
+    const path = `${target.pathname}${target.search}${target.hash}`
+    if (path.startsWith("//")) return fallback
+    return path
   } catch {
     return fallback
   }

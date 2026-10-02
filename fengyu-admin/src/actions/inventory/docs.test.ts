@@ -84,7 +84,7 @@ describe('listInventoryOperationDocs 入参闸门', () => {
       const { inbox } = INVENTORY_OPERATION_DOC_QUERY[operationId]
       const result = await listInventoryOperationDocs({ operationId, page: 3, inboxPage: 2, pageSize: 20 })
       if (!inbox) {
-        // ⚠️ 无 inbox 的 17 个业务不许图省事查两次：每次多一次 COUNT +
+        // ⚠️ 无 inbox 的业务不许图省事查两次：每次多一次 COUNT +
         // syncInventoryLocations + getSession。
         expect(mockEngine.listInventoryCoreDocs).toHaveBeenCalledTimes(1)
         expect(result.inbox).toBeNull()
@@ -111,6 +111,19 @@ describe('listInventoryOperationDocs 入参闸门', () => {
     await listInventoryOperationDocs({ operationId: 'market-receipt', page: 3, inboxPage: 2, pageSize: 20 })
     expect(mockEngine.listInventoryCoreDocs).toHaveBeenNthCalledWith(1, expect.objectContaining({ page: 3, pageSize: 20 }))
     expect(mockEngine.listInventoryCoreDocs).toHaveBeenNthCalledWith(2, expect.objectContaining({ page: 2, pageSize: 20 }))
+  })
+
+  it('日期区间和流程进度同时转发给产出、待办两段', async () => {
+    await listInventoryOperationDocs({
+      operationId: 'market-receipt', startDate: '2026-09-01', endDate: '2026-09-30',
+      processProgress: '部分采购', page: 2, inboxPage: 3,
+    })
+    expect(mockEngine.listInventoryCoreDocs).toHaveBeenCalledTimes(2)
+    for (const [index, page] of [[1, 2], [2, 3]] as const) {
+      expect(mockEngine.listInventoryCoreDocs).toHaveBeenNthCalledWith(index, expect.objectContaining({
+        startDate: '2026-09-01', endDate: '2026-09-30', processProgress: '部分采购', page,
+      }))
+    }
   })
 
   it('两段各自回传 engine 的 pageSize / canViewPrice，不互相覆盖', async () => {
@@ -141,9 +154,9 @@ describe('listInventoryOperationDocs 入参闸门', () => {
     })
 
     vi.clearAllMocks()
-    await listInventoryOperationDocs({ operationId: 'market-conversion', page: 1 })
+    await listInventoryOperationDocs({ operationId: 'supply-chain-conversion', page: 1 })
     expect(mockEngine.listInventoryCoreDocs).toHaveBeenLastCalledWith({
-      docTypes: ['库存转换出库', '库存转换入库'], statuses: undefined, locationType: '市场', scopeRole: undefined,
+      docTypes: ['库存转换出库', '库存转换入库'], statuses: undefined, locationType: '总部', scopeRole: undefined,
       cancellationRequested: undefined, pendingItemScope: undefined, page: 1, pageSize: undefined,
     })
 
@@ -162,7 +175,7 @@ describe('listInventoryOperationDocs 入参闸门', () => {
 
     vi.clearAllMocks()
     await listInventoryOperationDocs({ operationId: 'supply-chain-receipt', page: 1 })
-    // pendingItemScope 必须真的转发到 engine：漏转的话混合采购订单会全涌进待办区
+    // pendingItemScope 必须真的转发到 engine：漏转的话已收满（存量口径异常）的采购订单也会进待办区
     expect(mockEngine.listInventoryCoreDocs).toHaveBeenNthCalledWith(2, {
       docTypes: ['采购订单'], statuses: ['待收货'], locationType: undefined, scopeRole: 'target',
       cancellationRequested: undefined, pendingItemScope: 'supply-chain', page: undefined, pageSize: undefined,

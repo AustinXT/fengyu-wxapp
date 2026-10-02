@@ -2,7 +2,7 @@
 import { callStaffApi } from '../../utils/cloud';
 import { canAccessInventory, isManagementMode, isManager, requireManager } from '../../utils/role';
 import { emit, on, EVENT_STORE_CHANGED } from '../../utils/event-bus';
-import { INVENTORY_ENTRY_ENABLED } from '../../utils/feature-flags';
+import { INVENTORY_ENTRY_ENABLED, INVENTORY_LINKAGE_ENABLED } from '../../utils/feature-flags';
 
 const app = getApp<IAppOption>();
 
@@ -14,6 +14,7 @@ Page({
     position: '',
     isManager: false,
     inventoryEntryEnabled: INVENTORY_ENTRY_ENABLED,
+    inventoryLinkageEnabled: INVENTORY_LINKAGE_ENABLED,
     canAccessInventory: false,
     currentStoreId: '',
     scopedStores: [] as ScopedStore[],

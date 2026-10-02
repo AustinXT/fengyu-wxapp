@@ -19,6 +19,7 @@ import type { Appointment } from "@/lib/types"
 import type { MarketStoreFilterOptions } from "@/lib/market-store-filter-types"
 import MarketStoreFilter from "@/components/market-store-filter"
 import { formatDateTime as fmtDateTime } from "@/lib/utils"
+import { normalizePage } from "@/lib/paging"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
@@ -84,7 +85,7 @@ export default function AppointmentsPageClient({
   const storeFilter = get("store")
   const dateFrom = get("from")
   const dateTo = get("to")
-  const currentPage = Math.max(1, Number(get("page", "1")) || 1)
+  const currentPage = normalizePage(get("page", "1"))
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
 
   // 操作 state

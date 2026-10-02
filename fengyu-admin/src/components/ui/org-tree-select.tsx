@@ -136,6 +136,8 @@ export function OrgTreeSelect({
         >
           {hasChildren ? (
             <span
+              // 稳定选择器：测试靠它展开树，换图标/换字符时不会碎（GLM 谱系第 9 轮 P3）
+              data-testid={`org-tree-toggle-${node.id}`}
               className="inline-flex w-4 shrink-0 cursor-pointer select-none"
               onClick={(e) => toggleExpand(node.id, e)}
             >

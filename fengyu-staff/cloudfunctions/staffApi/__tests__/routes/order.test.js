@@ -16,6 +16,7 @@ const {
   assertNormalSkuMarketScopeForCurrentStore,
   resolveCustomerOrderMarketScope,
   buildCustomerOrderMarketScopeFilter,
+  pickupAmountSnapshot,
 } = orderRoutes.__testables__
 
 /**
@@ -5172,7 +5173,7 @@ describe('order.createConversion', () => {
         if (sql.includes('FROM sale_items si') && sql.includes('FOR UPDATE OF si')) {
           return {
             rows: [{
-              sale_item_id: 'item-card-1', sale_order_id: 'order-old', store_id: 'store-001',
+              sale_item_id: 'item-card-1', sale_order_id: 'order-old', store_id: source.storeId || 'store-001',
               item_direction: source.itemDirection || '购买',
               sku_id: 'sku-old', product_name: '旧项目', product_type: '疗程卡',
               session_count: 1, remaining_sessions: 1, quantity: 1, picked_up_quantity: 0,
@@ -6405,38 +6406,25 @@ describe('order.createConversion', () => {
   })
 
   // ===== D2.3 三种拒绝路径 =====
-  test('拒绝：跨店卡（held.store_id !== ctx.auth.storeId）', async () => {
+  test('跨店来源卡可转换；新单归当前店、源行 CAS 使用购买门店', async () => {
     const ctx = createManagerCtx({
       clientUserId: 'cu-001',
-      convertOutSaleItemIds: ['item-other'],
-      convertInItems: [{ skuId: 'sku-x', quantity: 1 }],
+      convertOutSaleItemIds: ['item-card-1'],
+      convertInItems: [{ skuId: 'sku-new', quantity: 1 }],
       paymentMethod: '线下',
     })
-
     pg.query.mockResolvedValueOnce([{
       user_id: 'cu-001', phone: '138', name: 'C', customer_type: '流量客', bound_store_id: 'store-001',
     }])
-    pg.transaction.mockImplementationOnce(async (cb) => {
-      const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }) }
-      return await cb(client)
-    })
-    const txQuery = vi.fn(async (sql) => defaultQueryResult(sql))
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
-      .mockResolvedValueOnce({
-        rows: [{
-          sale_item_id: 'item-other', store_id: 'store-999', item_direction: '购买',
-          sku_id: 'sku-old', product_name: 'X',
-          product_type: '疗程卡', session_count: 1, remaining_sessions: 1,
-          quantity: 1, picked_up_quantity: 0,
-          unit_price: '100', unit_real_price: '100',
-          sales_category: '自销自耗', service_fee: '0',
-          client_user_id: 'cu-001', order_status: '已支付', product_kind: '护理项目',
-        }], rowCount: 1,
-      })
-    pg.transaction.mockImplementationOnce(async (cb) => cb({ query: txQuery }))
+    const calls = mockPositiveDifferenceConversion(null, { storeId: 'store-999' })
 
-    await expect(orderRoutes.createConversion(ctx))
-      .rejects.toThrow(/INVALID_PARAMS.*门店/)
+    await orderRoutes.createConversion(ctx)
+
+    const orderInsert = calls.find(({ sql }) => sql.includes('INSERT INTO sale_orders'))
+    expect(orderInsert.params[4]).toBe('store-001')
+    const sourceUpdate = calls.find(({ sql }) => sql.includes('SET remaining_sessions = remaining_sessions - $4'))
+    expect(sourceUpdate.params[2]).toBe('store-999')
+    expect(ctx.result.status).toBe('待支付')
   })
 
   test('拒绝：疗程卡已耗尽（remaining_sessions=0）', async () => {
@@ -6995,7 +6983,7 @@ describe('order.customerHeldCards', () => {
 
     pg.query.mockResolvedValueOnce([
       {
-        sale_item_id: 'it-liao-1', source_sale_order_id: 'FY-A',
+        sale_item_id: 'it-liao-1', source_sale_order_id: 'FY-A', store_id: 'store-999', source_store_name: '汇东店',
         product_name: '疗程A', product_type: '疗程卡',
         remaining_sessions: 4, remaining_quantity: 1,
         unit_real_price: '300.00', deductible_amount: '1200.00',
@@ -7017,6 +7005,7 @@ describe('order.customerHeldCards', () => {
     // 疗程卡：deductibleAmount = unit_real_price × remaining_sessions = 300 × 4 = 1200
     expect(ctx.result.cards[0].deductibleAmount).toBe('1200.00')
     expect(ctx.result.cards[0].remainingSessions).toBe(4)
+    expect(ctx.result.cards[0]).toMatchObject({ storeId: 'store-999', storeName: '汇东店' })
     expect(ctx.result.cards[0]).toMatchObject({
       unit: '次',
       productKind: '护理项目',
@@ -7029,7 +7018,7 @@ describe('order.customerHeldCards', () => {
     expect(ctx.result.cards[1].remainingSessions).toBe(3)
   })
 
-  test('SQL 守卫：跨店卡不出现（WHERE si.store_id = $2）', async () => {
+  test('SQL 守卫：仅当前店归属顾客可查跨店来源行', async () => {
     const ctx = createManagerCtx({ clientUserId: 'cu-001' })
     pg.query.mockResolvedValueOnce([])
 
@@ -7037,7 +7026,8 @@ describe('order.customerHeldCards', () => {
 
     const sql = pg.query.mock.calls[0][0]
     const params = pg.query.mock.calls[0][1]
-    expect(sql).toMatch(/si\.store_id\s*=\s*\$2/)
+    expect(sql).not.toMatch(/AND si\.store_id\s*=\s*\$2/)
+    expect(sql).toMatch(/cu\.bound_store_id = \$2 OR cu\.is_cross_store_temp = TRUE/)
     expect(params[1]).toBe('store-001')
     expect(ctx.result.cards).toEqual([])
   })
@@ -7158,6 +7148,8 @@ describe('order.createPickup', () => {
                 sale_item_id: 'item-001', sale_order_id: 'FY-001', store_id: 'store-001',
                 sku_id: 'sku-001', product_name: '家居产品A', product_type: '家居产品',
                 item_direction: '购买', quantity: 5, settled_quantity: 0, picked_quantity: 0,
+                // staffApi 的 pg 把 numeric 解析成 float（88.50 → 88.5），夹具照实模拟
+                unit_real_price: 88.5,
                 paid_quantity: 5, order_status: '已支付', client_user_id: 'cu-001', customer_name: '顾客A',
               }],
               rowCount: 1,
@@ -7186,7 +7178,14 @@ describe('order.createPickup', () => {
           }
           if (/FROM inventory_stock_lots/.test(sql)) {
             const skuId = params[1]
-            return { rows: [{ id: skuId === 'inventory-sku-001' ? 1 : 2, location_id: 'store-001', sku_id: skuId, sku_name: skuId, batch_no: 'B1', expiry_date: null, quantity_on_hand: 10 }], rowCount: 1 }
+            return { rows: [{
+              id: skuId === 'inventory-sku-001' ? 1 : 2, location_id: 'store-001', sku_id: skuId, sku_name: skuId,
+              // 第二个组件用赠送批次：is_gift 必须原样取自锁定批次（误绑成常量会让触发器把成本算成 0 或把赠品计成本）
+              batch_no: 'B1', expiry_date: null, quantity_on_hand: 10, is_gift: skuId === 'inventory-sku-002',
+              supply_chain_unit_cost: 12, market_standard_unit_price: 20, market_unit_discount: 1,
+              market_actual_unit_price: 19, store_standard_unit_price: 32, store_unit_discount: 2,
+              store_actual_unit_price: 30,
+            }], rowCount: 1 }
           }
           if (/SELECT id FROM inventory_docs/.test(sql)) {
             return { rows: [], rowCount: 0 }
@@ -7206,6 +7205,32 @@ describe('order.createPickup', () => {
 
     await orderRoutes.createPickup(ctx)
 
+    // #341：出库金额 = 提货数 × 顾客实际单价，冻结进 pickup_records（88.50 × 2 = 177.00）
+    const frozenInsert = transactionClient.query.mock.calls.find(([sql]) => /INSERT INTO pickup_records/.test(sql))
+    expect(frozenInsert[0]).toMatch(/pickup_unit_price, pickup_amount/)
+    expect(frozenInsert[1].slice(-2)).toEqual(['88.50', '177.00'])
+    // #341：GCK 明细带锁定批次的价格快照（成本），actual_unit_price 不写——交给触发器按门店成本算 amount
+    const docItemInserts = transactionClient.query.mock.calls.filter(([sql]) => /INSERT INTO inventory_doc_items/.test(sql))
+    expect(docItemInserts).toHaveLength(2)
+    // 列名与参数逐列对齐后断言：quantity / stock_snapshot 对调会让触发器按 10 件算成本（#341 评审 round-4）
+    const byColumn = ([sql, params]) => {
+      const columns = sql.slice(sql.indexOf('(') + 1, sql.indexOf(')')).split(',').map((column) => column.trim())
+      expect(columns).toHaveLength(params.length)
+      return Object.fromEntries(columns.map((column, index) => [column, params[index]]))
+    }
+    expect(docItemInserts.map(byColumn).map((row) => ({
+      sku_id: row.sku_id, quantity: row.quantity, stock_snapshot: row.stock_snapshot, is_gift: row.is_gift,
+      supply_chain_unit_cost: row.supply_chain_unit_cost, market_actual_unit_price: row.market_actual_unit_price,
+      store_actual_unit_price: row.store_actual_unit_price, actual_unit_price: row.actual_unit_price,
+    }))).toEqual([
+      { sku_id: 'inventory-sku-001', quantity: 2, stock_snapshot: 10, is_gift: false, supply_chain_unit_cost: 12, market_actual_unit_price: 19, store_actual_unit_price: 30, actual_unit_price: undefined },
+      { sku_id: 'inventory-sku-002', quantity: 4, stock_snapshot: 10, is_gift: true, supply_chain_unit_cost: 12, market_actual_unit_price: 19, store_actual_unit_price: 30, actual_unit_price: undefined },
+    ])
+    for (const [sql, params] of docItemInserts) {
+      expect(sql).not.toMatch(/\bactual_unit_price\b/)
+      expect(params.slice(-7)).toEqual([12, 20, 1, 19, 32, 2, 30])
+    }
+
     expect(ctx.result.saleItemId).toBe('item-001')
     expect(ctx.result.pickedUp).toBe(2)
     expect(ctx.result.remaining).toBe(3) // 5 - 2
@@ -7213,10 +7238,90 @@ describe('order.createPickup', () => {
     expect(ctx.result.message).toContain('取货成功')
     expect(transactionClient.query.mock.calls.some(([sql]) => /FROM inventory_cutover_states/.test(sql))).toBe(true)
     expect(transactionClient.query.mock.calls.some(([sql]) => /FROM inventory_stock_lots/.test(sql))).toBe(true)
-    expect(transactionClient.query.mock.calls.some(([sql]) => /INSERT INTO inventory_docs/.test(sql))).toBe(true)
+    // 单头类型决定金额触发器取哪档成本：必须是「院顾客产品出库」（#341 评审 round-5）
+    const docInsert = transactionClient.query.mock.calls.find(([sql]) => /INSERT INTO inventory_docs\b/.test(sql))
+    expect(docInsert[0]).toMatch(/VALUES \(\$1, '院顾客产品出库', '已完成',/)
     expect(transactionClient.query.mock.calls.some(([sql]) => /INSERT INTO inventory_movements/.test(sql))).toBe(true)
     const pickupInsert = transactionClient.query.mock.calls.find(([sql]) => /INSERT INTO pickup_records/.test(sql))
     expect(pickupInsert[0]).toMatch(/VALUES \(\$1, NULL/)
+  })
+
+  test('#341 合并提货：每条来源明细各冻结一件的出库金额', async () => {
+    const ctx = createManagerCtx({ saleItemId: 'g-1', saleItemIds: ['g-2', 'g-1'], pickupQuantity: 2 })
+    let transactionClient
+    const snapshot = {
+      version: 1,
+      components: [{ inventorySkuId: 'inventory-sku-001', productCode: 'I001', productName: '库存品A', specName: null, quantityPerSaleUnit: 1 }],
+    }
+    const lockedRow = (id) => ({
+      sale_item_id: id, sale_item_group_id: 'grp-1', sale_order_id: 'FY-001', store_id: 'store-001',
+      sku_id: 'sku-001', product_name: '家居产品A', quantity: 1, picked_up_quantity: 0,
+      inventory_composition_snapshot: snapshot, settled_quantity: 0,
+      sale_amount: 19.99, unit_real_price: 19.99, received: 19.99, paid_quantity: 1,
+      product_type: '家居产品', item_direction: '购买', sale_order_type: '普通单',
+      client_user_id: 'cu-001', customer_name: '顾客A', order_status: '已支付',
+    })
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = {
+        query: vi.fn(withDeductible(async (sql, params) => {
+          if (/FROM inventory_cutover_states/.test(sql)) return { rows: [{ status: '已初始化' }], rowCount: 1 }
+          if (/FOR UPDATE OF si/.test(sql) && /AS paid_quantity/.test(sql)) {
+            return { rows: [lockedRow('g-1'), lockedRow('g-2')], rowCount: 2 }
+          }
+          if (/FROM inventory_stock_lots/.test(sql)) {
+            return { rows: [{ id: 1, location_id: 'store-001', sku_id: params[1], sku_name: params[1], batch_no: 'B1', expiry_date: null, quantity_on_hand: 10, store_actual_unit_price: 7.5 }], rowCount: 1 }
+          }
+          if (/SELECT id FROM inventory_docs/.test(sql)) return { rows: [], rowCount: 0 }
+          if (/SELECT org_node_id/.test(sql) && /FROM inventory_locations/.test(sql)) {
+            return { rows: [{ org_node_id: 'org-node-store-001' }], rowCount: 1 }
+          }
+          if (/INSERT INTO inventory_doc_items/.test(sql)) return { rows: [{ id: 10 }], rowCount: 1 }
+          if (/UPDATE sale_items/.test(sql)) return { rows: [{ sale_item_id: params[0] }], rowCount: 1 }
+          return { rows: [], rowCount: 1 }
+        })),
+      }
+      transactionClient = client
+      return await cb(client)
+    })
+
+    await orderRoutes.createPickup(ctx)
+
+    expect(ctx.result.pickedUp).toBe(2)
+    const inserts = transactionClient.query.mock.calls.filter(([sql]) => /INSERT INTO pickup_records/.test(sql))
+    expect(inserts).toHaveLength(2)
+    for (const [sql, params] of inserts) {
+      expect(sql).toMatch(/pickup_unit_price, pickup_amount/)
+      expect(params.slice(-2)).toEqual(['19.99', '19.99'])
+    }
+    const docItem = transactionClient.query.mock.calls.find(([sql]) => /INSERT INTO inventory_doc_items/.test(sql))
+    // 缺失的价格快照一律写 NULL（不是 undefined），门店成本 7.5 在末位
+    expect(docItem[1].slice(-7)).toEqual([null, null, null, null, null, null, 7.5])
+  })
+
+  describe('#341 pickupAmountSnapshot（与 admin 副本同一组用例）', () => {
+    test('88.50 × 2 = 177.00', () => {
+      expect(pickupAmountSnapshot('88.50', 2)).toEqual({ unitPrice: '88.50', amount: '177.00' })
+      expect(pickupAmountSnapshot(88.5, 2)).toEqual({ unitPrice: '88.50', amount: '177.00' })
+    })
+    test('按分计算，不带浮点尾差', () => {
+      expect(pickupAmountSnapshot(19.99, 3)).toEqual({ unitPrice: '19.99', amount: '59.97' })
+      expect(pickupAmountSnapshot(0.1, 3)).toEqual({ unitPrice: '0.10', amount: '0.30' })
+      // 0.07 * 100 = 7.000000000000001：舍入方向错成 ceil 会冻结 0.08 / 0.16（#341 评审 round-8）
+      expect(pickupAmountSnapshot(0.07, 2)).toEqual({ unitPrice: '0.07', amount: '0.14' })
+      expect(pickupAmountSnapshot('0.07', 2)).toEqual({ unitPrice: '0.07', amount: '0.14' })
+    })
+    test('0 元行冻结为 0，不是 NULL', () => {
+      expect(pickupAmountSnapshot(0, 4)).toEqual({ unitPrice: '0.00', amount: '0.00' })
+      expect(pickupAmountSnapshot('0.00', 1)).toEqual({ unitPrice: '0.00', amount: '0.00' })
+    })
+    test('单价缺失或数量非法直接拒绝', () => {
+      for (const price of [null, undefined, '', '  ', 'abc']) {
+        expect(() => pickupAmountSnapshot(price, 1)).toThrow(/INVALID_STATE/)
+      }
+      for (const qty of [0, -1, 1.5, '2']) {
+        expect(() => pickupAmountSnapshot('10.00', qty)).toThrow(/INVALID_STATE/)
+      }
+    })
   })
 
   test('超出可提货数量拒绝', async () => {
@@ -7306,6 +7411,30 @@ describe('提货查询门店范围', () => {
     expect(pg.query.mock.calls[0][0]).toContain("o.status IN ('已支付', '部分支付', '已完成')")
     expect(pg.query.mock.calls[0][0]).toContain('row_pending_pickup AS pending_pickup_quantity')
     expect(pg.query.mock.calls[0][1]).toEqual(['customer-001', 'store-001'])
+  })
+
+  test('#350 可提货商品带下单日期（上海日历日）与顾客实际单价，供按销售单分组', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'customer-001' })
+    pg.query.mockResolvedValueOnce([{
+      sale_item_id: 'SI-1', sale_item_group_id: 'SI-1', source_sale_item_ids: ['SI-1'],
+      sale_order_id: 'FY-XSD-WX-2609240001', sku_id: 'sku-1', product_name: '面霜',
+      quantity: 2, picked_up_quantity: 0, paid_quantity: 2, pending_pickup_quantity: 2,
+      unit_real_price: '199.00', store_id: 'store-001', store_name: '红谷滩店',
+      paid_at: new Date('2026-09-24T02:00:00Z'), order_date: '2026-09-24',
+    }])
+
+    await orderRoutes.availablePickupItems(ctx)
+
+    const sql = pg.query.mock.calls[0][0]
+    // 下单日期取 sale_orders.sale_order_datetime，并在服务端按上海时区截成日历日
+    expect(sql).toContain("to_char(o.sale_order_datetime AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD') AS order_date")
+    expect(sql).toContain('MIN(order_date) AS order_date')
+    expect(ctx.result[0]).toMatchObject({
+      saleOrderId: 'FY-XSD-WX-2609240001',
+      orderDate: '2026-09-24',
+      storeName: '红谷滩店',
+      unitRealPrice: '199.00',
+    })
   })
 
   test('提货记录列表只使用当前有效门店，而非全量 scope', async () => {
@@ -8521,6 +8650,7 @@ describe('order.close — 欠款归零的回滚（#182）', () => {
             sale_order_id: 'FY-SRC-001',
             sale_item_id: 'ITEM-SRC-001',
             waived: rowWaived,
+            has_positive_source: true,
             source_found: sourceFound,
             restored_ok: restoredOk,
           }],
@@ -8573,7 +8703,7 @@ describe('order.close — 欠款归零的回滚（#182）', () => {
 
     const recalc = q.mock.calls.find(([sql]) =>
       String(sql).includes('SET paid_sessions = CASE')
-      && String(sql).includes("out_item.waived_amount::numeric > 0"))
+      && String(sql).includes("AND sale_items.sale_amount > 0"))
     expect(recalc).toBeTruthy()
   })
 
@@ -8591,7 +8721,7 @@ describe('order.close — 欠款归零的回滚（#182）', () => {
     // 但行级 paid_sessions 必须重算
     const recalc = q.mock.calls.find(([sql]) =>
       String(sql).includes('SET paid_sessions = CASE')
-      && String(sql).includes("out_item.waived_amount::numeric > 0"))
+      && String(sql).includes("AND sale_items.sale_amount > 0"))
     expect(recalc).toBeTruthy()
     expect(recalc[1]).toEqual(['FY-CONV-WAIVE-001', 'FY-SRC-001'])
   })
@@ -8616,7 +8746,7 @@ describe('order.close — 欠款归零的回滚（#182）', () => {
             sale_order_id: 'FY-SRC-001',
             sale_item_id: 'ITEM-SRC-001',
             waived: '400.00',
-            source_found: true,
+            has_positive_source: true, source_found: true,
             restored_ok: true,
           }],
           rowCount: 1,
@@ -8668,7 +8798,7 @@ describe('order.close — 欠款归零的回滚（#182）', () => {
             sale_order_id: 'FY-SRC-001',
             sale_item_id: 'ITEM-SRC-001',
             waived: '400.00',
-            source_found: true,
+            has_positive_source: true, source_found: true,
             restored_ok: false,
           }],
           rowCount: 1,
@@ -8709,7 +8839,7 @@ describe('order.close — 欠款归零的回滚（#182）', () => {
             sale_order_id: 'FY-SRC-001',
             sale_item_id: 'ITEM-SRC-001',
             waived: '400.00',
-            source_found: true,
+            has_positive_source: true, source_found: true,
             restored_ok: true,
           }],
           rowCount: 1,
@@ -8719,7 +8849,7 @@ describe('order.close — 欠款归零的回滚（#182）', () => {
       if (text.includes('refund_items') && text.includes('GROUP BY sale_item_id')) {
         return { rows: [{ sale_item_id: 'ITEM-SRC-001', refunded: '400' }], rowCount: 1 }
       }
-      if (text.includes('SET paid_sessions = CASE') && text.includes('out_item.waived_amount')) {
+      if (text.includes('SET paid_sessions = CASE') && text.includes('out_item.ref_sale_item_id IS NOT NULL')) {
         return { rows: [], rowCount: 0 }
       }
       return defaultQueryResult(sql, params)

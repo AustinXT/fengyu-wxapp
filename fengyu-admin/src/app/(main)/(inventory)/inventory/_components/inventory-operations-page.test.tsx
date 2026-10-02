@@ -1,9 +1,9 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { INVENTORY_GENERIC_DOC_TYPES } from '@/lib/inventory/types'
-import type { InventoryDocDetail, InventoryDocRow } from '@/lib/inventory/types'
+import type { InventoryDocDetail, InventoryDocRow, InventoryLocationRow } from '@/lib/inventory/types'
 import {
   INVENTORY_BUSINESS_LEVELS,
   genericDocBusinessLevel,
@@ -25,13 +25,20 @@ vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(''),
 }))
 
-vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn(), info: vi.fn() } }))
+vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn(), info: vi.fn(), warning: vi.fn() } }))
+vi.mock('@/actions/inventory/skus', () => ({ listInventorySkus: vi.fn() }))
+vi.mock('./inventory-sku-search-select', () => import('./__stubs__/inventory-sku-search-select.stub'))
 
 vi.mock('@/actions/inventory/docs', () => ({
   confirmInventoryCoreReceive: vi.fn(),
   createInventoryCoreDoc: vi.fn(),
   getInventoryCoreDocById: vi.fn(),
+  getInventoryCoreDocsByIds: vi.fn(),
+  listInventoryDocCandidateIds: vi.fn(),
+  listInventoryDocCandidates: vi.fn(),
   listInventoryOperationDocs: vi.fn(),
+  // #337 分院配货自选行的未配报货提示：默认无提示
+  listStoreUnallocatedRequestSkus: vi.fn(async () => []),
 }))
 
 vi.mock('@/actions/inventory/stocks', () => ({ listInventoryLotOptions: vi.fn() }))
@@ -48,6 +55,7 @@ vi.mock('@/actions/inventory/business', () =>
       'createItemCompanyShipment',
       'createMarketReplenishment',
       'createMarketReportSummary',
+      'voidMarketReportSummary',
       'createMarketStaffPurchase',
       'createPurchaseOrder',
       'createReturnForRestock',
@@ -55,6 +63,8 @@ vi.mock('@/actions/inventory/business', () =>
       'createStoreAllocation',
       'createStoreReplenishmentRequest',
       'createSupplyChainStaffPurchase',
+      'deleteMarketReplenishmentDraft',
+      'deleteStoreReplenishmentDraft',
       'getShipmentReceiptProgress',
       'listMarketEmployeeOptions',
       'listSupplyChainEmployeeOptions',
@@ -68,29 +78,51 @@ vi.mock('@/actions/inventory/business', () =>
       'rejectReturnForRestock',
       'requestItemCompanyShipmentCancellation',
       'resolveInventorySkuSupplierStatus',
+      'saveMarketReplenishmentDraft',
+      'saveStoreReplenishmentDraft',
       'summarizeMarketReplenishmentRequests',
       'summarizeStoreReplenishmentRequests',
     ].map((name) => [name, vi.fn()]),
   ),
 )
 
+import { listInventoryLotOptions } from '@/actions/inventory/stocks'
+import { listInventorySkus } from '@/actions/inventory/skus'
 import { toast } from 'sonner'
 import {
   confirmInventoryCoreReceive,
   getInventoryCoreDocById,
+  getInventoryCoreDocsByIds,
+  listInventoryDocCandidateIds,
+  listInventoryDocCandidates,
   listInventoryOperationDocs,
+  listStoreUnallocatedRequestSkus,
 } from '@/actions/inventory/docs'
 import {
   approveItemCompanyShipmentCancellation,
   approveReturnForRestock,
   cancelSupplyChainPurchaseOrder,
+  voidMarketReportSummary,
+  createItemCompanyShipment,
+  createInventoryConversion,
+  createMarketReplenishment,
+  createStoreAllocation,
+  createStoreReplenishmentRequest,
+  deleteMarketReplenishmentDraft,
+  deleteStoreReplenishmentDraft,
+  saveStoreReplenishmentDraft,
+  quoteMarketReplenishmentPrices,
+  saveMarketReplenishmentDraft,
   receiveItemCompanyShipmentInFull,
+  receiveSupplyChainPurchaseOrder,
   receiveStoreAllocationInFull,
   rejectItemCompanyShipmentCancellation,
   rejectReturnForRestock,
+  summarizeStoreReplenishmentRequests,
 } from '@/actions/inventory/business'
-import InventoryOperationsPage, { OperationDocsTab } from './inventory-operations-page'
+import InventoryOperationsPage, { mergeMarketReportDraftLines, OperationDocsTab } from './inventory-operations-page'
 import type { InventoryAnyOperationId } from '@/lib/inventory/operation-doc-types'
+import { asGenericDocType, parseGenericOperationId } from '@/lib/inventory/operation-doc-types'
 
 /**
  * 办理台（inventory-operations-page.tsx）的表单一致性守护（#135）。
@@ -135,11 +167,23 @@ describe('办理台表单一致性（#135）', () => {
     expect(formField).not.toMatch(/aria-required/)
   })
 
-  it('DocPicker 把 required 透传给 FormField', () => {
-    // 漏传的话 9 个单据选择器全都不显示必填标记，而它们无一例外都是必填的。
-    const docPicker = block('function DocPicker(', 'function SkuPicker(')
-    expect(docPicker).toMatch(/required = false/)
-    expect(docPicker).toMatch(/<FormField label=\{label\} required=\{required\}>/)
+  it('候选单选择器（#338 取代 DocPicker）渲染必填标记', () => {
+    // 漏掉的话 9 个单据选择器全都不显示必填标记，而它们无一例外都是必填的。
+    const picker = readFileSync(resolve(__dirname, 'inventory-doc-candidate-picker.tsx'), 'utf8')
+    expect(picker).toMatch(/required = false/)
+    expect(picker).toMatch(/\{required && \(/)
+    expect(picker).toMatch(/<span className="sr-only">（必填）<\/span>/)
+  })
+
+  it('收货表单「本次实收」只读、按待收整单提交（#358 拍板 A）', () => {
+    const form = block('function ShipmentReceiptForm(', 'interface SupplyChainPurchaseReceiptDraftLine')
+    // 只读展示待收量，没有可改数量的 onChange
+    expect(form).toContain('aria-label={`本次实收 ${rowName}`} readOnly value={String(line.outstandingQuantity)}')
+    expect(form).not.toMatch(/receivedInput/)
+    // 提交的数量就是待收量，不经任何可编辑状态
+    expect(form).toMatch(/receivedQuantity: line\.outstandingQuantity,/)
+    // 文案不再引导去改数
+    expect(source).not.toMatch(/部分收货或登记差异/)
   })
 
   it('数值输入是 type=number 且带 min/step/max，不留 inputMode="decimal"', () => {
@@ -148,8 +192,13 @@ describe('办理台表单一致性（#135）', () => {
     expect(source).not.toMatch(/inputMode="decimal"/)
 
     const numberInputs = source.match(/type="number"[^/>]*/g) ?? []
-    // 21 个数值输入分布在 18 行（有的一行多个）
-    expect(numberInputs.length).toBe(21)
+    // 21 个数值输入分布在 18 行（有的一行多个）；#337 分院配货自选行 +3（正常 / 赠送 / 优惠）
+    // 24 → 22（#336a：品项公司发货表单暂为占位，去掉正常发货 / 赠送数量 2 个）
+    // 22 → 23（#344：转换目标行新增「单价」）
+    // 23 → 24（#336b：新发货表单每行一个数量框，正常 / 赠送共用一个 Input，标签按行属性切换）
+    // 24 → 25（#346：供应链采购入库行新增「单价优惠」）
+    // 25 → 24（#358：收货表单「本次实收」改只读文本框，整单按待收收货）
+    expect(numberInputs.length).toBe(23)
     for (const attrs of numberInputs) {
       expect(attrs).toMatch(/min="0(\.01)?"/)
       expect(attrs).toMatch(/step="0\.01"/)
@@ -166,20 +215,26 @@ describe('办理台表单一致性（#135）', () => {
     // .filter(x !== null) 剔除，等于「这行不选」，是合法操作，不能拦。
     const strict = source.match(/min="0\.01"/g) ?? []
     const loose = source.match(/min="0"/g) ?? []
-    expect(strict.length).toBe(9)
-    expect(loose.length).toBe(12)
+    // 9 → 10（#336b：发货行数量走 positiveNumber —— 不发的行要删掉，不是填 0）
+    expect(strict.length).toBe(10)
+    // #337 +3：分院配货自选行的正常 / 赠送 / 优惠都走 nonnegativeNumber（正常与赠送二选一）
+    // 15 → 13（#336a：品项公司发货表单暂为占位；#336b 新表单逐行显式校验，不再有 nonnegative 字段）
+    // 13 → 14（#344：转换目标「单价」允许 0（赠送转换 / 自填 0 价），走 nonnegativeNumber → min="0"）
+    // 14 → 15（#346：入库「单价优惠」允许 0 / 留空，走 nonnegativeNumber → min="0"）
+    // 15 → 14（#358：收货「本次实收」只读，不再是可填的数值框）
+    expect(loose.length).toBe(13)
 
     // 抽样两个方向，防止整体计数对了但分配错了
     const store = block('function StoreRequestForm(', 'function ItemCompanyReplenishmentForm(')
     expect(store).toMatch(/min="0\.01"/)          // 数量走 positiveNumber
     // #194 把「供应链采购订单」并入「采购订单」，原右锚 SupplyChainPurchaseOrderForm 已不存在，
     // 改用紧随其后的 interface 作右锚。
-    const purchase = block('function PurchaseOrderForm(', 'interface ShipmentDraftLine {')
+    const purchase = block('function PurchaseOrderForm(', 'function CompanyShipmentForm(')
     expect(purchase).toMatch(/<FormField label="采购数量">/)
     expect(purchase).toMatch(/min="0"/)
-    // 市场报货汇总（#193）同属「至少填一条」语义，也走 min="0"
+    // #356：汇总数量只读，不再保留数值输入
     const summary = block('function MarketReportSummaryForm(', 'interface PurchaseSourceLine {')
-    expect(summary).toMatch(/min="0"/)
+    expect(summary).not.toMatch(/type="number"/)
   })
 
   it('「请完整填写」语义的字段标必填', () => {
@@ -198,7 +253,7 @@ describe('办理台表单一致性（#135）', () => {
   it('「请填写至少一条」语义的字段**不**标必填', () => {
     // 采购订单的「采购数量」：submit() 先 .filter(quantity !== null) 再判
     // 「请填写至少一条采购数量」—— 逐行标 * 是误导（单行留空是允许的）。
-    const purchase = block('function PurchaseOrderForm(', 'interface ShipmentDraftLine {')
+    const purchase = block('function PurchaseOrderForm(', 'function CompanyShipmentForm(')
     expect(purchase).toMatch(/<FormField label="采购数量">/)
     expect(purchase).not.toMatch(/<FormField label="采购数量" required/)
 
@@ -209,25 +264,27 @@ describe('办理台表单一致性（#135）', () => {
   })
 
   it('nonnegativeNumber 字段不标必填（空串等于 0，不是漏填）', () => {
-    // 品项公司发货的「正常发货」「赠送数量」都走 nonnegativeNumber，且 submit()
+    // 分院配货的「正常配货」「赠送数量」都走 nonnegativeNumber，且 submit()
     // 先 filter 掉两者之和为 0 的行 —— 单独清空任一个都是合法的。
-    const shipment = block('function CompanyShipmentForm(', 'interface ReceiptProgressLine')
-    expect(shipment).toMatch(/<FormField label="正常发货">/)
-    expect(shipment).not.toMatch(/<FormField label="正常发货" required/)
-    expect(shipment).toMatch(/<FormField label="赠送数量">/)
-    expect(shipment).not.toMatch(/<FormField label="赠送数量" required/)
+    // （#336b 的发货表单改为逐行显式校验、数量必填，不再属于这一类，见下方批次那条的反向断言）
+    const allocation = block('function StoreAllocationForm(', 'function ReturnForm(')
+    expect(allocation).toMatch(/<FormField label="正常配货">/)
+    expect(allocation).not.toMatch(/<FormField label="正常配货" required/)
+    expect(allocation).toMatch(/<FormField label="赠送数量">/)
+    expect(allocation).not.toMatch(/<FormField label="赠送数量" required/)
   })
 
   it('filter-then-validate 的批次字段不标必填（条件必填）', () => {
-    // 品项公司发货 / 分院配货的 submit() 都是**先 filter 再校验**：
+    // 分院配货的 submit() 是**先 filter 再校验**（#336b 之前品项公司发货也是）：
     //   .filter((line) => (line.quantity ?? 0) + (line.giftQuantity ?? 0) > 0)
     //   .some((line) => !Number.isInteger(line.lotId) || ...)
     // 数量为 0 的行根本不检查 lotId —— 部分发货时"这次不发"的行留空批次完全合法。
     // 标上 * 会逼用户去给不发货的行挑批次，而该 SKU 在该库位可能压根没有批次可挑。
     // 这与「采购数量不该逐行标」是同一类判据，只是发生在批次上。
+    // 分院配货只截到自选区之前：#337 的自选行是用户主动添加的，不做 filter、逐行校验；
+    // #359 起它的「市场批次」同样只在正常数量 > 0 时必填（条件必填，下面单独断言不标 *）。
     for (const [from, to, label] of [
-      ['function CompanyShipmentForm(', 'interface ReceiptProgressLine', '发货批次'],
-      ['function StoreAllocationForm(', 'function ReturnForm(', '市场批次'],
+      ['function StoreAllocationForm(', '自选配货（不引用报货', '市场批次'],
     ] as const) {
       const form = block(from, to)
       expect(form).toMatch(new RegExp(`<FormField label="${label}">`))
@@ -238,13 +295,25 @@ describe('办理台表单一致性（#135）', () => {
     // 是无条件必填，必须仍标着 —— 否则这条测试就退化成"把所有批次都去掉标记"也能过。
     const staffPurchase = block('function MarketStaffPurchaseForm(', 'function SelfPurchaseForm(')
     expect(staffPurchase).toMatch(/<FormField label="市场批次" required/)
+    // #359 起自选行的「市场批次」也是条件必填（只配赠送时不需要正常批次），不再标 *
+    const allocationSelf = block('自选配货（不引用报货', 'function ReturnForm(')
+    expect(allocationSelf).toMatch(/<FormField label="市场批次">/)
+    expect(allocationSelf).not.toMatch(/<FormField label="市场批次" required/)
+    // #336b 品项公司发货：每行都是显式保留的（默认按未发量带出，不发就删行），submit() 不 filter、
+    // 逐行校验批次与正数数量 —— 批次与数量都是无条件必填。
+    const shipment = block('function CompanyShipmentForm(', 'interface ReceiptProgressLine')
+    expect(shipment).toMatch(/<FormField label="发货批次" required/)
+    expect(shipment).toMatch(/<FormField label=\{line\.isGift \? '赠送数量' : '正常发货'\} required/)
+    expect(shipment).not.toMatch(/\.filter\(\(line\) => \(line\.quantity \?\? 0\)/)
   })
 
   it('主体字段一律走 InventorySubjectSelect，不退回裸 Select（#189）', () => {
     // 组件单测只测组件自身、INV-11 默认 skip —— 把这 17 处换回 `<Select>` 不会让
     // 任何测试变红，而回退的后果（唯一候选还要手点一次 / 联动被吞）在总部、市场
     // 都只有一个的环境里肉眼难辨。这里钉住接线本身。
-    expect(source.match(/<InventorySubjectSelect/g) ?? []).toHaveLength(17)
+    // 17 → 18：#337 分院配货新增「收货门店」；18 → 17（#336a：品项公司发货表单暂为占位，去掉「发货总部」）
+    // 17 → 19（#336b：发货表单回填「发货总部」并新增「收货市场」）
+    expect(source.match(/<InventorySubjectSelect/g) ?? []).toHaveLength(19)
 
     // 反向：主体类 state 不得再出现在裸 `<Select value={...}>` 上。
     const subjectStates = [
@@ -284,16 +353,18 @@ describe('办理台表单一致性（#135）', () => {
     // 清单从 5 条减到 4 条。合并后的 `PurchaseOrderForm` 没有单选的来源单，
     // 同一语义写成 `autoSelect={selectedDocIds.length === 0}`（勾了来源就交还单据决定），
     // 所以它不计入 `!doc` 那一组，单独断言。
+    // 3 → 4：#337 分院配货的「收货门店」同样随报货单回填（报货主体），选了单就交还单据决定
+    // 4 → 3（#336a：品项公司发货表单暂为占位）。#336b 的新表单**不回填**：先选市场与总部再选报货单，
+    // 两端由用户定；「去发货」预选是显式写入非空值，唯一候选的自动补值只在值为空时发生，盖不掉它。
     expect(source.match(/autoSelect=\{!doc\}/g) ?? []).toHaveLength(3)
 
     for (const [from, to] of [
-      ['function CompanyShipmentForm(', 'interface ReceiptProgressLine'],
       ['function SupplyChainPurchaseReceiptForm(', 'function SupplyChainPurchaseCancelForm('],
       ['function StoreAllocationForm(', 'function ReturnForm('],
     ] as const) {
       expect(block(from, to)).toMatch(/autoSelect=\{!doc\}/)
     }
-    expect(block('function PurchaseOrderForm(', 'interface ShipmentDraftLine {'))
+    expect(block('function PurchaseOrderForm(', 'function CompanyShipmentForm('))
       .toMatch(/autoSelect=\{selectedDocIds\.length === 0\}/)
   })
 
@@ -306,8 +377,21 @@ describe('办理台表单一致性（#135）', () => {
     // （标题上自带 *，不是 FormField），只剩「供应链库存主体」1 个；
     // #193 新增的市场报货汇总表单同样只有 1 个 —— 这两项合计 6 → 2。
     // 品项公司发货表单则多出 1 个「发往市场」（混合单一次只能发一个市场）。净减 3。
-    const marked = source.match(/<(?:FormField|DocPicker) label=(?:"[^"]*"|\{[^}]*\}) required/g) ?? []
-    expect(marked.length).toBe(55)
+    //
+    // 55 → 56：#338 的候选单选择器取代 DocPicker（8 处 → 9 处调用），采购来源的多选清单
+    // 也改用它、带上了 required，不再是标题里手写的 *。
+    //
+    // #344：转换拆成来源 / 目标两段，目标行新增必填「单价」（未手改时按来源合计预填），+1。
+    const marked = source.match(/<(?:FormField|InventoryDocCandidatePicker)\s+label=(?:"[^"]*"|\{[^}]*\})\s+required/g) ?? []
+    //
+    // 56 → 58：#337 分院配货的门店报货单改为可选（−1），新增「收货门店」与自选行的
+    // 「商品」「市场批次」三个必填（+3）。
+    // 58 → 55（#336a：品项公司发货表单暂为占位，去掉发货总部 / 采购订单 / 发往市场 3 个）
+    // 55 → 56（#344：见上）
+    // 56 → 61（#336b：收货市场 / 发货总部 / 市场报货单 / 发货批次 / 发货数量 5 个）
+    // 61 → 60（#359：分院配货自选行的「市场批次」改为条件必填，只配赠送时不需要正常批次）
+    // #365 自采入库供应商改选填（−1）。
+    expect(marked.length).toBe(59)
   })
 })
 
@@ -441,13 +525,13 @@ describe('通用建单业务卡片（#191）', () => {
     // 有 `id:` 就说明又开始手写 id 了 —— 那正是借错 id 的入口。
     expect(genericBlock).not.toMatch(/\bid: '/)
     const docTypes = [...genericBlock.matchAll(/docType: '([^']+)'/g)].map((m) => m[1])
-    expect(docTypes.length).toBe(10)
+    expect(docTypes.length).toBe(9)
     // 每张卡的类型必须真属于「无需上游血缘」的通用建单类型，
     // 混进 '品项公司发货' 这种业务单类型就等于从通用入口绕过专用服务的校验。
     for (const docType of docTypes) {
       expect(INVENTORY_GENERIC_DOC_TYPES, `${docType} 不是通用建单类型`).toContain(docType)
     }
-    // 10 张卡覆盖全部 10 种通用类型，不重不漏
+    // 9 张卡覆盖全部 9 种通用类型，不重不漏（#350 起「顾客产品出库」是跳转卡，不在这里）
     expect([...docTypes].sort()).toEqual([...INVENTORY_GENERIC_DOC_TYPES].sort())
   })
 
@@ -477,10 +561,16 @@ describe('通用建单业务卡片（#191）', () => {
     expect(workspace).toMatch(/initialDocType=\{card\.docType\}/)
   })
 
-  it('卡片渲染不再有 href/Link 分支', () => {
-    const cardsBlock = source.slice(source.indexOf('{levelOperations.filter('), source.indexOf('{active && ('))
+  it('内置 / 通用卡的渲染没有 href/Link 分支（跳转卡是单独一张表）', () => {
+    // 只切到内置 + 通用卡的 map 为止：#350 的跳转卡（LINK_OPERATIONS）刻意单独渲染成 Link，
+    // 它不进 levelOperations，也就不会借用业务 id、不会有工作区与单据 Tab。
+    const cardsBlock = source.slice(source.indexOf('{levelOperations.filter('), source.indexOf('{levelLinkOperations.filter('))
+    expect(cardsBlock.length).toBeGreaterThan(0)
     expect(cardsBlock).not.toMatch(/operation\.href/)
     expect(cardsBlock).not.toMatch(/<Link/)
+    // 跳转卡不得混进 levelOperations（否则 `?op=` 能把它当工作区打开）
+    const levelOpsBlock = source.slice(source.indexOf('const levelOperations = useMemo'), source.indexOf('const operationEnabled'))
+    expect(levelOpsBlock).not.toContain('LINK_OPERATIONS')
   })
 })
 
@@ -503,7 +593,8 @@ describe('办理台内嵌建单的闸门（#191）', () => {
       formSource.indexOf('const result = await createInventoryCoreDoc(payload)'),
       formSource.indexOf('} catch (err) {', formSource.indexOf('const result = await createInventoryCoreDoc')),
     )
-    expect(submitBody).toMatch(/setItems\(\[defaultItem\(\)\]\)/)
+    // #351 起默认行按单据类型取默认数量（盘点留空、其余 1），仍须清回单行默认草稿
+    expect(submitBody).toMatch(/setItems\(\[defaultItem\(docType\)\]\)/)
     expect(submitBody).toMatch(/setRemark\(''\)/)
     // 批次可用量刚被自己这单改掉，必须推代次让下一张单重新取数
     expect(submitBody).toMatch(/setLotEpoch\(\(n\) => n \+ 1\)/)
@@ -643,7 +734,6 @@ describe('行内控件的可访问名（#194）', () => {
       '实际采购 ${rowName}',   // 市场报货：数量
       '福利方案 ${rowName}',   // 市场报货：福利方案下拉（原来是「${line.skuName}福利方案」，同样会重名）
       '汇总 ${rowName}',      // 市场报货汇总：勾选
-      '本次汇总 ${rowName}',   // 市场报货汇总：数量
       '本次实收 ${rowName}',   // 收货进度：数量
       '明细备注 ${rowName}',   // 收货进度：备注
     ]) {
@@ -734,6 +824,20 @@ function segment(data: InventoryDocRow[], total = data.length, pageSize = 20): O
   return { data, total, pageSize, canViewPrice: true, priceVisibility: 'all' }
 }
 
+/** 候选单查询（#338）：按给定行作为服务端结果，进度默认 0 / totalQuantity。 */
+function mockCandidates(rows: InventoryDocRow[]) {
+  vi.mocked(listInventoryDocCandidates).mockResolvedValue({
+    data: rows.map((row) => ({ ...row, progress: { done: 0, total: row.totalQuantity } })),
+    total: rows.length,
+    pageSize: 20,
+  })
+}
+
+/** 在候选表格里选中某张单 */
+async function pickCandidate(id: string) {
+  fireEvent.click(await screen.findByRole('radio', { name: `选择 ${id}` }))
+}
+
 /** 一次性把两段数据挂上去。`inbox: null` = 这个业务没有待办语义。 */
 function mockDocs(result: { produced?: OperationDocsSegment; inbox?: OperationDocsSegment | null }) {
   vi.mocked(listInventoryOperationDocs).mockResolvedValue({
@@ -774,22 +878,34 @@ function renderTab(
  */
 function renderPage(options: {
   level: InventoryBusinessLevel
-  operation: InventoryAnyOperationId
-  workflowDocs?: InventoryDocRow[]
+  operation?: InventoryAnyOperationId
+  candidates?: InventoryDocRow[]
+  locations?: InventoryLocationRow[]
+  shipmentMarketTargets?: Array<{ orgNodeId: string; name: string }>
+  canSelfPurchase?: boolean
+  canCreatePickupRecord?: boolean
+  receiptDiscountOrgNodeIds?: string[] | null
+  marketPriceLocationIds?: string[] | null
+  canViewPrice?: boolean
+  inboxTotals?: Record<string, number>
 }) {
+  mockCandidates(options.candidates ?? [])
   return render(
     <InventoryOperationsPage
       level={options.level}
-      locations={[]}
-      skuOptions={[]}
+      locations={options.locations ?? []}
+      shipmentMarketTargets={options.shipmentMarketTargets}
       suppliers={[]}
-      workflowDocs={options.workflowDocs ?? []}
+      inboxTotals={options.inboxTotals ?? {}}
       canCreate
       canApprove
-      canSelfPurchase={false}
+      canSelfPurchase={options.canSelfPurchase ?? false}
       canRequestShipmentCancellation={false}
       canApproveShipmentCancellation={false}
-      canViewPrice
+      canViewPrice={options.canViewPrice ?? true}
+      marketPriceLocationIds={options.marketPriceLocationIds === undefined ? null : options.marketPriceLocationIds}
+      receiptDiscountOrgNodeIds={options.receiptDiscountOrgNodeIds === undefined ? null : options.receiptDiscountOrgNodeIds}
+      canCreatePickupRecord={options.canCreatePickupRecord ?? true}
       // 深链入口：省掉「先点卡片」这一步，工作区直接展开在目标业务上
       initialOperationId={options.operation}
     />,
@@ -801,6 +917,14 @@ async function openDocsTab() {
   fireEvent.click(screen.getByRole('tab', { name: /单据/ }))
   await screen.findByText('待我处理')
 }
+
+it('办理台卡片展示一次聚合返回的待处理数', () => {
+  mockDocs({})
+  renderPage({ level: 'market', inboxTotals: { 'market-receipt': 3 } })
+  const card = screen.getByRole('button', { name: /市场采购入库/ })
+  expect(within(card).getByText('待处理 3')).toBeInTheDocument()
+  expect(screen.getAllByText('待处理 3')).toHaveLength(1)
+})
 
 /** 整页渲染时 `getInventoryCoreDocById` 的最小可用替身（选中单据后表单要拿它装载明细）。 */
 function docDetail(row: InventoryDocRow): InventoryDocDetail {
@@ -841,7 +965,7 @@ beforeEach(() => {
 
 describe('待办区的按钮可见性矩阵（#192）', () => {
   /**
-   * 七个内置业务 + 一个通用业务的「状态 → 按钮」矩阵。
+   * 八个内置业务 + 两个通用业务的「状态 → 按钮」矩阵。
    *
    * 期望值不是抄实现的：每条都对齐服务端 inbox 查询条件里的 docType/statuses
    * （`INVENTORY_OPERATION_DOC_QUERY` / `INVENTORY_GENERIC_OPERATION_INBOX`），
@@ -859,10 +983,16 @@ describe('待办区的按钮可见性矩阵（#192）', () => {
     { operation: 'shipment-cancel-approval', docType: '品项公司发货', status: '待审批', actions: ['通过', '驳回'] },
     { operation: 'market-receipt', docType: '品项公司发货', status: '待收货', actions: ['一键收货', '去收货'] },
     { operation: 'store-receipt', docType: '分院配货', status: '待收货', actions: ['一键收货', '去收货'] },
-    // 供应链采购入库要逐行填批号/效期，刻意没有一键版
+    // 供应链采购入库要逐行核对效期（批号可自动生成，#345），刻意没有一键版
     { operation: 'supply-chain-receipt', docType: '采购订单', status: '待收货', actions: ['去收货'] },
     { operation: 'supply-chain-purchase-cancel', docType: '采购订单', status: '待收货', actions: ['关闭采购'] },
+    // 待发货（#336）：市场报货单「已完成」即可发货，发货要逐行选批次，只给跳转
+    { operation: 'company-shipment', docType: '市场报货', status: '已完成', actions: ['去发货'] },
+    // 市场报货草稿（#348）：编辑要回表单重新汇总取价，删除走确认弹窗
+    { operation: 'market-report', docType: '市场报货', status: '草稿', actions: ['继续编辑', '删除草稿'] },
+    { operation: 'store-request', docType: '门店报货', status: '草稿', actions: ['继续编辑', '删除草稿'] },
     { operation: 'generic:分院调货出库', docType: '分院调货出库', status: '待收货', actions: ['确认收货'] },
+    { operation: 'generic:市场间调货出库', docType: '市场间调货出库', status: '待收货', actions: ['确认收货'] },
   ]
 
   for (const entry of matrix) {
@@ -1013,6 +1143,9 @@ describe('待办区与产出区的分段渲染（#192）', () => {
         page: 1,
         inboxPage: 2,
         pageSize: 20,
+        startDate: '',
+        endDate: '',
+        processProgress: undefined,
       }),
     )
 
@@ -1023,6 +1156,9 @@ describe('待办区与产出区的分段渲染（#192）', () => {
         page: 2,
         inboxPage: 2,
         pageSize: 20,
+        startDate: '',
+        endDate: '',
+        processProgress: undefined,
       }),
     )
   })
@@ -1282,7 +1418,7 @@ describe('待办行内动作的失败与防重（#192）', () => {
     renderTab({ operation: 'store-return-approval' })
     await screen.findByText('待我处理')
 
-    fireEvent.click(screen.getByRole('button', { name: '通过 D-15' }))
+    fireEvent.click(await screen.findByRole('button', { name: '通过 D-15' }))
     fireEvent.click(screen.getByRole('button', { name: '确认通过' }))
     await waitFor(() => expect(screen.getByRole('button', { name: '处理中…' })).toBeDisabled())
 
@@ -1306,82 +1442,58 @@ describe('待办行内动作的失败与防重（#192）', () => {
 })
 
 /**
- * DocPicker 的选中值兜底（#192 pr-ready 抓到的 P2-1）。
+ * 候选单选择（#338，取代 #192 的 DocPicker 兜底）。
  *
- * 待办区「去收货」预选的单据来自服务端按类型 + 状态**全量分页**的待办段，
- * 而 DocPicker 的候选只有 RSC 传下来的 `workflowDocs`（全类型混排的最近 100 张）——
- * 长期挂着的待收货单大概率不在里面。`<select>` 匹配不到 option 时落到
- * `selectedIndex = -1`：下拉空白、下方明细表却已加载好，没有任何报错。
+ * 候选原先是 RSC 传下来的「全类型混排最近 100 张」，老单选不到；现在按用途走服务端检索。
+ * 已选单据单独显示，不依赖它是否在当前候选页 —— 「去收货」预选的老单、办完一次后
+ * 掉出候选的单都照样有已选文案（#192 P2-1 的同一个坑）。
  */
-describe('DocPicker 的选中值兜底（#192 follow-up）', () => {
+describe('候选单选择改走服务端检索（#338）', () => {
   const source = readFileSync(resolve(__dirname, 'inventory-operations-page.tsx'), 'utf8')
 
-  it('「去收货」预选的单不在候选集里时，下拉仍选中它而不是空白', async () => {
+  it('「去收货」预选的单不在候选页里时，仍显示为已选', async () => {
     const row = docRow({ id: 'CGD-77', docType: '采购订单', status: '待收货' })
     vi.mocked(getInventoryCoreDocById).mockResolvedValue(docDetail(row))
     mockDocs({ inbox: segment([row]) })
-    // workflowDocs 为空 = 这张单掉出了「最近 100 张」，正是本条要修的场景
-    renderPage({ level: 'supply-chain', operation: 'supply-chain-receipt', workflowDocs: [] })
+    renderPage({ level: 'supply-chain', operation: 'supply-chain-receipt', candidates: [] })
 
     await openDocsTab()
-    fireEvent.click(screen.getByRole('button', { name: '去收货 CGD-77' }))
+    fireEvent.click(await screen.findByRole('button', { name: '去收货 CGD-77' }))
 
-    // 跳回填报表单后：选项补出来了，且真的被选中（修复前这里 selectedIndex 是 -1）
-    const option = await screen.findByRole<HTMLOptionElement>('option', { name: /^CGD-77 · / })
-    const select = option.closest('select') as HTMLSelectElement
-    expect(option.selected).toBe(true)
-    expect(select.selectedIndex).toBeGreaterThan(-1)
-    expect(select).toHaveValue('CGD-77')
+    expect(await screen.findByText(/^已选 CGD-77 · /)).toBeInTheDocument()
+    // 候选按用途向服务端查，不再由前端对预加载单据过滤
+    expect(listInventoryDocCandidates).toHaveBeenCalledWith(expect.objectContaining({ purpose: 'supply-chain-receipt', page: 1 }))
   })
 
-  it('候选集里本来就有这张单时不补重复选项', async () => {
+  it('候选页里有这张单时单选框处于选中态', async () => {
     const row = docRow({ id: 'CGD-88', docType: '采购订单', status: '待收货' })
     vi.mocked(getInventoryCoreDocById).mockResolvedValue(docDetail(row))
     mockDocs({ inbox: segment([row]) })
-    renderPage({ level: 'supply-chain', operation: 'supply-chain-receipt', workflowDocs: [row] })
+    renderPage({ level: 'supply-chain', operation: 'supply-chain-receipt', candidates: [row] })
 
     await openDocsTab()
-    fireEvent.click(screen.getByRole('button', { name: '去收货 CGD-88' }))
+    fireEvent.click(await screen.findByRole('button', { name: '去收货 CGD-88' }))
 
-    /*
-     * 先等单据明细装载完再数：兜底项在加载期只显示裸单号（文案对不上这个正则），
-     * 早数一步的话「无条件补一条」这种写法会蒙混过关。
-     */
-    await waitFor(() => {
-      const loaded = screen.getAllByRole<HTMLOptionElement>('option', { name: /^CGD-88 · / })
-      expect(loaded.some((option) => option.selected)).toBe(true)
-    })
-    // 补一条「无条件的」兜底选项会让同一张单在下拉里出现两次
-    expect(screen.getAllByRole('option', { name: /^CGD-88 · / })).toHaveLength(1)
+    await waitFor(() => expect(screen.getByRole<HTMLInputElement>('radio', { name: '选择 CGD-88' }).checked).toBe(true))
   })
 
-  it('每个 DocPicker 调用点都把当前单据交给 current', () => {
-    /*
-     * 漏传一处的后果只是「那个表单的下拉偶尔空白」—— 页面不报错、别的表单都正常，
-     * 靠肉眼 review 看不出来。这里把接线本身钉住：新加的选择器也必须带上。
-     *
-     * 不止预选那三个表单：候选集是按状态过滤的（docCandidates 的第三个参数），
-     * 行内动作 / 建单成功后的 router.refresh() 会让已选中的单据换状态、掉出候选，
-     * 正常路径也能走到同一个空白态。
-     */
-    const calls = source.match(/<DocPicker\b[\s\S]*?\/>/g) ?? []
-    expect(calls.length).toBeGreaterThanOrEqual(8)
+  it('页面不再预加载单据，表单里也没有前端过滤候选的写法（验收：grep 为 0）', () => {
+    expect(source).not.toMatch(/docCandidates\(workflowDocs/)
+    expect(source).not.toMatch(/workflowDocs\.filter/)
+    expect(source).not.toMatch(/\bworkflowDocs\b/)
+    const page = readFileSync(resolve(__dirname, '../operations/[level]/page.tsx'), 'utf8')
+    expect(page).not.toMatch(/listInventoryCoreDocs/)
+  })
+
+  it('每个单选候选调用点都把当前单据交给 current，且用途都在白名单里', () => {
+    const calls = source.match(/<InventoryDocCandidatePicker\b[\s\S]*?\/>/g) ?? []
+    // 采购来源（多选）+ 配货、收货（市场/门店共用）、采购入库、关闭采购、撤回申请、撤回审批、退货审批（两级共用）
+    // 8 → 9（#336b：品项公司发货的市场报货单多选）
+    expect(calls.length).toBe(9)
     for (const call of calls) {
-      expect(call).toMatch(/current=\{doc\}/)
+      if (call.includes("mode: 'multi'")) continue
+      expect(call).toMatch(/current: doc/)
     }
-  })
-
-  it('兜底只在选中值缺席时出现，且不动候选集本身', () => {
-    const picker = source.slice(
-      source.indexOf('function DocPicker('),
-      source.indexOf('function SkuPicker('),
-    )
-    // 「缺席」判据：有值 且 候选里找不到。少了后半句就变成无条件补，会出重复选项。
-    expect(picker).toMatch(/const selectedMissing = value !== '' && !docs\.some\(\(doc\) => doc\.id === value\)/)
-    // 还在加载（current 尚为 null）时用单号占位，保证任何时刻 select 都有选中项
-    expect(picker).toMatch(/current && current\.id === value \? formatDoc\(current\) : value/)
-    // 反向：不能把兜底项塞进 docs 再渲染 —— 那会污染候选集本身
-    expect(picker).not.toMatch(/\[current, \.\.\.docs\]/)
   })
 })
 
@@ -1477,6 +1589,1686 @@ describe('行内动作的在途态上报（#192 follow-up）', () => {
     expect(tab).toMatch(/const handleActionBusyChange = useCallback\(\(busy: boolean\) => \{/)
     expect(tab).toMatch(/onBusyChange=\{handleActionBusyChange\}/)
     // 本地那份仍然在，点击闸读的是它
-    expect(tab).toMatch(/if \(pendingInboxAction \|\| actionBusy\) return/)
+    expect(tab).toMatch(/if \(pendingInboxAction \|\| actionBusy \|\| formBusy\) return/)
+  })
+})
+
+/**
+ * SKU 候选的业务过滤（#339）。原先是前端对「预加载的前 100 条」再筛一遍，
+ * 排在后面的合法商品根本进不了候选；现在过滤条件随请求交给服务端。
+ * 这里钉住每个入口交给选择器的 `filters` —— 它必须与该业务建单时的服务端校验同口径
+ * （SQL 层的渲染断言见 engine.test.ts「SKU 候选检索过滤」）。
+ */
+describe('SKU 候选按业务口径交给服务端过滤（#339）', () => {
+  const LOCATIONS: InventoryLocationRow[] = [
+    { locationId: 'HQ', locationType: '总部', name: '品牌总部', orgNodeId: 'HQ', storeId: null, parentLocationId: null, isActive: true },
+    { locationId: 'M1', locationType: '市场', name: '市场一部', orgNodeId: 'M1', storeId: null, parentLocationId: 'HQ', isActive: true },
+    { locationId: 'M2', locationType: '市场', name: '市场二部', orgNodeId: 'M2', storeId: null, parentLocationId: 'HQ', isActive: true },
+    { locationId: 'S1', locationType: '门店', name: '一店', orgNodeId: 'N-S1', storeId: 'S1', parentLocationId: 'M1', isActive: true },
+    { locationId: 'S2', locationType: '门店', name: '二店', orgNodeId: 'N-S2', storeId: 'S2', parentLocationId: 'M2', isActive: true },
+  ]
+  beforeEach(() => mockDocs({}))
+  const pickers = () => Array.from(document.querySelectorAll<HTMLSelectElement>('[data-sku-picker]'))
+  const filtersOf = (picker: HTMLSelectElement) => JSON.parse(picker.dataset.filters ?? '{}')
+  function chooseSubject(placeholder: string, value: string) {
+    const select = screen.getByRole('option', { name: placeholder }).closest('select') as HTMLSelectElement
+    fireEvent.change(select, { target: { value } })
+  }
+
+  it('门店报货代建：未选门店时禁用；选定后只出可报货 + 门店所属市场可用的商品（Q1=A，与 staff 同口径）', () => {
+    renderPage({ level: 'store', operation: 'store-request', locations: LOCATIONS })
+    expect(pickers()[0]).toBeDisabled()
+    chooseSubject('请选择门店', 'S2')
+    expect(pickers()[0]).not.toBeDisabled()
+    expect(filtersOf(pickers()[0])).toEqual({ reportable: true, availableToMarketId: 'M2' })
+  })
+
+  it('门店报货代建：换到另一个市场的门店时清掉已选商品', () => {
+    renderPage({ level: 'store', operation: 'store-request', locations: LOCATIONS })
+    chooseSubject('请选择门店', 'S1')
+    fireEvent.change(pickers()[0], { target: { value: 'SKU-1' } })
+    expect(pickers()[0].value).toBe('SKU-1')
+    chooseSubject('请选择门店', 'S2')
+    expect(pickers()[0].value).toBe('')
+  })
+
+  it('商品选择器不放进 <label>：字段用 role=group + aria-labelledby 关联字段名', () => {
+    renderPage({ level: 'store', operation: 'store-request', locations: LOCATIONS })
+    const picker = pickers()[0]
+    expect(picker.closest('label')).toBeNull()
+    const group = picker.closest('[role="group"]') as HTMLElement
+    expect(document.getElementById(group.getAttribute('aria-labelledby') ?? '')?.textContent).toMatch(/^商品/)
+    // 源码守护：每个 SkuPicker 调用点的外层 FormField 都得带 group（新加入口时别漏）
+    const source = readFileSync(resolve(__dirname, 'inventory-operations-page.tsx'), 'utf8')
+    const calls = source.match(/<SkuPicker /g) ?? []
+    const grouped = source.match(/<FormField label="[^"]*"(?: required)? group>\s*<SkuPicker /g) ?? []
+    expect(calls.length).toBeGreaterThanOrEqual(9)
+    expect(grouped.length).toBe(calls.length)
+  })
+
+  it('品项公司报货需求：只出供应链来源 + 可报货', () => {
+    renderPage({ level: 'supply-chain', operation: 'item-company-request', locations: LOCATIONS })
+    expect(filtersOf(pickers()[0])).toEqual({ sourceType: '供应链', reportable: true })
+  })
+
+  it('自采产品入库：未选市场时禁用；选定后只出归属本市场的非供应链商品', () => {
+    renderPage({ level: 'market', operation: 'self-purchase', locations: LOCATIONS, canSelfPurchase: true })
+    expect(pickers()[0]).toBeDisabled()
+    chooseSubject('请选择市场', 'M1')
+    expect(filtersOf(pickers()[0])).toEqual({ ownedByMarketId: 'M1' })
+    expect(screen.getAllByPlaceholderText('留空自动生成')).toHaveLength(1) // #345
+  })
+
+  it('库存转换来源 / 目标：总部主体 → 都只出供应链商品（与服务端 assertConvertibleSku 同口径，#344）', () => {
+    // #343 起库存转换只剩供应链（总部主体）一层，市场 / 门店转换卡已下线
+    renderPage({ level: 'supply-chain', operation: 'supply-chain-conversion', locations: LOCATIONS })
+    const [source, target] = pickers()
+    expect(filtersOf(source)).toEqual({ sourceType: '供应链' })
+    expect(filtersOf(target)).toEqual({ sourceType: '供应链' })
+    expect(screen.getAllByPlaceholderText('留空自动生成')).toHaveLength(1) // #345：目标批号留空生成新批号
+  })
+})
+
+/**
+ * 分院配货的门店标准单价（#339）：原先查办理台预加载的前 100 条 SKU，排在后面的商品静默退回
+ * 明细快照价；现在按本单明细的 skuIds 精确查，分块各自生效，失败时提示且不阻断。
+ */
+describe('分院配货按 skuIds 精确取当前门店进货价（#339）', () => {
+  const request = docRow({ id: 'DBH-1', docType: '门店报货', status: '已完成' })
+  function item(id: number, skuId: string, standardUnitPrice: number | null) {
+    return {
+      id, docId: 'DBH-1', lotId: null, skuId, skuName: `商品${skuId}`, specName: null, quantity: 2, fulfilledQuantity: 0,
+      standardUnitPrice, actualUnitPrice: null, unitDiscount: 0,
+    } as unknown as InventoryDocDetail['items'][number]
+  }
+  const prices = () => screen.queryAllByText('门店标准单价').map((label) => label.nextElementSibling?.textContent)
+
+  beforeEach(() => {
+    mockDocs({})
+    vi.mocked(listInventorySkus).mockReset()
+    vi.mocked(toast.warning).mockReset()
+    // 每行的市场批次下拉会取数，给个空结果即可
+    vi.mocked(listInventoryLotOptions).mockResolvedValue([])
+  })
+
+  // #337 起须先选配货市场与收货门店，报货单候选才可用
+  const ALLOCATION_LOCATIONS: InventoryLocationRow[] = [
+    { locationId: 'M1', locationType: '市场', name: '南昌市场', orgNodeId: 'M1', storeId: null, parentLocationId: 'HQ', isActive: true },
+    { locationId: 'S1', locationType: '门店', name: '一分院', orgNodeId: 'S1', storeId: 'S1', parentLocationId: 'M1', isActive: true },
+  ]
+  async function pickRequest(items: InventoryDocDetail['items']) {
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue({ ...docDetail(request), items })
+    renderPage({ level: 'market', operation: 'store-allocation', candidates: [request], locations: ALLOCATION_LOCATIONS })
+    await pickCandidate('DBH-1')
+  }
+
+  it('取到档案价就覆盖快照价；只补价格列、按明细 skuIds 精确查（含已停用）', async () => {
+    vi.mocked(listInventorySkus).mockResolvedValue({
+      data: [{ skuId: 'S-200', storePurchasePrice: 88.5 } as never], total: 1,
+    })
+    await pickRequest([item(1, 'S-200', 60), item(2, 'S-201', 70)])
+    await waitFor(() => expect(prices()).toEqual(['88.50', '70.00']))
+    expect(listInventorySkus).toHaveBeenCalledWith({ skuIds: ['S-200', 'S-201'], onlyActive: false, page: 1, pageSize: 100 })
+    expect(toast.warning).not.toHaveBeenCalled()
+  })
+
+  it('批次下拉渲染正常与赠送两条批号不同的选项（#345）', async () => {
+    vi.mocked(listInventorySkus).mockResolvedValue({ data: [], total: 0 })
+    vi.mocked(listInventoryLotOptions).mockResolvedValue([
+      { id: 11, batchNo: 'B100', isGift: false, quantityOnHand: 6, availableQuantity: 6, expiryDate: null },
+      { id: 12, batchNo: 'GFH-20260925-0001-02', isGift: true, quantityOnHand: 2, availableQuantity: 2, expiryDate: null },
+    ] as never)
+    await pickRequest([item(1, 'S-200', 60)])
+    const normal = await screen.findByRole<HTMLOptionElement>('option', { name: /^批次 B100 · 可用 6$/ })
+    // #359：赠送批次在批号后带「（赠送）」标记
+    const gift = screen.getByRole<HTMLOptionElement>('option', { name: /^批次 GFH-20260925-0001-02（赠送） · 可用 2$/ })
+    expect(normal.closest('select')).not.toBeNull()
+    expect(normal.closest('select')).toBe(gift.closest('select'))
+    expect(listInventoryLotOptions).toHaveBeenCalledWith(expect.any(String), 'S-200')
+  })
+
+  it('取价失败：退回快照价并提示，不阻断配货', async () => {
+    vi.mocked(listInventorySkus).mockRejectedValue(new Error('NETWORK'))
+    await pickRequest([item(1, 'S-200', 60)])
+    await waitFor(() => expect(toast.warning).toHaveBeenCalled())
+    expect(prices()).toEqual(['60.00'])
+  })
+})
+
+/**
+ * #337：分院配货先选市场与收货门店，门店报货单可选；不引用时从市场库存自选商品与批次。
+ * 自选行命中该门店仍有未配报货的 SKU → 提示「建议引用报货单」，不拦截（拍板 A）。
+ */
+describe('分院配货不引用门店报货（#337）', () => {
+  const LOCATIONS: InventoryLocationRow[] = [
+    { locationId: 'M1', locationType: '市场', name: '市场一部', orgNodeId: 'M1', storeId: null, parentLocationId: 'HQ', isActive: true },
+    { locationId: 'M2', locationType: '市场', name: '市场二部', orgNodeId: 'M2', storeId: null, parentLocationId: 'HQ', isActive: true },
+    { locationId: 'S1', locationType: '门店', name: '一店', orgNodeId: 'N-S1', storeId: 'S1', parentLocationId: 'M1', isActive: true },
+    { locationId: 'S3', locationType: '门店', name: '三店', orgNodeId: 'N-S3', storeId: 'S3', parentLocationId: 'M1', isActive: true },
+    { locationId: 'S2', locationType: '门店', name: '二店', orgNodeId: 'N-S2', storeId: 'S2', parentLocationId: 'M2', isActive: true },
+  ]
+  /*
+   * 直接派 submit 事件：happy-dom 的 step 校验有浮点误差（value=1、step=0.01 被判 stepMismatch），
+   * 点提交按钮会被它的约束校验拦下；真浏览器不存在这个问题。
+   */
+  function submitAllocation() {
+    fireEvent.submit(screen.getByRole('button', { name: '创建分院配货单' }).closest('form')!)
+  }
+  function chooseSubject(placeholder: string, value: string) {
+    const select = screen.getByRole('option', { name: placeholder }).closest('select') as HTMLSelectElement
+    fireEvent.change(select, { target: { value } })
+  }
+
+  beforeEach(() => {
+    mockDocs({})
+    vi.mocked(createStoreAllocation).mockReset()
+    vi.mocked(createStoreAllocation).mockResolvedValue({ id: 'FPH-20260925-0001' })
+    vi.mocked(listInventorySkus).mockReset()
+    vi.mocked(listInventorySkus).mockResolvedValue({ data: [{ skuId: 'SKU-1', storePurchasePrice: 88 } as never], total: 1 })
+    vi.mocked(listInventoryLotOptions).mockResolvedValue([
+      { id: 31, batchNo: 'B31', isGift: false, quantityOnHand: 5, availableQuantity: 5, expiryDate: null },
+    ] as never)
+    vi.mocked(listStoreUnallocatedRequestSkus).mockReset()
+    vi.mocked(listStoreUnallocatedRequestSkus).mockResolvedValue([
+      { skuId: 'SKU-1', remainingQuantity: 4, docIds: ['DBH-9'] },
+    ])
+    vi.mocked(toast.error).mockReset()
+  })
+
+  it('只选门店不选报货单：候选按门店收窄，自选行命中未配报货时提示但照常提交，报货单为空', async () => {
+    renderPage({ level: 'market', operation: 'store-allocation', locations: LOCATIONS })
+    chooseSubject('请选择市场', 'M1')
+    // 门店只列所选市场下属门店
+    expect(screen.queryByRole('option', { name: '二店' })).toBeNull()
+    chooseSubject('请选择门店', 'N-S1')
+    await waitFor(() => expect(listInventoryDocCandidates).toHaveBeenLastCalledWith(
+      expect.objectContaining({ purpose: 'store-allocation-source', sourceOrgNodeId: 'N-S1', targetOrgNodeId: 'M1' }),
+    ))
+    await waitFor(() => expect(listStoreUnallocatedRequestSkus).toHaveBeenCalledWith({ storeOrgNodeId: 'N-S1', marketId: 'M1' }))
+
+    fireEvent.click(screen.getByRole('button', { name: '添加自选商品' }))
+    const picker = document.querySelector<HTMLSelectElement>('[data-sku-picker]')!
+    expect(JSON.parse(picker.dataset.filters ?? '{}')).toEqual({ availableToMarketId: 'M1' })
+    fireEvent.change(picker, { target: { value: 'SKU-1' } })
+    expect(await screen.findByText(/该门店对此商品仍有未配报货（DBH-9，合计未配 4），建议引用报货单配货/)).toBeTruthy()
+    // 自选行的门店标准单价按所选 SKU 的当前门店进货价预览
+    await waitFor(() => expect(screen.getAllByText('88.00').length).toBeGreaterThan(0))
+
+    const lot = await screen.findByRole<HTMLOptionElement>('option', { name: /^批次 B31 · 可用 5$/ })
+    fireEvent.change(lot.closest('select')!, { target: { value: '31' } })
+    submitAllocation()
+    await waitFor(() => expect(createStoreAllocation).toHaveBeenCalledWith({
+      storeRequestId: null,
+      targetStoreId: 'N-S1',
+      sourceMarketId: 'M1',
+      docDate: expect.any(String),
+      remark: null,
+      items: [{ requestItemId: null, skuId: 'SKU-1', lotId: 31, quantity: 1, giftQuantity: 0, giftLotId: null, storeUnitDiscount: 0, remark: null }],
+    }))
+  })
+
+  it('没选收货门店不提交；自选行没选商品也不提交', async () => {
+    renderPage({ level: 'market', operation: 'store-allocation', locations: LOCATIONS })
+    chooseSubject('请选择市场', 'M1')
+    fireEvent.click(screen.getByRole('button', { name: '添加自选商品' }))
+    submitAllocation()
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('请选择配货市场和收货门店'))
+    chooseSubject('请选择门店', 'N-S3')
+    submitAllocation()
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('请为每条自选明细选择商品并填写配货数量或赠送数量'))
+    expect(createStoreAllocation).not.toHaveBeenCalled()
+  })
+
+  it('选了报货单：门店随报货主体回填，报货里已有的 SKU 再加自选行时就地提示', async () => {
+    const request = docRow({ id: 'DBH-1', docType: '门店报货', status: '已完成', sourceOrgNodeId: 'N-S1', targetOrgNodeId: 'M1', marketId: 'M1' })
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue({
+      ...docDetail(request),
+      items: [{
+        id: 1, docId: 'DBH-1', lotId: null, skuId: 'SKU-1', skuName: '精华液', specName: null, quantity: 2, fulfilledQuantity: 0,
+        standardUnitPrice: 88, actualUnitPrice: null, unitDiscount: 0,
+      } as unknown as InventoryDocDetail['items'][number]],
+    })
+    renderPage({ level: 'market', operation: 'store-allocation', locations: LOCATIONS, candidates: [request] })
+    // 未选齐市场与门店：候选禁用且不发查询
+    expect(await screen.findByText('请先选择配货市场和收货门店')).toBeTruthy()
+    expect(listInventoryDocCandidates).not.toHaveBeenCalled()
+    chooseSubject('请选择市场', 'M1')
+    chooseSubject('请选择门店', 'N-S1')
+    await pickCandidate('DBH-1')
+    await screen.findByText('报货配货批次与数量')
+    const storeSelect = screen.getByRole('option', { name: '一店' }).closest('select') as HTMLSelectElement
+    expect(storeSelect.value).toBe('N-S1')
+    fireEvent.click(screen.getByRole('button', { name: '添加自选商品' }))
+    const pickers = document.querySelectorAll<HTMLSelectElement>('[data-sku-picker]')
+    fireEvent.change(pickers[pickers.length - 1], { target: { value: 'SKU-1' } })
+    expect(await screen.findByText('该商品已在引用的门店报货单中，请在上方报货明细上配货')).toBeTruthy()
+    // 引用单自身的报货不再重复提示「建议引用」
+    expect(screen.queryByText(/仍有未配报货/)).toBeNull()
+  })
+
+  it('报货单加载中不能提交（否则静默变成直接配货）；加载中换门店后旧单迟到的响应不把门店改回去', async () => {
+    const request = docRow({ id: 'DBH-1', docType: '门店报货', status: '已完成', sourceOrgNodeId: 'N-S1', targetOrgNodeId: 'M1', marketId: 'M1' })
+    let resolveDoc: (value: InventoryDocDetail) => void = () => {}
+    vi.mocked(getInventoryCoreDocById).mockImplementationOnce(() => new Promise((resolve) => { resolveDoc = resolve }))
+    renderPage({ level: 'market', operation: 'store-allocation', locations: LOCATIONS, candidates: [request] })
+    chooseSubject('请选择市场', 'M1')
+    chooseSubject('请选择门店', 'N-S1')
+    fireEvent.click(screen.getByRole('button', { name: '添加自选商品' }))
+    await pickCandidate('DBH-1')
+    expect(screen.getByRole('button', { name: '创建分院配货单' })).toBeDisabled()
+    submitAllocation()
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('门店报货单尚未加载完成，请稍候或清除后重选'))
+    expect(createStoreAllocation).not.toHaveBeenCalled()
+
+    // 加载中改选三店：解除引用；A 单随后才回来，不得把门店改回一店、也不得重新带出报货行
+    chooseSubject('请选择门店', 'N-S3')
+    await act(async () => {
+      resolveDoc({ ...docDetail(request), items: [{ id: 1, docId: 'DBH-1', skuId: 'SKU-1', skuName: '精华液', quantity: 2, fulfilledQuantity: 0 } as unknown as InventoryDocDetail['items'][number]] })
+    })
+    const storeSelect = screen.getByRole('option', { name: '三店' }).closest('select') as HTMLSelectElement
+    expect(storeSelect.value).toBe('N-S3')
+    expect(screen.queryByText('报货配货批次与数量')).toBeNull()
+    expect(screen.getByRole('button', { name: '创建分院配货单' })).toBeEnabled()
+  })
+})
+
+/**
+ * #335：采购订单的所有行都走供应链采购入库；采购行 fulfilledQuantity 只记入库量，
+ * 品项公司发货自 #336 起直接引用市场报货单，不再从采购订单出发。
+ */
+describe('采购订单市场行走供应链采购入库（#335）', () => {
+  beforeEach(async () => {
+    mockDocs({})
+    const { listInventoryLotOptions } = await import('@/actions/inventory/stocks')
+    vi.mocked(listInventoryLotOptions).mockResolvedValue([] as never)
+  })
+
+  function purchaseItem(overrides: Partial<InventoryDocDetail['items'][number]>): InventoryDocDetail['items'][number] {
+    return {
+      id: 1, docId: 'CGD-335', lotId: null, skuId: 'SKU-1', saleItemId: null,
+      skuName: '供应链产品', specName: null, supplier: null, supplierId: null,
+      marketId: null, marketName: null, productSeries: null, batchNo: '', expiryDate: null,
+      isGift: false, quantity: 10, stockSnapshot: null, requestQuantity: 10, fulfilledQuantity: 0,
+      promotionPlanId: null, promotionPlanNoSnapshot: null, promotionPlanNameSnapshot: null,
+      promotionRuleTypeSnapshot: null, promotionSelectionMode: null,
+      reason: null, remark: null, createdAt: '2026-09-24T00:00:00.000Z',
+      ...overrides,
+    } as InventoryDocDetail['items'][number]
+  }
+
+  async function pickPurchaseOrder(row: InventoryDocRow) {
+    await pickCandidate(row.id)
+  }
+
+  it('供应链采购入库表单装载市场行与自用行，按未入库量预填', async () => {
+    const row = docRow({ id: 'CGD-335', docType: '采购订单', status: '待收货' })
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue({
+      ...docDetail(row),
+      items: [
+        purchaseItem({ id: 1, skuName: '自用行', quantity: 10, fulfilledQuantity: 4 }),
+        purchaseItem({ id: 2, skuName: '市场行', marketId: 'M1', marketName: '市场甲', quantity: 20, fulfilledQuantity: 3 }),
+      ],
+    })
+    renderPage({ level: 'supply-chain', operation: 'supply-chain-receipt', candidates: [row] })
+    await pickPurchaseOrder(row)
+
+    await screen.findByText('本次实收入库')
+    // 市场行曾被过滤掉（#194），现在必须出现并按 20 − 3 预填
+    expect(screen.getAllByText('市场行').length).toBeGreaterThan(0)
+    expect(screen.getByDisplayValue('17')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('6')).toBeInTheDocument()
+    // 批号留空由服务端生成（#345），每行批号框都要提示
+    expect(screen.getAllByPlaceholderText('留空自动生成')).toHaveLength(2)
+  })
+
+  it('#346 入库行显示标准进价，填单价优惠后实际进价 = 标准 − 优惠，提交带 unitDiscount', async () => {
+    const row = docRow({ id: 'CGD-346', docType: '采购订单', status: '待收货' })
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue({
+      ...docDetail(row),
+      targetOrgNodeId: 'HQ',
+      items: [purchaseItem({ id: 1, skuName: '精华', quantity: 5, supplyChainUnitCost: 100, actualUnitPrice: 100 })],
+    })
+    vi.mocked(receiveSupplyChainPurchaseOrder).mockReset().mockResolvedValue({ id: 'GRK-1', purchaseOrderId: 'CGD-346' })
+    renderPage({ level: 'supply-chain', operation: 'supply-chain-receipt', candidates: [row] })
+    await pickPurchaseOrder(row)
+    await screen.findByText('本次实收入库')
+    expect(screen.getAllByDisplayValue('100.00')).toHaveLength(2) // 标准进价 + 未填优惠时的实际进价
+    const discount = screen.getByPlaceholderText('0')
+    fireEvent.change(discount, { target: { value: '20' } })
+    expect(screen.getByDisplayValue('80.00')).toBeInTheDocument() // 实际进价
+    fireEvent.submit(screen.getByRole('button', { name: '登记供应链采购入库' }).closest('form')!)
+    await waitFor(() => expect(receiveSupplyChainPurchaseOrder).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(receiveSupplyChainPurchaseOrder).mock.calls[0][0].items).toEqual([
+      { purchaseOrderItemId: 1, quantity: 5, unitDiscount: 20, batchNo: null, expiryDate: null, remark: null },
+    ])
+  })
+
+  it('#346 优惠大于标准进价：前端按服务端同判据拦下', async () => {
+    const row = docRow({ id: 'CGD-347', docType: '采购订单', status: '待收货' })
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue({
+      ...docDetail(row),
+      targetOrgNodeId: 'HQ',
+      items: [purchaseItem({ id: 1, skuName: '精华', quantity: 5, supplyChainUnitCost: 100, actualUnitPrice: 100 })],
+    })
+    vi.mocked(receiveSupplyChainPurchaseOrder).mockReset()
+    vi.mocked(toast.error).mockReset()
+    renderPage({ level: 'supply-chain', operation: 'supply-chain-receipt', candidates: [row] })
+    await pickPurchaseOrder(row)
+    await screen.findByText('本次实收入库')
+    fireEvent.change(screen.getByPlaceholderText('0'), { target: { value: '100.01' } })
+    expect(screen.getAllByDisplayValue('—').length).toBeGreaterThan(0) // 实际进价无效
+    fireEvent.submit(screen.getByRole('button', { name: '登记供应链采购入库' }).closest('form')!)
+    await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalledWith('单价优惠不能大于标准进价：精华'))
+    expect(receiveSupplyChainPurchaseOrder).not.toHaveBeenCalled()
+  })
+
+  it('#346 办理权与价格权不在同一绑定（本单总部不在可填优惠节点里）：不显示优惠框，与服务端同判据', async () => {
+    const row = docRow({ id: 'CGD-349', docType: '采购订单', status: '待收货' })
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue({
+      ...docDetail(row),
+      targetOrgNodeId: 'HQ',
+      items: [purchaseItem({ id: 1, skuName: '精华', quantity: 5, supplyChainUnitCost: 100, actualUnitPrice: 100 })],
+    })
+    renderPage({ level: 'supply-chain', operation: 'supply-chain-receipt', candidates: [row], receiptDiscountOrgNodeIds: [] })
+    await pickPurchaseOrder(row)
+    await screen.findByText('本次实收入库')
+    expect(screen.queryByText('单价优惠')).toBeNull()
+  })
+
+  it('#346 采购行供应链成本不可见（被价格档遮蔽）：不显示标准进价 / 单价优惠框', async () => {
+    const row = docRow({ id: 'CGD-348', docType: '采购订单', status: '待收货' })
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue({
+      ...docDetail(row),
+      targetOrgNodeId: 'HQ',
+      // 市场档能看到下单实际价，看不到供应链成本
+      items: [purchaseItem({ id: 1, skuName: '精华', quantity: 5, actualUnitPrice: 100 })],
+    })
+    renderPage({ level: 'supply-chain', operation: 'supply-chain-receipt', candidates: [row] })
+    await pickPurchaseOrder(row)
+    await screen.findByText('本次实收入库')
+    expect(screen.queryByText('单价优惠')).toBeNull()
+    expect(screen.queryByText('标准进价')).toBeNull()
+  })
+
+  it('候选表格把「待收货 + 已有入库」的采购订单标成「部分入库」', async () => {
+    const row = docRow({ id: 'CGD-336', docType: '采购订单', status: '待收货', partiallyReceived: true })
+    renderPage({ level: 'supply-chain', operation: 'supply-chain-receipt', candidates: [row] })
+    const radio = await screen.findByRole('radio', { name: '选择 CGD-336' })
+    expect(radio.closest('tr')).toHaveTextContent('部分入库')
+  })
+})
+
+describe('库存转换卡片只剩供应链一张（#343）', () => {
+  const source = readFileSync(resolve(__dirname, 'inventory-operations-page.tsx'), 'utf8')
+
+  it('卡片数组与渲染分支里都没有市场 / 门店转换', () => {
+    expect(source).not.toMatch(/id: 'market-conversion'/)
+    expect(source).not.toMatch(/id: 'store-conversion'/)
+    expect(source).not.toMatch(/operation === '(market|store)-conversion'/)
+    expect(source).toMatch(/id: 'supply-chain-conversion', level: 'supply-chain'/)
+    // 唯一的 ConversionForm 调用点固定总部主体
+    const calls = source.match(/<ConversionForm\b[^>]*\/>/g) ?? []
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toContain('locationType="总部"')
+  })
+})
+
+describe('门店办理台「顾客产品出库」改为跳转提货录入（#350）', () => {
+  it('有提货录入权限：渲染成指向 /pickup-records/create 的链接，不再是通用建单卡', () => {
+    renderPage({ level: 'store', canCreatePickupRecord: true })
+    const link = screen.getByRole('link', { name: /顾客产品出库/ })
+    expect(link.getAttribute('href')).toBe('/pickup-records/create')
+    // 不再有打开通用建单工作区的按钮
+    expect(screen.queryByRole('button', { name: /顾客产品出库/ })).toBeNull()
+  })
+
+  it('没有提货录入权限（如代建门店业务的市场财务）：卡片置灰且不是链接', () => {
+    renderPage({ level: 'store', canCreatePickupRecord: false })
+    expect(screen.queryByRole('link', { name: /顾客产品出库/ })).toBeNull()
+    const card = screen.getByRole('button', { name: /顾客产品出库/ })
+    expect((card as HTMLButtonElement).disabled).toBe(true)
+    expect(card.textContent).toContain('需提货录入权限')
+  })
+
+  it('市场 / 供应链办理台没有这张跳转卡', () => {
+    renderPage({ level: 'market', canCreatePickupRecord: true })
+    expect(screen.queryByRole('link', { name: /顾客产品出库/ })).toBeNull()
+  })
+
+  it('深链 ?create=院顾客产品出库 不再打开任何工作区', () => {
+    expect(asGenericDocType('院顾客产品出库')).toBeNull()
+    expect(parseGenericOperationId('generic:院顾客产品出库')).toBeNull()
+  })
+})
+
+/**
+ * 采购订单表单的多选来源（#338 pr-ready）。
+ */
+describe('采购订单来源多选与一键带出（#338）', () => {
+  const HQ1: InventoryLocationRow = { locationId: 'HQ1', locationType: '总部', name: '总部一', orgNodeId: 'HQ1', storeId: null, parentLocationId: null, isActive: true }
+  const HQ2: InventoryLocationRow = { locationId: 'HQ2', locationType: '总部', name: '总部二', orgNodeId: 'HQ2', storeId: null, parentLocationId: null, isActive: true }
+  function summary(id: string, target: string, quantity = 5): InventoryDocDetail {
+    return {
+      ...docDetail(docRow({ id, docType: '市场报货汇总', status: '已完成', targetOrgNodeId: target })),
+      items: [{
+        id: Number(id.replace(/\D/g, '')), docId: id, skuId: 'SKU-1', skuName: '面霜', specName: null,
+        marketId: 'M1', supplier: null, supplierId: 'SUP', quantity, fulfilledQuantity: 0, supplyChainUnitCost: 10,
+      } as unknown as InventoryDocDetail['items'][number]],
+    }
+  }
+  beforeEach(async () => {
+    mockDocs({})
+    vi.mocked(getInventoryCoreDocsByIds).mockReset()
+    vi.mocked(listInventoryDocCandidateIds).mockReset()
+    vi.mocked(toast.warning).mockReset()
+    const business = await import('@/actions/inventory/business')
+    vi.mocked(business.resolveInventorySkuSupplierStatus).mockResolvedValue([{ skuId: 'SKU-1', supplierId: 'SUP', supplierName: '供应商' }] as never)
+  })
+
+  it('多个总部且未选主体时，一键带出禁用并说明原因', async () => {
+    renderPage({ level: 'supply-chain', operation: 'purchase-order', locations: [HQ1, HQ2] })
+    const button = await screen.findByRole('button', { name: '带出区间内全部未下单' })
+    expect(button).toBeDisabled()
+    expect(screen.getByText('请先选择供应链库存主体')).toBeInTheDocument()
+  })
+
+  it('总部唯一时自动选中主体，一键带出可用，且候选按该总部收窄', async () => {
+    renderPage({ level: 'supply-chain', operation: 'purchase-order', locations: [HQ1] })
+    await waitFor(() => expect(screen.getByRole('button', { name: '带出区间内全部未下单' })).toBeEnabled())
+    await waitFor(() => expect(listInventoryDocCandidates).toHaveBeenLastCalledWith(
+      expect.objectContaining({ purpose: 'purchase-order-source', targetOrgNodeId: 'HQ1' }),
+    ))
+  })
+
+  it('明细一次批量取回；重拉在途时清空旧明细、提交按钮禁用（防把刚取消勾选的单下进去）', async () => {
+    const rowA = docRow({ id: 'MHZ-1', docType: '市场报货汇总', status: '已完成', targetOrgNodeId: 'HQ1' })
+    const rowB = docRow({ id: 'MHZ-2', docType: '市场报货汇总', status: '已完成', targetOrgNodeId: 'HQ1' })
+    const byId: Record<string, InventoryDocDetail> = { 'MHZ-1': summary('MHZ-1', 'HQ1'), 'MHZ-2': summary('MHZ-2', 'HQ1', 7) }
+    vi.mocked(getInventoryCoreDocsByIds).mockImplementation(async (ids: string[]) => ids.map((id) => byId[id]))
+    renderPage({ level: 'supply-chain', operation: 'purchase-order', locations: [HQ1], candidates: [rowA, rowB] })
+    fireEvent.click(await screen.findByRole('checkbox', { name: '选择 MHZ-1' }))
+    fireEvent.click(await screen.findByRole('checkbox', { name: '选择 MHZ-2' }))
+    await screen.findByDisplayValue('7')
+    expect(getInventoryCoreDocById).not.toHaveBeenCalled()
+    const submit = screen.getByRole('button', { name: '创建采购订单' })
+    expect(submit).toBeEnabled()
+
+    // 取消勾选 MHZ-2：重拉挂起期间旧明细必须已清空、提交禁用
+    let resolveReload: (value: InventoryDocDetail[]) => void = () => {}
+    vi.mocked(getInventoryCoreDocsByIds).mockImplementationOnce(() => new Promise((resolve) => { resolveReload = resolve }))
+    fireEvent.click(screen.getByRole('checkbox', { name: '选择 MHZ-2' }))
+    await waitFor(() => expect(screen.queryByDisplayValue('7')).not.toBeInTheDocument())
+    expect(submit).toBeDisabled()
+    await act(async () => { resolveReload([summary('MHZ-1', 'HQ1')]) })
+    await waitFor(() => expect(submit).toBeEnabled())
+    expect(screen.queryByDisplayValue('7')).not.toBeInTheDocument()
+    expect(getInventoryCoreDocsByIds).toHaveBeenLastCalledWith(['MHZ-1'])
+  })
+
+  it('不属于所选总部的来源单被剔出已选并提示，而不是隐身留到提交时整单被拒', async () => {
+    const rowA = docRow({ id: 'MHZ-1', docType: '市场报货汇总', status: '已完成', targetOrgNodeId: 'HQ1' })
+    vi.mocked(listInventoryDocCandidateIds).mockResolvedValue({ ids: ['MHZ-1', 'MHZ-9'] })
+    vi.mocked(getInventoryCoreDocsByIds)
+      .mockResolvedValueOnce([summary('MHZ-1', 'HQ1'), summary('MHZ-9', 'HQ2')])
+      .mockResolvedValue([summary('MHZ-1', 'HQ1')])
+    renderPage({ level: 'supply-chain', operation: 'purchase-order', locations: [HQ1], candidates: [rowA] })
+    const bulk = await screen.findByRole('button', { name: '带出区间内全部未下单' })
+    await waitFor(() => expect(bulk).toBeEnabled())
+    fireEvent.click(bulk)
+    await waitFor(() => expect(toast.warning).toHaveBeenCalledWith(expect.stringContaining('MHZ-9')))
+    await waitFor(() => expect(getInventoryCoreDocsByIds).toHaveBeenLastCalledWith(['MHZ-1']))
+    expect(await screen.findByText(/^已选 1 张：MHZ-1$/)).toBeInTheDocument()
+  })
+})
+
+/**
+ * 品项公司发货直接引用市场报货单（#336b）。
+ * 先定收货市场与发货总部 → 多选报货单 → 每条报货明细默认一行正常发货（数量 = 未发量），
+ * 逐行选总部批次；可拆批次、可删行、可加赠送行；顶部显示「还有 N 件未发」。
+ */
+describe('品项公司发货引用市场报货单（#336b）', () => {
+  const HQ: InventoryLocationRow = { locationId: 'HQ', locationType: '总部', name: '品牌总部', orgNodeId: 'HQ', storeId: null, parentLocationId: null, isActive: true }
+  // 收货市场候选走服务端越过 scope 的市场清单；locations 里只有总部（总部库存 scope 不展开市场，真实形状）
+  const M1 = { orgNodeId: 'M1', name: '市场一部' }
+  const M2 = { orgNodeId: 'M2', name: '市场二部' }
+
+  function report(id: string, marketId = 'M1') {
+    return docRow({ id, docType: '市场报货', status: '已完成', sourceOrgNodeId: marketId, targetOrgNodeId: 'HQ', marketId })
+  }
+  /** 报货 30、已直连发出 10 → 未发 20 */
+  function reportDetail(row: InventoryDocRow, itemId = 11, quantity = 30, shipped = 10): InventoryDocDetail {
+    return {
+      ...docDetail(row),
+      items: [{ id: itemId, docId: row.id, skuId: 'SKU-1', skuName: '精华液', specName: '50ml', quantity, fulfilledQuantity: 0 } as unknown as InventoryDocDetail['items'][number]],
+      fulfillmentProgress: {
+        kind: '报货履约',
+        items: [{ itemId, normalDemandQuantity: quantity, orderedQuantity: 0, normalFulfilledQuantity: shipped, giftFulfilledQuantity: 0, normalReceivedQuantity: 0, giftReceivedQuantity: 0 }],
+      },
+    }
+  }
+  function submitShipment() {
+    // 同分院配货那组：happy-dom 的 step 校验有浮点误差，直接派 submit
+    fireEvent.submit(screen.getByRole('button', { name: '创建品项公司发货单' }).closest('form')!)
+  }
+  async function chooseLot(index: number, value: string) {
+    await waitFor(() => expect(screen.getAllByRole('option', { name: /^批次 / }).length).toBeGreaterThan(0))
+    const selects = screen.getAllByRole('option', { name: '选择库存批次' }).map((option) => option.closest('select') as HTMLSelectElement)
+    fireEvent.change(selects[index], { target: { value } })
+  }
+
+  beforeEach(() => {
+    mockDocs({})
+    vi.mocked(createItemCompanyShipment).mockResolvedValue({ id: 'FH-20260925-0001' })
+    vi.mocked(listInventoryLotOptions).mockResolvedValue([
+      { id: 41, batchNo: 'A', isGift: false, quantityOnHand: 10, expiryDate: null },
+      { id: 42, batchNo: 'B', isGift: false, quantityOnHand: 50, expiryDate: null },
+    ] as never)
+  })
+
+  it('单市场只读；候选按收货市场 + 发货总部收窄；带出未发量并按行提交正常 / 赠送两组', async () => {
+    const row = report('SBH-1')
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue(reportDetail(row))
+    renderPage({ level: 'supply-chain', operation: 'company-shipment', locations: [HQ], shipmentMarketTargets: [M1], candidates: [row] })
+
+    // 唯一市场 / 唯一总部都降级成只读文本
+    await waitFor(() => expect(document.querySelector('[data-fixed-subject="M1"]')).not.toBeNull())
+    expect(document.querySelector('[data-fixed-subject="HQ"]')).not.toBeNull()
+    await waitFor(() => expect(listInventoryDocCandidates).toHaveBeenLastCalledWith(
+      expect.objectContaining({ purpose: 'company-shipment-source', sourceOrgNodeId: 'M1', targetOrgNodeId: 'HQ' }),
+    ))
+
+    fireEvent.click(await screen.findByRole('checkbox', { name: '选择 SBH-1' }))
+    expect(await screen.findByText(/报货 30 · 已发 10 · 未发 20/)).toBeInTheDocument()
+    expect(screen.getByRole('status', { name: '未发进度' })).toHaveTextContent('所选报货单还有 20 件未发')
+
+    // 正常行默认 = 未发量 20，改成 10 从批号 A 发；再拆一行从批号 B 发 10；加一行赠送 2 件
+    const normal = screen.getByLabelText(/^正常发货/) as HTMLInputElement
+    expect(normal.value).toBe('20')
+    fireEvent.change(normal, { target: { value: '10' } })
+    fireEvent.click(screen.getByRole('button', { name: '加批次 精华液 50ml SBH-1' }))
+    fireEvent.click(screen.getByRole('button', { name: '加赠送 精华液 50ml SBH-1' }))
+    const quantities = screen.getAllByRole('spinbutton')
+    fireEvent.change(quantities[1], { target: { value: '10' } })
+    fireEvent.change(quantities[2], { target: { value: '2' } })
+    await chooseLot(0, '41')
+    await chooseLot(1, '42')
+    await chooseLot(2, '42')
+    expect(screen.getByRole('status', { name: '未发进度' })).toHaveTextContent('本次正常发货 20 件，发后还剩 0 件')
+    // 三行同「总部 + SKU」共用一次批次查询（Server Action 全局串行，别排成一串）
+    expect(vi.mocked(listInventoryLotOptions).mock.calls.filter(([location, sku]) => location === 'HQ' && sku === 'SKU-1')).toHaveLength(1)
+
+    const docsLoadsBefore = vi.mocked(listInventoryOperationDocs).mock.calls.length
+    submitShipment()
+    await waitFor(() => expect(createItemCompanyShipment).toHaveBeenCalledWith({
+      marketId: 'M1',
+      sourceOrgNodeId: 'HQ',
+      docDate: expect.any(String),
+      logisticsCompany: null,
+      trackingNo: null,
+      remark: null,
+      items: [
+        { reportItemId: 11, lotId: 41, quantity: 10, remark: null },
+        { reportItemId: 11, lotId: 42, quantity: 10, remark: null },
+      ],
+      giftItems: [{ reportItemId: 11, lotId: 42, quantity: 2, remark: null }],
+    }))
+    // 建单成功后单据 Tab（keepMounted）跟着重取：发完的报货单要退出「待发货」，产出段要出现新发货单
+    await waitFor(() => expect(vi.mocked(listInventoryOperationDocs).mock.calls.length).toBeGreaterThan(docsLoadsBefore))
+    expect(screen.queryByRole('status', { name: '未发进度' })).toBeNull()
+  })
+
+  it('正常发货超过未发量先在前端拦下并给出可发上限；删掉的行不提交', async () => {
+    const row = report('SBH-1')
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue(reportDetail(row))
+    renderPage({ level: 'supply-chain', operation: 'company-shipment', locations: [HQ], shipmentMarketTargets: [M1], candidates: [row] })
+    fireEvent.click(await screen.findByRole('checkbox', { name: '选择 SBH-1' }))
+    const normal = await screen.findByLabelText(/^正常发货/)
+    fireEvent.change(normal, { target: { value: '21' } })
+    await chooseLot(0, '42')
+    submitShipment()
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('精华液 正常发货数量超过报货未发量，本次最多可发 20'))
+    expect(createItemCompanyShipment).not.toHaveBeenCalled()
+
+    // 库存不足时删行：没有明细就不能提交
+    fireEvent.click(screen.getByRole('button', { name: '删除发货行 精华液 50ml SBH-1 第1行' }))
+    expect(screen.getByRole('button', { name: '创建品项公司发货单' })).toBeDisabled()
+  })
+
+  it('多个市场时必须先选市场，候选禁用且不查询；换市场清空已选报货单，迟到的明细不回填', async () => {
+    const row = report('SBH-1')
+    let resolveDoc: (value: InventoryDocDetail) => void = () => {}
+    vi.mocked(getInventoryCoreDocById).mockImplementationOnce(() => new Promise((resolve) => { resolveDoc = resolve }))
+    renderPage({ level: 'supply-chain', operation: 'company-shipment', locations: [HQ], shipmentMarketTargets: [M1, M2], candidates: [row] })
+    expect(await screen.findByText('请先选择收货市场和发货总部')).toBeInTheDocument()
+    expect(listInventoryDocCandidates).not.toHaveBeenCalled()
+
+    const marketSelect = screen.getByRole('option', { name: '请选择市场' }).closest('select') as HTMLSelectElement
+    fireEvent.change(marketSelect, { target: { value: 'M1' } })
+    fireEvent.click(await screen.findByRole('checkbox', { name: '选择 SBH-1' }))
+    expect(screen.getByRole('button', { name: '创建品项公司发货单' })).toBeDisabled()
+
+    fireEvent.change(marketSelect, { target: { value: 'M2' } })
+    await act(async () => { resolveDoc(reportDetail(row)) })
+    expect(screen.queryByText(/报货 30 · 已发 10/)).toBeNull()
+    expect(screen.queryByText(/^已选 /)).toBeNull()
+  })
+
+  it('同一张单取消勾选再勾上：先发的请求迟到也只带出一遍明细', async () => {
+    const row = report('SBH-1')
+    let resolveFirst: (value: InventoryDocDetail) => void = () => {}
+    vi.mocked(getInventoryCoreDocById)
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveFirst = resolve }))
+      .mockResolvedValueOnce(reportDetail(row))
+    renderPage({ level: 'supply-chain', operation: 'company-shipment', locations: [HQ], shipmentMarketTargets: [M1], candidates: [row] })
+    const checkbox = await screen.findByRole('checkbox', { name: '选择 SBH-1' })
+    fireEvent.click(checkbox)
+    fireEvent.click(checkbox)
+    fireEvent.click(checkbox)
+    expect(await screen.findByText(/报货 30 · 已发 10 · 未发 20/)).toBeInTheDocument()
+    await act(async () => { resolveFirst(reportDetail(row)) })
+    expect(screen.getAllByLabelText(/^正常发货/)).toHaveLength(1)
+    expect(screen.getByRole('button', { name: '创建品项公司发货单' })).toBeEnabled()
+  })
+
+  it('「去发货」装载中不能提交；装载中用户改选了市场，迟到的预选不覆盖', async () => {
+    const row = report('SBH-9', 'M2')
+    let resolveDoc: (value: InventoryDocDetail) => void = () => {}
+    vi.mocked(getInventoryCoreDocById).mockImplementationOnce(() => new Promise((resolve) => { resolveDoc = resolve }))
+    mockDocs({ inbox: segment([row]) })
+    renderPage({ level: 'supply-chain', operation: 'company-shipment', locations: [HQ], shipmentMarketTargets: [M1, M2], candidates: [row] })
+    await openDocsTab()
+    fireEvent.click(await screen.findByRole('button', { name: '去发货 SBH-9' }))
+    expect(await screen.findByText('正在加载市场报货明细')).toBeInTheDocument()
+
+    const marketSelect = screen.getByRole('option', { name: '请选择市场' }).closest('select') as HTMLSelectElement
+    fireEvent.change(marketSelect, { target: { value: 'M1' } })
+    await act(async () => { resolveDoc(reportDetail(row, 91, 5, 0)) })
+    expect(marketSelect.value).toBe('M1')
+    expect(screen.queryByText(/报货 5 · 已发 0/)).toBeNull()
+    expect(screen.queryByText('正在加载市场报货明细')).toBeNull()
+  })
+
+  it('装载时复核报货单两端与状态：旧候选行 / 已变状态的单不带出明细并取消勾选', async () => {
+    const stale = report('SBH-7', 'M2')
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue(reportDetail(stale))
+    renderPage({ level: 'supply-chain', operation: 'company-shipment', locations: [HQ], shipmentMarketTargets: [M1], candidates: [stale] })
+    fireEvent.click(await screen.findByRole('checkbox', { name: '选择 SBH-7' }))
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('市场报货单 SBH-7 不是当前收货市场报给该总部的已完成单，已取消勾选'))
+    expect(screen.queryByText(/报货 30/)).toBeNull()
+    expect(screen.queryByText(/^已选 /)).toBeNull()
+
+    // 同一张单（市场对了但 market_id 漂了 / 状态已变）同样退勾
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue(reportDetail({ ...stale, sourceOrgNodeId: 'M1', marketId: 'M2' }))
+    fireEvent.click(await screen.findByRole('checkbox', { name: '选择 SBH-7' }))
+    await waitFor(() => expect(toast.error).toHaveBeenCalledTimes(2))
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue(reportDetail({ ...stale, sourceOrgNodeId: 'M1', marketId: 'M1', status: '已取消' }))
+    fireEvent.click(await screen.findByRole('checkbox', { name: '选择 SBH-7' }))
+    await waitFor(() => expect(toast.error).toHaveBeenCalledTimes(3))
+    expect(screen.queryByText(/报货 30/)).toBeNull()
+    expect(screen.queryByText(/^已选 /)).toBeNull()
+  })
+
+  it('服务端拒绝（库存 / 未发量冲突）后，已挂载的批次选择器按最新可用量重查，已选批次保留', async () => {
+    const row = report('SBH-1')
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue(reportDetail(row))
+    vi.mocked(createItemCompanyShipment).mockRejectedValueOnce(new Error('INVALID_STATE: 库存不足：精华液 可用 10'))
+    renderPage({ level: 'supply-chain', operation: 'company-shipment', locations: [HQ], shipmentMarketTargets: [M1], candidates: [row] })
+    fireEvent.click(await screen.findByRole('checkbox', { name: '选择 SBH-1' }))
+    await chooseLot(0, '41')
+    const lotQueries = () => vi.mocked(listInventoryLotOptions).mock.calls.length
+    const before = lotQueries()
+    submitShipment()
+    await waitFor(() => expect(toast.error).toHaveBeenCalled())
+    await waitFor(() => expect(lotQueries()).toBe(before + 1))
+    const lotSelect = screen.getAllByRole('option', { name: '选择库存批次' })[0].closest('select') as HTMLSelectElement
+    await waitFor(() => expect(lotSelect.value).toBe('41'))
+  })
+
+  it('未发量被并发发货改动：服务端拒绝后重取报货进度；已选批次被出完则清空并提示', async () => {
+    const row = report('SBH-1')
+    vi.mocked(getInventoryCoreDocById)
+      .mockResolvedValueOnce(reportDetail(row, 11, 30, 10))
+      .mockResolvedValueOnce(reportDetail(row, 11, 30, 25))
+    vi.mocked(createItemCompanyShipment).mockRejectedValueOnce(new Error('CONFLICT: 精华液 正常发货数量超过报货未发量，本次最多可发 5'))
+    renderPage({ level: 'supply-chain', operation: 'company-shipment', locations: [HQ], shipmentMarketTargets: [M1], candidates: [row] })
+    fireEvent.click(await screen.findByRole('checkbox', { name: '选择 SBH-1' }))
+    await chooseLot(0, '41')
+    // 重查时批号 A 已被别的单出完（查询排除零库存批次）
+    vi.mocked(listInventoryLotOptions).mockResolvedValue([
+      { id: 42, batchNo: 'B', isGift: false, quantityOnHand: 50, availableQuantity: 50, expiryDate: null },
+    ] as never)
+    submitShipment()
+    expect(await screen.findByText(/报货 30 · 已发 25 · 未发 5/)).toBeInTheDocument()
+    expect(screen.getByRole('status', { name: '未发进度' })).toHaveTextContent('所选报货单还有 5 件未发')
+    await waitFor(() => expect(toast.warning).toHaveBeenCalledWith('所选批次已无可用库存，请重新选择'))
+    const lotSelect = screen.getAllByRole('option', { name: '选择库存批次' })[0].closest('select') as HTMLSelectElement
+    expect(lotSelect.value).toBe('')
+    // 父级也清了：再提交被「请选择批次」校验接住，不会带旧 lotId 出去
+    submitShipment()
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('请为每条发货明细选择批次并填写数量；不发的行请删除'))
+    expect(createItemCompanyShipment).toHaveBeenCalledTimes(1)
+  })
+
+  it('提交失败后批次重取也失败：列表清空的同时清掉已选批次，不带旧 lotId 再提交', async () => {
+    const row = report('SBH-1')
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue(reportDetail(row))
+    vi.mocked(createItemCompanyShipment).mockRejectedValueOnce(new Error('INVALID_STATE: 库存不足：精华液 可用 10'))
+    renderPage({ level: 'supply-chain', operation: 'company-shipment', locations: [HQ], shipmentMarketTargets: [M1], candidates: [row] })
+    fireEvent.click(await screen.findByRole('checkbox', { name: '选择 SBH-1' }))
+    await chooseLot(0, '41')
+    vi.mocked(listInventoryLotOptions).mockRejectedValue(new Error('网络异常'))
+    submitShipment()
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('网络异常'))
+    submitShipment()
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('请为每条发货明细选择批次并填写数量；不发的行请删除'))
+    expect(createItemCompanyShipment).toHaveBeenCalledTimes(1)
+  })
+
+  it('LotPicker 自动清空已选批次时两路一起清：lotId 与批次快照（转换表单的 onLotChange）', () => {
+    // 转换表单同时保存 lotId 与整条批次快照（成本 / 赠送 / 可用量），只清 id 会让守恒预览按旧批次算
+    const source = readFileSync(resolve(__dirname, 'inventory-operations-page.tsx'), 'utf8')
+    // 截到紧随其后的 LotReferencePrice（#359）为止，别把后面的辅助函数一起截进来
+    const picker = source.slice(source.indexOf('function LotPicker('), source.indexOf('function LotReferencePrice('))
+    expect(picker.length).toBeGreaterThan(0)
+    const drop = picker.slice(picker.indexOf('const dropStaleSelection = () => {'), picker.indexOf('useEffect('))
+    expect(drop).toContain("onChangeRef.current('')")
+    expect(drop).toContain('onLotChangeRef.current?.(null)')
+    // 成功重取（已选不在列表）与重取失败两条路径都走它
+    expect(picker.match(/dropStaleSelection\(\)/g)).toHaveLength(2)
+  })
+
+  it('同一报货明细同一批次重复两行：前端先拦，按服务端口径提示合并', async () => {
+    const row = report('SBH-1')
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue(reportDetail(row))
+    renderPage({ level: 'supply-chain', operation: 'company-shipment', locations: [HQ], shipmentMarketTargets: [M1], candidates: [row] })
+    fireEvent.click(await screen.findByRole('checkbox', { name: '选择 SBH-1' }))
+    await screen.findByText(/报货 30 · 已发 10 · 未发 20/)
+    fireEvent.change(screen.getByLabelText(/^正常发货/), { target: { value: '5' } })
+    fireEvent.click(screen.getByRole('button', { name: '加批次 精华液 50ml SBH-1' }))
+    fireEvent.change(screen.getAllByRole('spinbutton')[1], { target: { value: '5' } })
+    await chooseLot(0, '42')
+    await chooseLot(1, '42')
+    submitShipment()
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('同一报货明细的同一批次不能重复填写，请合并数量'))
+    expect(createItemCompanyShipment).not.toHaveBeenCalled()
+  })
+
+  it('两张报货单：未发量跨单合计，按各自报货行提交；提交在途锁住「关闭」', async () => {
+    const a = report('SBH-1')
+    const b = report('SBH-2')
+    vi.mocked(getInventoryCoreDocById).mockImplementation(async (id) => (
+      id === 'SBH-1' ? reportDetail(a, 11, 30, 10) : reportDetail(b, 12, 4, 0)
+    ))
+    let resolveCreate: (value: { id: string }) => void = () => {}
+    vi.mocked(createItemCompanyShipment).mockImplementationOnce(() => new Promise((resolve) => { resolveCreate = resolve }))
+    renderPage({ level: 'supply-chain', operation: 'company-shipment', locations: [HQ], shipmentMarketTargets: [M1], candidates: [a, b] })
+    fireEvent.click(await screen.findByRole('checkbox', { name: '选择 SBH-1' }))
+    fireEvent.click(await screen.findByRole('checkbox', { name: '选择 SBH-2' }))
+    await screen.findByText(/SBH-2 · 50ml · 报货 4 · 已发 0 · 未发 4/)
+    expect(screen.getByRole('status', { name: '未发进度' })).toHaveTextContent('所选报货单还有 24 件未发')
+    await chooseLot(0, '42')
+    await chooseLot(1, '41')
+    submitShipment()
+    await waitFor(() => expect(createItemCompanyShipment).toHaveBeenCalledWith(expect.objectContaining({
+      items: [
+        { reportItemId: 11, lotId: 42, quantity: 20, remark: null },
+        { reportItemId: 12, lotId: 41, quantity: 4, remark: null },
+      ],
+      giftItems: [],
+    })))
+    expect(screen.getByRole('button', { name: '关闭' })).toBeDisabled()
+    await act(async () => { resolveCreate({ id: 'GFH-1' }) })
+    await waitFor(() => expect(screen.getByRole('button', { name: '关闭' })).toBeEnabled())
+  })
+
+  it('「去发货」的报货单已不可发（状态变了）：提示且不回填市场与已选', async () => {
+    const row = report('SBH-9', 'M2')
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue(reportDetail({ ...row, status: '已取消' }, 91, 5, 0))
+    mockDocs({ inbox: segment([row]) })
+    renderPage({ level: 'supply-chain', operation: 'company-shipment', locations: [HQ], shipmentMarketTargets: [M1, M2], candidates: [row] })
+    await openDocsTab()
+    fireEvent.click(await screen.findByRole('button', { name: '去发货 SBH-9' }))
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('该市场报货单当前不可发货，请刷新待办'))
+    const marketSelect = screen.getByRole('option', { name: '请选择市场' }).closest('select') as HTMLSelectElement
+    expect(marketSelect.value).toBe('')
+    expect(screen.queryByText(/^已选 /)).toBeNull()
+  })
+
+  it('待办「去发货」：带出收货市场、发货总部并勾上这张报货单', async () => {
+    const row = report('SBH-9', 'M2')
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue(reportDetail(row, 91, 5, 0))
+    mockDocs({ inbox: segment([row]) })
+    renderPage({ level: 'supply-chain', operation: 'company-shipment', locations: [HQ], shipmentMarketTargets: [M1, M2], candidates: [row] })
+
+    await openDocsTab()
+    expect(screen.getByText('待发货：仍有未发量的市场报货单')).toBeInTheDocument()
+    fireEvent.click(await screen.findByRole('button', { name: '去发货 SBH-9' }))
+
+    expect(await screen.findByText(/报货 5 · 已发 0 · 未发 5/)).toBeInTheDocument()
+    const marketSelect = screen.getByRole('option', { name: '市场二部' }).closest('select') as HTMLSelectElement
+    expect(marketSelect.value).toBe('M2')
+    expect(await screen.findByText(/^已选 1 张：SBH-9/)).toBeInTheDocument()
+    await waitFor(() => expect(listInventoryDocCandidates).toHaveBeenLastCalledWith(
+      expect.objectContaining({ purpose: 'company-shipment-source', sourceOrgNodeId: 'M2', targetOrgNodeId: 'HQ' }),
+    ))
+  })
+})
+
+/**
+ * #344 转换表单：来源 / 目标两段 N:M，目标单价按「来源合计 ÷ 目标总数量」预填、可改，
+ * 实时显示来源合计 / 目标合计 / 差额；超出允许误差时提交前拦下（服务端同公式再硬拦截一次）。
+ */
+describe('库存转换两段式表单与成本守恒（#344）', () => {
+  const LOCATIONS: InventoryLocationRow[] = [
+    { locationId: 'HQ', locationType: '总部', name: '品牌总部', orgNodeId: 'HQ', storeId: null, parentLocationId: null, isActive: true },
+  ]
+  const lot = {
+    id: 101, locationId: 'HQ', locationName: '品牌总部', locationType: '总部', skuId: 'SKU-1', skuName: '精华液', specName: null,
+    supplier: null, productSeries: null, batchNo: 'B1', expiryDate: null, isGift: false, quantityOnHand: 30, availableQuantity: 30,
+    supplyChainUnitCost: 10, remark: null, updatedAt: '2026-09-25T00:00:00.000Z',
+  }
+  beforeEach(() => {
+    mockDocs({})
+    vi.mocked(toast.error).mockReset()
+    vi.mocked(createInventoryConversion).mockReset()
+    vi.mocked(listInventoryLotOptions).mockResolvedValue([lot] as never)
+  })
+  const pickers = () => Array.from(document.querySelectorAll<HTMLSelectElement>('[data-sku-picker]'))
+  const numberInputs = () => Array.from(document.querySelectorAll<HTMLInputElement>('input[type="number"]'))
+  const balanceText = () => screen.getByTestId('conversion-balance').textContent ?? ''
+
+  async function fillThirteenToThirteen() {
+    renderPage({ level: 'supply-chain', operation: 'supply-chain-conversion', locations: LOCATIONS })
+    const subject = screen.queryByRole('option', { name: '请选择总部' })?.closest('select')
+    if (subject) fireEvent.change(subject, { target: { value: 'HQ' } })
+    const [sourcePicker, targetPicker] = pickers()
+    fireEvent.change(sourcePicker, { target: { value: 'SKU-1' } })
+    const lotOption = await screen.findByRole('option', { name: /批次 B1/ })
+    fireEvent.change(lotOption.closest('select')!, { target: { value: '101' } })
+    fireEvent.change(targetPicker, { target: { value: 'SKU-2' } })
+    const [sourceQuantity, targetQuantity] = numberInputs()
+    fireEvent.change(sourceQuantity, { target: { value: '13' } })
+    fireEvent.change(targetQuantity, { target: { value: '13' } })
+  }
+
+  it('选好来源批次后显示来源合计，目标单价按合计 ÷ 目标总数量预填', async () => {
+    await fillThirteenToThirteen()
+    expect(screen.getAllByDisplayValue('130.00')).toHaveLength(2) // 来源带出成本 + 目标金额
+    expect(numberInputs()[2]).toHaveValue(10) // 单价预填 130 ÷ 13
+    expect(balanceText()).toMatch(/来源合计 130\.00.*目标合计 130\.00.*差额 0\.00/)
+  })
+
+  it('手改单价超出允许误差：差额标红、提交被拦；恢复预填后按预填价提交', async () => {
+    await fillThirteenToThirteen()
+    fireEvent.change(numberInputs()[2], { target: { value: '11' } })
+    expect(balanceText()).toMatch(/目标合计 143\.00.*差额 13\.00/)
+    fireEvent.submit(screen.getByRole('button', { name: '创建库存转换单' }).closest('form')!)
+    await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalledWith(expect.stringContaining('转换前后成本不守恒')))
+    expect(createInventoryConversion).not.toHaveBeenCalled()
+
+    vi.mocked(createInventoryConversion).mockResolvedValue({ outboundId: 'ZHO-1', inboundId: 'ZHI-1' })
+    fireEvent.click(screen.getByRole('button', { name: '单价恢复预填' }))
+    expect(numberInputs()[2]).toHaveValue(10)
+    fireEvent.submit(screen.getByRole('button', { name: '创建库存转换单' }).closest('form')!)
+    await waitFor(() => expect(createInventoryConversion).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(createInventoryConversion).mock.calls[0][0]).toMatchObject({
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 101, quantity: 13, remark: null }],
+      targets: [{ targetSkuId: 'SKU-2', quantity: 13, unitPrice: 10, targetBatchNo: null, targetExpiryDate: null, remark: null }],
+    })
+  })
+
+  it('清空单价按未填拦下，不当 0 提交', async () => {
+    await fillThirteenToThirteen()
+    fireEvent.change(numberInputs()[2], { target: { value: '' } })
+    fireEvent.submit(screen.getByRole('button', { name: '创建库存转换单' }).closest('form')!)
+    await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalledWith('请完整填写目标商品、入库数量和单价'))
+    expect(createInventoryConversion).not.toHaveBeenCalled()
+  })
+
+  it('与服务端同判据：目标 SKU 不能与来源相同；赠送来源的目标单价必须为 0', async () => {
+    await fillThirteenToThirteen()
+    fireEvent.change(pickers()[1], { target: { value: 'SKU-1' } })
+    fireEvent.submit(screen.getByRole('button', { name: '创建库存转换单' }).closest('form')!)
+    await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalledWith('库存转换目标 SKU 不能与来源 SKU 相同'))
+
+    vi.mocked(toast.error).mockReset()
+    vi.mocked(listInventoryLotOptions).mockResolvedValue([{ ...lot, isGift: true, supplyChainUnitCost: 0 }] as never)
+    fireEvent.change(pickers()[1], { target: { value: 'SKU-2' } })
+    fireEvent.change(pickers()[0], { target: { value: 'SKU-2' } })
+    fireEvent.change(pickers()[0], { target: { value: 'SKU-1' } })
+    const lotOption = await screen.findByRole('option', { name: /批次 B1/ })
+    fireEvent.change(lotOption.closest('select')!, { target: { value: '101' } })
+    expect(numberInputs()[2]).toHaveValue(0) // 赠送来源合计 0 → 预填 0
+    fireEvent.change(numberInputs()[2], { target: { value: '0.01' } })
+    fireEvent.change(numberInputs()[1], { target: { value: '1' } })
+    fireEvent.submit(screen.getByRole('button', { name: '创建库存转换单' }).closest('form')!)
+    await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalledWith('赠送批次转换的目标单价必须为 0'))
+    expect(createInventoryConversion).not.toHaveBeenCalled()
+  })
+
+  it('成本不可见（价格档遮蔽）：不预填、提示需要价格权限，提交被拦', async () => {
+    vi.mocked(listInventoryLotOptions).mockResolvedValue([{ ...lot, supplyChainUnitCost: undefined }] as never)
+    await fillThirteenToThirteen()
+    expect(numberInputs()[2]).toHaveValue(null)
+    expect(balanceText()).toContain('需要本主体的供应链价格查看权限')
+    fireEvent.change(numberInputs()[2], { target: { value: '10' } })
+    fireEvent.submit(screen.getByRole('button', { name: '创建库存转换单' }).closest('form')!)
+    await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalledWith('库存转换需要本主体的供应链价格查看权限（要按成本核算守恒）'))
+    expect(createInventoryConversion).not.toHaveBeenCalled()
+  })
+
+  it('赠送批次成本被遮蔽同样视为无价格权（服务端对赠送来源也要求价格权）', async () => {
+    vi.mocked(listInventoryLotOptions).mockResolvedValue([{ ...lot, isGift: true, supplyChainUnitCost: undefined }] as never)
+    await fillThirteenToThirteen()
+    expect(balanceText()).toContain('需要本主体的供应链价格查看权限')
+    fireEvent.submit(screen.getByRole('button', { name: '创建库存转换单' }).closest('form')!)
+    await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalledWith('库存转换需要本主体的供应链价格查看权限（要按成本核算守恒）'))
+    expect(createInventoryConversion).not.toHaveBeenCalled()
+  })
+
+  it('批次缺成本（null，看得到但没有）：提示缺成本而不是权限', async () => {
+    vi.mocked(listInventoryLotOptions).mockResolvedValue([{ ...lot, supplyChainUnitCost: null }] as never)
+    await fillThirteenToThirteen()
+    expect(balanceText()).toContain('来源批次缺少供应链成本')
+  })
+
+  it('同一批次两行合计超过可用量：前端按批次汇总拦下（与服务端同口径）', async () => {
+    await fillThirteenToThirteen()
+    fireEvent.click(screen.getByRole('button', { name: '添加来源' }))
+    fireEvent.change(pickers()[1], { target: { value: 'SKU-1' } })
+    await waitFor(() => expect(screen.getAllByRole('option', { name: /批次 B1 · 可用 30/ })).toHaveLength(2))
+    const options = screen.getAllByRole('option', { name: /批次 B1 · 可用 30/ })
+    fireEvent.change(options[1].closest('select')!, { target: { value: '101' } })
+    fireEvent.change(numberInputs()[1], { target: { value: '18' } }) // 13 + 18 = 31 > 30
+    fireEvent.submit(screen.getByRole('button', { name: '创建库存转换单' }).closest('form')!)
+    await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalledWith('库存不足：精华液 可用 30'))
+    expect(createInventoryConversion).not.toHaveBeenCalled()
+  })
+
+  it('严格 1 分：100 元拆 7 件预填 14.29 差 0.03 标红；点「拆分补差」拆成 3 × 14.28 + 4 × 14.29 后按两行提交', async () => {
+    vi.mocked(listInventoryLotOptions).mockResolvedValue([{ ...lot, supplyChainUnitCost: 100 }] as never)
+    await fillThirteenToThirteen()
+    fireEvent.change(numberInputs()[0], { target: { value: '1' } })
+    fireEvent.change(numberInputs()[1], { target: { value: '7' } })
+    expect(numberInputs()[2]).toHaveValue(14.29)
+    expect(balanceText()).toMatch(/差额 0\.03.*允许误差 ±0\.01.*拆分补差/)
+    fireEvent.click(screen.getByRole('button', { name: '拆分补差' }))
+    await waitFor(() => expect(screen.getAllByRole('button', { name: '拆分补差' })).toHaveLength(2))
+    const values = numberInputs().map((input) => input.value)
+    expect(values.slice(1)).toEqual(['3', '14.28', '4', '14.29'])
+    expect(balanceText()).toMatch(/差额 0\.00/)
+    vi.mocked(createInventoryConversion).mockResolvedValue({ outboundId: 'ZHO-1', inboundId: 'ZHI-1' })
+    fireEvent.submit(screen.getByRole('button', { name: '创建库存转换单' }).closest('form')!)
+    await waitFor(() => expect(createInventoryConversion).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(createInventoryConversion).mock.calls[0][0].targets).toMatchObject([
+      { targetSkuId: 'SKU-2', quantity: 3, unitPrice: 14.28, targetBatchNo: null },
+      { targetSkuId: 'SKU-2', quantity: 4, unitPrice: 14.29, targetBatchNo: null },
+    ])
+  })
+
+  it('来源 / 目标可各自增行（N:M 解耦）', async () => {
+    renderPage({ level: 'supply-chain', operation: 'supply-chain-conversion', locations: LOCATIONS })
+    fireEvent.click(screen.getByRole('button', { name: '添加来源' }))
+    fireEvent.click(screen.getByRole('button', { name: '添加目标' }))
+    fireEvent.click(screen.getByRole('button', { name: '添加目标' }))
+    expect(screen.getAllByText('来源批次')).toHaveLength(2)
+    expect(screen.getAllByText('目标商品')).toHaveLength(3)
+  })
+})
+
+/**
+ * 配货选批次显示赠送标记与黄色参考进价（#359）。
+ * 参考进价只读：不参与金额、不进 payload；无价格档（lotRow 不下发 marketActualUnitPrice）不渲染。
+ * 赠送数量单独选批次，默认只列赠送批次；勾「从普通批次赠送」后列全部。
+ */
+describe('分院配货批次的赠送标记与参考进价（#359）', () => {
+  const request = docRow({ id: 'DBH-1', docType: '门店报货', status: '已完成' })
+  const LOCATIONS: InventoryLocationRow[] = [
+    { locationId: 'M1', locationType: '市场', name: '南昌市场', orgNodeId: 'M1', storeId: null, parentLocationId: 'HQ', isActive: true },
+    { locationId: 'S1', locationType: '门店', name: '一分院', orgNodeId: 'S1', storeId: 'S1', parentLocationId: 'M1', isActive: true },
+  ]
+  const NORMAL = { id: 11, batchNo: 'B100', isGift: false, quantityOnHand: 6, availableQuantity: 5, expiryDate: null, marketActualUnitPrice: 27 }
+  const NORMAL2 = { id: 13, batchNo: 'B200', isGift: false, quantityOnHand: 9, availableQuantity: 9, expiryDate: null, marketActualUnitPrice: 30 }
+  const GIFT = { id: 12, batchNo: 'GFH-1-02', isGift: true, quantityOnHand: 2, availableQuantity: 2, expiryDate: null, marketActualUnitPrice: 0 }
+  const reference = (name: RegExp) => screen.queryByRole('note', { name })
+
+  async function openAllocation(lots: unknown[]) {
+    vi.mocked(listInventoryLotOptions).mockResolvedValue(lots as never)
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue({
+      ...docDetail(request),
+      items: [{
+        id: 1, docId: 'DBH-1', lotId: null, skuId: 'S-1', skuName: '精华液', specName: '50ml', quantity: 4, fulfilledQuantity: 0,
+        standardUnitPrice: 40, actualUnitPrice: null, unitDiscount: 0,
+      } as unknown as InventoryDocDetail['items'][number]],
+    })
+    renderPage({ level: 'market', operation: 'store-allocation', candidates: [request], locations: LOCATIONS })
+    await pickCandidate('DBH-1')
+    await screen.findByText('报货配货批次与数量')
+  }
+  function normalLotSelect() {
+    return screen.getAllByRole('option', { name: /^批次 B100/ })[0].closest('select') as HTMLSelectElement
+  }
+
+  beforeEach(() => {
+    mockDocs({})
+    vi.mocked(listInventorySkus).mockReset()
+    vi.mocked(listInventorySkus).mockResolvedValue({ data: [], total: 0 })
+    vi.mocked(createStoreAllocation).mockReset()
+    vi.mocked(createStoreAllocation).mockResolvedValue({ id: 'FPH-20260925-0001' })
+    vi.mocked(toast.error).mockReset()
+  })
+
+  it('批次选项带赠送标记、可用取 availableQuantity；选中批次显示黄色参考进价并随切换更新，改优惠 / 数量不变，payload 不含参考价', async () => {
+    await openAllocation([NORMAL, NORMAL2, GIFT])
+    expect(await screen.findByRole('option', { name: /^批次 B100 · 可用 5$/ })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: /^批次 GFH-1-02（赠送） · 可用 2$/ })).toBeInTheDocument()
+    expect(reference(/正常批次参考进价/)).toBeNull()
+
+    fireEvent.change(normalLotSelect(), { target: { value: '11' } })
+    expect(reference(/正常批次参考进价/)).toHaveTextContent('参考进价 27.00')
+    fireEvent.change(normalLotSelect(), { target: { value: '13' } })
+    expect(reference(/正常批次参考进价/)).toHaveTextContent('参考进价 30.00')
+
+    // 改优惠与数量：参考值不跟着变（它不是计价输入）
+    const spinbuttons = screen.getAllByRole('spinbutton')
+    fireEvent.change(spinbuttons[0], { target: { value: '3' } })
+    fireEvent.change(spinbuttons[2], { target: { value: '5' } })
+    expect(reference(/正常批次参考进价/)).toHaveTextContent('参考进价 30.00')
+
+    fireEvent.submit(screen.getByRole('button', { name: '创建分院配货单' }).closest('form')!)
+    await waitFor(() => expect(createStoreAllocation).toHaveBeenCalledTimes(1))
+    const payload = vi.mocked(createStoreAllocation).mock.calls[0][0]
+    expect(payload.items).toEqual([{
+      requestItemId: 1, skuId: null, lotId: 13, quantity: 3, giftQuantity: 0, giftLotId: null, storeUnitDiscount: 5, remark: null,
+    }])
+    expect(JSON.stringify(payload)).not.toMatch(/marketActualUnitPrice|参考/)
+  })
+
+  it('无价格档（接口不下发 marketActualUnitPrice）：不渲染参考进价', async () => {
+    const strip = ({ marketActualUnitPrice: _price, ...lot }: typeof NORMAL) => lot
+    await openAllocation([strip(NORMAL), strip(GIFT)])
+    await screen.findByRole('option', { name: /^批次 B100/ })
+    // 选普通批次：无参考价、无提示、无赠送 → 附加区整块不渲染（不留空分隔线）
+    fireEvent.change(normalLotSelect(), { target: { value: '11' } })
+    expect(normalLotSelect().value).toBe('11')
+    expect(document.querySelector('[data-allocation-lot-extras]')).toBeNull()
+    fireEvent.change(normalLotSelect(), { target: { value: '12' } })
+    expect(screen.queryAllByRole('note')).toHaveLength(0)
+    // 赠送提示仍在，但不带价格
+    expect(screen.getByText('该批次为赠送货')).toBeInTheDocument()
+  })
+
+  it('正常数量选到赠送批次：提示但不拦；赠送数量的批次只列赠送批次，勾「从普通批次赠送」后列全部，提交带 giftLotId', async () => {
+    await openAllocation([NORMAL, GIFT])
+    await screen.findByRole('option', { name: /^批次 B100/ })
+    fireEvent.change(normalLotSelect(), { target: { value: '12' } })
+    expect(screen.getByText('该批次为赠送货，参考进价 0.00')).toBeInTheDocument()
+
+    // 填赠送数量 → 出现「赠送批次」，只列 isGift 批次
+    fireEvent.change(screen.getAllByRole('spinbutton')[1], { target: { value: '1' } })
+    const giftField = (await screen.findByText('赠送批次')).closest('label, div')!.parentElement!
+    await waitFor(() => expect(giftField.querySelectorAll('option[value]:not([value=""])')).toHaveLength(1))
+    const giftSelect = giftField.querySelector('select') as HTMLSelectElement
+    expect([...giftSelect.options].map((option) => option.textContent)).toEqual(['选择库存批次', '批次 GFH-1-02（赠送） · 可用 2'])
+    fireEvent.change(giftSelect, { target: { value: '12' } })
+    expect(reference(/赠送批次参考进价/)).toHaveTextContent('参考进价 0.00（赠送批次）')
+
+    // 勾「从普通批次赠送」→ 列全部批次；已选的赠送批次仍在列表里，不被清掉
+    fireEvent.click(screen.getByRole('checkbox', { name: /^从普通批次赠送/ }))
+    await waitFor(() => expect(giftSelect.querySelectorAll('option[value]:not([value=""])')).toHaveLength(2))
+    expect(giftSelect.value).toBe('12')
+
+    fireEvent.submit(screen.getByRole('button', { name: '创建分院配货单' }).closest('form')!)
+    await waitFor(() => expect(createStoreAllocation).toHaveBeenCalledWith(expect.objectContaining({
+      items: [expect.objectContaining({ requestItemId: 1, lotId: 12, quantity: 4, giftQuantity: 1, giftLotId: 12 })],
+    })))
+  })
+
+  it('取消「从普通批次赠送」：已选的普通批次同步清空（不等重取），立即提交也不会把普通批次当赠送发出', async () => {
+    vi.mocked(toast.warning).mockReset()
+    await openAllocation([NORMAL, GIFT])
+    await screen.findByRole('option', { name: /^批次 B100/ })
+    fireEvent.change(normalLotSelect(), { target: { value: '11' } })
+    fireEvent.change(screen.getAllByRole('spinbutton')[1], { target: { value: '1' } })
+    const checkbox = await screen.findByRole('checkbox', { name: /^从普通批次赠送/ })
+    fireEvent.click(checkbox)
+    const giftSelect = (await screen.findByText('赠送批次')).closest('label, div')!.parentElement!.querySelector('select') as HTMLSelectElement
+    await waitFor(() => expect(giftSelect.querySelectorAll('option[value="11"]')).toHaveLength(1))
+    fireEvent.change(giftSelect, { target: { value: '11' } })
+    // 重取挂起：窗口期内立即提交
+    vi.mocked(listInventoryLotOptions).mockImplementation(() => new Promise(() => {}))
+    fireEvent.click(checkbox)
+    expect(toast.warning).toHaveBeenCalledWith('已改为只从赠送批次赠送，请重新选择赠送批次')
+    expect(reference(/赠送批次参考进价/)).toBeNull()
+    fireEvent.submit(screen.getByRole('button', { name: '创建分院配货单' }).closest('form')!)
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('请为赠送数量选择赠送批次（没有赠送批次时可勾选「从普通批次赠送」）'))
+    expect(createStoreAllocation).not.toHaveBeenCalled()
+  })
+
+  it('市场没有赠送批次：占位指出「从普通批次赠送」出路；赠送数量改回 0 后残留的赠送批次不提交', async () => {
+    await openAllocation([NORMAL])
+    await screen.findByRole('option', { name: /^批次 B100/ })
+    fireEvent.change(normalLotSelect(), { target: { value: '11' } })
+    const giftQuantity = screen.getAllByRole('spinbutton')[1]
+    fireEvent.change(giftQuantity, { target: { value: '1' } })
+    expect(await screen.findByRole('option', { name: '暂无赠送批次，可勾选「从普通批次赠送」' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('checkbox', { name: /^从普通批次赠送/ }))
+    const giftSelect = screen.getByText('赠送批次').closest('label, div')!.parentElement!.querySelector('select') as HTMLSelectElement
+    await waitFor(() => expect(giftSelect.querySelectorAll('option[value="11"]')).toHaveLength(1))
+    fireEvent.change(giftSelect, { target: { value: '11' } })
+    fireEvent.change(giftQuantity, { target: { value: '0' } })
+    fireEvent.submit(screen.getByRole('button', { name: '创建分院配货单' }).closest('form')!)
+    await waitFor(() => expect(createStoreAllocation).toHaveBeenCalledWith(expect.objectContaining({
+      items: [expect.objectContaining({ lotId: 11, quantity: 4, giftQuantity: 0, giftLotId: null })],
+    })))
+  })
+
+  it('赠送数量未选赠送批次不提交；只配赠送时不要求选正常批次', async () => {
+    await openAllocation([NORMAL, GIFT])
+    await screen.findByRole('option', { name: /^批次 B100/ })
+    const [normalQuantity, giftQuantity] = screen.getAllByRole('spinbutton')
+    fireEvent.change(normalQuantity, { target: { value: '0' } })
+    fireEvent.change(giftQuantity, { target: { value: '1' } })
+    fireEvent.submit(screen.getByRole('button', { name: '创建分院配货单' }).closest('form')!)
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('请为赠送数量选择赠送批次（没有赠送批次时可勾选「从普通批次赠送」）'))
+    expect(createStoreAllocation).not.toHaveBeenCalled()
+
+    const giftSelect = (await screen.findByText('赠送批次')).closest('label, div')!.parentElement!.querySelector('select') as HTMLSelectElement
+    await waitFor(() => expect(giftSelect.querySelectorAll('option[value="12"]')).toHaveLength(1))
+    fireEvent.change(giftSelect, { target: { value: '12' } })
+    fireEvent.submit(screen.getByRole('button', { name: '创建分院配货单' }).closest('form')!)
+    await waitFor(() => expect(createStoreAllocation).toHaveBeenCalledWith(expect.objectContaining({
+      items: [expect.objectContaining({ lotId: null, quantity: 0, giftQuantity: 1, giftLotId: 12 })],
+    })))
+  })
+})
+
+/**
+ * 市场汇总报货显示在途采购（#362）：待配量 / 建议采购已由服务端扣掉在途覆盖的部分，
+ * 表单要把在途量亮出来，填报人才知道建议采购没算漏已报货未到的货。
+ */
+describe('市场汇总报货显示在途采购（#362）', () => {
+  const M1: InventoryLocationRow = { locationId: 'M1', locationType: '市场', name: '市场一部', orgNodeId: 'M1', storeId: null, parentLocationId: 'HQ', isActive: true }
+  const HQ: InventoryLocationRow = { locationId: 'HQ', locationType: '总部', name: '品牌总部', orgNodeId: 'HQ', storeId: null, parentLocationId: null, isActive: true }
+
+  beforeEach(() => {
+    mockDocs({})
+  })
+
+  it('在途列与待配 / 可用 / 建议采购并排；在途已覆盖的行建议采购为 0、默认不勾选', async () => {
+    vi.mocked(summarizeStoreReplenishmentRequests).mockResolvedValue({
+      marketId: 'M1',
+      items: [
+        { storeQuantities: [],
+          skuId: 'SKU-1', skuName: '精华液', specName: '50ml',
+          requestedQuantity: 16, fulfilledQuantity: 6, outstandingQuantity: 0,
+          onHandQuantity: 0, reservedQuantity: 0, availableQuantity: 0,
+          inTransitQuantity: 10, inTransitCoveredQuantity: 6, suggestedPurchaseQuantity: 0, requestItemIds: [2],
+        },
+        { storeQuantities: [],
+          skuId: 'SKU-2', skuName: '面霜', specName: '30g',
+          requestedQuantity: 8, fulfilledQuantity: 0, outstandingQuantity: 5,
+          onHandQuantity: 1, reservedQuantity: 0, availableQuantity: 1,
+          inTransitQuantity: 3, inTransitCoveredQuantity: 0, suggestedPurchaseQuantity: 4, requestItemIds: [3],
+        },
+      ],
+    })
+    renderPage({ level: 'market', operation: 'market-report', locations: [M1, HQ] })
+    // 唯一市场自动选中（InventorySubjectSelect #189），不用再手选
+    fireEvent.click(await screen.findByRole('button', { name: '汇总门店报货' }))
+    await waitFor(() => expect(summarizeStoreReplenishmentRequests).toHaveBeenCalledWith(
+      expect.objectContaining({ marketId: 'M1' }),
+    ))
+
+    const headers = (await screen.findAllByRole('columnheader')).map((cell) => cell.textContent)
+    expect(headers.slice(2, 6)).toEqual(['待配数量', '市场可用库存', '在途采购', '建议采购'])
+    const rowCells = (name: string) => {
+      const row = screen.getByRole('checkbox', { name: `选择 ${name}` }).closest('tr')!
+      return [...row.querySelectorAll('td')].slice(2, 6).map((cell) => cell.textContent)
+    }
+    // 被在途封顶的行在待配下注明扣了多少；没被封顶的行不出提示
+    expect(rowCells('精华液 50ml')).toEqual(['0在途已覆盖 6', '0', '10', '0'])
+    expect(rowCells('面霜 30g')).toEqual(['5', '1', '3', '4'])
+    expect(screen.getAllByText(/^在途已覆盖/)).toHaveLength(1)
+    expect(screen.getByRole('checkbox', { name: '选择 精华液 50ml' })).not.toBeChecked()
+    expect(screen.getByRole('checkbox', { name: '选择 面霜 30g' })).toBeChecked()
+    expect(screen.getByLabelText('实际采购 面霜 30g')).toHaveValue(4)
+  })
+})
+
+describe('市场报货草稿（#348）', () => {
+  const HQ: InventoryLocationRow = { locationId: 'HQ', locationType: '总部', name: '品牌总部', orgNodeId: 'HQ', storeId: null, parentLocationId: null, isActive: true }
+  const M1: InventoryLocationRow = { locationId: 'M1', locationType: '市场', name: '南昌市场', orgNodeId: 'M1', storeId: null, parentLocationId: 'HQ', isActive: true }
+  const M2: InventoryLocationRow = { locationId: 'M2', locationType: '市场', name: '九江市场', orgNodeId: 'M2', storeId: null, parentLocationId: 'HQ', isActive: true }
+  const summaryLine = (skuId: string, requestItemIds: number[], suggested: number) => ({
+    storeQuantities: [{ storeId: 'S1', storeName: '门店一', quantity: suggested }],
+    skuId, skuName: `商品${skuId}`, specName: null, requestedQuantity: suggested, fulfilledQuantity: 0,
+    outstandingQuantity: suggested, onHandQuantity: 0, reservedQuantity: 0, availableQuantity: 0,
+    inTransitQuantity: 0, inTransitCoveredQuantity: 0, suggestedPurchaseQuantity: suggested, requestItemIds,
+  })
+  function draftRow() {
+    return docRow({ id: 'MBH-D1', docType: '市场报货', status: '草稿', sourceOrgNodeId: 'M1', targetOrgNodeId: 'HQ', marketId: 'M1' })
+  }
+  function draftDetail(items: Array<{ skuId: string; quantity: number; mode?: '人工选择' | '系统推荐'; planId?: string }>): InventoryDocDetail {
+    return {
+      ...docDetail(draftRow()),
+      remark: '草稿备注',
+      items: items.map((item, index) => ({
+        id: index + 1, docId: 'MBH-D1', skuId: item.skuId, skuName: `商品${item.skuId}`, specName: null,
+        quantity: item.quantity, promotionPlanId: item.planId ?? null, promotionSelectionMode: item.mode ?? null,
+      }) as unknown as InventoryDocDetail['items'][number]),
+    }
+  }
+  function quoteFor(items: Array<{ skuId: string; quantity: number }>) {
+    return {
+      items: items.map((item) => ({
+        skuId: item.skuId, marketId: 'M1', quantity: item.quantity,
+        marketStandardUnitPrice: 100, marketUnitDiscount: 0, marketActualUnitPrice: 100,
+        promotionPlanId: null, promotionPlanNo: null, promotionName: null, promotionRuleType: null,
+        recommendedPromotionPlanId: null, selectionMode: null, eligibleOptions: [],
+      })),
+      totalStandardAmount: 0, totalDiscountAmount: 0, totalActualAmount: 0,
+    }
+  }
+
+  beforeEach(() => {
+    vi.mocked(quoteMarketReplenishmentPrices).mockImplementation(async (input) => quoteFor(input.items) as never)
+  })
+
+  it('#363 SKU 可展开两店分量，四列报价只读且不影响采购数', async () => {
+    mockDocs({})
+    vi.mocked(summarizeStoreReplenishmentRequests).mockResolvedValue({ marketId: 'M1', items: [{
+      ...summaryLine('SKU-1', [11, 12], 16),
+      storeQuantities: [{ storeId: 'S1', storeName: '门店 A', quantity: 10 }, { storeId: 'S2', storeName: '门店 B', quantity: 6 }],
+    }] })
+    vi.mocked(quoteMarketReplenishmentPrices).mockImplementation(async (input) => ({
+      ...quoteFor(input.items), items: quoteFor(input.items).items.map((item) => ({ ...item, storeStandardUnitPrice: 150, marketUnitDiscount: 10, marketActualUnitPrice: 90 })),
+    }) as never)
+    renderPage({ level: 'market', operation: 'market-report', locations: [M1, HQ] })
+    fireEvent.click(await screen.findByRole('button', { name: '汇总门店报货' }))
+    const summary = await screen.findByLabelText('门店分量 商品SKU-1 SKU-1')
+    expect(summary.closest('details')?.open).toBe(false)
+    fireEvent.click(summary)
+    expect(summary.closest('details')?.open).toBe(true)
+    expect(within(summary.closest('details')!).getByText('门店 A')).toBeInTheDocument()
+    expect(within(summary.closest('details')!).getByText('门店 B')).toBeInTheDocument()
+    expect(screen.getByText('已扣已汇总 / 已配货，在途封顶前')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByText('150')).toBeInTheDocument())
+    for (const name of ['市场单价', '单价优惠', '实际单价', '门店单价（参考）']) {
+      expect(screen.getByRole('columnheader', { name })).toBeInTheDocument()
+    }
+    expect(screen.getByLabelText('实际采购 商品SKU-1 SKU-1')).toHaveValue(16)
+  })
+
+  it.each([['仅供应链价格档', true], ['无价格档', false]] as const)('#363 %s 不取市场报价、不显示门店单价', async (_tier, canViewPrice) => {
+    mockDocs({})
+    vi.mocked(summarizeStoreReplenishmentRequests).mockResolvedValue({ marketId: 'M1', items: [summaryLine('SKU-1', [11], 4)] })
+    renderPage({ level: 'market', operation: 'market-report', locations: [M1, HQ], marketPriceLocationIds: [], canViewPrice })
+    fireEvent.click(await screen.findByRole('button', { name: '汇总门店报货' }))
+    await screen.findByLabelText('实际采购 商品SKU-1 SKU-1')
+    for (const name of ['市场单价', '单价优惠', '实际单价', '门店单价（参考）']) {
+      expect(screen.queryByRole('columnheader', { name })).toBeNull()
+    }
+    expect(quoteMarketReplenishmentPrices).not.toHaveBeenCalled()
+  })
+
+  it('继续编辑：回填草稿（只勾草稿里的商品、数量取草稿值）、锁定市场，提交时带 draftId 与当前来源明细', async () => {
+    mockDocs({ inbox: segment([draftRow()]) })
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue(draftDetail([{ skuId: 'SKU-1', quantity: 3, mode: '人工选择', planId: 'P1' }]))
+    vi.mocked(summarizeStoreReplenishmentRequests).mockResolvedValue({
+      marketId: 'M1', items: [summaryLine('SKU-1', [11, 12], 8), summaryLine('SKU-2', [21], 5)],
+    })
+    vi.mocked(createMarketReplenishment).mockResolvedValue({ id: 'MBH-D1' })
+    renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1, M2] })
+
+    await openDocsTab()
+    expect(screen.getByText('草稿：存了未提交的市场报货单，提交后才进入下游')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '继续编辑 MBH-D1' }))
+
+    expect(await screen.findByText('MBH-D1', { selector: 'span.font-mono' })).toBeInTheDocument()
+    // 草稿不存汇总区间：按当前全部待配需求重新汇总
+    expect(summarizeStoreReplenishmentRequests).toHaveBeenCalledWith({ marketId: 'M1' })
+    const sku1 = screen.getByRole('checkbox', { name: '选择 商品SKU-1 SKU-1' }) as HTMLInputElement
+    const sku2 = screen.getByRole('checkbox', { name: '选择 商品SKU-2 SKU-2' }) as HTMLInputElement
+    expect(sku1.checked).toBe(true)
+    expect(sku2.checked).toBe(false)
+    expect((screen.getByRole('spinbutton', { name: '实际采购 商品SKU-1 SKU-1' }) as HTMLInputElement).value).toBe('3')
+    // 草稿里人工改选的福利方案在第一次取价时带回去
+    await waitFor(() => expect(quoteMarketReplenishmentPrices).toHaveBeenCalledWith(expect.objectContaining({
+      marketId: 'M1', selections: [{ skuId: 'SKU-1', promotionPlanId: 'P1' }],
+    })))
+    const marketSelect = screen.getByRole('option', { name: '南昌市场' }).closest('select') as HTMLSelectElement
+    expect(marketSelect.value).toBe('M1')
+    expect(marketSelect.disabled).toBe(true)
+
+    const submitButton = await screen.findByRole('button', { name: '提交市场报货单' })
+    await waitFor(() => expect(screen.getByText('无匹配福利，按标准价')).toBeInTheDocument())
+    fireEvent.submit(submitButton.closest('form')!)
+    await waitFor(() => expect(createMarketReplenishment).toHaveBeenCalledWith(expect.objectContaining({
+      draftId: 'MBH-D1',
+      marketId: 'M1',
+      supplyChainLocationId: 'HQ',
+      remark: '草稿备注',
+      items: [{ skuId: 'SKU-1', sourceRequestItemIds: [11, 12], purchaseQuantity: 3 }],
+    })))
+  })
+
+  it('存草稿：新建时不带 draftId、不传来源明细，存完留在编辑态且下次覆盖同一张', async () => {
+    mockDocs({})
+    vi.mocked(summarizeStoreReplenishmentRequests).mockResolvedValue({ marketId: 'M1', items: [summaryLine('SKU-1', [11], 4)] })
+    vi.mocked(saveMarketReplenishmentDraft).mockResolvedValue({ id: 'MBH-D9', updatedAt: '2026-09-26T01:00:00.000Z' })
+    renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1] })
+
+    fireEvent.click(await screen.findByRole('button', { name: '汇总门店报货' }))
+    await screen.findByRole('checkbox', { name: '选择 商品SKU-1 SKU-1' })
+    await waitFor(() => expect(screen.getByText('无匹配福利，按标准价')).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: '存草稿' }))
+    await waitFor(() => expect(saveMarketReplenishmentDraft).toHaveBeenCalledWith(expect.objectContaining({
+      draftId: null, marketId: 'M1', supplyChainLocationId: 'HQ',
+      items: [{ skuId: 'SKU-1', purchaseQuantity: 4 }],
+    })))
+    expect(await screen.findByText('MBH-D9', { selector: 'span.font-mono' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '存草稿' }))
+    await waitFor(() => expect(saveMarketReplenishmentDraft).toHaveBeenLastCalledWith(expect.objectContaining({ draftId: 'MBH-D9' })))
+  })
+
+  it('#469 市场报货存草稿拒绝非法步长，修正后可保存', async () => {
+    mockDocs({})
+    vi.mocked(summarizeStoreReplenishmentRequests).mockResolvedValue({ marketId: 'M1', items: [summaryLine('SKU-1', [11], 4)] })
+    renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1] })
+    fireEvent.click(await screen.findByRole('button', { name: '汇总门店报货' }))
+    const quantity = await screen.findByRole('spinbutton', { name: '实际采购 商品SKU-1 SKU-1' })
+    await waitFor(() => expect(screen.getByText('无匹配福利，按标准价')).toBeInTheDocument())
+    fireEvent.change(quantity, { target: { value: '1.005' } })
+    fireEvent.blur(quantity)
+    expect(screen.getByRole('alert')).toHaveTextContent('步长')
+    fireEvent.click(screen.getByRole('button', { name: '存草稿' }))
+    expect(saveMarketReplenishmentDraft).not.toHaveBeenCalled()
+    fireEvent.change(quantity, { target: { value: '1' } })
+    fireEvent.blur(quantity)
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.getByText('无匹配福利，按标准价')).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: '存草稿' }))
+    await waitFor(() => expect(saveMarketReplenishmentDraft).toHaveBeenCalled())
+  })
+
+  it('草稿里有、当前已无待汇总门店需求的商品：仍列出可存草稿，但提交前拦下', async () => {
+    const lines = mergeMarketReportDraftLines([], [{ skuId: 'SKU-X', skuName: '商品X', specName: null, quantity: 2 }])
+    expect(lines).toEqual([expect.objectContaining({ skuId: 'SKU-X', requestItemIds: [], selected: true, purchaseQuantity: '2' })])
+
+    mockDocs({ inbox: segment([draftRow()]) })
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue(draftDetail([{ skuId: 'SKU-X', quantity: 2 }]))
+    vi.mocked(summarizeStoreReplenishmentRequests).mockResolvedValue({ marketId: 'M1', items: [] })
+    renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1] })
+    await openDocsTab()
+    fireEvent.click(screen.getByRole('button', { name: '继续编辑 MBH-D1' }))
+    const submitButton = await screen.findByRole('button', { name: '提交市场报货单' })
+    await waitFor(() => expect(screen.getByText('无匹配福利，按标准价')).toBeInTheDocument())
+    fireEvent.submit(submitButton.closest('form')!)
+    await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalledWith('商品SKU-X 当前已无待汇总的门店报货，请取消勾选后再提交'))
+    expect(createMarketReplenishment).not.toHaveBeenCalled()
+  })
+
+  it('删除草稿走确认弹窗，原因选填，调删除 action 后重取两段', async () => {
+    mockDocs({ inbox: segment([draftRow()]) })
+    vi.mocked(deleteMarketReplenishmentDraft).mockResolvedValue({ id: 'MBH-D1' })
+    renderTab({ operation: 'market-report' })
+    await screen.findByText('待我处理')
+    fireEvent.click(screen.getByRole('button', { name: '删除草稿 MBH-D1' }))
+    expect(screen.getByText('删除市场报货草稿？')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '确认删除' }))
+    await waitFor(() => expect(deleteMarketReplenishmentDraft).toHaveBeenCalledWith({ draftId: 'MBH-D1', reason: null }))
+    await waitFor(() => expect(listInventoryOperationDocs).toHaveBeenCalledTimes(2))
+  })
+
+  it('存草稿在途：待办「继续编辑」不响应；在途期间换了市场，迟到的单号不写回表单', async () => {
+    mockDocs({ inbox: segment([draftRow()]) })
+    vi.mocked(summarizeStoreReplenishmentRequests).mockResolvedValue({ marketId: 'M1', items: [summaryLine('SKU-1', [11], 4)] })
+    const slowSave = deferred<{ id: string; updatedAt: string | null }>()
+    vi.mocked(saveMarketReplenishmentDraft).mockReturnValue(slowSave.promise)
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue(draftDetail([{ skuId: 'SKU-1', quantity: 3 }]))
+    renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1, M2] })
+
+    const marketSelect = (await screen.findByRole('option', { name: '南昌市场' })).closest('select') as HTMLSelectElement
+    fireEvent.change(marketSelect, { target: { value: 'M1' } })
+    fireEvent.click(await screen.findByRole('button', { name: '汇总门店报货' }))
+    await screen.findByRole('checkbox', { name: '选择 商品SKU-1 SKU-1' })
+    await waitFor(() => expect(screen.getByText('无匹配福利，按标准价')).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: '存草稿' }))
+    await waitFor(() => expect(saveMarketReplenishmentDraft).toHaveBeenCalledTimes(1))
+    // 表单提交在途：待办动作一律不响应（防止回填 / 删除与在途的保存抢同一张单）
+    fireEvent.click(screen.getByRole('tab', { name: /单据/ }))
+    fireEvent.click(await screen.findByRole('button', { name: '继续编辑 MBH-D1' }))
+    expect(getInventoryCoreDocById).not.toHaveBeenCalled()
+    // 在途期间换市场 = 新世代：迟到的保存结果不能把单号写回（否则下一次「提交」会落到那张单上）
+    fireEvent.click(screen.getByRole('tab', { name: '填报表单' }))
+    fireEvent.change(marketSelect, { target: { value: 'M2' } })
+    await act(async () => { slowSave.resolve({ id: 'MBH-OLD', updatedAt: null }) })
+    expect(screen.queryByText('MBH-OLD', { selector: 'span.font-mono' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '创建市场报货单' })).toBeInTheDocument()
+  })
+
+  it('无市场价格权限（marketPriceLocationIds=[]）：不取福利报价，存草稿不带福利选择', async () => {
+    mockDocs({})
+    vi.mocked(summarizeStoreReplenishmentRequests).mockResolvedValue({ marketId: 'M1', items: [summaryLine('SKU-1', [11], 4)] })
+    vi.mocked(saveMarketReplenishmentDraft).mockResolvedValue({ id: 'MBH-D9', updatedAt: '2026-09-26T01:00:00.000Z' })
+    renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1], marketPriceLocationIds: [] })
+    fireEvent.click(await screen.findByRole('button', { name: '汇总门店报货' }))
+    await screen.findByRole('checkbox', { name: '选择 商品SKU-1 SKU-1' })
+    fireEvent.click(screen.getByRole('button', { name: '存草稿' }))
+    await waitFor(() => expect(saveMarketReplenishmentDraft).toHaveBeenCalledWith(expect.objectContaining({ promotionSelections: undefined })))
+    expect(quoteMarketReplenishmentPrices).not.toHaveBeenCalled()
+  })
+
+  it('价格权只覆盖别的市场（办理 A、价格权在 B）：在 A 市场不取价、不带福利选择（与服务端同绑定判据同源）', async () => {
+    mockDocs({})
+    vi.mocked(summarizeStoreReplenishmentRequests).mockResolvedValue({ marketId: 'M1', items: [summaryLine('SKU-1', [11], 4)] })
+    vi.mocked(saveMarketReplenishmentDraft).mockResolvedValue({ id: 'MBH-D9', updatedAt: '2026-09-26T01:00:00.000Z' })
+    renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1], marketPriceLocationIds: ['M2'] })
+    fireEvent.click(await screen.findByRole('button', { name: '汇总门店报货' }))
+    await screen.findByRole('checkbox', { name: '选择 商品SKU-1 SKU-1' })
+    fireEvent.click(screen.getByRole('button', { name: '存草稿' }))
+    await waitFor(() => expect(saveMarketReplenishmentDraft).toHaveBeenCalledWith(expect.objectContaining({ promotionSelections: undefined })))
+    expect(quoteMarketReplenishmentPrices).not.toHaveBeenCalled()
+  })
+
+  it('只回传人工改选的福利：系统推荐命中的方案不当作改选提交', async () => {
+    mockDocs({})
+    vi.mocked(summarizeStoreReplenishmentRequests).mockResolvedValue({ marketId: 'M1', items: [summaryLine('SKU-1', [11], 4)] })
+    vi.mocked(quoteMarketReplenishmentPrices).mockImplementation(async (input) => ({
+      ...quoteFor(input.items),
+      items: quoteFor(input.items).items.map((item) => ({
+        ...item, promotionPlanId: 'P-REC', promotionPlanNo: 'FL-1', promotionName: '推荐福利',
+        promotionRuleType: '单品阶梯', recommendedPromotionPlanId: 'P-REC', selectionMode: '系统推荐',
+      })),
+    }) as never)
+    vi.mocked(saveMarketReplenishmentDraft).mockResolvedValue({ id: 'MBH-D9', updatedAt: '2026-09-26T01:00:00.000Z' })
+    renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1] })
+    fireEvent.click(await screen.findByRole('button', { name: '汇总门店报货' }))
+    await screen.findByText('FL-1 · 推荐福利')
+    fireEvent.click(screen.getByRole('button', { name: '存草稿' }))
+    await waitFor(() => expect(saveMarketReplenishmentDraft).toHaveBeenCalledWith(expect.objectContaining({ promotionSelections: undefined })))
+  })
+
+  it('汇总在途时换市场：汇总按钮与工作区立即解锁，迟到的汇总不覆盖', async () => {
+    mockDocs({})
+    const slowSummary = deferred<Awaited<ReturnType<typeof summarizeStoreReplenishmentRequests>>>()
+    vi.mocked(summarizeStoreReplenishmentRequests).mockReturnValue(slowSummary.promise)
+    renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1, M2] })
+    const marketSelect = (await screen.findByRole('option', { name: '南昌市场' })).closest('select') as HTMLSelectElement
+    fireEvent.change(marketSelect, { target: { value: 'M1' } })
+    fireEvent.click(await screen.findByRole('button', { name: '汇总门店报货' }))
+    await waitFor(() => expect(summarizeStoreReplenishmentRequests).toHaveBeenCalledTimes(1))
+    fireEvent.change(marketSelect, { target: { value: 'M2' } })
+    await waitFor(() => expect(screen.getByRole('button', { name: '汇总门店报货' })).not.toBeDisabled())
+    await act(async () => { slowSummary.resolve({ marketId: 'M1', items: [summaryLine('SKU-1', [11], 4)] }) })
+    expect(screen.queryByRole('checkbox', { name: '选择 商品SKU-1 SKU-1' })).not.toBeInTheDocument()
+  })
+
+  it('跨天续编：报货日期更新为今天并提示', async () => {
+    mockDocs({ inbox: segment([draftRow()]) })
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue({ ...draftDetail([{ skuId: 'SKU-1', quantity: 3 }]), docDate: '2020-01-01' })
+    vi.mocked(summarizeStoreReplenishmentRequests).mockResolvedValue({ marketId: 'M1', items: [summaryLine('SKU-1', [11], 4)] })
+    renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1] })
+    await openDocsTab()
+    fireEvent.click(screen.getByRole('button', { name: '继续编辑 MBH-D1' }))
+    await waitFor(() => expect(vi.mocked(toast.info)).toHaveBeenCalledWith(expect.stringMatching(/^报货日期已从草稿的 2020-01-01 更新为今天/)))
+  })
+
+  it('不是草稿的单点「继续编辑」（已被别人提交）：提示且不回填', async () => {
+    mockDocs({ inbox: segment([draftRow()]) })
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue({ ...draftDetail([{ skuId: 'SKU-1', quantity: 3 }]), status: '已完成' })
+    renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1] })
+    await openDocsTab()
+    fireEvent.click(screen.getByRole('button', { name: '继续编辑 MBH-D1' }))
+    await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalledWith('单据 MBH-D1 不是可编辑的市场报货草稿'))
+    expect(screen.queryByRole('button', { name: '提交市场报货单' })).not.toBeInTheDocument()
+    expect(summarizeStoreReplenishmentRequests).not.toHaveBeenCalled()
+  })
+})
+
+describe('门店报货草稿（#348 · 348a）', () => {
+  const M1: InventoryLocationRow = { locationId: 'M1', locationType: '市场', name: '南昌市场', orgNodeId: 'M1', storeId: null, parentLocationId: 'HQ', isActive: true }
+  const S1: InventoryLocationRow = { locationId: 'S1', locationType: '门店', name: '一分院', orgNodeId: 'ORG-S1', storeId: 'S1', parentLocationId: 'M1', isActive: true }
+  const S2: InventoryLocationRow = { locationId: 'S2', locationType: '门店', name: '二分院', orgNodeId: 'ORG-S2', storeId: 'S2', parentLocationId: 'M1', isActive: true }
+  function draftRow() {
+    return docRow({ id: 'DBH-D1', docType: '门店报货', status: '草稿', sourceOrgNodeId: 'ORG-S1', targetOrgNodeId: 'M1', marketId: 'M1' })
+  }
+  function draftDetail(): InventoryDocDetail {
+    return {
+      ...docDetail(draftRow()),
+      remark: '门店草稿',
+      items: [{ id: 1, docId: 'DBH-D1', skuId: 'SKU-1', skuName: '商品1', specName: null, quantity: 3, remark: '急用' } as unknown as InventoryDocDetail['items'][number]],
+    }
+  }
+
+  it('继续编辑：回填门店 / 市场 / 明细并锁定门店，提交带 draftId', async () => {
+    mockDocs({ inbox: segment([draftRow()]) })
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue(draftDetail())
+    vi.mocked(createStoreReplenishmentRequest).mockResolvedValue({ id: 'DBH-D1', updatedAt: null })
+    renderPage({ level: 'store', operation: 'store-request', locations: [M1, S1, S2] })
+    await openDocsTab()
+    expect(screen.getByText('草稿：存了未提交的门店报货单，提交后市场才能汇总、配货')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '继续编辑 DBH-D1' }))
+    expect(await screen.findByText('DBH-D1', { selector: 'span.font-mono' })).toBeInTheDocument()
+    const storeSelect = screen.getByRole('option', { name: '一分院' }).closest('select') as HTMLSelectElement
+    expect(storeSelect.value).toBe('S1')
+    expect(storeSelect.disabled).toBe(true)
+    const submitButton = screen.getByRole('button', { name: '提交门店报货单' })
+    fireEvent.submit(submitButton.closest('form')!)
+    await waitFor(() => expect(createStoreReplenishmentRequest).toHaveBeenCalledWith({
+      storeId: 'S1', marketId: 'M1', docDate: expect.any(String), remark: '门店草稿',
+      items: [{ skuId: 'SKU-1', quantity: 3, remark: '急用' }],
+      draftId: 'DBH-D1',
+      // 草稿乐观锁：回传打开草稿时的版本
+      expectedUpdatedAt: draftRow().updatedAt,
+    }))
+  })
+
+  it('存草稿走 saveStoreReplenishmentDraft，存完停在编辑态', async () => {
+    mockDocs({ inbox: segment([draftRow()]) })
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue(draftDetail())
+    vi.mocked(saveStoreReplenishmentDraft).mockResolvedValue({ id: 'DBH-D1', updatedAt: '2026-09-26T02:00:00.000Z' })
+    renderPage({ level: 'store', operation: 'store-request', locations: [M1, S1] })
+    await openDocsTab()
+    fireEvent.click(screen.getByRole('button', { name: '继续编辑 DBH-D1' }))
+    await screen.findByText('DBH-D1', { selector: 'span.font-mono' })
+    fireEvent.click(screen.getByRole('button', { name: '存草稿' }))
+    await waitFor(() => expect(saveStoreReplenishmentDraft).toHaveBeenCalledWith(expect.objectContaining({ draftId: 'DBH-D1', storeId: 'S1' })))
+    expect(createStoreReplenishmentRequest).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: '提交门店报货单' })).toBeInTheDocument()
+  })
+
+  it('门店报货草稿的非法数量不能绕过提交约束', async () => {
+    mockDocs({ inbox: segment([draftRow()]) })
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue(draftDetail())
+    renderPage({ level: 'store', operation: 'store-request', locations: [M1, S1] })
+    await openDocsTab()
+    fireEvent.click(screen.getByRole('button', { name: '继续编辑 DBH-D1' }))
+    await screen.findByText('DBH-D1', { selector: 'span.font-mono' })
+    fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '-1' } })
+    fireEvent.click(screen.getByRole('button', { name: '存草稿' }))
+    expect(saveStoreReplenishmentDraft).not.toHaveBeenCalled()
+    expect(toast.error).toHaveBeenCalledWith('报货数量须为 0.01 至 9999999999.99，且最多两位小数')
+  })
+
+  it('删除草稿按业务分派到门店报货的 action，不串到市场报货', async () => {
+    mockDocs({ inbox: segment([draftRow()]) })
+    vi.mocked(deleteStoreReplenishmentDraft).mockResolvedValue({ id: 'DBH-D1' })
+    renderTab({ operation: 'store-request' })
+    await screen.findByText('待我处理')
+    fireEvent.click(screen.getByRole('button', { name: '删除草稿 DBH-D1' }))
+    expect(screen.getByText('删除门店报货草稿？')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '确认删除' }))
+    await waitFor(() => expect(deleteStoreReplenishmentDraft).toHaveBeenCalledWith({ draftId: 'DBH-D1', reason: null }))
+    expect(deleteMarketReplenishmentDraft).not.toHaveBeenCalled()
+  })
+
+  it('草稿门店已不在可选范围（停用 / 越权）：提示只能删除，不回填', async () => {
+    mockDocs({ inbox: segment([draftRow()]) })
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue(draftDetail())
+    renderPage({ level: 'store', operation: 'store-request', locations: [M1, S2] })
+    await openDocsTab()
+    fireEvent.click(screen.getByRole('button', { name: '继续编辑 DBH-D1' }))
+    await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalledWith('草稿的报货门店已停用或不在你的范围内，只能删除该草稿'))
+    expect(screen.queryByRole('button', { name: '提交门店报货单' })).not.toBeInTheDocument()
+  })
+})
+
+/**
+ * #349 汇总表单的价格列。
+ *
+ * 这几条是**源码级**守护，和本文件其它用例同构：价格列的成立条件散在
+ * 「服务端下发的 priceVisible → state → 表头/单元格三处 JSX」之间，
+ * 只靠渲染测试挡不住「某处漏了条件、某列无条件渲染」。
+ */
+describe('汇总表单的价格列（#349）', () => {
+  const source = readFileSync(resolve(__dirname, 'inventory-operations-page.tsx'), 'utf8')
+
+  it('价格列由服务端下发的 priceVisible 门控，不由前端猜', () => {
+    expect(source).toContain('setSummaryPriceVisible(summary.priceVisible)')
+    // 表头与行两处都要门控：只门控一处会渲染出「有表头无数据」的错位表
+    expect(source.match(/\{summaryPriceVisible && <>/g)?.length).toBe(2)
+  })
+
+  it('loadSummary 映射了两个价格字段', () => {
+    // 漏映射的表现是字段恒 null + 列恒「—」，而没有任何测试会红 —— 所以在这里钉住
+    expect(source).toContain('marketStandardUnitPrice: item.marketStandardUnitPrice')
+    expect(source).toContain('marketActualUnitPrice: item.marketActualUnitPrice')
+  })
+
+  it('金额随本次汇总数量联动（#356 把数量固定后自然退化为只读派生）', () => {
+    expect(source).toContain('function summaryLineAmount(')
+    expect(source).toContain('quantity * line.marketActualUnitPrice')
+    // 反向：不得写成固定用 outstandingQuantity 算（#356 合并前那与可编辑的数量对不上）
+    expect(source).not.toContain('line.outstandingQuantity * line.marketActualUnitPrice')
+  })
+})
+
+describe('#356 汇总作废入口', () => {
+  it('原因必填；仅已完成待办有入口，已取消产出只读', async () => {
+    mockDocs({ inbox: segment([docRow({ id: 'MHZ-356', docType: '市场报货汇总', status: '已完成' })]), produced: segment([docRow({ id: 'MHZ-old', docType: '市场报货汇总', status: '已取消' })]) })
+    renderTab({ operation: 'market-report-summary' })
+    await screen.findByText('待我处理')
+    expect(screen.queryByRole('button', { name: '作废汇总 MHZ-old' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '作废汇总 MHZ-356' }))
+    fireEvent.click(screen.getByRole('button', { name: '确认作废' }))
+    await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalledWith('请填写作废原因'))
+    expect(vi.mocked(voidMarketReportSummary)).not.toHaveBeenCalled()
+    fireEvent.change(screen.getByLabelText(/作废原因/), { target: { value: '汇总范围有误' } })
+    fireEvent.click(screen.getByRole('button', { name: '确认作废' }))
+    await waitFor(() => expect(vi.mocked(voidMarketReportSummary)).toHaveBeenCalledWith({ summaryId: 'MHZ-356', reason: '汇总范围有误' }))
+  })
+
+  it('汇总数量固定、无供应商列；采购缺供应商只提示且不禁提交', () => {
+    const source = readFileSync(resolve(__dirname, 'inventory-operations-page.tsx'), 'utf8')
+    const summary = source.slice(source.indexOf('function MarketReportSummaryForm('), source.indexOf('interface MergedPurchase'))
+    expect(summary).not.toContain('aria-label={`本次汇总')
+    expect(summary).toContain('const quantity = line.outstandingQuantity')
+    expect(summary).not.toContain('font-medium">供应商</th>')
+    expect(source).not.toContain('补全后才能下单')
+    expect(source).not.toContain('disabled={loading || lines.length === 0 || missingSupplierNames.length > 0}')
+    expect(source).not.toContain('供应商：{group.supplier')
   })
 })

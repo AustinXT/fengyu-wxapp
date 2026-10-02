@@ -1,0 +1,103 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`product — year 查询计数 (#311) > year 比三个不同区间少 5 次 db.execute 1`] = `
+{
+  "byMarket": [],
+  "byStore": [],
+  "filterOptions": [],
+  "kpis": {
+    "cardHolderRate": {
+      "unit": "percent",
+      "value": null,
+    },
+    "cardHolders": {
+      "unit": "count",
+      "value": 0,
+    },
+    "newAvgTicket": {
+      "unit": "amount",
+      "value": null,
+    },
+    "newCount": {
+      "mom": {
+        "kind": "na",
+      },
+      "unit": "count",
+      "value": 0,
+      "yoy": {
+        "kind": "na",
+      },
+    },
+    "newRevenue": {
+      "mom": {
+        "kind": "na",
+      },
+      "unit": "amount",
+      "value": 0,
+      "yoy": {
+        "kind": "na",
+      },
+    },
+    "repurchaseAvgTicket": {
+      "unit": "amount",
+      "value": null,
+    },
+    "repurchaseCount": {
+      "mom": {
+        "kind": "na",
+      },
+      "unit": "count",
+      "value": 0,
+      "yoy": {
+        "kind": "na",
+      },
+    },
+    "repurchaseRate": {
+      "unit": "percent",
+      "value": null,
+    },
+    "repurchaseRevenue": {
+      "mom": {
+        "kind": "na",
+      },
+      "unit": "amount",
+      "value": 0,
+      "yoy": {
+        "kind": "na",
+      },
+    },
+    "trialCount": {
+      "mom": {
+        "kind": "na",
+      },
+      "unit": "count",
+      "value": 0,
+      "yoy": {
+        "kind": "na",
+      },
+    },
+  },
+  "scope": {
+    "id": null,
+    "name": "全部",
+    "type": "all",
+  },
+  "selected": {
+    "categoryName": null,
+    "productKind": null,
+  },
+  "timeRange": {
+    "end": "2026-09-29",
+    "lastYear": {
+      "end": "2025-09-29",
+      "start": "2025-01-01",
+    },
+    "presetLabel": "今年",
+    "previous": {
+      "end": "2025-09-29",
+      "start": "2025-01-01",
+    },
+    "start": "2026-01-01",
+  },
+}
+`;

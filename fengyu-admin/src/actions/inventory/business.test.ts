@@ -5,6 +5,7 @@ const { mockBusiness } = vi.hoisted(() => ({
     approveItemCompanyShipmentCancellation: vi.fn(),
     approveReturnForRestock: vi.fn(),
     cancelSupplyChainPurchaseOrder: vi.fn(),
+    createInventoryConversion: vi.fn(),
     getShipmentReceiptProgress: vi.fn(),
     receiveItemCompanyShipment: vi.fn(),
     receiveItemCompanyShipmentInFull: vi.fn(),
@@ -40,6 +41,7 @@ import {
   approveItemCompanyShipmentCancellation,
   approveReturnForRestock,
   cancelSupplyChainPurchaseOrder,
+  createInventoryConversion,
   receiveItemCompanyShipment,
   receiveItemCompanyShipmentInFull,
   receiveStoreAllocation,
@@ -102,7 +104,7 @@ describe('整单收货入口的权限闸门（#192）', () => {
   })
 
   it('两个整单入口的权限与各自「带明细」的老入口逐字一致', async () => {
-    // 规格要求：一键收货不得比部分收货更宽松。两两对照，任一侧被改都会红。
+    // 规格要求：一键收货不得比「去收货」（带明细入口，#358 起同样整单）更宽松。两两对照，任一侧被改都会红。
     mockBusiness.receiveItemCompanyShipment.mockResolvedValue({ id: 'MRK-1', shipmentId: 'GFH-1' })
     await receiveItemCompanyShipment({ shipmentId: 'GFH-1', items: [] })
     const marketPartial = vi.mocked(requirePermission).mock.calls.map(([, action]) => action)
@@ -211,5 +213,27 @@ describe('待办区行内动作的权限派发表', () => {
     expect(requirePermission).toHaveBeenCalledTimes(1)
     expect(requirePermission).toHaveBeenCalledWith(SESSION, 'inventory:supply_chain_approve')
     expect(requireAnyPermission).not.toHaveBeenCalled()
+  })
+})
+
+describe('库存转换仅供应链可做（#343）', () => {
+  it('createInventoryConversion 只闸 inventory:supply_chain_operate，不再是 any 版本', async () => {
+    mockBusiness.createInventoryConversion.mockResolvedValue({ outboundId: 'ZHC-1', inboundId: 'ZHR-1' })
+    await createInventoryConversion({ locationId: 'HQ', sources: [], targets: [] })
+
+    expect(requirePermission).toHaveBeenCalledTimes(1)
+    expect(requirePermission).toHaveBeenCalledWith(SESSION, 'inventory:supply_chain_operate')
+    // 早先是 withAnyPermission([供应链, 市场, 门店])，任一即可 —— 退回去必红
+    expect(requireAnyPermission).not.toHaveBeenCalled()
+    expect(scopeSessionToActions).toHaveBeenCalledWith(SESSION, ['inventory:supply_chain_operate'])
+  })
+
+  it('只有市场 / 门店权限的会话调用被拒（PERMISSION_DENIED），不进业务函数', async () => {
+    vi.mocked(requirePermission).mockImplementation(() => {
+      throw new ApiError('PERMISSION_DENIED', '缺少权限')
+    })
+    await expect(createInventoryConversion({ locationId: 'M1', sources: [], targets: [] }))
+      .rejects.toThrow('PERMISSION_DENIED')
+    expect(mockBusiness.createInventoryConversion).not.toHaveBeenCalled()
   })
 })

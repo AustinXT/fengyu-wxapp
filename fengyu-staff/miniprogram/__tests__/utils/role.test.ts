@@ -141,3 +141,50 @@ describe('门店运行态角色判定', () => {
     expect(isManager()).toBe(false)
   })
 })
+
+describe('canOperateStoreInventory：动作与 scope 同一绑定（#352）', () => {
+  // 员工在 A 店有 store_operate、在 B 所属市场只有 market_approve：三动作并集含 A、B，
+  // 但写权限集合只含 A —— 在 B 店不能进写表单（云端 assertInventoryWriteStoreScope 同样拒绝）
+  function setInventory(globalData: Record<string, unknown>) {
+    ;(globalThis as any).getApp = () => ({
+      globalData: {
+        loginLevel: 'store',
+        roleBindings: [
+          { role: 'inventory_store_operator', scopeId: 'org-A', scopeType: '门店', actions: ['inventory:store_operate'] },
+          { role: 'finance', scopeId: 'org-market-B', scopeType: '市场', actions: ['inventory:market_approve'] },
+        ],
+        inventoryStoreIds: ['store-A', 'store-B'],
+        ...globalData,
+      },
+    })
+  }
+
+  afterEach(() => {
+    delete (globalThis as any).getApp
+  })
+
+  test('跨绑定：B 店可浏览但不可办理', async () => {
+    const { canAccessInventory, canOperateStoreInventory } = await import('../../utils/role')
+    setInventory({ currentStoreId: 'store-B', inventoryOperateStoreIds: ['store-A'] })
+    expect(canAccessInventory()).toBe(true)
+    expect(canOperateStoreInventory()).toBe(false)
+  })
+
+  test('A 店可办理', async () => {
+    const { canOperateStoreInventory } = await import('../../utils/role')
+    setInventory({ currentStoreId: 'store-A', inventoryOperateStoreIds: ['store-A'] })
+    expect(canOperateStoreInventory()).toBe(true)
+  })
+
+  test('云端未下发（旧版 staffApi，null）时回退三动作并集，不把库存员挡在门外', async () => {
+    const { canOperateStoreInventory } = await import('../../utils/role')
+    setInventory({ currentStoreId: 'store-A', inventoryOperateStoreIds: null })
+    expect(canOperateStoreInventory()).toBe(true)
+  })
+
+  test('下发空数组 = 无写权限门店（不回退）', async () => {
+    const { canOperateStoreInventory } = await import('../../utils/role')
+    setInventory({ currentStoreId: 'store-A', inventoryOperateStoreIds: [] })
+    expect(canOperateStoreInventory()).toBe(false)
+  })
+})

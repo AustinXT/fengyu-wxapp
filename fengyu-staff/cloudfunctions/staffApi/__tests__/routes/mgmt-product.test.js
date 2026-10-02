@@ -14,6 +14,38 @@ const config = globalThis.__mocks__.config
 const { createCtx, createManagerCtx } = require('../helpers')
 const { cardHolders, cycleStats } = require('../../routes/mgmt-product')
 
+/**
+ * #401：scope 构造器叠加了在营口径 helper（utils/store-status.js activeStoreCondition）。
+ * 把那段固定子查询替换成 `<ACTIVE>` 占位，再断言其余形态 —— 既不让它误伤「单店不得出现
+ * store_id IN (」这类断言，又能钉住「启用门店过滤确实叠上了」。
+ */
+const ACTIVE_STORE_RE =
+  /\S+ IN \(\s*SELECT active_store\.store_id\s+FROM stores active_store\s+JOIN org_nodes active_node ON active_store\.org_node_id = active_node\.id\s+WHERE active_node\.type = '门店'\s+AND active_node\.is_active = TRUE\s*\)/g
+function withoutActive(sql) {
+  return sql.replace(ACTIVE_STORE_RE, '<ACTIVE>')
+}
+
+
+/**
+ * ★ 运行时核对**两条查询的绑定参数**（#287 闸门 2 round-3 codex）。
+ *
+ * 三档 scope 用例此前只检查 SQL 文本，没有检查 `pg.query` 的第二参数 ——
+ * 于是 `pg.query(memberSql, [])` 这类「分子分母参数脱钩」**测不出来**：
+ * all 档恰好能跑（无占位符），market/store 档的 memberSql 含 `$1` 却没绑参数，
+ * 要到运行时才炸。分子分母必须绑**同一份**参数。
+ */
+function expectSharedScopeParams(expected) {
+  const calls = pg.query.mock.calls.filter(
+    (c) => /FROM\s+client_wechat_users\s+c/.test(c[0]) && /became_member_at/.test(c[0]),
+  )
+  expect(calls, '未捕获到持卡与会员两条查询').toHaveLength(2)
+  for (const c of calls) {
+    expect(c[1] ?? [], `scope 参数与预期不符：${String(c[0]).slice(0, 60)}`).toEqual(expected)
+  }
+  // 两条必须是同一份数组引用 —— 各建一份就为「一侧改了另一侧没改」留了门
+  expect(calls[0][1], '两条查询未共用同一个 params 数组').toBe(calls[1][1])
+}
+
 // ---- ctx 构造 ----
 function makeHqCtx(payload = {}) {
   return createCtx({
@@ -70,15 +102,20 @@ function setupCardMocks({
     if (/FROM stores\b/.test(sql) && /SELECT store_name/.test(sql)) {
       return [{ store_name: storeName }]
     }
-    // memberCount SQL：FROM client_wechat_users + became_member_at IS NOT NULL
-    if (/FROM\s+client_wechat_users\s+c/.test(sql) && /became_member_at\s+IS\s+NOT\s+NULL/.test(sql)) {
-      return [{ cnt: memberCount }]
-    }
-    // 持卡 SQL：JOIN product_categories pc + product_kind 分组
+    // ⚠️ 持卡必须**先于**会员判定（#287）：同源改造后持卡 SQL 也是
+    //    FROM client_wechat_users c + became_member_at IS NOT NULL，
+    //    照旧序会被错认成 memberCount，两者返回同一批行、rate 恒等于 1。
+    //    唯一的区别是持卡多了 JOIN product_categories pc（要按 product_kind 分组）。
     if (/JOIN\s+product_categories\s+pc/.test(sql) && /pc\.product_kind/.test(sql)) {
       return cardRows
     }
-    return []
+    // memberCount SQL：FROM client_wechat_users + became_member_at IS NOT NULL（且无品项 JOIN）
+    if (/FROM\s+client_wechat_users\s+c/.test(sql) && /became_member_at\s+IS\s+NOT\s+NULL/.test(sql)) {
+      return [{ cnt: memberCount }]
+    }
+    // ⚠️ 兜底抛错而非返回空数组：把「没命中任何分支」伪装成合法零值，
+    //    会让路由混淆（本轮实测踩过）退化成「数字变了」而不是「测试红」。
+    throw new Error('mock 未路由到任何分支，SQL 片段：' + String(sql).slice(0, 200))
   })
 }
 
@@ -102,7 +139,9 @@ function setupCycleMocks({
     if (/WITH\s+daily_agg\s+AS/.test(sql)) {
       return unionRows
     }
-    return []
+    // ⚠️ 兜底抛错而非返回空数组：把「没命中任何分支」伪装成合法零值，
+    //    会让路由混淆（本轮实测踩过）退化成「数字变了」而不是「测试红」。
+    throw new Error('mock 未路由到任何分支，SQL 片段：' + String(sql).slice(0, 200))
   })
 }
 
@@ -162,7 +201,12 @@ describe('mgmtProduct.cardHolders SQL 形态', () => {
     expect(cardSql).not.toMatch(/si\.remaining_sessions\s*>\s*0/)
     expect(cardSql).toMatch(/JOIN\s+product_skus\s+sk/)
     expect(cardSql).toMatch(/JOIN\s+product_categories\s+pc/)
-    expect(cardSql).toMatch(/COUNT\(DISTINCT\s+so\.client_user_id\)/)
+    // ★ 同源（#287）：分子以会员表为驱动表、带会员条件，按会员去重
+    expect(cardSql).toMatch(/FROM\s+client_wechat_users\s+c\b/)
+    expect(cardSql).toMatch(/c\.became_member_at\s+IS\s+NOT\s+NULL/)
+    expect(cardSql).toMatch(/COUNT\(DISTINCT\s+c\.user_id\)/)
+    // 反向：绝不能回到以订单表数人的老写法（那是 253% 的根因）
+    expect(cardSql).not.toMatch(/COUNT\(DISTINCT\s+so\.client_user_id\)/)
     expect(cardSql).toMatch(/GROUP BY\s+pc\.product_kind/)
     // 2026-05-18 B5：寄存单（剩余次数初始化）按次数维度纳入持卡人数
     expect(cardSql).toMatch(/so\.sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*,\s*'寄存单'\s*\)/)
@@ -176,7 +220,11 @@ describe('mgmtProduct.cardHolders SQL 形态', () => {
 
     const sqlList = pg.query.mock.calls.map((c) => c[0])
     const memberSql = sqlList.find(
-      (s) => /FROM\s+client_wechat_users\s+c/.test(s) && /became_member_at\s+IS\s+NOT\s+NULL/.test(s),
+      (s) =>
+        /FROM\s+client_wechat_users\s+c/.test(s) &&
+        /became_member_at\s+IS\s+NOT\s+NULL/.test(s) &&
+        // 排除持卡 SQL —— 同源改造后它同样以会员表为驱动表（#287）
+        !/JOIN\s+product_categories\s+pc/.test(s),
     )
     expect(memberSql).toBeTruthy()
     expect(memberSql).toMatch(/COUNT\(\*\)::int\s+AS\s+cnt/)
@@ -190,12 +238,17 @@ describe('mgmtProduct.cardHolders SQL 形态', () => {
     const sqlList = pg.query.mock.calls.map((c) => c[0])
     const cardSql = sqlList.find((s) => /JOIN\s+product_categories\s+pc/.test(s))
     const memberSql = sqlList.find(
-      (s) => /FROM\s+client_wechat_users\s+c/.test(s) && /became_member_at\s+IS\s+NOT\s+NULL/.test(s),
+      (s) =>
+        /FROM\s+client_wechat_users\s+c/.test(s) &&
+        /became_member_at\s+IS\s+NOT\s+NULL/.test(s) &&
+        // 排除持卡 SQL —— 同源改造后它同样以会员表为驱动表（#287）
+        !/JOIN\s+product_categories\s+pc/.test(s),
     )
-    expect(cardSql).toMatch(/WHERE\s+TRUE/)
-    expect(memberSql).toMatch(/WHERE\s+TRUE/)
+    expect(withoutActive(cardSql)).toMatch(/WHERE\s+\(TRUE\)\s+AND\s+<ACTIVE>/)
+    expect(withoutActive(memberSql)).toMatch(/WHERE\s+\(TRUE\)\s+AND\s+<ACTIVE>/)
     expect(cardSql).not.toMatch(/store_id\s*=\s*\$/)
     expect(memberSql).not.toMatch(/bound_store_id\s*=\s*\$/)
+    expectSharedScopeParams([])
   })
 
   test('scopeType=market：持卡与会员数均走递归后代组织树', async () => {
@@ -206,17 +259,24 @@ describe('mgmtProduct.cardHolders SQL 形态', () => {
     const sqlList = pg.query.mock.calls.map((c) => c[0])
     const cardSql = sqlList.find((s) => /JOIN\s+product_categories\s+pc/.test(s))
     const memberSql = sqlList.find(
-      (s) => /FROM\s+client_wechat_users\s+c/.test(s) && /became_member_at\s+IS\s+NOT\s+NULL/.test(s),
+      (s) =>
+        /FROM\s+client_wechat_users\s+c/.test(s) &&
+        /became_member_at\s+IS\s+NOT\s+NULL/.test(s) &&
+        // 排除持卡 SQL —— 同源改造后它同样以会员表为驱动表（#287）
+        !/JOIN\s+product_categories\s+pc/.test(s),
     )
 
-    expect(cardSql).toMatch(/so\.store_id\s+IN\s*\(/)
+    // ★ 归店同源（#287）：持卡与会员数用**同一个** scope 构造（bound_store_id）
+    expect(cardSql).toMatch(/c\.bound_store_id\s+IN\s*\(/)
+    expect(cardSql).not.toMatch(/so\.store_id\s+IN\s*\(/)
     expectRecursiveDescendantScope(cardSql, 1)
 
     expect(memberSql).toMatch(/c\.bound_store_id\s+IN\s*\(/)
     expectRecursiveDescendantScope(memberSql, 1)
+    expectSharedScopeParams(['mkt-A'])
   })
 
-  test('scopeType=store：持卡用 so.store_id = $1；memberCount 用 c.bound_store_id = $1', async () => {
+  test('scopeType=store：持卡与 memberCount **都**用 c.bound_store_id = $1（同源，#287）', async () => {
     setupCardMocks({ cardRows: [], memberCount: 0 })
     const ctx = makeHqCtx({ scopeType: 'store', scopeId: 'store-001' })
     await cardHolders(ctx)
@@ -224,12 +284,21 @@ describe('mgmtProduct.cardHolders SQL 形态', () => {
     const sqlList = pg.query.mock.calls.map((c) => c[0])
     const cardSql = sqlList.find((s) => /JOIN\s+product_categories\s+pc/.test(s))
     const memberSql = sqlList.find(
-      (s) => /FROM\s+client_wechat_users\s+c/.test(s) && /became_member_at\s+IS\s+NOT\s+NULL/.test(s),
+      (s) =>
+        /FROM\s+client_wechat_users\s+c/.test(s) &&
+        /became_member_at\s+IS\s+NOT\s+NULL/.test(s) &&
+        // 排除持卡 SQL —— 同源改造后它同样以会员表为驱动表（#287）
+        !/JOIN\s+product_categories\s+pc/.test(s),
     )
 
-    expect(cardSql).toMatch(/so\.store_id\s*=\s*\$1/)
-    expect(cardSql).not.toMatch(/store_id\s+IN\s*\(/)
+    // ⚠️ 本条原本断言「持卡用 so.store_id、memberCount 用 c.bound_store_id」——
+    //    那正是 #287 的缺陷（归店键不同源），守护把它当成正确行为钉死了。
+    expect(cardSql).toMatch(/c\.bound_store_id\s*=\s*\$1/)
+    expect(cardSql).not.toMatch(/so\.store_id\s*=\s*\$1/)
+    expect(withoutActive(cardSql)).not.toMatch(/store_id\s+IN\s*\(/)
+    expect(withoutActive(cardSql)).toMatch(/<ACTIVE>/)
     expect(memberSql).toMatch(/c\.bound_store_id\s*=\s*\$1/)
+    expectSharedScopeParams(['store-001'])
   })
 })
 
@@ -369,7 +438,7 @@ describe('mgmtProduct.cycleStats SQL 形态', () => {
     expect(sql).toMatch(/so\.sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*,\s*'寄存单'\s*\)/)
     expect(sql).toMatch(/FILTER\s*\(\s*WHERE\s+so\.sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*\)\s*\)/)
     expect(sql).toMatch(/so\.status\s+NOT\s+IN\s*\(\s*'已关闭'\s*,\s*'已作废'\s*,\s*'未审核'\s*,\s*'待审批'\s*,\s*'支付失败'\s*\)/)
-    expect(sql).toMatch(/FROM\s+sale_item_performance_events\s+sipe/)
+    expect(sql).toMatch(/FROM\s+sale_reportable_item_events\s+sipe/)
     expect(sql).toMatch(/sipe\.performance_date\s*<=\s*\$2/)
   })
 
@@ -392,7 +461,12 @@ describe('mgmtProduct.cycleStats SQL 形态', () => {
 
     const sql = getCycleSql()
     expect(sql).toMatch(/repurchase_qualifying_days\s+AS\s*\([\s\S]*?purchase_received\s*>=\s*\$3/)
-    expect(sql).toMatch(/period_agg\s+AS\s*\([\s\S]*?purchase_received\s+AS\s+day_received[\s\S]*?purchase_received\s*>\s*0/)
+    // #288：period_agg 整段等值 —— 只排除纯寄存日（<> 0），负数冲销日必须保留；追加任何谓词都会让冲销重新被吞
+    const flat = sql.replace(/--[^\n]*/g, ' ').replace(/\s+/g, ' ')
+    expect(/\bperiod_agg AS \( ([\s\S]*?) \), \w+ AS /.exec(flat)?.[1]).toBe(
+      'SELECT client_user_id, store_id, product_kind, purchase_date, purchase_received AS day_received ' +
+        'FROM daily_agg WHERE purchase_date BETWEEN $1 AND $2 AND purchase_received <> 0',
+    )
     expect(sql).toMatch(/fugou\s+AS\s*\([\s\S]*?FROM\s+repurchase_qualifying_days\s+q/)
   })
 
@@ -432,6 +506,31 @@ describe('mgmtProduct.cycleStats SQL 形态', () => {
     const sql = getCycleSql()
     expect(sql).toMatch(/tiyan\s+AS\s*\(/)
     expect(sql).toMatch(/NOT EXISTS\s*\(\s*SELECT\s+1\s+FROM\s+first_entry\s+f/)
+  })
+
+  test('#288 tiyan 只从正数购买日派生（负数冲销行不造体验客）', async () => {
+    setupCycleMocks({})
+    const ctx = makeHqCtx({ period: 'month', scopeType: 'all' })
+    await cycleStats(ctx)
+
+    const flat = getCycleSql().replace(/--[^\n]*/g, ' ').replace(/\s+/g, ' ')
+    expect(/\btiyan AS \( ([\s\S]*?) \) SELECT /.exec(flat)?.[1]).toBe(
+      'SELECT DISTINCT pa.client_user_id, pa.product_kind FROM period_agg pa WHERE pa.day_received > 0 ' +
+        'AND NOT EXISTS ( SELECT 1 FROM first_entry f WHERE f.client_user_id = pa.client_user_id ' +
+        'AND f.product_kind = pa.product_kind )',
+    )
+  })
+
+  test('#288 daily_agg 的 HAVING 只剔除两列都为 0 的空组（负数净额日保留）', async () => {
+    setupCycleMocks({})
+    const ctx = makeHqCtx({ period: 'month', scopeType: 'all' })
+    await cycleStats(ctx)
+
+    const flat = getCycleSql().replace(/--[^\n]*/g, ' ').replace(/\s+/g, ' ')
+    expect(flat.match(/\bHAVING\b/g)).toHaveLength(1)
+    expect(/\bHAVING ([\s\S]*?) \), qualifying_days AS /.exec(flat)?.[1]).toBe(
+      "SUM(sipe.performance_amount::numeric) <> 0 OR SUM(sipe.performance_amount::numeric) FILTER (WHERE so.sale_order_type IN ('销售单','转换单')) <> 0",
+    )
   })
 
   test('period_agg WHERE 含 purchase_date BETWEEN $1 AND $2', async () => {
@@ -489,7 +588,7 @@ describe('mgmtProduct.cycleStats scope 三档 SQL 形态', () => {
 
     const sql = getCycleSql()
     // daily_agg 紧跟一段 WHERE，包含 TRUE
-    expect(sql).toMatch(/daily_agg\s+AS\s*\(\s*SELECT[\s\S]*?WHERE\s+TRUE/)
+    expect(withoutActive(sql)).toMatch(/daily_agg\s+AS\s*\(\s*SELECT[\s\S]*?WHERE\s+\(TRUE\)\s+AND\s+<ACTIVE>/)
 
     const cycleCall = pg.query.mock.calls.find((c) => /WITH\s+daily_agg\s+AS/.test(c[0]))
     // params: [startDate, endDate, threshold]
@@ -516,7 +615,8 @@ describe('mgmtProduct.cycleStats scope 三档 SQL 形态', () => {
 
     const sql = getCycleSql()
     expect(sql).toMatch(/so\.store_id\s*=\s*\$4/)
-    expect(sql).not.toMatch(/store_id\s+IN\s*\(/)
+    expect(withoutActive(sql)).not.toMatch(/store_id\s+IN\s*\(/)
+    expect(withoutActive(sql)).toMatch(/<ACTIVE>/)
 
     const cycleCall = pg.query.mock.calls.find((c) => /WITH\s+daily_agg\s+AS/.test(c[0]))
     expect(cycleCall[1][3]).toBe('store-001')
@@ -567,6 +667,22 @@ describe('mgmtProduct.cycleStats 出数与防除零', () => {
     expect(ctx.result.trial[0].avgTicket).toBeNull()
     // 1000/3=333.333... → 333.33
     expect(ctx.result.newEntry[0].avgTicket).toBe(333.33)
+  })
+
+  test('#288 净额为负：业绩与客单价如实为负，不被截成 0 或 null', async () => {
+    setupCycleMocks({
+      unionRows: [
+        { group_kind: 'new', product_kind: '护理项目', count: 2, revenue: '-1500.50' },
+        { group_kind: 'repurchase', product_kind: '护理项目', count: 1, revenue: '-300' },
+      ],
+    })
+    const ctx = makeHqCtx({ period: 'month', scopeType: 'all' })
+    await cycleStats(ctx)
+
+    expect(ctx.result.newEntry).toEqual([
+      { productKind: '护理项目', count: 2, revenue: -1500.5, avgTicket: -750.25 },
+    ])
+    expect(ctx.result.repurchase[0]).toMatchObject({ revenue: -300, avgTicket: -300, repurchaseRate: 0.5 })
   })
 
   test('空 unionRows → trial / newEntry / repurchase 都为 []', async () => {

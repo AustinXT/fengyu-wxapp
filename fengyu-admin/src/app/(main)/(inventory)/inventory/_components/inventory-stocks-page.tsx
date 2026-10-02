@@ -18,6 +18,7 @@ import { Input } from '@/components/ui/input'
 import { Pagination } from '@/components/ui/pagination'
 import { exportToXlsx } from '@/lib/export-xlsx'
 import { useUrlFilters } from '@/lib/hooks/use-url-filters'
+import { normalizePage } from '@/lib/paging'
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100]
 
@@ -47,7 +48,7 @@ export default function InventoryStocksPage({
   const [searchInput, setSearchInput] = useState(get('q'))
   const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null)
 
-  const page = Math.max(1, Number(get('page', '1')) || 1)
+  const page = normalizePage(get('page', '1'))
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get('size')))
     ? Number(get('size'))
     : 20

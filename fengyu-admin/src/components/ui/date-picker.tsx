@@ -6,10 +6,12 @@ import { CalendarDays, ChevronDown, Clock3, X } from "lucide-react"
 import { DayPicker, TZDate, type Matcher } from "@daypicker/react"
 import { zhCN } from "@daypicker/react/locale"
 import { cn } from "@/lib/utils"
+import { CALENDAR_MAX_YEAR, CALENDAR_MIN_YEAR } from "@/lib/calendar-date"
 
 const TIME_ZONE = "Asia/Shanghai"
-const DEFAULT_START_YEAR = 1900
-const DEFAULT_END_YEAR = 2100
+// 与数据中心的日期校验（@/lib/calendar-date）同源：选得到的年份必须校验得过（#308）
+const DEFAULT_START_YEAR = CALENDAR_MIN_YEAR
+const DEFAULT_END_YEAR = CALENDAR_MAX_YEAR
 const POPOVER_GAP = 4
 const VIEWPORT_PADDING = 8
 

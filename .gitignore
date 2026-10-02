@@ -25,6 +25,7 @@ fengyu-admin/src/generated/
 coverage/
 playwright-report/
 test-results/
+.playwright-mcp/
 .auth/
 .last-test-context.json
 .last-inventory-context.json
@@ -82,3 +83,10 @@ reports/
 # 双谱系评审 harness 配置（因机器而异，本机专属）
 .claude/dev-launch.review.md
 .claude/notes/pr-ready/
+
+# Python generated caches
+__pycache__/
+*.pyc
+
+# 本地待办笔记（不入 git）
+notes/backlog/

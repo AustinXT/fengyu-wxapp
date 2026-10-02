@@ -154,7 +154,7 @@ async function history(ctx) {
     SELECT ct.id, ct.type, ct.amount, ct.ref_order_id, ct.created_at
     FROM card_transactions ct
     WHERE ct.card_id = $1 AND ct.created_at >= NOW() - INTERVAL '6 months'
-    ORDER BY ct.created_at DESC
+    ORDER BY ct.created_at DESC, ct.id DESC
     LIMIT $2 OFFSET $3
   `, [cardId, pageSize, offset])
 
@@ -198,17 +198,22 @@ async function rechargeConfig(ctx) {
  * 与 admin deleteOrder（事务内闸门读到「已关闭」即跳过回滚）都不会再补回，资产永久蒸发。
  */
 async function _closeExpiredPendingByUser(client, userId) {
+  // ⚠️ 候选集**刻意是超集**，别往这里加 `lakala_out_order_no IS NULL`
+  //（与 order.closeExpiredOrdersByUser 同一条原则，issue #215）：
+  // 该列双向可变，SELECT 之后、CAS 之前它可能被 payNotify/对账清成 NULL ——
+  // 那一刻这单已经该关了，而收窄过的候选集根本没把它选进来，这一趟就漏过去了。
+  // 漏关的后果是它继续占着 uq_sale_orders_client_pending，紧随的充值单 INSERT 撞唯一约束。
+  // 真正决定关不关的是下面 UPDATE 的 CAS 守卫，选多了只是白跑一个空事务。
   const expired = await client.query(
     `SELECT sale_order_id FROM sale_orders
      WHERE client_user_id = $1 AND status = '待支付'
      AND opened_by IS NULL
      AND sale_order_type <> '转换单'
-     AND lakala_out_order_no IS NULL
      AND sale_order_datetime < NOW() - INTERVAL '10 minutes'`,
     [userId]
   )
   for (const row of expired.rows) {
-    await client.query(
+    const closed = await client.query(
       `UPDATE sale_orders SET status = '已关闭', updated_at = NOW()
        WHERE sale_order_id = $1 AND status = '待支付' AND opened_by IS NULL
          AND sale_order_type <> '转换单'
@@ -217,11 +222,17 @@ async function _closeExpiredPendingByUser(client, userId) {
          AND lakala_out_order_no IS NULL`,
       [row.sale_order_id]
     )
-    await client.query(
-      `UPDATE user_coupons SET status = '未使用', used_sale_order_id = NULL, used_at = NULL
-       WHERE used_sale_order_id = $1`,
-      [row.sale_order_id]
-    )
+    // ⚠️ 必须先看 CAS 是否命中再释放券（与 order.closeExpiredOrder 的
+    // `if (result.rowCount > 0)` 同一道门）。上面的 SELECT 没加行锁，选出来之后、
+    // CAS 之前这张单完全可能被并发支付掉；那时 UPDATE 影响 0 行，而无条件释放会把
+    // **已经用于支付**的券退回「未使用」—— 券可再次抵扣，是直接的资金损失。
+    if (closed.rowCount > 0) {
+      await client.query(
+        `UPDATE user_coupons SET status = '未使用', used_sale_order_id = NULL, used_at = NULL
+         WHERE used_sale_order_id = $1`,
+        [row.sale_order_id]
+      )
+    }
   }
 }
 
@@ -338,4 +349,9 @@ async function recharge(ctx) {
   }
 }
 
-module.exports = { list, balance, history, rechargeConfig, recharge, matchTier, _loadRechargeConfig }
+module.exports = {
+  list, balance, history, rechargeConfig, recharge, matchTier, _loadRechargeConfig,
+  // 导出仅供单测直接驱动「CAS 落空时不得释放优惠券」这条门（issue #215 round-4 的 P0）。
+  // index.js 的 action 映射是显式白名单，多导出一个函数不会多出可调用 action。
+  _closeExpiredPendingByUser,
+}

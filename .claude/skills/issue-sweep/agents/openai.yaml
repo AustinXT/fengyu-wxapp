@@ -1,0 +1,4 @@
+interface:
+  display_name: "整理积压并批量开发"
+  short_description: "先去重归并交付，再以 Codex 批量开发并保留完整验证评审"
+  default_prompt: "请使用 $issue-sweep 按本项目流程处理当前任务。"

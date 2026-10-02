@@ -21,9 +21,92 @@ import type { Customer, Store } from '@/lib/types'
 import { formatPhoneSafe } from '@/lib/format'
 import { actionErrorMessage } from '@/lib/action-error'
 import { INVENTORY_LINKAGE_ENABLED } from '@/lib/inventory-feature-flags'
+import { formatCurrency } from '@/lib/utils'
+
+/**
+ * 按销售单分组（#350）：会议 §2.11「选顾客 → 选销售单 → 领取」，顾客出库必须能对上是哪张销售单的货。
+ * 组的顺序沿用服务端排序（最近付款在前）中该单第一次出现的位置；与 staff 提货页同一分组规则。
+ */
+export interface PickupOrderGroup {
+  saleOrderId: string
+  orderDate: string | null
+  storeName: string | null
+  items: AvailablePickupItem[]
+}
+
+export function groupAvailablePickupItemsByOrder(items: readonly AvailablePickupItem[]): PickupOrderGroup[] {
+  const groups: PickupOrderGroup[] = []
+  const byOrder = new Map<string, PickupOrderGroup>()
+  for (const item of items) {
+    let group = byOrder.get(item.saleOrderId)
+    if (!group) {
+      group = { saleOrderId: item.saleOrderId, orderDate: item.orderDate, storeName: item.storeName, items: [] }
+      byOrder.set(item.saleOrderId, group)
+      groups.push(group)
+    }
+    group.items.push(item)
+  }
+  return groups
+}
 
 interface Props {
   stores: Store[]
+}
+
+/** 一张销售单：组头行（单号 / 下单日期 / 开单门店）+ 该单下的可提明细行 */
+export function PickupOrderGroupRows({
+  group,
+  selectedItemId,
+  onSelect,
+}: {
+  group: PickupOrderGroup
+  selectedItemId: string | null
+  onSelect: (saleItemId: string) => void
+}) {
+  return (
+    <>
+      <tr className="bg-[#FAFAFA]">
+        <td colSpan={6} className="px-4 py-2 text-xs text-[#666666]">
+          <span className="font-medium text-[#333333]">
+            销售单 <span className="font-mono">{group.saleOrderId}</span>
+          </span>
+          <span className="ml-4">下单日期 {group.orderDate ?? '—'}</span>
+          <span className="ml-4">开单门店 {group.storeName ?? '—'}</span>
+        </td>
+      </tr>
+      {group.items.map((item) => {
+        const selected = item.saleItemId === selectedItemId
+        return (
+          <tr
+            key={item.saleItemId}
+            className={`transition-colors cursor-pointer ${
+              selected ? 'bg-[#FFF0EE]' : 'hover:bg-gray-50'
+            }`}
+            onClick={() => onSelect(item.saleItemId)}
+          >
+            <td className="px-4 py-3">
+              <input
+                type="radio"
+                name="pickup-item"
+                aria-label={`选择 ${item.productName || item.saleItemId}`}
+                checked={selected}
+                onChange={() => onSelect(item.saleItemId)}
+              />
+            </td>
+            <td className="px-4 py-3">
+              <div className="font-medium">{item.productName || '—'}</div>
+            </td>
+            <td className="px-4 py-3 text-right">{formatCurrency(item.unitRealPrice)}</td>
+            <td className="px-4 py-3 text-right font-medium text-[#C0322A]">
+              {item.remaining}
+            </td>
+            <td className="px-4 py-3 text-right">{item.paidQuantity}</td>
+            <td className="px-4 py-3 text-right">{item.quantity}</td>
+          </tr>
+        )
+      })}
+    </>
+  )
 }
 
 export default function PickupRecordCreatePageClient({ stores }: Props) {
@@ -274,11 +357,8 @@ export default function PickupRecordCreatePageClient({ stores }: Props) {
                       <th className="px-4 py-3 text-left font-medium text-gray-500">
                         商品 / 规格
                       </th>
-                      <th className="px-4 py-3 text-left font-medium text-gray-500">
-                        销售明细号
-                      </th>
-                      <th className="px-4 py-3 text-left font-medium text-gray-500">
-                        原销售门店
+                      <th className="px-4 py-3 text-right font-medium text-gray-500">
+                        实际单价
                       </th>
                       <th className="px-4 py-3 text-right font-medium text-gray-500">
                         待提
@@ -292,39 +372,14 @@ export default function PickupRecordCreatePageClient({ stores }: Props) {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-200">
-                    {items.map((item) => {
-                      const selected = item.saleItemId === selectedItemId
-                      return (
-                        <tr
-                          key={item.saleItemId}
-                          className={`transition-colors cursor-pointer ${
-                            selected ? 'bg-[#FFF0EE]' : 'hover:bg-gray-50'
-                          }`}
-                          onClick={() => handleSelectItem(item.saleItemId)}
-                        >
-                          <td className="px-4 py-3">
-                            <input
-                              type="radio"
-                              name="pickup-item"
-                              checked={selected}
-                              onChange={() => handleSelectItem(item.saleItemId)}
-                            />
-                          </td>
-                          <td className="px-4 py-3">
-                            <div className="font-medium">{item.productName || '—'}</div>
-                          </td>
-                          <td className="px-4 py-3 font-mono text-xs text-[#666666]">
-                            {item.saleItemId}
-                          </td>
-                          <td className="px-4 py-3">{item.storeName ?? '—'}</td>
-                          <td className="px-4 py-3 text-right font-medium text-[#C0322A]">
-                            {item.remaining}
-                          </td>
-                          <td className="px-4 py-3 text-right">{item.paidQuantity}</td>
-                          <td className="px-4 py-3 text-right">{item.quantity}</td>
-                        </tr>
-                      )
-                    })}
+                    {groupAvailablePickupItemsByOrder(items).map((group) => (
+                      <PickupOrderGroupRows
+                        key={group.saleOrderId}
+                        group={group}
+                        selectedItemId={selectedItemId}
+                        onSelect={handleSelectItem}
+                      />
+                    ))}
                   </tbody>
                 </table>
               </div>

@@ -17,6 +17,7 @@ import { Select } from "@/components/ui/select"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import { PreserveListContextLink } from "@/components/return-context"
 import { ExportButton } from "@/components/ui/export-button"
+import { normalizePage } from "@/lib/paging"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
@@ -94,7 +95,7 @@ export default function CouponsPage({ templates, markets, canCreate, canUpdate }
   const search = get("q")
   const marketFilter = get("market")
   const statusFilter = get("status", "enabled")
-  const page = Number(get("page", "1"))
+  const page = normalizePage(get("page", "1"))
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
 
   const marketMap = useMemo(() => new Map(markets.map((m) => [m.id, m.name])), [markets])

@@ -16,7 +16,7 @@ async function list(ctx) {
     SELECT id, title, body, message_type, is_read, ref_entity_type, ref_entity_id, created_at
     FROM messages
     WHERE recipient_type = '客户' AND recipient_id = $1 AND deleted_at IS NULL
-    ORDER BY created_at DESC
+    ORDER BY created_at DESC, id DESC
     LIMIT $2 OFFSET $3
   `, [userId, pageSize, offset])
 

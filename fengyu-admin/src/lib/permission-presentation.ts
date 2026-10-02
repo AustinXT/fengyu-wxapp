@@ -26,7 +26,9 @@ export const PERMISSION_ACTION_CATALOG = {
     'customer:list': '查看顾客',
     'customer:update': '修改顾客',
     'dashboard:view': '查看工作台',
+    'data_center:customer_detail': '查看数据中心顾客明细报表',
     'data_center:dashboard': '查看数据中心',
+    'data_center:staff_commission': '查看数据中心员工提成报表',
     'employee:create': '新增员工',
     'employee:delete': '删除员工',
     'employee:list': '查看员工',
@@ -42,6 +44,7 @@ export const PERMISSION_ACTION_CATALOG = {
     'inventory:shipment_cancel_request': '申请品项发货撤回',
     'inventory:stock_list': '查看库存与产品资料',
     'inventory:store_operate': '办理门店进销存业务',
+    'inventory:store_settlement_view': '查看本店货款结算',
     'inventory:supply_chain_approve': '审批供应链库存业务',
     'inventory:supply_chain_master_data_manage': '维护供应链库存资料',
     'inventory:supply_chain_operate': '办理供应链进销存业务',
@@ -148,11 +151,16 @@ export const PERMISSION_ACTION_CATALOG = {
     'inventory:shipment_cancel_request': ['inventory:market_operate'],
     'inventory:shipment_cancel_approve': ['inventory:supply_chain_approve'],
     'inventory:store_operate': ['inventory:list', 'inventory:stock_list'],
+    // 独立只读入口，不依赖库存单据/价格权，不自动扩权。
+    'inventory:store_settlement_view': [],
     'inventory:supply_chain_approve': ['inventory:list', 'inventory:stock_list'],
     'inventory:supply_chain_master_data_manage': ['inventory:list', 'inventory:stock_list'],
     'inventory:supply_chain_operate': ['inventory:list', 'inventory:stock_list'],
     'inventory:supply_chain_price_view': ['inventory:list', 'inventory:stock_list'],
     'merchant:create': ['merchant:list'], 'merchant:update': ['merchant:list'], 'merchant:delete': ['merchant:list'],
+    // 经营明细报表（#367）：页面 SSR 与取数都要求同一角色同时持有 dashboard，勾选时自动补齐。
+    'data_center:customer_detail': ['data_center:dashboard'],
+    'data_center:staff_commission': ['data_center:dashboard'],
   },
 } as const
 

@@ -1,10 +1,15 @@
 import { Suspense } from 'react'
 import { notFound, redirect } from 'next/navigation'
-import { listInventoryCoreDocs } from '@/actions/inventory/docs'
-import { listInventoryLocations } from '@/actions/inventory/locations'
-import { listInventorySkus } from '@/actions/inventory/skus'
+import {
+  listInventoryLocations,
+  listInventoryMarketTransferTargets,
+  listInventoryShipmentMarketTargets,
+} from '@/actions/inventory/locations'
 import { listInventorySuppliers } from '@/actions/inventory/suppliers'
+import { listInventoryOperationInboxTotals } from '@/actions/inventory/docs'
 import { getSession } from '@/lib/auth'
+import { inventoryPriceScopeByTier, inventoryPriceVisibility, inventoryScopedLocationIds } from '@/lib/inventory/access'
+import { scopeSessionToAllActions } from '@/lib/action-scope'
 import {
   INVENTORY_BUSINESS_LEVELS,
   genericDocBusinessLevel,
@@ -45,22 +50,35 @@ export default async function Page({
   const session = await getSession()
   requireAllUiPageCapabilities(session, ['inventory:list', 'inventory:stock_list'])
   requireInventoryBusinessLevel(session, level)
-  const [locations, skus, suppliers, workflowDocs] = await Promise.all([
+  const actions = session.permissions.actions
+  const operateAction = inventoryLevelOperateAction(level)
+  const canCreate = hasUiCapability(actions, operateAction)
+  // SKU 候选不再预加载前 100 条（#339）：各明细行的商品选择按关键词走服务端分页检索，
+  // 业务过滤（可报货 / 市场归属 / 供应链来源）也在服务端做，见 InventorySkuSearchSelect。
+  // 来源单 / 待处理单候选同样不再预加载（#338）：原先这里拉「全类型混排最近 100 张」，
+  // 老单在各表单里选不到；现在各表单按用途走服务端检索 + 分页，见 InventoryDocCandidatePicker。
+  const [locations, marketTransferTargets, shipmentMarketTargets, suppliers, inboxTotals] = await Promise.all([
     listInventoryLocations(),
-    listInventorySkus({ page: 1, pageSize: 100, onlyActive: true }),
+    /*
+     * 市场间调货卡的接收主体候选（#340）：不按 scope 的全部启用市场。只在市场层、且能建单时取 ——
+     * 那张卡只挂在市场层，别的层级 / 只读账号拿它没用，也不该多看到一份市场名单。
+     */
+    level === 'market' && canCreate ? listInventoryMarketTransferTargets() : Promise.resolve([]),
+    /*
+     * 品项公司发货的收货市场候选（#336b）：同样越过 scope（总部 scope 不展开市场）。
+     * 只在供应链层、且能建单时取；权限门与发货 action 同为 supply_chain_operate。
+     */
+    level === 'supply-chain' && canCreate ? listInventoryShipmentMarketTargets() : Promise.resolve([]),
     // 刻意不传 pageSize：办理台的供应商下拉要的是整份名单，
     // 跟着列表页分页走会把靠后的供应商静默漏掉（#135）。
     listInventorySuppliers({ onlyActive: true }),
-    listInventoryCoreDocs({ page: 1, pageSize: 100 }),
+    listInventoryOperationInboxTotals(),
   ])
-  const actions = session.permissions.actions
-  const operateAction = inventoryLevelOperateAction(level)
   const approveAction = level === 'supply-chain'
     ? 'inventory:supply_chain_approve'
     : level === 'market'
       ? 'inventory:market_approve'
       : null
-  const canCreate = hasUiCapability(actions, operateAction)
   const canApprove = approveAction ? hasUiCapability(actions, approveAction) : false
 
   /*
@@ -82,18 +100,37 @@ export default async function Page({
         <InventoryOperationsPage
           level={level}
           locations={locations}
-          skuOptions={skus.data}
+          marketTransferTargets={marketTransferTargets}
+          shipmentMarketTargets={shipmentMarketTargets}
           suppliers={suppliers.data}
-          workflowDocs={workflowDocs.data}
+          inboxTotals={inboxTotals}
           canCreate={canCreate}
           canApprove={canApprove}
           canSelfPurchase={hasUiCapability(actions, 'inventory:self_purchase_receive')}
           canRequestShipmentCancellation={hasUiCapability(actions, 'inventory:shipment_cancel_request')}
           canApproveShipmentCancellation={hasUiCapability(actions, 'inventory:shipment_cancel_approve')}
-          canViewPrice={workflowDocs.canViewPrice}
+          // 与单据列表查询回传的 canViewPrice 同一判据
+          canViewPrice={inventoryPriceVisibility(session) !== 'none'}
+          // 市场报货福利报价 / 改选（#348）：与服务端 assertMarketPromotionSelectable 同一判据 ——
+          // 办理权与市场价格权落在同一条绑定上，按该绑定覆盖的主体判；null = 不受限（admin）
+          marketPriceLocationIds={hasUiCapability(actions, 'inventory:market_price_view')
+            ? inventoryScopedLocationIds(scopeSessionToAllActions(session, ['inventory:market_operate', 'inventory:market_price_view']))
+            : []}
+          // 入库单价优惠（#346）与服务端 receiveSupplyChainPurchaseOrder 同判据：办理权与供应链价格权
+          // 落在同一条角色绑定上，按总部节点判；null = 不受节点限制（admin）
+          receiptDiscountOrgNodeIds={receiptDiscountOrgNodeIds(session)}
+          // 「顾客产品出库」跳转卡（#350）：与提货录入页 requireUiPageCapability 同一判据
+          canCreatePickupRecord={hasUiCapability(actions, 'pickup_record:create')}
           initialOperationId={initialOperationId}
         />
       </Suspense>
     </div>
   )
+}
+
+function receiptDiscountOrgNodeIds(session: NonNullable<Awaited<ReturnType<typeof getSession>>>): string[] | null {
+  const tiers = inventoryPriceScopeByTier(
+    scopeSessionToAllActions(session, ['inventory:supply_chain_operate', 'inventory:supply_chain_price_view']),
+  )
+  return tiers.supplyChain === null ? null : [...tiers.supplyChain]
 }

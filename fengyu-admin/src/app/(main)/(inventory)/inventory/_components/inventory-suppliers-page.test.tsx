@@ -34,6 +34,9 @@ import InventorySuppliersPage from './inventory-suppliers-page'
 
 function supplier(overrides: Partial<InventorySupplierRow> = {}): InventorySupplierRow {
   return {
+    ownerMarketId: null,
+    ownerMarketName: null,
+    canManage: true,
     supplierId: 'SUP-1',
     name: '广州美姿贺生物科技',
     contactName: '张三',
@@ -178,5 +181,23 @@ describe('InventorySuppliersPage（#132 关联 SKU 计数）', () => {
     expect(screen.queryByText(/仍有 .* 个库存商品关联该供应商/)).not.toBeInTheDocument()
     // 通用文案仍在
     expect(screen.getByText(/历史单据不会受影响/)).toBeInTheDocument()
+  })
+})
+
+describe('#365 供应商归属 UI', () => {
+  it('显示供应链共有和市场名，仅可维护行有编辑入口', () => {
+    render(<InventorySuppliersPage rows={[
+      supplier({ supplierId: 'SHARED', name: '共有供货商', canManage: false }),
+      supplier({ supplierId: 'OWN', name: '本地供货商', ownerMarketId: 'M1', ownerMarketName: '广州市场', canManage: true }),
+    ]} total={2} canCreate canUpdate creationOwnerLabel="广州市场" />)
+    const sharedRow = screen.getByText('共有供货商').closest('tr')!
+    const ownRow = screen.getByText('本地供货商').closest('tr')!
+    expect(within(sharedRow).getByText('供应链共有')).toBeInTheDocument()
+    expect(within(sharedRow).queryByRole('button', { name: /编辑/ })).not.toBeInTheDocument()
+    expect(within(ownRow).getByText('广州市场')).toBeInTheDocument()
+    expect(within(ownRow).getByRole('button', { name: /编辑/ })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '新建供应商' }))
+    expect(screen.getByText('归属市场：广州市场（归属不可修改）')).toBeInTheDocument()
+    expect(screen.queryByRole('combobox', { name: /归属市场/ })).not.toBeInTheDocument()
   })
 })

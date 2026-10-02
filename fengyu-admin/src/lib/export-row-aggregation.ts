@@ -30,6 +30,8 @@ function positiveQuantity(row: ExportRow): number {
 }
 
 function displayQuantity(row: ExportRow): number | null {
+  // 纯金额余数转出镜像原卡 session_count，但注销权益为 0，报表不能计作原卡次数。
+  if (finiteNumber(row.__quantity) === 0) return 0
   const sessions = finiteNumber(row.sessionCount)
   if (sessions != null) return sessions
   return finiteNumber(row.__quantity)
@@ -268,7 +270,7 @@ export function aggregateOrderExportRows<T extends ExportRow>(sourceRows: T[]): 
     const totalQuantity = bucket.reduce((sum, row) => sum + (displayQuantity(row) ?? 0), 0)
     result.sessionCount = bucket.every((row) => displayQuantity(row) == null) ? null : totalQuantity
     result.paidUnusedSessions = sumNullableNumbers(bucket, 'paidUnusedSessions')
-    result.__quantity = bucket.reduce((sum, row) => sum + positiveQuantity(row), 0)
+    result.__quantity = bucket.reduce((sum, row) => sum + (finiteNumber(row.__quantity) ?? 1), 0)
     result.__remainingSessions = sumNullableNumbers(bucket, '__remainingSessions')
     result.__paidSessions = sumNullableNumbers(bucket, '__paidSessions')
     for (const key of ['totalAmount', 'prepaidCardAmount', 'cashAmount', 'received', 'refundedAmount'] as const) {
@@ -331,7 +333,7 @@ function aggregateAllocationOutput<T extends ExportRow>(
   result.received = money(receipts.reduce((sum, receipt) => sum + receipt.amountCents, 0))
   result.prepaidCardAmount = money(receipts.reduce((sum, receipt) => sum + receipt.prepaidCents, 0))
   result.refundedAmount = money(receipts.reduce((sum, receipt) => sum + receipt.refundCents, 0))
-  result.__quantity = sourceRows.reduce((sum, row) => sum + positiveQuantity(row), 0)
+  result.__quantity = sourceRows.reduce((sum, row) => sum + (finiteNumber(row.__quantity) ?? 1), 0)
   result.__remainingSessions = sumNullableNumbers(sourceRows, '__remainingSessions')
   result.__paidSessions = sumNullableNumbers(sourceRows, '__paidSessions')
 

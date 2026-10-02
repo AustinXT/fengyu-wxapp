@@ -5,6 +5,7 @@ BRANCH=$1
 START=$2          # 可选 start-point；省略时基于当前 HEAD（与历史行为一致）
 DIR=".tree/$BRANCH"
 REPO_ROOT=$(git rev-parse --show-toplevel)
+cd "$REPO_ROOT"
 
 if [ -z "$BRANCH" ]; then
   echo "用法: $0 <分支名> [start-point]"
@@ -66,6 +67,9 @@ link_node_modules() {
 }
 link_node_modules "fengyu-admin"
 link_node_modules "db"
+link_node_modules "fengyu-client/cloudfunctions/clientApi"
+link_node_modules "fengyu-client/cloudfunctions/payNotify"
+link_node_modules "fengyu-staff/cloudfunctions/staffApi"
 
 # 6. 给 admin dev 写入专属端口，避免与主仓 3000 冲突
 ADMIN_ENV="$DIR/fengyu-admin/.env.local"
@@ -88,17 +92,17 @@ echo "✓ Worktree 已创建: $DIR"
 echo ""
 echo "已复制/链接："
 echo "  .env × 4、project.private.config.json × 2、miniprogram_npm × 2"
-echo "  .claude/dev-launch.review.md（双谱系评审配置）"
-echo "  node_modules: fengyu-admin, db  (软链到主仓)"
+echo "  评审约定: .agents/skills/issue-dev/references/review.md"
+echo "  node_modules: fengyu-admin, db, clientApi, payNotify, staffApi (软链到主仓)"
 echo "  admin PORT=3010 已写入 .env.local"
 echo ""
 echo "下一步："
-echo "  cd $DIR && claude                         # 进入独立会话"
+echo "  cd $DIR && codex                          # 进入独立开发会话"
 echo "  cd $DIR/fengyu-admin && bun run dev       # 端口 3010"
 echo "  cd $DIR/fengyu-admin && bun run test      # 跑测试"
 echo ""
 echo "注意事项："
-echo "  - db:migrate 与主仓互斥（共享 PG）"
+echo "  - DB 变更登记 db/rollout/requests/，集中集成；开发期不占迁移令牌、不迁共享库"
 echo "  - 小程序 devtools 同 appid 不能同时打开两处"
 echo "  - 依赖升级前先把 node_modules 软链换成实体：rm node_modules && bun install"
 echo ""

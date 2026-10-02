@@ -2513,10 +2513,10 @@ async function rollbackPendingConversionOnClose(client, saleOrderId, now) {
            AND item_direction = '转出'
            AND ref_sale_item_id IS NOT NULL
          GROUP BY ref_sale_item_id
-        HAVING SUM(waived_amount::numeric) > 0
+        -- 包含 Δ_row=0 的付清/overpay 行，也必须还原 pending_received 快照
       ),
       locked_source AS (
-        SELECT src.sale_item_id, src.sale_order_id, waived.waived, waived.orig_pending
+        SELECT src.sale_item_id, src.sale_order_id, src.sale_amount::numeric AS source_sale_amount, waived.waived, waived.orig_pending
           FROM sale_items src
           JOIN waived ON waived.ref_sale_item_id = src.sale_item_id
          -- 与上面两段回滚、以及 createConversion 折抵同一把升序锁序
@@ -2551,6 +2551,7 @@ async function rollbackPendingConversionOnClose(client, saleOrderId, now) {
       SELECT w.ref_sale_item_id AS sale_item_id,
              locked_source.sale_order_id,
              w.waived,
+             (locked_source.source_sale_amount + w.waived > 0) AS has_positive_source,
              (locked_source.sale_item_id IS NOT NULL) AS source_found,
              (r.sale_item_id IS NOT NULL) AS restored_ok
         FROM waived w
@@ -2635,7 +2636,7 @@ async function rollbackPendingConversionOnClose(client, saleOrderId, now) {
   // （行级豁免额全部来自已退款、本无真实欠款）时上面会 continue，但源行 sale_amount 已被
   // CTE **无条件**还原 —— 不重算就会留下偏高的 paid_sessions（付清后退款 40% 的 10 次卡会
   // 停在 10，正确值 6），把已退款的权益重新放出来。
-  for (const refOrderId of [...new Set(restoredWaive.rows.map((r) => r.sale_order_id))].sort()) {
+  for (const refOrderId of [...new Set(restoredWaive.rows.filter((r) => r.has_positive_source === true).map((r) => r.sale_order_id))].sort()) {
     const recalcRes = await client.query(
       `UPDATE sale_items
 SET paid_sessions = CASE
@@ -2652,15 +2653,12 @@ WHERE sale_items.sale_item_id IN (
    WHERE out_item.sale_order_id = $1
      AND out_item.item_direction = '转出'
      AND out_item.ref_sale_item_id IS NOT NULL
-     -- 必须与正向 6b 的作用域一致（只含真正被豁免过的行）。少了这条会把同单其它被折抵行
-     -- 一起重算——例如已全退、被 STEP 2.5 压成 paid_sessions=0 的 0 元赠品卡会命中
-     -- sale_amount <= 0 兜底重回满次数，而 paid_sessions 是「已退款卡从卡包消失」的唯一机制。
-     AND out_item.waived_amount::numeric > 0
 )
-  AND sale_items.sale_order_id = $2`,
+  AND sale_items.sale_order_id = $2
+  AND sale_items.sale_amount > 0`,
       [saleOrderId, refOrderId],
     )
-    // 影响行数必为 >= 1：作用域来自「本单 waived_amount > 0 的转出行」，其源行刚被上面的 CTE
+    // 影响行数必为 >= 1：作用域来自「本单转出行引用的正金额源行」，其源行刚被上面的 CTE
     // 还原过、source_found / restored_ok 都已校验。为 0 只可能是 op 子查询取不到原单
     // （孤儿数据）—— 此时源行金额已还原、paid_sessions 没还原，而下面还会把归因凭据清零，
     // 必须显式抛出。订单级还原量为 0 的那条路径也走这里，不会被上面的 continue 绕过。
@@ -4562,7 +4560,7 @@ async function createRepayment(ctx) {
              -- targeted（通常 0），而它的 remaining_sessions 已注销为 0 →
              -- (session_count − 0) > paid_sessions 永久违反 D3，原单从此回款/退款/回调全失败。
              -- 触发条件很普通：同一原单里另一行发起定向回款即可。
-               WHEN si.waived_amount::numeric > 0 THEN si.pending_received
+               WHEN (EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = si.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭') AND (CASE WHEN si.product_type = '疗程卡' THEN COALESCE(si.remaining_sessions, 0) = 0 ELSE (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)) >= si.quantity END)) THEN si.pending_received
                ELSE COALESCE(rp.delta, 0)
              END,
              updated_at = NOW()
@@ -4692,13 +4690,13 @@ async function createRepayment(ctx) {
  * 创建转换单（店长专用）
  *
  * 与 admin 侧 createConversionOrder 语义对齐：
- *   - 按 client_user_id + store_id 跨订单聚合候选卡（不再绑定单一原订单）
+ *   - 按 client_user_id 跨订单、跨购买门店聚合候选权益（不再绑定单一原订单）
  *   - 整张卡折抵（疗程卡全部 remaining_sessions；单品已合并入疗程卡）
  *   - 差额>0：total_amount=差额，status='待支付'（线下走 confirmOffline 入账，线上走 payNotify）
  *   - 差额=0：total_amount=0，status=已支付
  *   - 差额<0：total_amount=0，status=已支付，差额充入 prepaid_cards（UPSERT user_id+store_id）+ INSERT card_transactions
  *   - 订单号前缀与 admin 对齐为 FY-XSD-WX-（admin 侧 createConversionOrder 使用同一前缀）
- *   - 跨店守卫：所有候选卡必须 store_id = ctx.auth.effectiveStoreId
+ *   - 顾客归属当前店（或现有临时跨店授权）；来源权益保留原购买门店
  *
  * payload: {
  *   clientUserId: string,              // 必须实名顾客（要挂储值卡）
@@ -4769,8 +4767,8 @@ async function createConversion(ctx) {
   if (!client.bound_store_id) {
     throw new Error('CLIENT_NOT_REGISTERED: 顾客未注册小程序或未绑定门店')
   }
-  // 与 order.create 对齐：普通顾客必须属于当前 scope；临时跨店顾客允许在外店转换。
-  if (!isStoreInScope(ctx.auth, client.bound_store_id) && !client.is_cross_store_temp) {
+  // 顾客归属当前开单门店；保留现有临时跨店授权例外。来源权益的购买门店可不同。
+  if (client.bound_store_id !== storeId && !client.is_cross_store_temp) {
     throw new Error('PERMISSION_DENIED: 该顾客不属于当前门店，无法开单')
   }
 
@@ -4910,16 +4908,12 @@ async function createConversion(ctx) {
 
     const held = heldResult.rows
     if (held.length !== convertOutSaleItemIds.length) {
-      throw new Error('INVALID_PARAMS: 部分卡不属于当前门店或已耗尽')
+      throw new Error('INVALID_PARAMS: 部分折抵项不存在或已耗尽')
     }
 
     // 先完成与预扣无关的归属/状态校验，避免无效请求额外扫描 service_items。
     for (const row of held) {
-      // 归属校验
-      // 家居产品行复用同一分支，文案用中性表述避免「卡」字样误导员工
-      if (row.store_id !== storeId) {
-        throw new Error('INVALID_PARAMS: 部分折抵项不属于当前门店或已耗尽')
-      }
+      // 来源门店可不同；顾客、权益方向和状态仍须锁内逐行复核。
       if (row.client_user_id !== clientUserId) {
         throw new Error('INVALID_PARAMS: 部分折抵项不属于该顾客')
       }
@@ -5054,6 +5048,7 @@ async function createConversion(ctx) {
 
       outItems.push({
         refSaleItemId: row.sale_item_id,
+        sourceStoreId: row.store_id,
         skuId: row.sku_id,
         productName: row.product_name,
         productType,
@@ -5083,6 +5078,7 @@ async function createConversion(ctx) {
         // 原行 pending_received 快照：关单回滚必须还原，否则历史行（原本 pending=0）的
         // 分摊权重被永久改写，行级实收与 0040 视图 residual 随之漂移。
         // 同样只能记在转出行上才归因得到本单。
+        waiveEligible,
         refPendingReceived: Math.round(Number(row.pending_received ?? 0) * 100) / 100,
       })
     }
@@ -5503,7 +5499,7 @@ async function createConversion(ctx) {
            WHERE sale_item_id = $2
              AND store_id = $3
              AND COALESCE(remaining_sessions, 0) >= $4`,
-          [now, d.refSaleItemId, storeId, d.quantity]
+          [now, d.refSaleItemId, d.sourceStoreId, d.quantity]
         )
         if (upd.rowCount === 0) {
           throw new Error('INVALID_PARAMS: 卡状态变化，请重试')
@@ -5521,7 +5517,7 @@ async function createConversion(ctx) {
              AND product_type = '家居产品'
              AND (COALESCE(picked_up_quantity, 0) + COALESCE(refunded_quantity, 0)
                   + COALESCE(converted_quantity, 0) + $4) <= quantity`,
-          [now, d.refSaleItemId, storeId, d.quantity]
+          [now, d.refSaleItemId, d.sourceStoreId, d.quantity]
         )
         if (upd.rowCount === 0) {
           throw new Error('INVALID_PARAMS: 家居产品可提数量变化，请重试')
@@ -5540,14 +5536,14 @@ async function createConversion(ctx) {
       // 两个下调额与守卫在转出行构建时已算好（见 waiveAmount / orderWaiveAmount）：
       // waive = 行级（压到净实收，保 paid_sessions 满付 → D3）；订单级见下方 waiveByOrder。
       const waive = d.waiveAmount
-      if (!(waive > 0)) continue
+      if (!d.waiveEligible) continue
 
       const updItem = await tx.query(
         `UPDATE sale_items
             SET sale_amount = sale_amount - $3,
                 waived_amount = waived_amount + $3,
                 -- 把「逐行实付草稿」钉到该行**毛已付**（净实收 + 该行已退款额）。这是 D3 的
-                -- 承重墙：STEP 1 Branch B 见 waived_amount > 0 就按本列**固定预留**该行的
+                -- 承重墙：STEP 1 Branch B 见未关闭转出引用且权益耗尽 就按本列**固定预留**该行的
                 -- received（不再丢进比例池），预留额同时从 untargeted 扣除 → 该行 received
                 -- 恒等于毛已付、同单其它行分到的钱不变；再由 STEP 1.5 扣掉该行退款额得到净额，
                 -- 恰好等于下调后的 sale_amount → paid_sessions 满付。
@@ -5826,7 +5822,7 @@ WHERE sale_items.sale_item_id = ANY($1)`,
 }
 
 /**
- * 查询顾客在当前门店可折抵的卡（转换单备选）
+ * 查询当前门店顾客跨购买门店的可折抵权益（转换单备选）
  *
  * payload: { clientUserId: string }
  * 返回: { cards: [{ saleItemId, sourceSaleOrderId, productName, productType,
@@ -5858,6 +5854,7 @@ async function customerHeldCards(ctx) {
             so.market_name,
             so.legacy_source,
             si.store_id,
+            source_store.store_name AS source_store_name,
             si.sku_id,
             si.item_direction,
             si.ref_sale_item_id,
@@ -5890,6 +5887,8 @@ async function customerHeldCards(ctx) {
             COALESCE(hp.deductible_amount, 0) AS deductible_amount
      FROM sale_items si
      JOIN sale_orders so ON si.sale_order_id = so.sale_order_id
+     JOIN client_wechat_users cu ON cu.user_id = so.client_user_id
+     LEFT JOIN stores source_store ON source_store.store_id = si.store_id
      LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
      LEFT JOIN product_categories pc ON pc.category_id = ps.category_id
      -- 折抵额度（#145/#153 立口径，#182 统一到疗程卡）：四端字面同源。
@@ -5933,7 +5932,8 @@ async function customerHeldCards(ctx) {
        ) hpa
      ) hp ON TRUE
      WHERE so.client_user_id = $1
-       AND si.store_id = $2
+       AND cu.bound_store_id IS NOT NULL
+       AND (cu.bound_store_id = $2 OR cu.is_cross_store_temp = TRUE)
        AND (
          si.item_direction = '购买'
          OR (so.sale_order_type = '转换单' AND si.item_direction = '转入')
@@ -5990,6 +5990,7 @@ async function customerHeldCards(ctx) {
       marketName: r.market_name || '',
       legacySource: r.legacy_source || null,
       storeId: r.store_id || '',
+      storeName: r.source_store_name || '',
       skuId: r.sku_id || null,
       itemDirection: r.item_direction || '',
       refSaleItemId: r.ref_sale_item_id || null,
@@ -6044,6 +6045,29 @@ function pendingHomeProductQuantity(row) {
     toCents(row.received) - Number(row.picked_quantity || 0) * unitCents - toCents(row.converted_amount),
   )
   return Math.min(physicalRemaining, Math.floor(remainingCents / unitCents))
+}
+
+/**
+ * #341：提货时冻结的出库金额 = 本次提货数 × 顾客实际单价（sale_items.unit_real_price）。
+ *
+ * - 口径（用户拍板）：部分支付也按 unit_real_price；寄存单 / 0 元赠品 / 转换转入一律同式，
+ *   0 元行即记 0；套装只在销售明细级记一次（这里），不按库存组件拆。
+ * - 调用方必须传**已加锁**的 sale_items 行上的单价，冻结的是提货那一刻的值。
+ * - 按「分」算：staffApi 的 pg 把 numeric 解析成 float，直接相乘会带出 0.1+0.2 式尾差；
+ *   单价 0 是合法值，不能写成 `|| null`（会把 0 元行冻结成 NULL）。
+ * - DB 有 chk_pickup_amount_frozen 兜底：金额 ≠ ROUND(单价 × 数量, 2) 的写入直接被拒。
+ * - admin `actions/pickup-records.ts` 有同名副本，cross-end-sql-snapshot 整段守护。
+ */
+function pickupAmountSnapshot(unitRealPrice, pickupQuantity) {
+  const unitCents = Math.round(Number(unitRealPrice) * 100)
+  const amountCents = unitCents * pickupQuantity
+  if (unitRealPrice === null || unitRealPrice === undefined || String(unitRealPrice).trim() === '' || !Number.isFinite(unitCents) || !Number.isInteger(pickupQuantity) || pickupQuantity <= 0) {
+    throw new Error('INVALID_STATE: 销售明细缺少顾客实际单价，无法计算出库金额')
+  }
+  return {
+    unitPrice: (unitCents / 100).toFixed(2),
+    amount: (amountCents / 100).toFixed(2),
+  }
 }
 
 async function generatePickupInventoryDocNo(client) {
@@ -6152,7 +6176,10 @@ async function createPickupInventoryDoc(client, ctx, updatedItem, requirements, 
     const lotRows = await client.query(
       `SELECT lot.id, lot.location_id, lot.sku_id, lot.sku_name, lot.spec_name,
               lot.supplier, lot.product_series, lot.batch_no, lot.expiry_date,
-              lot.is_gift, lot.quantity_on_hand
+              lot.is_gift, lot.quantity_on_hand,
+              lot.supply_chain_unit_cost, lot.market_standard_unit_price, lot.market_unit_discount,
+              lot.market_actual_unit_price, lot.store_standard_unit_price, lot.store_unit_discount,
+              lot.store_actual_unit_price
          FROM inventory_stock_lots lot
         WHERE lot.location_id = $1
           AND lot.sku_id = $2
@@ -6230,11 +6257,17 @@ async function createPickupInventoryDoc(client, ctx, updatedItem, requirements, 
       if (deduct <= 0) continue
       const after = before - deduct
       const inserted = await client.query(
+      // #341：带上锁定批次的价格快照（与 admin engine 通用建单同一组列）。actual_unit_price 留空，
+      // 由 inventory_set_doc_item_amount 按 store → market → 供应链 取成本算 amount；赠送批次记 0。
+      // 这是**出库成本**；顾客售价口径的出库金额另存 pickup_records.pickup_amount，两列不混。
       `INSERT INTO inventory_doc_items (
          doc_id, lot_id, sku_id, sale_item_id, sku_name, spec_name, supplier,
-         product_series, batch_no, expiry_date, is_gift, quantity, stock_snapshot, remark
+         product_series, batch_no, expiry_date, is_gift, quantity, stock_snapshot, remark,
+         supply_chain_unit_cost, market_standard_unit_price, market_unit_discount,
+         market_actual_unit_price, store_standard_unit_price, store_unit_discount,
+         store_actual_unit_price
        )
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
        RETURNING id`,
       [
         docId,
@@ -6251,6 +6284,13 @@ async function createPickupInventoryDoc(client, ctx, updatedItem, requirements, 
         deduct,
         before,
         remark || null,
+        lot.supply_chain_unit_cost ?? null,
+        lot.market_standard_unit_price ?? null,
+        lot.market_unit_discount ?? null,
+        lot.market_actual_unit_price ?? null,
+        lot.store_standard_unit_price ?? null,
+        lot.store_unit_discount ?? null,
+        lot.store_actual_unit_price ?? null,
       ],
     )
       const docItemId = inserted.rows[0].id
@@ -6433,13 +6473,16 @@ async function createGroupedPickup(ctx, saleItemIds, pickupQuantity, remark, ide
         [item.sale_item_id],
       )
       if (updated.rowCount !== 1) throw new Error('CONFLICT: 家居产品状态已更新，请刷新后重试')
+      // #341：合并提货每条来源明细 quantity=1，各自冻结一件的出库金额
+      const frozen = pickupAmountSnapshot(item.unit_real_price, 1)
       await client.query(
         `INSERT INTO pickup_records (
            sale_item_id, inventory_sku_id, pickup_quantity, store_id, client_user_id,
-           confirmed_by, remark, idempotency_key
-         ) VALUES ($1, NULL, 1, $2, $3, $4, $5, $6)`,
+           confirmed_by, remark, idempotency_key, pickup_unit_price, pickup_amount
+         ) VALUES ($1, NULL, 1, $2, $3, $4, $5, $6, $7, $8)`,
         [item.sale_item_id, ctx.auth.effectiveStoreId, first.client_user_id,
-          ctx.auth.staffWfId, remark || null, idempotencyKey || null],
+          ctx.auth.staffWfId, remark || null, idempotencyKey || null,
+          frozen.unitPrice, frozen.amount],
       )
     }
 
@@ -6600,6 +6643,8 @@ async function createPickup(ctx) {
       throw new Error(`INVALID_STATE: 已支付可提数量不足，当前可提 ${pendingBeforePickup}`)
     }
     await assertNoPendingRefund(client, row.sale_order_id)
+    // #341：单价取自上面已加锁的 sale_items 行，冻结提货这一刻的顾客实际单价
+    const frozen = pickupAmountSnapshot(row.unit_real_price, requestedQuantity)
 
     const result = await client.query(
       // #154：守卫看「已结算」三列之和而非单列——只看 picked_up 会把已退款/已折抵占用的额度重新放出来提货。
@@ -6643,9 +6688,10 @@ async function createPickup(ctx) {
       await client.query(
         `INSERT INTO pickup_records (
            sale_item_id, inventory_sku_id, pickup_quantity, store_id, client_user_id,
-           confirmed_by, remark, idempotency_key
-         ) VALUES ($1, NULL, $2, $3, $4, $5, $6, $7)`,
-        [saleItemId, requestedQuantity, ctx.auth.effectiveStoreId, clientUserId, ctx.auth.staffWfId, remark || null, idempotencyKey || null]
+           confirmed_by, remark, idempotency_key, pickup_unit_price, pickup_amount
+         ) VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [saleItemId, requestedQuantity, ctx.auth.effectiveStoreId, clientUserId, ctx.auth.staffWfId, remark || null, idempotencyKey || null,
+          frozen.unitPrice, frozen.amount]
       )
     } catch (err) {
       if (err && err.code === '23505' && err.constraint === 'uq_pickup_idempotency') {
@@ -6741,7 +6787,11 @@ async function availablePickupItems(ctx) {
               si.unit_real_price,
               o.store_id,
               o.paid_at,
-              s.store_name
+              -- #350：提货页按销售单分组，组头显示下单日期（sale_orders.sale_order_datetime，按上海日历日）。
+              -- 服务端格式化成 YYYY-MM-DD 再下发：小程序端的日期本地化不可靠。
+              to_char(o.sale_order_datetime AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD') AS order_date,
+              -- #350：组头「开单门店」用订单快照（门店改名后仍显示下单时名称），缺快照的历史单回退实时名
+              COALESCE(NULLIF(o.store_name, ''), s.store_name) AS store_name
          FROM sale_items si
          JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
          LEFT JOIN stores s ON s.store_id = o.store_id
@@ -6779,6 +6829,7 @@ async function availablePickupItems(ctx) {
             MIN(unit_real_price) AS unit_real_price,
             MIN(store_id) AS store_id,
             MAX(paid_at) AS paid_at,
+            MIN(order_date) AS order_date,
             MIN(store_name) AS store_name
        FROM pickup_balances
    GROUP BY sale_item_group_id
@@ -6803,6 +6854,7 @@ async function availablePickupItems(ctx) {
     storeId: r.store_id,
     storeName: r.store_name || null,
     paidAt: r.paid_at,
+    orderDate: r.order_date || null,
   }))
 }
 
@@ -6969,7 +7021,7 @@ async function pickupRecordsList(ctx) {
  LEFT JOIN sale_items si ON si.sale_item_id = pr.sale_item_id
  LEFT JOIN inventory_skus inventory_sku ON inventory_sku.sku_id = pr.inventory_sku_id
        ${whereSql}
-  ORDER BY pr.created_at DESC
+  ORDER BY pr.created_at DESC, pr.id DESC
      LIMIT ${limit} OFFSET ${offset}
   `
   const countSql = `SELECT COUNT(*)::int AS cnt FROM pickup_records pr ${whereSql}`
@@ -7090,7 +7142,7 @@ async function refundList(ctx) {
     LEFT JOIN staff_wechat_users approver ON sop.audit_employee_id = approver.employee_id
     WHERE so.store_id = $1 AND sop.change_type = '退款'
     ${whereExtra}
-    ORDER BY sop.created_at DESC
+    ORDER BY sop.created_at DESC, sop.id DESC
     LIMIT $2 OFFSET $3
   `, params)
 
@@ -7544,5 +7596,6 @@ Object.defineProperty(module.exports, '__testables__', {
     assertNormalSkuMarketScopeForCurrentStore,
     resolveCustomerOrderMarketScope,
     buildCustomerOrderMarketScopeFilter,
+    pickupAmountSnapshot,
   },
 })

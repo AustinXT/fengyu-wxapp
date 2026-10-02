@@ -83,3 +83,7 @@
   background: #C0322A;
   color: #FFFFFF;
 }
+
+.scope-row--hint {
+  color: var(--color-text-hint);
+}

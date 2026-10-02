@@ -25,6 +25,7 @@ import {
 } from '@/lib/workfine-mssql'
 import { storeInMarketCondition } from '@/lib/market-store-sql'
 import { classifySaleOrderDocumentType } from '@/lib/document-type'
+import { resolvePaging } from '@/lib/paging'
 
 /**
  * 业务错误：把可读 message 同时写入 `digest`。
@@ -86,9 +87,12 @@ export interface PaginatedLegacyOrders {
 export const listLegacyOrders = withPermission(
   'legacy_order:list',
   async (session, filters: LegacyOrderFilters = {}): Promise<PaginatedLegacyOrders> => {
-    const page = Math.max(1, filters.page || 1)
-    const pageSize = [10, 20, 50, 100].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
-    const offset = (page - 1) * pageSize
+    const { page, pageSize, offset } = resolvePaging({
+      page: filters.page,
+      pageSize: filters.pageSize,
+      defaultPageSize: 20,
+      allowedPageSizes: [10, 20, 50, 100],
+    })
 
     const conditions: (SQL | undefined)[] = [
       eq(saleOrders.legacySource, 'workfine'),
@@ -147,7 +151,7 @@ export const listLegacyOrders = withPermission(
       .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
       .where(whereClause)
       // 例外：业务时间优先（历史订单按销售日期倒序，与"最近编辑浮顶"语义不符）
-      .orderBy(desc(saleOrders.saleOrderDatetime))
+      .orderBy(desc(saleOrders.saleOrderDatetime), desc(saleOrders.saleOrderId))
       .limit(pageSize)
       .offset(offset)
 

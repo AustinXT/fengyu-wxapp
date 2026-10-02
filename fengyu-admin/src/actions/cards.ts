@@ -21,10 +21,17 @@ import {
   type ExportBatchResult,
 } from '@/lib/export-pagination'
 import { paidUnusedSessionsExpr } from '@/lib/paid-sessions'
+import {
+  CARD_ENTITLEMENT_ORDER_STATUSES,
+  cardBaseConditions,
+  cardEntitlementDirectionCondition,
+  cardNotFullyRefundedCondition,
+} from '@/lib/card-entitlement'
 import { computeItemOverpayRemainders, type RefundSourceItem } from '@/lib/refund'
 import { storeInMarketCondition } from '@/lib/market-store-sql'
 import { getPointsToYuanRate, getPointsDeductionMaxRate } from '@/lib/system-config'
 import { classifySaleOrderDocumentType } from '@/lib/document-type'
+import { resolvePaging } from '@/lib/paging'
 
 // ============================================================================
 // 管理端卡包列表（/cards 页面）
@@ -35,8 +42,6 @@ export type CardTypeFilter = 'all' | '疗程卡' | '单次卡'
 
 /** 状态（UI 下拉） */
 export type CardStatusFilter = 'active' | 'exhausted' | 'expired'
-
-const CARD_ENTITLEMENT_ORDER_STATUSES = ['已支付', '部分支付', '已完成'] as const
 
 /** 卡包列表筛选参数 */
 export interface CardFilters {
@@ -103,11 +108,11 @@ function computeCardRemainingRemainder(item: {
   /**
    * #182：已被转换单折走的金额。折抵会带走 overpay 余数且不动 remaining_sessions，
    * 不传这一项，卡包/顾客持卡/导出的「剩余零头」列会继续展示已经被折走的钱。
-   * 调用方未提供时按 0（旧行为），但列表类查询都应带上转出行聚合。
+   * 必填聚合，避免调用方遗漏后仍展示或退还已折走金额。
    */
-  convertedAmount?: string | number | null
+  convertedAmount: string | number | null
   /** #182：已折走的**次数**。必须先按次数扣减再加金额，否则与 (sc − rem) 双计。 */
-  convertedQuantity?: number | null
+  convertedQuantity: number | null
 }): number {
   const source: RefundSourceItem = {
     sale_item_id: item.saleItemId,
@@ -126,7 +131,7 @@ function computeCardRemainingRemainder(item: {
     received: item.received,
     picked_up_quantity: 0,
     picked_quantity: null,
-    converted_amount: item.convertedAmount ?? null,
+    converted_amount: item.convertedAmount,
     converted_quantity: item.convertedQuantity ?? 0,
     sales_category: null,
     service_fee: null,
@@ -206,24 +211,12 @@ export const getCardFilterOptions = withPermission(
 // paidUnusedSessionsExpr（已付未用 = 可用次数 派生）已提升为 admin 共享单源（@/lib/paid-sessions），
 // 卡包列表/详情 + 订单/营业额分配导出复用同一表达式；NULL 退回物理剩余、clamp 等口径细节见该文件注释。
 
-function cardEntitlementDirectionCondition() {
-  return or(
-    eq(saleItems.itemDirection, '购买'),
-    and(
-      eq(saleOrders.saleOrderType, '转换单'),
-      eq(saleItems.itemDirection, '转入'),
-    ),
-  )
-}
-
 function buildCardBaseConditions(
   session: Parameters<typeof scopeCondition>[0],
 ): (SQL | undefined)[] {
   return [
-    cardEntitlementDirectionCondition(),
-    inArray(saleOrders.status, [...CARD_ENTITLEMENT_ORDER_STATUSES]),
-    eq(saleItems.productType, '疗程卡'),
-    isNotNull(saleItems.remainingSessions),
+    // 权益方向 + 有效订单状态 + 疗程卡 + 余次不为空（lib/card-entitlement.ts，与数据中心剩余卡项清单共用）
+    ...cardBaseConditions(),
     // issue #122：移除原本的 `paid_sessions > 0` —— 它会把部分支付的欠款卡整行隐藏，
     // 顾客买了卡却在卡包里查无此卡。基础集不再按次数过滤（"是否已用完"交给 status 分支，
     // exhausted 要的正是 remaining_sessions = 0，基础集若先排掉它会让该筛选恒空、卡详情 404）。
@@ -303,9 +296,12 @@ function buildCardConditions(
 export const getCardsPaginated = withPermission(
   'sale_item:list',
   async (session, filters: CardFilters = {}): Promise<PaginatedCards> => {
-  const page = Math.max(1, filters.page || 1)
-  const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
-  const offset = (page - 1) * pageSize
+  const { page, pageSize, offset } = resolvePaging({
+    page: filters.page,
+    pageSize: filters.pageSize,
+    defaultPageSize: 20,
+    allowedPageSizes: [10, 20, 50],
+  })
 
   const whereClause = and(...buildCardConditions(session, filters))
 
@@ -362,7 +358,11 @@ export const getCardsPaginated = withPermission(
     .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
     .where(whereClause)
     // 例外：业务时间优先（支付时间优于"最近编辑"）
-    .orderBy(desc(saleOrders.paidAt), desc(saleItems.createdAt))
+    // ⚠️ 末位 tie-break 用 **asc** 而非 desc —— 必须与导出侧（本文件 `exportCards`）
+    // 的 `asc(saleItems.saleItemId)` 同向，否则 paid_at + created_at 都并列的那几行，
+    // 页面上的顺序与导出 CSV 相反，对账逐行比对会在每个并列组上错位。
+    // 这也是本仓既有约定（employees.ts / coupons.ts 的 `desc, desc, asc(pk)`）。
+    .orderBy(desc(saleOrders.paidAt), desc(saleItems.createdAt), asc(saleItems.saleItemId))
     .limit(pageSize)
     .offset(offset)
 
@@ -727,10 +727,10 @@ export const getCardTransactions = withPermission(
 // ============================================================================
 
 /**
- * 转换单候选卡 — 顾客在指定门店可折抵的购买行。
+ * 转换单候选卡 — 当前门店顾客在各购买门店可折抵的权益行。
  *
- * 来源口径：sale_items 上 item_direction='购买'，且归属该顾客（通过 sale_orders
- * 反向 JOIN client_user_id）、归属指定 store_id；状态为"已支付/已完成"的订单。
+ * 来源口径：归属该顾客的购买/转换转入行，购买门店不限；顾客必须归属当前开单店
+ * 或有既存临时跨店授权，原单状态和行级资格继续按现有规则过滤。
  *
  * 折抵对象（2026-05-21 单品合并后放开）：
  *   疗程卡 (product_type='疗程卡') AND remaining_sessions > 0
@@ -754,6 +754,7 @@ export interface HeldCardCandidate {
   marketName: string
   legacySource: string | null
   storeId: string
+  storeName: string | null
   skuId: string | null
   itemDirection: string
   refSaleItemId: string | null
@@ -811,6 +812,7 @@ export const getCustomerHeldCards = withPermission(
       marketName: saleOrders.marketName,
       legacySource: saleOrders.legacySource,
       storeId: saleItems.storeId,
+      storeName: stores.storeName,
       skuId: saleItems.skuId,
       itemDirection: saleItems.itemDirection,
       refSaleItemId: saleItems.refSaleItemId,
@@ -843,12 +845,18 @@ export const getCustomerHeldCards = withPermission(
     })
     .from(saleItems)
     .innerJoin(saleOrders, eq(saleItems.saleOrderId, saleOrders.saleOrderId))
+    .leftJoin(stores, eq(saleItems.storeId, stores.storeId))
     .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
     .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
     .where(
       and(
-        eq(saleItems.storeId, storeId),
         eq(saleOrders.clientUserId, clientUserId),
+        sql`EXISTS (
+          SELECT 1 FROM client_wechat_users cu
+          WHERE cu.user_id = ${clientUserId}
+            AND cu.bound_store_id IS NOT NULL
+            AND (cu.bound_store_id = ${storeId} OR cu.is_cross_store_temp = TRUE)
+        )`,
         cardEntitlementDirectionCondition(),
         // 2026-09-14 #125 甲方拍板：订单级「部分支付」也可折抵；与卡包列表共用同一组状态，
         // 疗程卡与家居同时放开，欠款按方案 A 留原单
@@ -886,7 +894,7 @@ export const getCustomerHeldCards = withPermission(
         // 审批后隐藏已退完的卡：仅当订单存在已审批退款时按 paid_sessions 有效余量判定（不影响无退款的分期卡）
         // 家居产品不适用：已退数量落 refunded_quantity（#154 拆列前并入 picked_up_quantity），
         // 而未结算件数 = quantity − 已提货 − 已退款 − 已转换，天然已扣除
-        sql`(${saleItems.productType} <> '疗程卡' OR NOT EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleItems.saleOrderId} AND sop.change_type = '退款' AND sop.status = '已支付') OR ${saleItems.paidSessions} IS NULL OR ${saleItems.paidSessions} > (${saleItems.sessionCount} - ${saleItems.remainingSessions}))`,
+        cardNotFullyRefundedCondition(),
       ),
     )
 
@@ -937,6 +945,7 @@ export const getCustomerHeldCards = withPermission(
       marketName: r.marketName,
       legacySource: r.legacySource,
       storeId: r.storeId,
+      storeName: r.storeName ?? null,
       skuId: r.skuId ?? null,
       itemDirection: r.itemDirection,
       refSaleItemId: r.refSaleItemId ?? null,

@@ -11,14 +11,27 @@
           <van-icon name="arrow-down" size="24rpx" color="#C0322A" />
         </view>
         <mgmt-scope-picker
+          id="scopePicker"
           default-scope="{{ defaultScope }}"
+          applied-inactive="{{ scope.inactive }}"
+          auto-correct="{{ scopeAutoCorrect }}"
+          resolve-default="{{ scopeResolveDefault }}"
           bind:change="onScopeChange"
+          bind:defaultresolved="onScopeDefaultResolved"
+          bind:optionsfailed="onScopeOptionsFailed"
         />
       </view>
 
       <!-- 三态壳：loading / error 时由组件接管，content 时渲染 slot -->
-      <mgmt-data-state state="{{ summaryState }}" bind:retry="onSummaryRetry">
+      <!-- empty 仅在 scope 落到已停用门店时出现（#400）；在营门店无业绩照常渲染 0 -->
+      <mgmt-data-state
+        state="{{ summaryState }}"
+        empty-text="{{ summaryEmptyText }}"
+        empty-hint="{{ summaryEmptyHint }}"
+        bind:retry="onSummaryRetry"
+      >
         <view wx:if="{{ display }}">
+          <view class="dash-section-title dash-section-title--first">业绩与实耗</view>
           <!-- 大卡片：2×2 -->
           <view class="mgmt-dash-grid-large">
             <view class="dash-card dash-card--large">
@@ -47,7 +60,8 @@
             </view>
           </view>
 
-          <!-- 小卡片：4×1 -->
+          <view class="dash-section-title">客量概览</view>
+          <!-- 小卡片：宽屏 4 列，手机 2 列 -->
           <view class="mgmt-dash-grid-small">
             <view class="dash-card dash-card--small">
               <view class="dash-card-title">客流</view>
@@ -126,9 +140,6 @@
               <view class="dash-card-row"><text class="lbl">日均：</text><text class="val">{{ display.perEmployee.shengmeiCons.day }}</text></view>
               <view class="dash-card-row"><text class="lbl">月均：</text><text class="val">{{ display.perEmployee.shengmeiCons.month }}</text></view>
             </view>
-          </view>
-
-          <view class="mgmt-dash-grid-small">
             <view class="dash-card dash-card--small">
               <view class="dash-card-title">人均客流</view>
               <view class="dash-card-row"><text class="lbl">日均：</text><text class="val">{{ display.perEmployee.footfall.day }}</text></view>
@@ -262,6 +273,8 @@
       <!-- 排行榜表格 -->
       <view class="ranking-table">
         <view class="ranking-table-title">员工排行榜</view>
+        <!-- #299 口径说明，与 admin STAFF_OUTPUT_SCOPE_NOTE 逐字一致（cross-end-staff-output-note.test.js 守护） -->
+        <view class="ranking-table-note">数值为员工个人全域产出</view>
 
         <view class="ranking-table-header">
           <view class="col col-rank">排名</view>

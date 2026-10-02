@@ -43,6 +43,7 @@ function resolveRuntimeAuth(base, loginLevelInput, currentStoreIdInput, hasDashb
     staffLevel,
     scopeStoreIds,
     hasDashboardPermission,
+    base.authData?.roleBindings || base.roleBindings || [],
   )
 
   // 1. loginLevel

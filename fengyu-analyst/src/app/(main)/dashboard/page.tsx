@@ -35,6 +35,7 @@ import {
 } from "@/lib/analyst-scope"
 import { getSession } from "@/lib/auth"
 import { getMetric, type AnalystMetric } from "@/lib/metric-catalog"
+import { formatMetricDelta, formatPointDelta } from "@/lib/metric-delta"
 import {
   getNewCustomerFunnelDashboard,
   getNewCustomerFunnelFilterOptions,
@@ -60,15 +61,6 @@ import type { AuthSession } from "@/lib/types"
 
 function formatRate(value: number): string {
   return `${(value * 100).toFixed(1)}%`
-}
-
-function formatDelta(value: number | null): { text: string; tone: "default" | "positive" | "negative" } {
-  if (value === null) return { text: "无上一年对比", tone: "default" }
-  if (value === 0) return { text: "同比持平", tone: "default" }
-  return {
-    text: `同比 ${value > 0 ? "+" : ""}${(value * 100).toFixed(1)}pct`,
-    tone: value > 0 ? "positive" : "negative",
-  }
 }
 
 function formatMoney(value: number): string {
@@ -105,29 +97,6 @@ function buildMonthOptions(months: string[], startMonth: string, endMonth: strin
   const start = Math.min(...indexes)
   const end = Math.max(...indexes)
   return Array.from({ length: end - start + 1 }, (_, index) => monthOptionFromIndex(end - index))
-}
-
-function formatDeltaPart(current: number, previous: number, type: "count" | "rate" | "money"): string {
-  if (previous === 0) return "无基数"
-  if (type === "rate") {
-    const delta = current - previous
-    if (delta === 0) return "持平"
-    return `${delta > 0 ? "+" : ""}${(delta * 100).toFixed(1)}pct`
-  }
-  const delta = (current - previous) / previous
-  if (delta === 0) return "持平"
-  return `${delta > 0 ? "+" : ""}${(delta * 100).toFixed(1)}%`
-}
-
-function formatMetricDelta(
-  current: number,
-  prevYear: number,
-  prevPeriod: number,
-  type: "count" | "rate" | "money" = "count",
-): { text: string; tone: "default" | "positive" | "negative" } {
-  const text = `同比 ${formatDeltaPart(current, prevYear, type)} / 环比 ${formatDeltaPart(current, prevPeriod, type)}`
-  if (prevYear === 0 || current === prevYear) return { text, tone: "default" }
-  return { text, tone: current > prevYear ? "positive" : "negative" }
 }
 
 function queryString(filters: Record<string, string | number | undefined>): string {
@@ -560,7 +529,7 @@ async function RepurchaseDashboard({
     getRepurchaseCascadeTree(session, scope),
   ])
   const normalized = data.filters
-  const delta = formatDelta(data.kpi.delta)
+  const delta = formatPointDelta(data.kpi.delta)
   const exportHref = `/api/analyst/repurchase/export?${scopedQueryString(scope, {
     year: normalized.year || undefined,
     productKind: normalized.productKind,

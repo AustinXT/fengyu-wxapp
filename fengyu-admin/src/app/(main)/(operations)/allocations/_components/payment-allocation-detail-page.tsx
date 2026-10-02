@@ -31,7 +31,6 @@ import { ReturnContextLink, useReturnContext } from "@/components/return-context
 // --------------- 常量 ---------------
 
 const PERCENTAGE_OPTIONS = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100] as const
-const MAX_PER_GROUP = 3
 
 const allocationStatusMap: Record<string, { label: string; className: string }> = {
   待分配: { label: "待分配", className: "border-[#D4820A] text-[#D4820A] bg-[#FFF8E6]" },
@@ -54,6 +53,7 @@ interface PaymentAllocatables {
   paymentMethod: string
   changeType: string
   allocationStatus: string | null
+  frozen: boolean
   marketName: string | null
   items: PaymentAllocationItem[]
   existingAllocations: PaymentExistingAllocation[]
@@ -205,7 +205,8 @@ export default function PaymentAllocationDetailPageClient({
   )
   const marketName = payment.marketName ?? ''
   const eventAmount = payment.eventAmount
-  const statusInfo = allocationStatusMap[payment.allocationStatus || "待分配"] || allocationStatusMap.待分配
+  const statusInfo = allocationStatusMap[payment.allocationStatus || ""]
+    || { label: "不可分配", className: "border-[#888888] text-[#888888] bg-[#F5F2EE]" }
   const isRefundAllocation = payment.changeType === '退款'
 
   const [groupAllocs, setGroupAllocs] = useState<Record<string, AllocationEntry[]>>(() =>
@@ -322,6 +323,7 @@ export default function PaymentAllocationDetailPageClient({
               <span className="text-[#999999]">分配状态</span>
               <p className="mt-1">
                 <Badge variant="outline" className={statusInfo.className}>{statusInfo.label}</Badge>
+                {payment.frozen && <Badge variant="outline" className="ml-2">已冻结</Badge>}
               </p>
             </div>
           </div>
@@ -338,6 +340,7 @@ export default function PaymentAllocationDetailPageClient({
             getFilteredEmployees={getFilteredEmployees}
             skillTagNames={skillTagNames}
             readOnly={isRefundAllocation || !canSave}
+            isRefundAllocation={isRefundAllocation}
             onAdd={addEntry}
             onUpdate={updateEntry}
             onRemove={removeEntry}
@@ -379,6 +382,7 @@ function ItemAllocationCard({
   getFilteredEmployees,
   skillTagNames,
   readOnly = false,
+  isRefundAllocation = false,
   onAdd,
   onUpdate,
   onRemove,
@@ -388,6 +392,7 @@ function ItemAllocationCard({
   getFilteredEmployees: (skillTag: string) => AllocationEmployeeCandidate[]
   skillTagNames: string[]
   readOnly?: boolean
+  isRefundAllocation?: boolean
   onAdd: (groupId: string) => void
   onUpdate: (groupId: string, entryId: number, field: 'skillTag' | 'employeeId' | 'ratioPercent', value: string) => void
   onRemove: (groupId: string, entryId: number) => void
@@ -421,7 +426,7 @@ function ItemAllocationCard({
           </CardTitle>
           <span className="text-lg font-bold text-[var(--primary)]">¥{allocatable.toLocaleString()}</span>
         </div>
-        <p className="text-xs text-[#999999] mt-1">{readOnly ? '本次退款赤字分配基数' : '本次回款可分配额'} ¥{allocatable.toLocaleString()}</p>
+        <p className="text-xs text-[#999999] mt-1">{isRefundAllocation ? '本次退款赤字分配基数' : '本次回款可分配额'} ¥{allocatable.toLocaleString()}</p>
       </CardHeader>
 
       <CardContent className="space-y-3">
@@ -539,7 +544,7 @@ function ItemAllocationCard({
             )
           })
         ) : (
-          <p className="text-xs text-[#999999] py-2">{readOnly ? '该退款暂无赤字分配' : '暂无分配，点击"添加分配"开始'}</p>
+          <p className="text-xs text-[#999999] py-2">{isRefundAllocation ? '该退款暂无赤字分配' : readOnly ? '暂无分配' : '暂无分配，点击"添加分配"开始'}</p>
         )}
 
         {/* 底部：每个技能标签独立池比例合计 + 添加按钮（P2-14 Q5） */}
@@ -606,11 +611,6 @@ function SaveButton({
       }
 
       for (const [roleType, poolEntries] of Object.entries(pools)) {
-        if (poolEntries.length > MAX_PER_GROUP) {
-          toast.error(`${item.productName || '商品'} 的${roleType}最多分配 3 人`)
-          return
-        }
-
         const empIds = new Set<string>()
         for (const e of poolEntries) {
           if (empIds.has(e.employeeId)) {

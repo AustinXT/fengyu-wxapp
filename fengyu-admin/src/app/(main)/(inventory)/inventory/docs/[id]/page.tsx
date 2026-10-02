@@ -2,15 +2,23 @@ import Link from 'next/link'
 import { ReturnContextLink } from '@/components/return-context'
 import { notFound } from 'next/navigation'
 import { ArrowLeft } from 'lucide-react'
-import { getInventoryCoreDocById } from '@/actions/inventory/docs'
+import {
+  getInventoryCoreDocById,
+  listMarketReportSummarySourceMarkets,
+  listMarketReportSummarySources,
+} from '@/actions/inventory/docs'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import { fmtDateTime } from '@/lib/datetime'
 import { getSession } from '@/lib/auth'
 import { requireAllUiPageCapabilities } from '@/lib/page-capability'
+import { hasUiCapability } from '@/lib/permission-contract'
+import { canOpenOrderDetail } from '@/lib/order-detail-access'
 import { isStocktakeDocType, stocktakeDiff, stocktakeSummary } from '@/lib/inventory/stocktake'
 import { resolveInventoryDocReturn } from '@/lib/inventory/operation-return'
+import { inventoryDocStatusLabel } from '@/lib/inventory/doc-status-label'
 import { InventoryDocReturnLink } from './inventory-doc-return-link'
+import { MarketReportSummarySources } from './market-report-summary-sources'
 
 export const dynamic = 'force-dynamic'
 
@@ -20,7 +28,11 @@ function fmt(v: string | number | boolean | null | undefined) {
   return String(v)
 }
 
-/** 盘盈绿 / 盘亏红 / 相符灰，取 admin 状态色（成功 / 错误 / 完结）。 */
+/**
+ * 盘盈绿 / 盘亏红 / 相符灰，取 admin 状态色（成功 / 错误 / 完结）。
+ * ⚠️ 差异文本表达式与 staff 小程序 `utils/stocktake.ts` 的 stocktakeDiffDisplay 逐字相同，
+ * 由 fengyu-staff/miniprogram/__tests__/utils/stocktake-cross-end.test.ts 钉住，改一端必同步另一端。
+ */
 function StocktakeDiffCell({ diff }: { diff: number | null }) {
   if (diff === null) return <td className="px-3 py-2 text-right text-[#999999]">—</td>
   const tone = diff > 0 ? 'text-[#3D8A5A]' : diff < 0 ? 'text-[#D94040]' : 'text-[#888888]'
@@ -47,19 +59,53 @@ export default async function Page({
    * 页面回落到既有的「返回单据中心」，不会拿着来路不明的字符串去拼跳转路径。
    */
   const back = resolveInventoryDocReturn(query)
-  requireAllUiPageCapabilities(await getSession(), ['inventory:list'])
+  const session = await getSession()
+  requireAllUiPageCapabilities(session, ['inventory:list'])
+  // 「关联销售单」能否点进订单详情：与 /orders/[id] 的页面守卫同源（#350）
+  const canLinkOrder = canOpenOrderDetail(session.permissions.actions)
   const doc = await getInventoryCoreDocById(id)
   if (!doc) notFound()
 
+  /*
+   * #349 汇总单来源明细：只在汇总单上取，其它单据类型不产生这次查询。
+   * 市场筛选走 URL（`?market=`），与返回入口的 from/level/op 并存 —— 组件内构造链接时会保留它们。
+   */
+  const sourceMarketFilter = typeof query?.market === 'string' && query.market.trim()
+    ? query.market.trim()
+    : undefined
+  const summarySourceData = doc.docType === '市场报货汇总'
+    ? await Promise.all([
+        // 市场筛选走 SQL（与导出同一 where），不在内存里过滤 —— 见组件的注释
+        listMarketReportSummarySources({ docId: doc.id, market: sourceMarketFilter }),
+        // 选项独立查（不受截断与当前筛选影响）
+        listMarketReportSummarySourceMarkets({ docId: doc.id }),
+      ]).then(([sources, markets]) => ({ sources, markets }))
+    : null
+  // 价格档由**取数层按行级判据**下发（见 listMarketReportSummarySourcesForSession 的注释）：
+  // 会话级 visibility 与行级剥离在"档位绑定集合为空"时会分叉，页面会渲染出整列「—」的表头。
+  const canViewSourcePrice = summarySourceData?.sources.priceVisible ?? false
+
   const showPrice = doc.totalAmount !== undefined && doc.docType !== '品项公司发货'
-  const showStoreAllocationPrice = showPrice && doc.docType === '分院配货'
+  // 市场报货四列价格来自服务端快照，门店参考价按主体市场价格档遮蔽。
+  const showMarketReportPrice = showPrice && doc.docType === '市场报货'
+  const showMarketReportStorePrice = showMarketReportPrice && doc.items.some((item) => item.storeStandardUnitPrice !== undefined)
+  // 标准价 / 优惠 / 实际价三列：分院配货（门店货款）与供应链采购入库（#346 入库单价优惠）
+  const showStoreAllocationPrice = showPrice && (doc.docType === '分院配货' || doc.docType === '供应链采购入库')
+  const discountPriceHeaders = doc.docType === '供应链采购入库'
+    ? ['标准进价', '单价优惠', '实际进价', '金额']
+    : ['门店标准单价', '单价优惠', '优惠后实际单价', '应付货款']
+  // 报货草稿 / 删除的草稿（#348，市场报货与门店报货）没有采购、配货、发货语义，不渲染履约列
   const reportFulfillment = doc.fulfillmentProgress?.kind === '报货履约'
+    && !((doc.docType === '市场报货' || doc.docType === '门店报货') && doc.status !== '已完成')
     ? doc.fulfillmentProgress
     : null
   const shipmentFulfillment = doc.fulfillmentProgress?.kind === '发货收货'
     ? doc.fulfillmentProgress
     : null
   const itemCompanyRequestFulfillment = doc.fulfillmentProgress?.kind === '品项公司报货履约'
+    ? doc.fulfillmentProgress
+    : null
+  const marketSummaryFulfillment = doc.fulfillmentProgress?.kind === '市场汇总采购'
     ? doc.fulfillmentProgress
     : null
   const supplyChainPurchaseFulfillment = doc.fulfillmentProgress?.kind === '供应链采购收货'
@@ -74,6 +120,9 @@ export default async function Page({
   const itemCompanyRequestProgressByItemId = new Map(
     itemCompanyRequestFulfillment?.items.map((item) => [item.itemId, item]) ?? [],
   )
+  const marketSummaryProgressByItemId = new Map(
+    marketSummaryFulfillment?.items.map((item) => [item.itemId, item]) ?? [],
+  )
   const supplyChainPurchaseProgressByItemId = new Map(
     supplyChainPurchaseFulfillment?.items.map((item) => [item.itemId, item]) ?? [],
   )
@@ -82,7 +131,17 @@ export default async function Page({
     : 0
   const shipmentColumnCount = shipmentFulfillment ? 2 : 0
   const itemCompanyRequestColumnCount = itemCompanyRequestFulfillment ? 3 : 0
-  const supplyChainPurchaseColumnCount = supplyChainPurchaseFulfillment ? 2 : 0
+  const marketSummaryColumnCount = marketSummaryFulfillment ? 2 : 0
+  // 采购订单的市场行（#335）：同样经供应链采购入库，另列市场结算价（参考）。
+  // 发货自 #336 起直连市场报货单，采购单上不再有「已发货」列。
+  const hasPurchaseMarketLine = doc.docType === '采购订单' && doc.items.some((item) => item.marketId)
+  // #346：入库可填单价优惠，采购单「入库后实际金额」按各次入库的实际进价算（不是下单价），价格可见时才有
+  // 进度被价格档遮蔽时不带金额；单头合计要求每一行都算得出（历史按发货完结的单、缺下单价的行服务端不给 actualAmount）
+  const purchaseAmountVisible = showPrice && Boolean(supplyChainPurchaseFulfillment?.items.some((item) => item.receivedAmount !== undefined))
+  const purchaseActualAmount = purchaseAmountVisible && supplyChainPurchaseFulfillment!.items.every((item) => item.actualAmount !== undefined)
+    ? Number(supplyChainPurchaseFulfillment!.items.reduce((sum, item) => sum + item.actualAmount!, 0).toFixed(2))
+    : null
+  const supplyChainPurchaseColumnCount = supplyChainPurchaseFulfillment ? (purchaseAmountVisible ? 3 : 2) : 0
   // 盘点单：把「数量」当实盘数，额外并排展示账面数与差异。
   // 差异是纯派生值（实盘 − 账面），**前端算、不落库** —— 落库就多一个会漂的数（issue #131 Q2）。
   const isStocktake = isStocktakeDocType(doc.docType)
@@ -100,22 +159,45 @@ export default async function Page({
   // 单头、明细行为空，若一并按行渲染会把它们统统误标成「品项公司自用」。
   const lineMarketColumnCount = (doc.docType === '采购订单' || doc.docType === '市场报货汇总') ? 1 : 0
   const lineOwnershipColumnCount = lineSupplierColumnCount + lineMarketColumnCount
-  const priceColumnCount = showPrice ? (showStoreAllocationPrice ? 4 : 2) : 0
+  const marketReferencePriceColumnCount = showPrice && !showStoreAllocationPrice && hasPurchaseMarketLine ? 1 : 0
+  const priceColumnCount = showPrice ? (showMarketReportPrice ? 4 + Number(showMarketReportStorePrice) : showStoreAllocationPrice ? 4 : 2 + marketReferencePriceColumnCount) : 0
   const promotionColumnCount = doc.items.some((item) => item.promotionPlanId || item.promotionPlanNoSnapshot) ? 1 : 0
   const itemColumnCount = 9 + lineOwnershipColumnCount + priceColumnCount + reportColumnCount + shipmentColumnCount +
-    itemCompanyRequestColumnCount + supplyChainPurchaseColumnCount + promotionColumnCount +
+    itemCompanyRequestColumnCount + marketSummaryColumnCount + supplyChainPurchaseColumnCount + promotionColumnCount +
     stocktakeColumnCount
+  // 市场报货单的整单履约（#336）：已发 / 已收都按「市场报货发货」直连血缘累计，只算正常量（赠送不占报货量），
+  // 用来判断「是否已全部发出 / 全部入库」。
+  const marketReportSummary = doc.docType === '市场报货' && reportFulfillment && reportFulfillment.items.length > 0
+    ? ((items) => {
+      const sum = (pick: (item: (typeof items)[number]) => number) =>
+        Number(items.reduce((total, item) => total + pick(item), 0).toFixed(2))
+      const demand = sum((item) => item.normalDemandQuantity)
+      const shipped = sum((item) => item.normalFulfilledQuantity)
+      const received = sum((item) => item.normalReceivedQuantity)
+      const allReceived = items.every((item) => item.normalReceivedQuantity >= item.normalDemandQuantity - 0.000001)
+      return {
+        shipping: `已发 ${shipped} / 报货 ${demand}（未发 ${Math.max(0, Number((demand - shipped).toFixed(2)))}）`,
+        receiving: allReceived ? `已全部入库（已收 ${received}）` : `未全部入库（已收 ${received} / 报货 ${demand}）`,
+      }
+    })(reportFulfillment.items)
+    : null
   const fields = [
     ['单据号', doc.id],
     ['类型', doc.docType],
-    ['状态', doc.status],
+    ['状态', inventoryDocStatusLabel(doc)],
     ['出库/发起主体', doc.sourceOrgNodeName ?? doc.sourceOrgNodeId],
     ['入库/接收主体', doc.targetOrgNodeName ?? doc.targetOrgNodeId],
     ['单据日期', doc.docDate?.slice(0, 10)],
     ['总数量', doc.totalQuantity],
     ...(isStocktake ? ([['盘点结论', stocktakeSummary(doc.items)]] as const) : []),
+    ...(marketReportSummary
+      ? ([['发货进度', marketReportSummary.shipping], ['入库进度', marketReportSummary.receiving]] as const)
+      : []),
     ...(showPrice ? ([['金额', doc.totalAmount]] as const) : []),
+    ...(purchaseActualAmount !== null ? ([['入库后实际金额', purchaseActualAmount]] as const) : []),
     ['顾客', doc.customerName],
+    // #350：顾客出库（GCK）由提货服务产生，related_sale_order_id 记着是哪张销售单的货
+    ['关联销售单', doc.relatedSaleOrderId],
     ['员工', doc.employeeName],
     ['供应商', doc.supplierName],
     ['外部对象', doc.externalPartyName],
@@ -130,9 +212,15 @@ export default async function Page({
     ['撤回申请原因', doc.cancellationRequestReason],
     ['撤回申请人', doc.cancellationRequestedBy],
     ['撤回申请时间', doc.cancellationRequestedAt ? fmtDateTime(doc.cancellationRequestedAt) : null],
-    ['撤回原因', doc.cancellationReason],
+    // 市场报货 / 门店报货只有「删除草稿」一条路径会转已取消（#348，提交即终态）
+    [doc.docType === '市场报货' || doc.docType === '门店报货' ? '删除原因' : '撤回原因', doc.cancellationReason],
     ['备注', doc.remark],
   ] as const
+  const lineageSteps = [
+    ...doc.lineage.filter((step) => step.direction === '上游').sort((a, b) => b.depth - a.depth),
+    null,
+    ...doc.lineage.filter((step) => step.direction === '下游').sort((a, b) => a.depth - b.depth),
+  ]
 
   return (
     <div className="p-6 space-y-6">
@@ -175,6 +263,13 @@ export default async function Page({
                   >
                     查看附件
                   </a>
+                ) : label === '关联销售单' && typeof value === 'string' && value && canLinkOrder ? (
+                  <Link
+                    href={`/orders/${encodeURIComponent(value)}`}
+                    className="font-mono text-sm text-[var(--primary)] hover:underline"
+                  >
+                    {value}
+                  </Link>
                 ) : <span className="text-sm">{fmt(value)}</span>}
               </div>
             ))}
@@ -185,14 +280,16 @@ export default async function Page({
       <Card>
         <CardContent className="p-5">
           <h2 className="mb-4 text-base font-medium">关联单据血缘</h2>
+          <p className="mb-3 text-xs text-[#888888]">同一单据涉及不同关系时分别列出，关联数量按关系计算。</p>
           <div className="overflow-x-auto rounded-md border border-[var(--border)]">
             <table className="w-full min-w-[760px] text-sm">
               <thead className="bg-[#F8F8F8] text-xs text-[#666666]">
                 <tr>
-                  <th className="px-3 py-2 text-left">方向</th>
+                  <th className="px-3 py-2 text-left">链路环节</th>
                   <th className="px-3 py-2 text-left">关系</th>
                   <th className="px-3 py-2 text-left">关联单据</th>
                   <th className="px-3 py-2 text-left">类型</th>
+                  <th className="px-3 py-2 text-left">发起主体</th>
                   <th className="px-3 py-2 text-left">状态</th>
                   <th className="px-3 py-2 text-right">关联数量</th>
                   <th className="px-3 py-2 text-right">单据总数量</th>
@@ -200,32 +297,55 @@ export default async function Page({
                 </tr>
               </thead>
               <tbody>
-                {doc.lineage.map((lineage) => (
-                  <tr key={`${lineage.direction}-${lineage.relationType}-${lineage.docId}`} className="border-t border-[var(--border)]">
-                    <td className="px-3 py-2">{lineage.direction}</td>
-                    <td className="px-3 py-2">{lineage.relationType}</td>
+                {lineageSteps.map((lineage, index) => lineage === null ? (
+                  <tr key="current" className="border-t border-[var(--border)] bg-[#FFF8F7]">
+                    <td className="border-l-2 border-[var(--primary)] px-3 py-2 font-medium"><span className="mr-2 inline-block size-2 rounded-full bg-[var(--primary)]" />当前单据</td>
+                    <td className="px-3 py-2">—</td>
+                    <td className="px-3 py-2 font-mono text-xs">{doc.id}</td>
+                    <td className="px-3 py-2">{doc.docType}</td>
+                    <td className="px-3 py-2">{fmt(doc.sourceOrgNodeName)}</td>
+                    <td className="px-3 py-2">{doc.status}</td>
+                    <td className="px-3 py-2 text-right">—</td>
+                    <td className="px-3 py-2 text-right">{doc.totalQuantity}</td>
+                    <td className="px-3 py-2">{fmt(doc.docDate?.slice(0, 10))}</td>
+                  </tr>
+                ) : (
+                  <tr key={`${lineage.direction}-${lineage.depth}-${lineage.viaDocId}-${lineage.relationType}-${lineage.docId}-${index}`} className="border-t border-[var(--border)]">
+                    <td className="border-l-2 border-[var(--primary)] px-3 py-2 whitespace-nowrap"><span className="mr-2 inline-block size-2 rounded-full bg-[var(--primary)]" />{lineage.direction} · 第 {lineage.depth} 跳</td>
+                    <td className="px-3 py-2">{lineage.relationType}<span className="block text-xs text-[#888888]">{lineage.direction === '上游' ? `${lineage.docId} → ${lineage.viaDocId}` : `${lineage.viaDocId} → ${lineage.docId}`}</span></td>
                     <td className="px-3 py-2 font-mono text-xs">
                       <Link href={`/inventory/docs/${encodeURIComponent(lineage.docId)}`} className="text-[var(--primary)] hover:underline">
                         {lineage.docId}
                       </Link>
                     </td>
                     <td className="px-3 py-2">{lineage.docType}</td>
+                    <td className="px-3 py-2">{fmt(lineage.sourceOrgNodeName)}</td>
                     <td className="px-3 py-2">{lineage.status}</td>
-                    <td className="px-3 py-2 text-right">{lineage.linkedQuantity}</td>
+                    {/* #344 库存转换 N:M：关联数量记的是分摊到该目标的来源（出库）数量，与入库单总数量不同口径 */}
+                    <td className="px-3 py-2 text-right">{lineage.linkedQuantity}{lineage.relationType === '库存转换' && <span className="ml-1 text-xs text-[#999999]">（按出库数量）</span>}</td>
                     <td className="px-3 py-2 text-right">{lineage.totalQuantity}</td>
                     <td className="px-3 py-2">{fmt(lineage.docDate?.slice(0, 10))}</td>
                   </tr>
                 ))}
-                {doc.lineage.length === 0 && (
-                  <tr>
-                    <td className="px-3 py-8 text-center text-[#999999]" colSpan={8}>暂无关联单据</td>
-                  </tr>
-                )}
               </tbody>
             </table>
           </div>
         </CardContent>
       </Card>
+
+      {summarySourceData && (
+        <MarketReportSummarySources
+          rows={summarySourceData.sources.rows}
+          docId={doc.id}
+          query={query ?? {}}
+          marketFilter={sourceMarketFilter}
+          marketOptions={summarySourceData.markets}
+          canViewPrice={canViewSourcePrice}
+          canExport={hasUiCapability(session.permissions.actions, 'inventory:export')}
+          truncated={summarySourceData.sources.truncated}
+          limit={summarySourceData.sources.limit}
+        />
+      )}
 
       <div className="overflow-x-auto rounded-md border border-[var(--border)] bg-white">
         <table className={`w-full ${
@@ -245,14 +365,18 @@ export default async function Page({
               <th className="px-3 py-2 text-left">赠送</th>
               {lineSupplierColumnCount > 0 && <th className="px-3 py-2 text-left">供应商</th>}
               {lineMarketColumnCount > 0 && <th className="px-3 py-2 text-left">市场</th>}
-              {showStoreAllocationPrice ? <>
-                <th className="px-3 py-2 text-right">门店标准单价</th>
+              {showMarketReportPrice ? <>
+                <th className="px-3 py-2 text-right">市场单价</th>
                 <th className="px-3 py-2 text-right">单价优惠</th>
-                <th className="px-3 py-2 text-right">优惠后实际单价</th>
-                <th className="px-3 py-2 text-right">应付货款</th>
+                <th className="px-3 py-2 text-right">实际单价</th>
+                {showMarketReportStorePrice && <th className="px-3 py-2 text-right">门店单价（参考）</th>}
+                <th className="px-3 py-2 text-right">金额</th>
+              </> : showStoreAllocationPrice ? <>
+                {discountPriceHeaders.map((header) => <th key={header} className="px-3 py-2 text-right">{header}</th>)}
               </> : showPrice && <>
                 <th className="px-3 py-2 text-right">实际单价</th>
                 <th className="px-3 py-2 text-right">金额</th>
+                {marketReferencePriceColumnCount > 0 && <th className="px-3 py-2 text-right">市场结算价（参考）</th>}
               </>}
               {promotionColumnCount > 0 && <th className="px-3 py-2 text-left">报货福利</th>}
               {reportFulfillment && <>
@@ -272,9 +396,14 @@ export default async function Page({
                 <th className="px-3 py-2 text-right">已下单</th>
                 <th className="px-3 py-2 text-right">已入库</th>
               </>}
+              {marketSummaryFulfillment && <>
+                <th className="px-3 py-2 text-right">已下单</th>
+                <th className="px-3 py-2 text-right">未下单</th>
+              </>}
               {supplyChainPurchaseFulfillment && <>
                 <th className="px-3 py-2 text-right">已入库</th>
                 <th className="px-3 py-2 text-right">待入库</th>
+                {purchaseAmountVisible && <th className="px-3 py-2 text-right">已入库金额</th>}
               </>}
               <th className="px-3 py-2 text-left">原因</th>
             </tr>
@@ -284,6 +413,7 @@ export default async function Page({
               const reportProgress = reportProgressByItemId.get(item.id)
               const shipmentProgress = shipmentProgressByItemId.get(item.id)
               const itemCompanyRequestProgress = itemCompanyRequestProgressByItemId.get(item.id)
+              const marketSummaryProgress = marketSummaryProgressByItemId.get(item.id)
               const supplyChainPurchaseProgress = supplyChainPurchaseProgressByItemId.get(item.id)
               return (
                 <tr key={item.id} className="border-t border-[var(--border)]">
@@ -305,7 +435,13 @@ export default async function Page({
                   {lineMarketColumnCount > 0 && (
                     <td className="px-3 py-2">{item.marketId ? fmt(item.marketName) : '品项公司自用'}</td>
                   )}
-                  {showStoreAllocationPrice ? <>
+                  {showMarketReportPrice ? <>
+                    <td className="px-3 py-2 text-right">{fmt(item.marketStandardUnitPrice)}</td>
+                    <td className="px-3 py-2 text-right">{fmt(item.marketUnitDiscount)}</td>
+                    <td className="px-3 py-2 text-right">{fmt(item.marketActualUnitPrice)}</td>
+                    {showMarketReportStorePrice && <td className="px-3 py-2 text-right">{fmt(item.storeStandardUnitPrice)}</td>}
+                    <td className="px-3 py-2 text-right">{fmt(item.amount)}</td>
+                  </> : showStoreAllocationPrice ? <>
                     <td className="px-3 py-2 text-right">{fmt(item.standardUnitPrice)}</td>
                     <td className="px-3 py-2 text-right">{fmt(item.unitDiscount)}</td>
                     <td className="px-3 py-2 text-right">{fmt(item.actualUnitPrice)}</td>
@@ -313,6 +449,9 @@ export default async function Page({
                   </> : showPrice && <>
                     <td className="px-3 py-2 text-right">{fmt(item.actualUnitPrice)}</td>
                     <td className="px-3 py-2 text-right">{fmt(item.amount)}</td>
+                    {marketReferencePriceColumnCount > 0 && (
+                      <td className="px-3 py-2 text-right">{item.marketId ? fmt(item.marketActualUnitPrice) : '—'}</td>
+                    )}
                   </>}
                   {promotionColumnCount > 0 && (
                     <td className="px-3 py-2">
@@ -343,9 +482,14 @@ export default async function Page({
                     <td className="px-3 py-2 text-right">{fmt(itemCompanyRequestProgress?.orderedQuantity)}</td>
                     <td className="px-3 py-2 text-right">{fmt(itemCompanyRequestProgress?.receivedQuantity)}</td>
                   </>}
+                  {marketSummaryFulfillment && <>
+                    <td className="px-3 py-2 text-right">{fmt(marketSummaryProgress?.orderedQuantity)}</td>
+                    <td className="px-3 py-2 text-right">{fmt(marketSummaryProgress?.outstandingQuantity)}</td>
+                  </>}
                   {supplyChainPurchaseFulfillment && <>
                     <td className="px-3 py-2 text-right">{fmt(supplyChainPurchaseProgress?.receivedQuantity)}</td>
                     <td className="px-3 py-2 text-right">{fmt(supplyChainPurchaseProgress?.outstandingQuantity)}</td>
+                    {purchaseAmountVisible && <td className="px-3 py-2 text-right">{fmt(supplyChainPurchaseProgress?.receivedAmount)}</td>}
                   </>}
                   <td className="px-3 py-2">{fmt(item.reason)}</td>
                 </tr>

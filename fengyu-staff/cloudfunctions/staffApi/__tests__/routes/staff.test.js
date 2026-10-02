@@ -179,6 +179,12 @@ describe('staff.todayCommission', () => {
     expect(ctx.result.lastMonthOrderCount).toBe(10)
     expect(ctx.result.lastMonthServiceCount).toBe(8)
     expect(ctx.result.storeTodayRevenue).toBeUndefined()
+    for (const index of [0, 2, 4]) {
+      const amountSql = pg.query.mock.calls[index][0]
+      expect(amountSql).toContain('JOIN sale_reportable_item_events sipe ON sipe.receipt_id = spir.id')
+      expect(amountSql).toContain('sipe.performance_amount::numeric / NULLIF(spir.amount::numeric, 0)')
+      expect(amountSql).not.toContain('spia.commission_amount')
+    }
   })
 
   test('店长额外获取门店今日营收', async () => {
@@ -267,7 +273,7 @@ describe('staff.todoList', () => {
     pg.query.mockResolvedValueOnce([{ cnt: '1' }])
     pg.query.mockResolvedValueOnce([{ cnt: '4' }])
     pg.query.mockResolvedValueOnce([{ cnt: '0' }])
-    pg.query.mockResolvedValueOnce([{ cnt: '5' }])
+    pg.query.mockResolvedValueOnce([{ sale_cnt: '23', service_cnt: '4' }])
     pg.query.mockResolvedValueOnce([{ cnt: '7' }])  // 待审批退款
     await staffRoutes.todoList(ctx)
     expect(ctx.result.pendingAppointmentCount).toBe(3)
@@ -275,8 +281,21 @@ describe('staff.todoList', () => {
     expect(ctx.result.pendingOfflineOrderCount).toBe(1)
     expect(ctx.result.pendingCreateOrderCount).toBe(4)
     expect(ctx.result.pendingUnbindCount).toBe(0)
-    expect(ctx.result.pendingAllocationCount).toBe(5)
+    expect(ctx.result.pendingAllocationCount).toBe(27)
     expect(ctx.result.pendingRefundCount).toBe(7)
+    const [allocationSql, allocationParams] = pg.query.mock.calls[5]
+    expect(allocationParams).toEqual(['store-001', '待分配', '待分配'])
+    expect(allocationSql).toContain('FROM sale_order_payments p')
+    expect(allocationSql).toContain('p.allocation_status = $2')
+    expect(allocationSql).toContain('FROM sale_payment_item_receipts spir')
+    expect(allocationSql).toContain('spia.is_void = false')
+    expect(allocationSql).toContain("o.sale_order_type IN ('销售单', '转换单')")
+    expect(allocationSql).toContain("o.legacy_source IS DISTINCT FROM 'workfine'")
+    expect(allocationSql).toContain('FROM service_orders so')
+    expect(allocationSql).toContain('so.store_id = $1')
+    expect(allocationSql).toContain("so.status = '已完成'")
+    expect(allocationSql).toContain("COALESCE(so.commission_status::text, '待分配') = $3")
+    expect(allocationSql).not.toContain('LIMIT')
   })
 })
 
@@ -386,7 +405,7 @@ describe('staff.performanceDetail', () => {
     await staffRoutes.performanceDetail(ctx)
 
     const allocSql = pg.query.mock.calls[0][0]
-    expect(allocSql).toContain('JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id')
+    expect(allocSql).toContain('JOIN sale_reportable_payment_events spe ON spe.sale_payment_id = spir.sale_payment_id')
     expect(allocSql).toContain("spe.status = '已支付'")
     expect(allocSql).toContain('spe.performance_date >= ($2::timestamptz')
     expect(allocSql).toContain('spe.performance_date < ($3::timestamptz')
@@ -699,7 +718,7 @@ describe('staff.performanceDetail', () => {
     // mock 直接喂 alloc_amount 别名，守不住列名回归 —— 必须对 SQL 文本断言。
     // total_amount 是旧表 sale_allocations 的列，取错会让「业绩(我的分配)」虚高 1/ratio 倍
     const allocSql = pg.query.mock.calls[0][0]
-    expect(allocSql).toContain('spia.allocated_amount AS alloc_amount')
+    expect(allocSql).toMatch(/ROUND\(spia\.allocated_amount::numeric \*\s*COALESCE\(sipe\.performance_amount::numeric \/ NULLIF\(spir\.amount::numeric, 0\), 0\), 2\) AS alloc_amount/)
     expect(allocSql).not.toContain('total_amount')
   })
 
@@ -1092,6 +1111,27 @@ describe('staff.performanceDetail', () => {
     expect(svc.commissionRate).toBe(0.12)
     // fixedFee + consumeAmount === amount（保证两字段拆分恒等）
     expect(svc.fixedFee + svc.consumeAmount).toBe(svc.amount)
+  })
+
+  // #379：thresholdApplied 用落库值反推（不查当前矩阵，历史单不回溯）
+  test.each([
+    ['单价 80 按阈值 100 计（15 > 12）', '80.00', '15.00', '1.000', true],
+    ['赠送 NULL 按阈值计', null, '15.00', '1.000', true],
+    ['单价 ≥ 阈值（与旧公式相等）', '500.00', '75.00', '1.000', false],
+    ['上线前落库的低价单（旧公式 12）→ 不标', '80.00', '12.00', '1.000', false],
+    ['两人各 50%：7.5 > 6', '80.00', '7.50', '0.500', true],
+    ['舍入/历史手改偏差 ≤ 0.05 不误报', '33.33', '5.05', '1.000', false],
+  ])('%s', async (_n, price, consume, ratio, expected) => {
+    const ctx = createManagerCtx({ ...rangePayload, filterType: 'service' })
+    pg.query.mockResolvedValueOnce([])
+    pg.query.mockResolvedValueOnce([{
+      commission_amount: consume, fixed_fee: '0.00', consume_amount: consume,
+      role_type: '美容师', commission_rate: '0.1500', allocation_ratio: ratio, session_used: 1, service_unit_price: price,
+      product_name: '面部护理', sales_category: '自销自耗',
+      service_order_id: 'HLD-379', service_date: '2026-09-25', store_id: 'store-001', customer_name: '张三', client_phone: null,
+    }])
+    await staffRoutes.performanceDetail(ctx)
+    expect(ctx.result.items[0].thresholdApplied).toBe(expected)
   })
 
   test('保留 totalServiceFee 字段向后兼容老版本前端', async () => {

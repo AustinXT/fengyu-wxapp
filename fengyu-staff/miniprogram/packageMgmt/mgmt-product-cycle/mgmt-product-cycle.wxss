@@ -11,7 +11,7 @@
   align-items: center;
   gap: 12rpx;
   padding: 12rpx var(--spacing-card);
-  background: var(--color-bg-page);
+  background: var(--color-bg-page); flex-wrap: wrap;
 }
 
 .pc-date-field {
@@ -46,11 +46,11 @@
 .pc-section-title {
   font-size: 30rpx;
   font-weight: 600;
-  color: var(--color-primary);
-  text-align: center;
-  margin: var(--spacing-tight) 0 var(--spacing-card);
-  padding-top: var(--spacing-tight);
-  border-top: 2rpx solid var(--color-divider-soft);
+  color: var(--color-text-primary);
+  text-align: left;
+  margin: var(--spacing-page) 0 var(--spacing-card);
+  padding-left: var(--spacing-tight);
+  border-left: 4rpx solid var(--color-primary);
 }
 
 /* 子区块 */
@@ -64,11 +64,11 @@
 .pc-subsection-title {
   font-size: 28rpx;
   font-weight: 600;
-  color: var(--color-primary);
+  color: var(--color-text-primary);
   padding: var(--spacing-card) var(--spacing-card) 12rpx;
   display: flex;
   align-items: center;
-  gap: 12rpx;
+  gap: 12rpx; flex-wrap: wrap;
 }
 
 .pc-badge {
@@ -96,7 +96,9 @@
 }
 
 .pc-table-header {
-  color: var(--color-text-hint);
+  background: var(--color-primary-light);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
   font-size: 24rpx;
   border-bottom: 1rpx solid var(--color-divider-soft);
 }
@@ -116,7 +118,11 @@
 
 .pc-col {
   flex: 1;
-  text-align: center;
+  min-width: 0;
+  padding: 0 6rpx;
+  word-break: break-all;
+  line-height: 1.5;
+  text-align: right;
 }
 
 .pc-col-name {
@@ -127,6 +133,7 @@
 }
 
 .pc-col-num {
+  font-variant-numeric: tabular-nums;
   color: var(--color-text-primary);
   font-weight: 600;
 }
@@ -136,12 +143,15 @@
 }
 
 .pc-table--repurchase .pc-col-num {
-  flex: 0.9;
-  font-size: 24rpx;
+  font-variant-numeric: tabular-nums;
+  flex: 0.9; font-size: 26rpx;
 }
 
 .pc-table-header .pc-col-num,
 .pc-table-header .pc-col-name {
-  color: var(--color-text-hint);
-  font-weight: normal;
+  color: var(--color-text-secondary);
+  font-weight: 500;
 }
+
+.pc-table-scroll { width: 100%; }
+.pc-table--repurchase { min-width: 900rpx; box-sizing: border-box; }

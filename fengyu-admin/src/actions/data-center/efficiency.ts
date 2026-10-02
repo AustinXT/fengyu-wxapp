@@ -29,8 +29,20 @@
  *   排名榜不算同比环比。
  *
  * ★ 口径红线（consistency.efficiency.test.ts 字面量守护，禁止偏离）：
- *   - 业绩(员工) = SUM(sale_payment_item_allocations.allocated_amount) 归 employee_id ∩
- *     is_void=FALSE ∩ 销售单/转换单 ∩ 已支付回款分配；不按 role_type 白名单截断
+ *   - 业绩**有两套口径，按聚合粒度分**（2026-09-23 #285 修正，别再混用）：
+ *       · Part A/B 全局大卡 + by store（喂 empAvgRevenue / byMarket.techAvgRevenue）
+ *         = SUM(sale_order_performance_events.amount) ∩ 已支付 ∩ 首次支付/回款/退款 ∩
+ *           销售单/转换单/**充值单** ∩ `legacy_source IS DISTINCT FROM 'workfine'` ∩ performance_date 区间。
+ *           ⚠️ 该列生产全表 NULL，**必须用 IS DISTINCT FROM**；写成 `<> 'workfine'` 走三值逻辑
+ *           会把每一行都判成 NULL，结果恒为 0.00。
+ *         与 Part C 门店排名榜 / sales.ts runStoreRevenue / staff queryStoreRevenue 同源。
+ *       · Part D/E 员工榜 + 按技师人效明细
+ *         = SUM(sale_payment_item_allocations.allocated_amount) 归 employee_id ∩
+ *           is_void=FALSE ∩ 销售单/转换单 ∩ 已支付回款分配；不按 role_type 白名单截断。
+ *     ⚠️ `allocated_amount` 是**角色归属额**，只在 GROUP BY employee_id 时才是钱。
+ *     2026-07-27 `23405ddf` 换表时把 Part A/B 一并留在了 allocation 口径（并把守护断言
+ *     反向钉死），导致 KPI 与同页门店榜差 111 万、虚高 32.3%，直到 #285 才纠正。
+ *     恢复 role_type 白名单**不是**修法（实测仍差 −4.45%，只是偶然的部分去重）。
  *   - 实耗(员工) = SUM(unit_real_price * session_used * service_commissions.allocation_ratio)
  *     归 service_commissions.employee_id ∩ is_void=FALSE ∩ 已完成（2026-09-03 改，见下「员工归属口径」）
  *   - 收入 = 销售提成 SUM(sale_payment_item_allocations.commission_amount) + 服务提成 SUM(service_commissions.commission_amount)
@@ -44,8 +56,11 @@
  *   ⚠️ 所有 role_type 各算一份（用户拍板，不做角色去重）：同一项目同时挂美容师 + 品项老师时
  *   两人各全额计入，故**员工榜/明细表合计会大于门店实耗**（2026-09 实测高约 25%）。
  *   门店榜 / 全局大卡实耗（Part A/B）仍走 service_items 原口径，不受影响。
- *   - 产能员工 producer_employees：hired_at/resigned_at 历史化（2026-05-20 起不再用 skills 过滤，
- *     以已归属业绩自然过滤 + 末尾 value>0 排除零值；与 mgmt-dashboard.js producerEmployeesCte 一致）
+ *   - 产能员工 producer_employees：hired_at/resigned_at 历史化；与 mgmt-dashboard.js
+ *     producerEmployeesCte 一致。**入榜口径见 Part D 段头**（2026-09-24 #290 起为
+ *     `pe.has_skills OR COALESCE(v,0) <> 0`，取代 2026-05-20 的 `value > 0`）。
+ *     ⚠️ 候选池仍**不用** skills 白名单截断（`skills && ARRAY['美容师','养生师']` 会漏 27.8%）；
+ *     `has_skills` 是「有任意技能标签」的非空判定，与白名单是两回事，别混为一谈。
  *
  * ⚠️ 偏离 metrics.md 说明：
  *   - 「店长人数 managerCount」「技师人数 technicianCount」是本 admin 人效板块新增的 byMarket 头数指标，
@@ -55,6 +70,10 @@
  *         故 managerAvgX = 每店平均 X（m.income 本就是门店全部产能员工提成合计 → managerAvgIncome = 每店平均产能收入）。
  *       技师 = staff_wechat_users.skills && ARRAY['美容师','养生师']（= metrics.md employeeCount「产能技师在职数」），
  *         按区间末 hired_at/resigned_at 历史化。
+ *         ⚠️ **含直挂市场/部门的技师**（2026-09-23 #285 修正）：组织归属双轨，只按 store_id
+ *         过滤会漏掉 13 名 store_id IS NULL 的在职产能技师（集团 150 vs 164，虚高 +9.33%）。
+ *         归属规则单源在 `@/lib/data-center/technician-sql`（销售板共用同一份），与 Part D `producer_base` 对齐；
+ *         单店 scope 下直挂者不出现（`orgAnchorScopeSql` 返回 FALSE），与员工榜同语义。
  *   - 人均派生分母「员工数」= 技师（产能技师）口径，与 metrics.md §派生指标分母 employeeCount 对齐。
  *   - 「人均项目数 empAvgProjects / techAvgProjects」分子用 metrics.md 项目数口径
  *     （sales_category IN ('自销自耗','他销自耗')，非生美过滤）；任务描述「生美项目」措辞按 metrics.md 项目数对齐。
@@ -62,6 +81,7 @@
  *     而非 metrics.md 的双口径 day/month（本板块只有单一 TimeRange，取区间末快照最自洽）。
  */
 
+import { safeDiv } from '@/lib/data-center/format'
 import { db } from '@/db'
 import { sql } from 'drizzle-orm'
 import { withPermission } from '@/lib/with-permission'
@@ -76,6 +96,11 @@ import type {
 import { prepareBoardContext } from '@/lib/data-center/context'
 import { scopeFilterSql, scopeStoreSkeletonSql, orgAnchorScopeSql } from '@/lib/data-center/scope-sql'
 import { excludeDepositRefundSql } from '@/lib/data-center/consume-filter'
+import {
+  technicianCountSql,
+  technicianByStoreSql,
+  technicianDirectByMarketSql,
+} from '@/lib/data-center/technician-sql'
 
 /** db.execute 返回数组，取首行标量并 Number 化（null→0，分母聚合无行时按 0 处理） */
 function scalar(rows: unknown, key = 'v'): number {
@@ -83,12 +108,6 @@ function scalar(rows: unknown, key = 'v'): number {
   if (!r || r[key] == null) return 0
   const n = Number(r[key])
   return Number.isFinite(n) ? n : 0
-}
-
-/** 人均/店均派生：分子 / 分母；分母<=0 → null（前端 '--'） */
-function ratio(num: number | null, den: number | null): number | null {
-  if (num == null || den == null || den <= 0) return null
-  return num / den
 }
 
 function performanceEventDateBetween(
@@ -137,17 +156,29 @@ export const getEfficiencyBoard = withPermission(
     //  Part A — 全局聚合标量（KPI 分子/分母用，单一区间，不算同比环比）
     // ═══════════════════════════════════════════════════════════════════
 
-    /** 业绩（员工归属，全局合计）= SUM(sale_payment_item_allocations.allocated_amount) */
+    /**
+     * 业绩（门店口径，全局合计）= SUM(sale_order_performance_events.amount)
+     *
+     * ⚠️ 禁止改回 SUM(spia.allocated_amount)（#285）：`allocated_amount` 是**角色归属额**不是钱。
+     * 写入侧 staffApi/routes/allocation.js 按 (sale_item_id, role_type) **分池**校验「池内 Σratio ≤ 1」，
+     * 单 receipt 挂几个角色就有几个独立的 100% 池 —— ratio 合计 2.0 / 3.0 是设计允许的正常形态。
+     * 按 employee_id 分组时它是对的（Part D 员工榜保留该口径）；去掉 GROUP BY 跨员工求和，
+     * 同一笔钱就被算了 2~3 次（2026-09-01~09-21 集团实测虚高 +32.30%，且 950 张零分配 receipt
+     * 反向漏计 → 偏差不同向，**无法用统一系数校正**）。
+     *
+     * 谓词集与下列四处**逐字对齐**，任一处漂移都会让 KPI 与同页门店排行榜对不上账：
+     *   - 同文件 Part C `qStoreRankRevenue`（同页门店排名榜-业绩）
+     *   - `sales.ts` `runStoreRevenue`（销售板总业绩 = metrics.md 的 storeRevenue）
+     *   - staff `mgmt-dashboard.js` `queryStoreRevenue`（两端同名指标同源）
+     * 缺 `充值单` / `change_type` / `legacy_source` 任一条都会与门店榜产生差额。
+     */
     const qRevenueTotal = db.execute(sql`
-      SELECT COALESCE(SUM(spia.allocated_amount::numeric), 0) AS v
-      FROM sale_payment_item_allocations spia
-      JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
-      JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
-      JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-      JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id
-      WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
-        AND spia.is_void = FALSE
-        AND so.sale_order_type IN ('销售单', '转换单')
+      SELECT COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
+      FROM sale_reportable_payment_events spe
+      WHERE ${scopeFilterSql(session, scope, 'spe.store_id')}
+        AND spe.change_type IN ('首次支付', '回款', '退款')
+        AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
+        AND spe.legacy_source IS DISTINCT FROM 'workfine'
         AND ${performanceEventDateBetween('spe', cur.start, cur.end)}
     `)
 
@@ -223,19 +254,13 @@ export const getEfficiencyBoard = withPermission(
     `)
 
     /**
-     * 员工数 = 技师（产能技师，区间末历史化）：skills && ARRAY['美容师','养生师']
-     *   ∩ hired_at <= 区间末 ∩ (resigned_at IS NULL OR resigned_at > 区间末)。
-     * 对齐 metrics.md employeeCount（人均派生分母）。
+     * 员工数 = 产能技师（含直挂市场/部门者），人均派生分母。
+     *
+     * ⚠️ 口径单源在 `@/lib/data-center/technician-sql`，**销售板 `sales.ts` 共用同一份**。
+     * 别在这里内联重写：#285 之前两个板块各写一份只按 `store_id` 过滤的查询，
+     * 只修一处会让同一个数据中心的两个板块技师数差 14 人（闸门 2 codex 判 P0）。
      */
-    const qTechnicianCount = db.execute(sql`
-      SELECT COUNT(*)::int AS v
-      FROM staff_wechat_users s
-      WHERE ${scopeFilterSql(session, scope, 's.store_id')}
-        AND s.skills && ARRAY['美容师','养生师']::text[]
-        AND s.hired_at IS NOT NULL
-        AND s.hired_at::date <= ${cur.end}
-        AND (s.resigned_at IS NULL OR s.resigned_at::date > ${cur.end})
-    `)
+    const qTechnicianCount = db.execute(technicianCountSql(session, scope, cur.end))
 
     /**
      * 店长数 = 在营门店数（2026-05-26 用户拍板：每店一店长口径，不再按 position_name 识别）。
@@ -270,31 +295,29 @@ export const getEfficiencyBoard = withPermission(
         AND (s.closed_at IS NULL OR s.closed_at::date > ${cur.end})
     `)
 
-    /** 技师数 by store */
-    const qTechByStore = db.execute(sql`
-      SELECT s.store_id, COUNT(*)::int AS v
-      FROM staff_wechat_users s
-      WHERE ${scopeFilterSql(session, scope, 's.store_id')}
-        AND s.skills && ARRAY['美容师','养生师']::text[]
-        AND s.hired_at IS NOT NULL
-        AND s.hired_at::date <= ${cur.end}
-        AND (s.resigned_at IS NULL OR s.resigned_at::date > ${cur.end})
-      GROUP BY s.store_id
-    `)
+    /** 技师数 by store（有门店归属的部分）—— 与 Part A 同一份 technician-sql 单源 */
+    const qTechByStore = db.execute(technicianByStoreSql(session, scope, cur.end))
 
-    /** 业绩 by store（员工归属 total_amount） */
+    /** 技师数 by market（直挂市场/部门、无门店归属的部分）—— 详见 technician-sql 的注释 */
+    const qTechDirectByMarket = db.execute(technicianDirectByMarketSql(session, scope, cur.end))
+
+    /**
+     * 业绩 by store（门店口径）—— 与 Part A `qRevenueTotal` 同谓词集，仅多一个 GROUP BY。
+     * 该 map 喂给 byMarket 的 `techAvgRevenue`，故必须与全局大卡同源，否则「按市场人效」
+     * 与 KPI 大卡自相矛盾（#285）。
+     * 分组列用 `spe.store_id`（非 `so.store_id`）与 Part C 对齐。二者**定义恒等**：
+     * 视图 `sale_order_performance_events` 就是 `sale_order_payments JOIN sale_orders so`
+     * 再把 `so.store_id` 原样投影出来（`pg_get_viewdef` 可查），不是"实测出来零不一致"的经验结论。
+     */
     const qRevenueByStore = db.execute(sql`
-      SELECT so.store_id, COALESCE(SUM(spia.allocated_amount::numeric), 0) AS v
-      FROM sale_payment_item_allocations spia
-      JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
-      JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
-      JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-      JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id
-      WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
-        AND spia.is_void = FALSE
-        AND so.sale_order_type IN ('销售单', '转换单')
+      SELECT spe.store_id, COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
+      FROM sale_reportable_payment_events spe
+      WHERE ${scopeFilterSql(session, scope, 'spe.store_id')}
+        AND spe.change_type IN ('首次支付', '回款', '退款')
+        AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
+        AND spe.legacy_source IS DISTINCT FROM 'workfine'
         AND ${performanceEventDateBetween('spe', cur.start, cur.end)}
-      GROUP BY so.store_id
+      GROUP BY spe.store_id
     `)
 
     /** 实耗 by store */
@@ -387,11 +410,11 @@ export const getEfficiencyBoard = withPermission(
 
     const qStoreRankRevenue = db.execute(sql`
       SELECT s.store_id, s.store_name, o.name AS market_name,
-        COALESCE(SUM(spe.amount::numeric), 0) AS value
+        COALESCE(SUM(spe.performance_amount::numeric), 0) AS value
       FROM stores s
       JOIN org_nodes o_store ON s.org_node_id = o_store.id
       JOIN org_nodes o ON o_store.parent_id = o.id
-      LEFT JOIN sale_order_performance_events spe
+      LEFT JOIN sale_reportable_payment_events spe
         ON spe.store_id = s.store_id
         AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
         AND spe.legacy_source IS DISTINCT FROM 'workfine'
@@ -478,9 +501,29 @@ export const getEfficiencyBoard = withPermission(
     // ═══════════════════════════════════════════════════════════════════
     //  Part D — 员工排名榜（5 metric，producer_employees CTE + TimeRange 区间）
     // ═══════════════════════════════════════════════════════════════════
-    // 移植 staff staffRanking：producer_employees（hired_at/resigned_at 历史化，无 skills 过滤）
-    // LEFT JOIN 各 metric 子查询；末尾 WHERE value > 0 排除零值员工。
+    // 移植 staff staffRanking：producer_employees（hired_at/resigned_at 历史化）
+    // LEFT JOIN 各 metric 子查询；末尾 WHERE 见下方「入榜口径」。
     // 时间过滤改 BETWEEN cur.start/end（关键改造）。
+    //
+    // ★ 入榜口径（2026-09-24 用户拍板，#290）：`pe.has_skills OR COALESCE(v,0) <> 0`
+    //   ——「有技能标签的员工无条件入榜（含零值/负值），无标签者仅在有非零产能时入榜」。
+    //
+    //   2026-05-20 P0-4 曾用 `WHERE COALESCE(v,0) > 0` 替代被删的 skills 白名单，语义是
+    //   「无业绩不入榜」。但 `> 0` 比「无业绩」宽：它连**有**业绩而净额为负（退款冲销超过
+    //   新单）的员工一并吞掉，与「退款负数冲销不删行」硬口径冲突 —— 同板块门店榜（Part C）
+    //   从不按 value 剔行，且该「不剔负」纪律已被 consistency.efficiency.test.ts 的
+    //   fail-closed 断言钉死，Part D 是同一缺陷唯一未被守护的一侧。
+    //   2026-09-01~22 生产实测：2 人被吞（唐杰 −10,260.00 / 万淑婷 −642.00）。
+    //
+    //   候选池改用 has_skills 而非白名单 `skills && ARRAY['美容师','养生师']`：后者实测会把
+    //   品项老师 1,061,191.30 / 推广部 231,767.01 / 售前老师 97,728.00 共 139 万（27.8%）
+    //   排出榜单，且与 2026-09-03「品项老师/养生部应当入榜」的放宽改造直接矛盾。
+    //
+    //   ⚠️ `OR COALESCE(v,0) <> 0` 这半边是**防漏算兜底**，不是冗余：`skills` 是
+    //   optional/nullable（schemas.ts:50），漏填就会静默掉出榜单 —— 2026-05-20 正是栽在
+    //   这里（当时 skills 1174/2020 为空，漏算 33% 业绩）。全历史仍存反例：skills 空却有
+    //   allocation 的 1 人 42,624.00、有服务提成的 3 人 269.40。「skills 空 ⇒ 零产能」
+    //   是当期巧合，不是数据约束，故兜底必须保留。
     // 产能员工锚点：staff 用 NOW()，本板块用区间末 cur.end（与人均分母历史化口径一致）。
     // scope 命中 sw.store_id。
 
@@ -493,7 +536,8 @@ export const getEfficiencyBoard = withPermission(
      *     1. store_id  —— 档案 store_id 空但直挂门店节点时反查该门店；
      *     2. 展示名    —— store_name 空时显示直挂节点名（「品项公司」「养生部」），不留空白列；
      *     3. 可见性锚  —— anchor_market_id = 直挂节点自身（若为市场）或其父节点，交
-     *        orgAnchorScopeSql 判定；品项公司下无门店故仅 admin/总部可见。
+     *        orgAnchorScopeSql 判定；品项公司下无门店：汇总范围仅 admin/总部可见，
+     *        直接授权到品项公司的账号以市场范围可见（#399）。
      */
     const producerCte = sql`
       WITH producer_base AS (
@@ -507,7 +551,8 @@ export const getEfficiencyBoard = withPermission(
                ) AS market_name,
                CASE WHEN o.type = '市场' THEN o.id
                     WHEN op.type = '市场' THEN op.id
-                    ELSE NULL END AS anchor_market_id
+                    ELSE NULL END AS anchor_market_id,
+               (COALESCE(cardinality(array_remove(array_remove(sw.skills, ''), NULL)), 0) > 0) AS has_skills
         FROM staff_wechat_users sw
         LEFT JOIN stores s ON s.store_id = sw.store_id
         LEFT JOIN org_nodes o_store ON s.org_node_id = o_store.id AND o_store.type = '门店'
@@ -521,7 +566,7 @@ export const getEfficiencyBoard = withPermission(
       ),
       producer_employees AS (
         SELECT pb.employee_id, pb.employee_name, pb.store_id, pb.store_name,
-               pb.position_name, pb.market_name
+               pb.position_name, pb.market_name, pb.has_skills
         FROM producer_base pb
         WHERE (pb.store_id IS NOT NULL AND ${scopeFilterSql(session, scope, 'pb.store_id')})
            OR (pb.store_id IS NULL AND ${orgAnchorScopeSql(session, scope)})
@@ -531,12 +576,15 @@ export const getEfficiencyBoard = withPermission(
     const qStaffRankRevenue = db.execute(sql`
       ${producerCte},
       revenue_by_emp AS (
-        SELECT spia.employee_id, COALESCE(SUM(spia.allocated_amount::numeric), 0) AS v
+        SELECT spia.employee_id,
+          COALESCE(SUM(ROUND(spia.allocated_amount::numeric *
+            COALESCE(sipe.performance_amount::numeric / NULLIF(spir.amount::numeric, 0), 0), 2)), 0) AS v
         FROM sale_payment_item_allocations spia
         JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+        JOIN sale_reportable_item_events sipe ON sipe.receipt_id = spir.id
         JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
         JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-        JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id
+        JOIN sale_reportable_payment_events spe ON spe.sale_payment_id = spir.sale_payment_id
         WHERE spia.is_void = FALSE
           AND so.sale_order_type IN ('销售单', '转换单')
           AND ${performanceEventDateBetween('spe', cur.start, cur.end)}
@@ -546,12 +594,19 @@ export const getEfficiencyBoard = withPermission(
         COALESCE(r.v, 0)::numeric AS value
       FROM producer_employees pe
       LEFT JOIN revenue_by_emp r ON r.employee_id = pe.employee_id
-      WHERE COALESCE(r.v, 0) > 0
-      ORDER BY value DESC, pe.employee_name ASC, pe.employee_id ASC
+      WHERE (pe.has_skills OR COALESCE(r.v, 0) <> 0)
+      ORDER BY (COALESCE(r.v, 0) <> 0) DESC, COALESCE(r.v, 0) DESC, pe.employee_name ASC, pe.employee_id ASC
     `)
 
-    // 实耗(员工)：2026-09-03 起归属改 service_commissions（见文件头「员工归属口径」说明），
-    // 与 staff mgmt-dashboard.js staffRankingConsume 镜像。
+    // 实耗(员工)：2026-09-03 起归属改 service_commissions（见文件头「员工归属口径」说明）。
+    //
+    // ⚠️ 与 staff `mgmt-dashboard.js staffRankingConsume` **并非逐字镜像**（原注释称「镜像」
+    //    不准确，2026-09-24 #290 闸门 2 订正）：staff 侧的 `consume_by_emp` 多挂一个
+    //    `JOIN sale_items si ON si.sale_item_id = sit.sale_item_id`，而 `si` 在其 SELECT/WHERE
+    //    中零引用 —— 是旧口径残留，现在唯一作用是 INNER 存在性过滤。
+    //    生产实测（当期 + 全历史）`service_items.sale_item_id` 无空值、无悬空引用，
+    //    故两端当前结果一致；但它是**潜在分裂点**（无数据库约束保证该列非空）。
+    //    删它属口径改动、超出 #290 范围，已转范围外报告，勿在本文件单边"对齐"。
     const qStaffRankConsume = db.execute(sql`
       ${producerCte},
       consume_by_emp AS (
@@ -570,8 +625,8 @@ export const getEfficiencyBoard = withPermission(
         COALESCE(c.v, 0)::numeric AS value
       FROM producer_employees pe
       LEFT JOIN consume_by_emp c ON c.employee_id = pe.employee_id
-      WHERE COALESCE(c.v, 0) > 0
-      ORDER BY value DESC, pe.employee_name ASC, pe.employee_id ASC
+      WHERE (pe.has_skills OR COALESCE(c.v, 0) <> 0)
+      ORDER BY (COALESCE(c.v, 0) <> 0) DESC, COALESCE(c.v, 0) DESC, pe.employee_name ASC, pe.employee_id ASC
     `)
 
     const qStaffRankNewMember = db.execute(sql`
@@ -588,8 +643,8 @@ export const getEfficiencyBoard = withPermission(
         COALESCE(n.v, 0)::numeric AS value
       FROM producer_employees pe
       LEFT JOIN new_member_by_emp n ON n.employee_id = pe.employee_id
-      WHERE COALESCE(n.v, 0) > 0
-      ORDER BY value DESC, pe.employee_name ASC, pe.employee_id ASC
+      WHERE (pe.has_skills OR COALESCE(n.v, 0) <> 0)
+      ORDER BY (COALESCE(n.v, 0) <> 0) DESC, COALESCE(n.v, 0) DESC, pe.employee_name ASC, pe.employee_id ASC
     `)
 
     // 项目数(员工)：归属同上改 service_commissions；次数为计数指标不乘 allocation_ratio，
@@ -615,8 +670,8 @@ export const getEfficiencyBoard = withPermission(
         COALESCE(p.v, 0)::numeric AS value
       FROM producer_employees pe
       LEFT JOIN project_by_emp p ON p.employee_id = pe.employee_id
-      WHERE COALESCE(p.v, 0) > 0
-      ORDER BY value DESC, pe.employee_name ASC, pe.employee_id ASC
+      WHERE (pe.has_skills OR COALESCE(p.v, 0) <> 0)
+      ORDER BY (COALESCE(p.v, 0) <> 0) DESC, COALESCE(p.v, 0) DESC, pe.employee_name ASC, pe.employee_id ASC
     `)
 
     const qStaffRankIncome = db.execute(sql`
@@ -648,8 +703,8 @@ export const getEfficiencyBoard = withPermission(
       FROM producer_employees pe
       LEFT JOIN sales_comm sc1 ON sc1.employee_id = pe.employee_id
       LEFT JOIN service_comm sc2 ON sc2.employee_id = pe.employee_id
-      WHERE COALESCE(sc1.v, 0) + COALESCE(sc2.v, 0) > 0
-      ORDER BY value DESC, pe.employee_name ASC, pe.employee_id ASC
+      WHERE (pe.has_skills OR COALESCE(sc1.v, 0) + COALESCE(sc2.v, 0) <> 0)
+      ORDER BY (COALESCE(sc1.v, 0) + COALESCE(sc2.v, 0) <> 0) DESC, COALESCE(sc1.v, 0) + COALESCE(sc2.v, 0) DESC, pe.employee_name ASC, pe.employee_id ASC
     `)
 
     // ═══════════════════════════════════════════════════════════════════
@@ -668,16 +723,17 @@ export const getEfficiencyBoard = withPermission(
       ${producerCte},
       revenue_by_emp_cat AS (
         SELECT spia.employee_id,
-          COALESCE(SUM(spia.allocated_amount::numeric), 0) AS total,
-          COALESCE(SUM(spia.allocated_amount::numeric) FILTER (WHERE si.sales_category = '自销自耗'), 0) AS sale_zxzh,
-          COALESCE(SUM(spia.allocated_amount::numeric) FILTER (WHERE si.sales_category = '他销自耗'), 0) AS sale_txzh,
-          COALESCE(SUM(spia.allocated_amount::numeric) FILTER (WHERE si.sales_category = '他销他耗'), 0) AS sale_txth,
-          COALESCE(SUM(spia.allocated_amount::numeric) FILTER (WHERE si.sales_category = '生态合作'), 0) AS sale_eco
+          COALESCE(SUM(ROUND(spia.allocated_amount::numeric * COALESCE(sipe.performance_amount::numeric / NULLIF(spir.amount::numeric, 0), 0), 2)), 0) AS total,
+          COALESCE(SUM(ROUND(spia.allocated_amount::numeric * COALESCE(sipe.performance_amount::numeric / NULLIF(spir.amount::numeric, 0), 0), 2)) FILTER (WHERE si.sales_category = '自销自耗'), 0) AS sale_zxzh,
+          COALESCE(SUM(ROUND(spia.allocated_amount::numeric * COALESCE(sipe.performance_amount::numeric / NULLIF(spir.amount::numeric, 0), 0), 2)) FILTER (WHERE si.sales_category = '他销自耗'), 0) AS sale_txzh,
+          COALESCE(SUM(ROUND(spia.allocated_amount::numeric * COALESCE(sipe.performance_amount::numeric / NULLIF(spir.amount::numeric, 0), 0), 2)) FILTER (WHERE si.sales_category = '他销他耗'), 0) AS sale_txth,
+          COALESCE(SUM(ROUND(spia.allocated_amount::numeric * COALESCE(sipe.performance_amount::numeric / NULLIF(spir.amount::numeric, 0), 0), 2)) FILTER (WHERE si.sales_category = '生态合作'), 0) AS sale_eco
         FROM sale_payment_item_allocations spia
         JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+        JOIN sale_reportable_item_events sipe ON sipe.receipt_id = spir.id
         JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
         JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-        JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id
+        JOIN sale_reportable_payment_events spe ON spe.sale_payment_id = spir.sale_payment_id
         WHERE spia.is_void = FALSE
           AND so.sale_order_type IN ('销售单', '转换单')
           AND ${performanceEventDateBetween('spe', cur.start, cur.end)}
@@ -762,7 +818,7 @@ export const getEfficiencyBoard = withPermission(
       revenueTotalR, consumeTotalR, salesCommTotalR, serviceCommTotalR,
       footfallTotalR, projectCountTotalR, memberCountR, technicianCountR, managerCountR,
       // Part B
-      skelRows, managerByStoreR, techByStoreR, revenueByStoreR, consumeByStoreR,
+      skelRows, managerByStoreR, techByStoreR, techDirectByMarketR, revenueByStoreR, consumeByStoreR,
       shengmeiConsumeByStoreR, salesCommByStoreR, serviceCommByStoreR,
       footfallByMarketR, projectByStoreR,
       // Part C
@@ -774,7 +830,7 @@ export const getEfficiencyBoard = withPermission(
     ] = await Promise.all([
       qRevenueTotal, qConsumeTotal, qSalesCommTotal, qServiceCommTotal,
       qFootfallTotal, qProjectCountTotal, qMemberCount, qTechnicianCount, qManagerCount,
-      qStoreSkeleton, qManagerByStore, qTechByStore, qRevenueByStore, qConsumeByStore,
+      qStoreSkeleton, qManagerByStore, qTechByStore, qTechDirectByMarket, qRevenueByStore, qConsumeByStore,
       qShengmeiConsumeByStore, qSalesCommByStore, qServiceCommByStore,
       qFootfallByMarket, qProjectByStore,
       qStoreRankRevenue, qStoreRankConsume, qStoreRankRetainedMember, qStoreRankNewMember, qStoreRankProjectCount,
@@ -794,14 +850,23 @@ export const getEfficiencyBoard = withPermission(
 
     const mk = (value: number | null, unit: 'amount' | 'count'): KpiCell => ({ value, unit })
 
+    /**
+     * 无门店范围（#423 方案 A）：骨架无在营门店时，技师人均的分子（门店口径）恒 0、分母却含直挂技师，
+     * `0 / N` 与员工榜对不上 → 一律给 null（前端「--」+ 说明）。骨架与 `scopeHasStoreSql` 同源。
+     * 店长人均两项不用管：无门店时店长数必为 0，`ratio` 已返回 null。
+     */
+    const scopeHasStore = (skelRows as unknown[]).length > 0
+    const perTechnician = (num: number): number | null =>
+      scopeHasStore ? safeDiv(num, technicianCount) : null
+
     const kpis: Record<string, KpiCell> = {
-      managerAvgMembers: mk(ratio(memberCount, managerCount), 'count'),
-      managerAvgEmployees: mk(ratio(technicianCount, managerCount), 'count'),
-      empAvgRevenue: mk(ratio(revenueTotal, technicianCount), 'amount'),
-      empAvgConsume: mk(ratio(consumeTotal, technicianCount), 'amount'),
-      empAvgIncome: mk(ratio(incomeTotal, technicianCount), 'amount'),
-      empAvgMembers: mk(ratio(footfallTotal, technicianCount), 'count'),
-      empAvgProjects: mk(ratio(projectCountTotal, technicianCount), 'count'),
+      managerAvgMembers: mk(safeDiv(memberCount, managerCount), 'count'),
+      managerAvgEmployees: mk(safeDiv(technicianCount, managerCount), 'count'),
+      empAvgRevenue: mk(perTechnician(revenueTotal), 'amount'),
+      empAvgConsume: mk(perTechnician(consumeTotal), 'amount'),
+      empAvgIncome: mk(perTechnician(incomeTotal), 'amount'),
+      empAvgMembers: mk(perTechnician(footfallTotal), 'count'),
+      empAvgProjects: mk(perTechnician(projectCountTotal), 'count'),
     }
 
     // ── byMarket 装配（事件指标按门店汇总；客流直接取市场去重值）─────────
@@ -818,6 +883,8 @@ export const getEfficiencyBoard = withPermission(
     type MarketAgg = {
       marketId: string
       marketName: string
+      /** 骨架里该市场的在营门店数；0 = 无门店市场（品项公司等），技师人均给 null（#423） */
+      storeCount: number
       managerCount: number
       technicianCount: number
       revenue: number
@@ -827,14 +894,13 @@ export const getEfficiencyBoard = withPermission(
       projectCount: number
     }
     const marketMap = new Map<string, MarketAgg>()
-    for (const r of skelRows as Array<Record<string, unknown>>) {
-      const storeId = String(r.store_id)
-      const marketId = String(r.market_id ?? '')
+    const marketRowOf = (marketId: string, marketName: string): MarketAgg => {
       let m = marketMap.get(marketId)
       if (!m) {
         m = {
           marketId,
-          marketName: String(r.market_name ?? ''),
+          marketName,
+          storeCount: 0,
           managerCount: 0,
           technicianCount: 0,
           revenue: 0,
@@ -845,6 +911,13 @@ export const getEfficiencyBoard = withPermission(
         }
         marketMap.set(marketId, m)
       }
+      return m
+    }
+
+    for (const r of skelRows as Array<Record<string, unknown>>) {
+      const storeId = String(r.store_id)
+      const m = marketRowOf(String(r.market_id ?? ''), String(r.market_name ?? ''))
+      m.storeCount += 1
       m.managerCount += managerMap.get(storeId) ?? 0
       m.technicianCount += techMap.get(storeId) ?? 0
       m.revenue += revMap.get(storeId) ?? 0
@@ -854,21 +927,43 @@ export const getEfficiencyBoard = withPermission(
       m.projectCount += projectMap.get(storeId) ?? 0
     }
 
-    const byMarket: BreakdownRow[] = Array.from(marketMap.values()).map((m) => ({
-      groupId: m.marketId,
-      groupName: m.marketName,
-      metrics: {
-        managerCount: m.managerCount,
-        managerAvgIncome: ratio(m.income, m.managerCount),
-        technicianCount: m.technicianCount,
-        techAvgRevenue: ratio(m.revenue, m.technicianCount),
-        techAvgConsume: ratio(m.consume, m.technicianCount),
-        techAvgShengmeiConsume: ratio(m.shengmeiConsume, m.technicianCount),
-        techAvgIncome: ratio(m.income, m.technicianCount),
-        techAvgMembers: ratio(footfallByMarketMap.get(m.marketId) ?? 0, m.technicianCount),
-        techAvgProjects: ratio(m.projectCount, m.technicianCount),
-      },
-    }))
+    /**
+     * 并入**直挂市场/部门**的产能技师（#285）。
+     *
+     * 上面的循环是逐门店累加的，`store_id IS NULL` 的技师没有任何门店可挂，只走那个循环
+     * 会把他们二次丢失 —— 这正是分母缺口的成因（2026-09 实测南昌凤御漏 8 人、昭通凤御漏 4 人）。
+     *
+     * ⚠️ 必须在循环**外**按市场加一次：放进循环会按该市场的门店数重复累加。
+     * ⚠️ 用 `marketRowOf` 建行：「品项公司」这类市场底下一个门店都没有，
+     * 压根不出现在门店骨架 skelRows 里，只能在这里补出行（表现为新增一行 1 技师 / 0 业绩）。
+     */
+    for (const r of techDirectByMarketR as Array<Record<string, unknown>>) {
+      if (r.market_id == null) continue
+      const m = marketRowOf(String(r.market_id), String(r.market_name ?? ''))
+      m.technicianCount += Number(r.v ?? 0)
+    }
+
+    const marketRows = Array.from(marketMap.values())
+    const byMarket: BreakdownRow[] = marketRows.map((m) => {
+      // 与顶部 KPI 同一条（#423）：该市场没有在营门店 → 门店口径分子恒 0，技师人均不适用
+      const perTech = (num: number): number | null =>
+        m.storeCount > 0 ? safeDiv(num, m.technicianCount) : null
+      return {
+        groupId: m.marketId,
+        groupName: m.marketName,
+        metrics: {
+          managerCount: m.managerCount,
+          managerAvgIncome: safeDiv(m.income, m.managerCount),
+          technicianCount: m.technicianCount,
+          techAvgRevenue: perTech(m.revenue),
+          techAvgConsume: perTech(m.consume),
+          techAvgShengmeiConsume: perTech(m.shengmeiConsume),
+          techAvgIncome: perTech(m.income),
+          techAvgMembers: perTech(footfallByMarketMap.get(m.marketId) ?? 0),
+          techAvgProjects: perTech(m.projectCount),
+        },
+      }
+    })
 
     // ── 排名榜装配（assignRanks 并列跳号）──────────────────────────────
     const mapStoreRank = (rows: unknown): RankingRow[] =>
@@ -938,6 +1033,8 @@ export const getEfficiencyBoard = withPermission(
     return {
       ...ctx.meta,
       kpis,
+      noStoreScope: !scopeHasStore,
+      noStoreMarkets: marketRows.filter((m) => m.storeCount === 0).map((m) => m.marketName),
       byMarket,
       byStaff,
       storeRankings,

@@ -15,24 +15,72 @@ function roundCents(v) {
   return Math.round(v * 100) / 100
 }
 
-function allocateSignedCents(totalCents, rows) {
-  const signedTotal = rows.reduce((s, r) => s + r.weightCents, 0)
-  if (signedTotal <= 0 || rows.length === 0) return []
-  const parts = rows.map((r) => {
-    const exact = (totalCents * r.weightCents) / signedTotal
-    const cents = exact < 0 ? Math.ceil(exact) : Math.floor(exact)
-    return { saleItemId: r.saleItemId, cents, frac: Math.abs(exact - cents) }
-  })
-  const remainder = totalCents - parts.reduce((s, p) => s + p.cents, 0)
-  const step = remainder >= 0 ? 1 : -1
-  parts.sort((a, b) => b.frac - a.frac)
-  for (let i = 0; i < Math.abs(remainder); i++) {
-    parts[i % parts.length].cents += step
-  }
-  return parts
-    .map((p) => ({ saleItemId: p.saleItemId, amount: p.cents / 100 }))
-    .filter((p) => p.amount !== 0)
-}
+// #300：receipt = 本次收款前后转入行已兑现价值的差；转出折抵值不随回款改变。
+// 与 paid-sessions STEP 1.6 同一封顶/已折走行/累计边界规则，四端整段守护。
+const CONVERSION_RECEIPT_DELTAS_SQL = `WITH conversion_receipt_order AS (
+      SELECT so.sale_order_type,
+             GREATEST(0, so.received::numeric - so.refunded_amount::numeric) AS net_received,
+             COALESCE((
+               SELECT SUM(GREATEST(0, -out_item.received::numeric))
+               FROM sale_items out_item
+               WHERE out_item.sale_order_id = $1 AND out_item.item_direction = '转出'
+             ), 0)::numeric AS converted_value,
+             COALESCE((
+               SELECT SUM(in_item.sale_amount::numeric)
+               FROM sale_items in_item
+               WHERE in_item.sale_order_id = $1 AND in_item.item_direction = '转入'
+                 AND in_item.sale_amount::numeric > 0
+                 AND NOT (EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = in_item.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭') AND (CASE WHEN in_item.product_type = '疗程卡' THEN COALESCE(in_item.remaining_sessions, 0) = 0 ELSE (COALESCE(in_item.picked_up_quantity, 0) + COALESCE(in_item.refunded_quantity, 0) + COALESCE(in_item.converted_quantity, 0)) >= in_item.quantity END))
+             ), 0)::numeric AS in_total,
+             COALESCE((
+               SELECT SUM(in_item.received::numeric)
+               FROM sale_items in_item
+               WHERE in_item.sale_order_id = $1 AND in_item.item_direction = '转入'
+                 AND (EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = in_item.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭') AND (CASE WHEN in_item.product_type = '疗程卡' THEN COALESCE(in_item.remaining_sessions, 0) = 0 ELSE (COALESCE(in_item.picked_up_quantity, 0) + COALESCE(in_item.refunded_quantity, 0) + COALESCE(in_item.converted_quantity, 0)) >= in_item.quantity END))
+             ), 0)::numeric AS waived_in_received
+      FROM sale_orders so
+      WHERE so.sale_order_id = $1
+    ),
+    ranked AS (
+      SELECT si.sale_item_id,
+             si.sale_amount::numeric AS item_sale_amount,
+             conversion_receipt_order.in_total,
+             LEAST(conversion_receipt_order.in_total,
+                   GREATEST(0, conversion_receipt_order.converted_value + conversion_receipt_order.net_received
+                               - conversion_receipt_order.waived_in_received)) AS target_received,
+             LEAST(conversion_receipt_order.in_total,
+                   GREATEST(0, conversion_receipt_order.converted_value
+                     + GREATEST(0, conversion_receipt_order.net_received - $2::numeric)
+                     - conversion_receipt_order.waived_in_received)) AS target_before,
+             SUM(si.sale_amount::numeric) OVER (
+               ORDER BY si.sale_item_id
+               ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+             ) AS cumulative_sale_amount
+      FROM sale_items si
+      CROSS JOIN conversion_receipt_order
+      WHERE conversion_receipt_order.sale_order_type = '转换单'
+        AND si.sale_order_id = $1
+        AND si.item_direction = '转入'
+        AND si.sale_amount::numeric > 0
+        AND NOT (EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = si.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭') AND (CASE WHEN si.product_type = '疗程卡' THEN COALESCE(si.remaining_sessions, 0) = 0 ELSE (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)) >= si.quantity END))
+    ),
+    allocated AS (
+      SELECT sale_item_id,
+             (
+               ROUND(target_received * cumulative_sale_amount / in_total, 2)
+               - ROUND(target_received * (cumulative_sale_amount - item_sale_amount) / in_total, 2)
+              - (
+               ROUND(target_before * cumulative_sale_amount / in_total, 2)
+               - ROUND(target_before * (cumulative_sale_amount - item_sale_amount) / in_total, 2)
+             ))::numeric(10, 2) AS amount
+      FROM ranked
+      WHERE in_total > 0
+    )
+    SELECT a.sale_item_id, a.amount, si.sales_category
+    FROM allocated a
+    JOIN sale_items si ON si.sale_item_id = a.sale_item_id
+    WHERE a.amount <> 0
+    ORDER BY a.sale_item_id`
 
 async function upsertReceipt(client, { salePaymentId, saleOrderId, saleItemId, amount, salesCategory }) {
   const rows = await client.query(
@@ -61,34 +109,24 @@ async function capturePaymentAllocatables(client, { salePaymentId, saleOrderId, 
   }
 
   const itemsRes = await client.query(
-    `SELECT sale_item_id, sale_amount::numeric AS sale_amount, pending_received::numeric AS pending_received,
-            waived_amount::numeric AS waived_amount, sales_category
-       FROM sale_items
-      WHERE sale_order_id = $1
-        AND item_direction = '购买'
-      ORDER BY sale_item_id`,
+    `SELECT si.sale_item_id, si.sale_amount::numeric AS sale_amount, si.pending_received::numeric AS pending_received,
+            (EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = si.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭') AND (CASE WHEN si.product_type = '疗程卡' THEN COALESCE(si.remaining_sessions, 0) = 0 ELSE (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)) >= si.quantity END)) AS converted_out, si.sales_category
+       FROM sale_items si
+      WHERE si.sale_order_id = $1
+        AND si.item_direction = '购买'
+      ORDER BY si.sale_item_id`,
     [saleOrderId],
   )
   const items = itemsRes.rows
 
   if (items.length === 0) {
-    const convRes = await client.query(
-      `SELECT sale_item_id, sale_amount::numeric AS sale_amount, sales_category
-         FROM sale_items
-        WHERE sale_order_id = $1
-          AND item_direction IN ('转出', '转入')
-        ORDER BY sale_item_id`,
-      [saleOrderId],
-    )
+    const convRes = await client.query(CONVERSION_RECEIPT_DELTAS_SQL, [saleOrderId, evt])
     const rows = convRes.rows
     if (rows.length === 0) return []
 
     const convGuard = await client.query(`UPDATE sale_order_payments SET allocation_status = '待分配' WHERE id = $1 AND (allocation_status IS NULL OR allocation_status = '待分配')`, [salePaymentId])
     if (convGuard.rowCount === 0) return []
-    const perItem = allocateSignedCents(
-      Math.round(evt * 100),
-      rows.map((r) => ({ saleItemId: r.sale_item_id, weightCents: Math.round(Number(r.sale_amount) * 100) })),
-    )
+    const perItem = rows.map((r) => ({ saleItemId: r.sale_item_id, amount: Number(r.amount) }))
 
     const catMap = new Map(rows.map((r) => [r.sale_item_id, r.sales_category]))
     const out = []
@@ -128,12 +166,12 @@ async function capturePaymentAllocatables(client, { salePaymentId, saleOrderId, 
       const prior = priorMap.get(i.sale_item_id) || 0
       const pending = Number(i.pending_received)
       const saleAmt = Number(i.sale_amount)
-      // #182：折抵退出的行（waived_amount > 0）债务已归零、剩余权益已注销，不得再吸收新款项。
+      // #182：折抵退出的行（未关闭转出引用且权益耗尽）债务已归零、剩余权益已注销，不得再吸收新款项。
       // 它的 pending_received 被钉成「毛已付」作为 paid-sessions STEP 1 的预留依据，
       // 若照常算 pendCap = pending − prior，在无历史 receipt 的老单上（prior = 0）会得到
       // 一整笔产能，把本该落在真正欠款行上的回款分到已结清行 —— 钱记错归属，欠款行
       // 少拿 receipt、paid_sessions 解锁不足。
-      if (Number(i.waived_amount) > 0) {
+      if (i.converted_out === true) {
         return { saleItemId: i.sale_item_id, pendCap: 0, saleCap: 0 }
       }
       return {
@@ -177,9 +215,10 @@ async function capturePaymentAllocatables(client, { salePaymentId, saleOrderId, 
         .map((i) => ({ saleItemId: i.sale_item_id, amount: (acc.get(i.sale_item_id) || 0) / 100 }))
         .filter((d) => d.amount > 0)
     } else {
-      // 两段产能都为 0 的兜底（订单已结清却又来了一笔款）。#182：优先落在**未被折抵**的行上 ——
+      // 两段产能都为 0 的兜底（订单已结清却又来了一笔款）。#182：只落在**未退出**的行上 ——
       // 折抵行的剩余权益已注销，把钱记到它头上既错归属又毫无意义。
-      const fallback = items.find((i) => !(Number(i.waived_amount) > 0)) || items[0]
+      const fallback = items.find((i) => i.converted_out !== true)
+      if (!fallback) return []
       perItem = [{ saleItemId: fallback.sale_item_id, amount: evt }]
     }
   }

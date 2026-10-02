@@ -181,8 +181,11 @@
 | `amount_tier_min` | numeric(10,2) | 金额阶段下限（含） |
 | `amount_tier_max` | numeric(10,2) \| null | 金额阶段上限（不含；null 表示无上限） |
 | `commission_rate` | numeric(5,4) | 提成比例（如 0.08 = 8%） |
+| `price_threshold` | numeric(10,2) \| null | 划卡单价阈值（#379，2026-09-18 会议拍板）：仅服务单的自销自耗 / 他销自耗行可配，默认 100、按市场逐行改；null = 不启用 |
 
 > UNIQUE 约束：`(org_id, order_type, role_type, sales_category, amount_tier_min)`
+>
+> **划卡单价阈值（#379）**：服务提成的消耗部分 = max(单次实价, 阈值) × 次数 × 分配比例 × 提成比例；赠送（单价 0）同样按阈值计；手工费照常叠加；金额阶段仍按真实「单价 × 次数」匹配；阈值作用于单价，多人按比例拆分时合计等于单人保底额。只对上线后计算/保存的提成生效，不回溯已落库提成。
 
 ### 2.8 sale_orders（订单主表）
 
@@ -232,7 +235,7 @@
 >
 > **约束**: `UNIQUE(client_user_id) WHERE status='待支付' AND client_user_id IS NOT NULL`、`UNIQUE(client_phone, store_id) WHERE status='待支付' AND client_user_id IS NULL`。**索引**: `(store_id, status)`、`(ref_sale_order_id)`。
 >
-> **expire_at**：应用层计算（`created_at + 10min`），不存储，通过 SQL 条件懒清理。
+> **expire_at**：应用层计算（`sale_order_datetime + 10min`），不存储，通过 SQL 条件懒清理。懒清理仅命中 `opened_by IS NULL AND lakala_out_order_no IS NULL` 的待支付单，`order.detail` 的 `expire_at` 下发口径与之同源（issue #215）。
 
 **业绩归属规则（2026-08-17 已决）**：
 
@@ -298,8 +301,8 @@
 **折抵后原单该行「欠款归零」（#182）**：折抵 = 整行退出，原单不该再为已经不存在的权益挂欠款。
 
 ```
-仅当 sale_order_type <> '寄存单' AND sale_amount > 0 AND received > 0 AND Δ_row > 0：
-  行级 Δ_row   = sale_amount − received（received 是行级**净**实收；Δ_row > 0 即 received < sale_amount）
+仅当 sale_order_type <> '寄存单' AND sale_amount > 0 AND received > 0（waiveEligible）：
+  行级 Δ_row   = max(0, sale_amount − received)（received 是行级**净**实收；付清/overpay 为 0）
   订单级 Δ_ord = Δ_row − 该行已退款额 = 真实欠款
   原行：sale_amount -= Δ_row；waived_amount += Δ_row（留底，供关单回滚）；
         pending_received = received + 该行已退款额（= **毛已付**，见下方 ⚠）
@@ -335,8 +338,17 @@
 > `0040` 视图的 residual 凭空产出营业额事件。绕开 STEP 0 就必须自己写 `payable_amount`，
 > 否则撞 cron 的 I5 资金不变量告警。
 
+> ⚠️ **已折抵退出 = EXISTS(未关闭转出行引用本行) AND 权益已耗尽**。
+> 疗程卡须 `remaining_sessions = 0`，家居须 `picked_up + refunded + converted >= quantity`。
+> 仅看 `waived_amount > 0` 会漏掉付清/overpay 的 Δ_row=0 行；仅看 EXISTS 会误伤历史部分折抵行。
+> 四端 Branch B 的 reserved/pend_cap/sale_cap、STEP 1.6 与 #300 receipt 差额分摊必须同源；
+> 排除时对合取**整体取反**。两端定向回款不得覆盖退出行的 pending_received。
+> 转换时 `waiveEligible` 覆盖 Δ_row=0 行并钉毛已付；关单还原所有源行 pending 快照，
+> paid_sessions 重算仅限本单引用的正金额源行，避免已全退赠品复活。
+> 历史部分折抵行若后来耗尽全部权益，也会命中退出判据；此时影响回款归属，已无权益可解锁。
+>
 > ⚠️ **已折抵退出的行在 STEP 1 Branch B 里走「固定预留」，不参与比例瀑布**。折抵时把
-> `pending_received` 钉到该行**毛已付**（净实收 + 该行已退款额）；Branch B 见 `waived_amount > 0`
+> `pending_received` 钉到该行**毛已付**（净实收 + 该行已退款额）；Branch B 见上述合取成立
 > 就按这一列固定预留该行的 `received`（`pend_cap = sale_cap = 0`），预留额**同时从 `untargeted`
 > 扣除**，之后由 STEP 1.5 扣该行退款额得到净额 = 下调后的 `sale_amount` → `paid_sessions` 满付。
 > 三种错误写法都踩过：
@@ -352,7 +364,7 @@
 >    而历史付款没有对应 receipt，折抵行会只拿到新 receipt 的份额、低于新应付 → 违反 D3，
 >    该单此后任何 recalc 都抛 CONFLICT（单子永久不可操作，不是数据损坏）。订单级覆盖判据
 >    （`Σ正向 receipt >= order.received`）挡住了常见路径。**运维禁令：不得为含折抵行
->    （`waived_amount > 0`）的订单补写/回填 `sale_payment_item_receipts`**——那会把它推过覆盖阈值。
+>    （上述退出合取成立）的订单补写/回填 `sale_payment_item_receipts`**——那会把它推过覆盖阈值。
 >    彻底根治要行级 receipt 保真。
 > 2. Branch B 两段瀑布对非预留行是**逐行 `ROUND(…, 2)`**、没有尾差吸收，`Σ行级 received`
 >    可能比订单级实收多几分钱（订单实收 ¥0.02、四行等权 → 每行 ¥0.01、Σ=¥0.04）。
@@ -438,6 +450,12 @@
 > **约束**: `UNIQUE(sale_item_id, employee_id) WHERE is_void = false`
 >
 > **索引**: `INDEX(employee_id)`
+
+### 2.10.1 sale_payment_item_allocations（现行回款级营业额分配）
+
+> **人数规则（#475，2026-09-30）**：每笔回款按 `(sale_item_id, role_type)` 建立独立分配池，池内可分配给任意数量的不同员工，不设固定人数上限；同一员工在同池只能出现一次，池内分配比例合计不得超过 100%。同 SKU 的多个销售明细实例须逐项保存和回显。员工端、管理后台及各自保存接口遵循同一规则。2026-03-24 会议纪要与早期适配计划中的「最多 3 人」已由 #475 取代；服务提成人数规则不受此变更影响。
+>
+> 本表以 `sale_payment_item_receipt_id` 关联逐项实收记录，活动行唯一键为 `(sale_payment_item_receipt_id, employee_id, role_type) WHERE is_void = false`；上节 `sale_allocations` 是旧订单级表，其 `(sale_item_id, employee_id)` 唯一约束不适用于本表。
 
 ### 2.11 service_orders（服务单主表）
 

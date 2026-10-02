@@ -8,8 +8,13 @@ name: DB migrations integrity check
 on:
   pull_request:
     paths:
+      - 'db/scripts/__tests__/inventory-supplier-owner.pg.test.js'
+      - 'db/scripts/workfine-inventory-common.js'
       - 'db/schema/**'
       - 'db/migrations/**'
+      - 'db/scripts/__tests__/store-surplus-migration.pg.test.js'
+      - 'db/scripts/__tests__/inventory-summary-void.pg.test.js'
+      - 'db/scripts/__tests__/store-settlement-permissions.pg.test.js'
       - 'db/drizzle.config.ts'
       - 'db/package.json'
       - 'db/package-lock.json'
@@ -118,3 +123,21 @@ jobs:
             exit 1
           fi
           echo "OK: from-zero migrate built $TBL_COUNT tables"
+
+      - name: Store surplus migration semantic regression (#353)
+        working-directory: db
+        env:
+          STORE_SURPLUS_PG_TEST_URL: postgresql://postgres:test@localhost:5432/test
+        run: node --test scripts/__tests__/store-surplus-migration.pg.test.js
+
+      - name: Market supplier ownership semantic regression (#365)
+        working-directory: db
+        env:
+          SUPPLIER_OWNER_TEST_DATABASE_URL: postgresql://postgres:test@localhost:5432/test
+        run: node --test scripts/__tests__/inventory-supplier-owner.pg.test.js
+
+      - name: Summary void and store settlement semantic regression (#356, #364)
+        working-directory: db
+        env:
+          INVENTORY_PG_TEST_URL: postgresql://postgres:test@localhost:5432/test
+        run: node --test scripts/__tests__/inventory-summary-void.pg.test.js scripts/__tests__/store-settlement-permissions.pg.test.js

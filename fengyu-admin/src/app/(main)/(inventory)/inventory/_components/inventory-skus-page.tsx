@@ -21,12 +21,14 @@ import { DataTable, type Column } from '@/components/ui/data-table'
 import InventorySubjectSelect from '@/components/inventory-subject-select'
 import { Dialog, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { InventoryNumberInput } from './inventory-number-input'
 import { Pagination } from '@/components/ui/pagination'
 import { Select } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { actionErrorMessage } from '@/lib/action-error'
 import { useUrlFilters } from '@/lib/hooks/use-url-filters'
+import { normalizePage } from '@/lib/paging'
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100]
 
@@ -70,7 +72,21 @@ function text(value: string | null | undefined): string {
   return value ?? ''
 }
 
-function emptyForm(): SkuForm {
+/**
+ * 当前账号可以新建 / 编辑的来源，顺序沿用 `INVENTORY_SKU_SOURCE_TYPES`。
+ * 判定与服务端 `assertSelfPurchasedSkuEditor` 同源：供应链看供应链资料权限，其余看市场自采权限。
+ */
+function allowedSourceTypes(canManageSupplySkus: boolean, canManageMarketSkus: boolean): InventorySkuSourceType[] {
+  return INVENTORY_SKU_SOURCE_TYPES.filter((source) => source === '供应链' ? canManageSupplySkus : canManageMarketSkus)
+}
+
+/**
+ * #355：新建的来源初值取「可选来源」的第一项，不能写死「供应链」。
+ * 只有市场权限的账号下拉里没有「供应链」，原生 select 会显示第一项「市场自采」，
+ * 而表单 state 仍是「供应链」—— 归属市场被隐藏、提交被服务端拒。
+ * 两把权限都没有时拿不到「新建」按钮，这里的兜底值不会被用到。
+ */
+function emptyForm(sourceType: InventorySkuSourceType = '供应链'): SkuForm {
   return {
     productName: '',
     specName: '',
@@ -79,7 +95,7 @@ function emptyForm(): SkuForm {
     brand: '',
     productSeries: '',
     purchaseCategory: '',
-    sourceType: '供应链',
+    sourceType,
     ownerMarketId: '',
     retailPrice: '',
     accountingPrice: '',
@@ -178,7 +194,7 @@ export default function InventorySkusPage({
   }, [supplierOptions])
   const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null)
 
-  const page = Math.max(1, Number(get('page', '1')) || 1)
+  const page = normalizePage(get('page', '1'))
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get('size'))) ? Number(get('size')) : 20
 
   const handleSearchChange = useCallback((value: string) => {
@@ -366,7 +382,9 @@ function SkuFormDialog({
   onSupplierCreated: (option: InventorySupplierOption) => void
   onSuccess: () => void
 }) {
-  const [form, setForm] = useState<SkuForm>(() => row ? formFromRow(row) : emptyForm())
+  const sourceOptions = allowedSourceTypes(canManageSupplySkus, canManageMarketSkus)
+  const defaultSourceType = sourceOptions[0]
+  const [form, setForm] = useState<SkuForm>(() => row ? formFromRow(row) : emptyForm(defaultSourceType))
   const [submitting, setSubmitting] = useState(false)
   // 用户有没有动过供货商下拉。没有它就分不清「没碰」和「选了档案又改回未指定」——
   // 两者的 form.supplierId 都是 ''，而前者要保住存量旧文本、后者是明确要清空。
@@ -378,7 +396,13 @@ function SkuFormDialog({
 
   useEffect(() => {
     if (!open) return
-    setForm(row ? formFromRow(row) : emptyForm())
+    setForm(row ? formFromRow(row) : emptyForm(defaultSourceType))
+    // ⚠️ #355：只有市场权限时「归属市场」随初值一起渲染，唯一市场由 InventorySubjectSelect
+    // 经 onChange 补进来。这里整值重置会把它清成 ''，能补回来靠的是**弹窗子树常驻**：
+    // 原生 <dialog> 关着也挂载、新建的 key 恒为 'create'，所以候选在页面加载时就已落定，
+    // 打开时 value 从市场 id 变成 ''，SubjectSelect 的 effect 依赖变化才会再补一次。
+    // 若改成 `{open && <SkuFormDialog />}` 或让 key 在打开时变化，子 effect 的补值与这次重置
+    // 会落在同一次提交里被盖掉（value 始终 ''，effect 不再重跑）→ 显示只读市场名、提交却报缺归属市场。
     // 把弹窗内的其余状态一并重置。
     // ⚠️ 诚实标注：当前**不靠**这几行也能重置 —— 关闭时 editing 变 undefined，
     // `key` 从 skuId 变成 'create'，React 会卸载旧实例、state 自然清空
@@ -388,7 +412,7 @@ function SkuFormDialog({
     setSupplierTouched(false)
     setSupplierFormOpen(false)
     setSupplierDraft({ name: '', contactName: '', phone: '' })
-  }, [open, row])
+  }, [open, row, defaultSourceType])
 
   /**
    * 存量里 supplier 文本没匹配上档案的旧 SKU（migration 0042 匹配不上就留 NULL）。
@@ -440,14 +464,14 @@ function SkuFormDialog({
     }
     setSavingSupplier(true)
     try {
-      const { supplierId } = await createInventorySupplier({
+      const { supplierId, name: displayName } = await createInventorySupplier({
         name,
         contactName: supplierDraft.contactName.trim() || null,
         phone: supplierDraft.phone.trim() || null,
       })
       // 只更新本地选项、不 router.refresh()：refresh 会让 server 重新下发 row，
       // SkuFormDialog 的 useEffect([open, row]) 随即把用户填到一半的表单重置掉。
-      onSupplierCreated({ supplierId, name })
+      onSupplierCreated({ supplierId, name: displayName ?? name })
       setSupplierTouched(true)
       setField('supplierId', supplierId)
       setSupplierDraft({ name: '', contactName: '', phone: '' })
@@ -588,14 +612,9 @@ function SkuFormDialog({
                   + 新建供应商
                 </button>
               )}
-              {/*
-                建供应商档案要 supply_chain_master_data_manage，而建 SKU 只要 market_sku_manage
-                也行 —— 市场角色能建自采 SKU 却建不了档案。改造前他们至少能手打一个名字，
-                现在下拉里没有就真的没有了；不给出路的话这是一次能力回退。
-              */}
               {!canCreateSupplier && supplierChoices.length === 0 && (
                 <p className="text-xs text-[#888888]">
-                  暂无可选供应商。供应商档案由供应链管理员在「资料配置 → 供应商」维护，请联系其先建档。
+                  暂无可选供应商。请联系本市场产品资料维护人员或供应链管理员建档。
                 </p>
               )}
               {unlinkedLegacyText && !form.supplierId && (
@@ -662,9 +681,7 @@ function SkuFormDialog({
             <Field label="采购分类"><Input value={form.purchaseCategory} onChange={(event) => setField('purchaseCategory', event.target.value)} /></Field>
             <Field label="来源 *">
               <Select value={form.sourceType} disabled={!!row} onChange={(event) => setField('sourceType', event.target.value as InventorySkuSourceType)}>
-                {INVENTORY_SKU_SOURCE_TYPES
-                  .filter((source) => source === '供应链' ? canManageSupplySkus : canManageMarketSkus)
-                  .map((source) => <option key={source} value={source}>{source}</option>)}
+                {sourceOptions.map((source) => <option key={source} value={source}>{source}</option>)}
               </Select>
             </Field>
             {form.sourceType !== '供应链' && (
@@ -685,11 +702,11 @@ function SkuFormDialog({
           <section className="space-y-3 border-t border-[var(--border)] pt-4">
             <h3 className="text-sm font-medium">价格资料</h3>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Field label="供应链采购价"><Input type="number" min="0" step="0.01" max="9999999999.99" value={form.supplyChainPurchasePrice} onChange={(event) => setField('supplyChainPurchasePrice', event.target.value)} /></Field>
-              <Field label="门店进货价"><Input type="number" min="0" step="0.01" max="9999999999.99" value={form.storePurchasePrice} onChange={(event) => setField('storePurchasePrice', event.target.value)} /></Field>
-              <Field label="市场员工购价"><Input type="number" min="0" step="0.01" max="9999999999.99" value={form.marketStaffPurchasePrice} onChange={(event) => setField('marketStaffPurchasePrice', event.target.value)} /></Field>
-              <Field label="顾客零售价"><Input type="number" min="0" step="0.01" max="9999999999.99" value={form.retailPrice} onChange={(event) => setField('retailPrice', event.target.value)} /></Field>
-              <Field label="核算价"><Input type="number" min="0" step="0.01" max="9999999999.99" value={form.accountingPrice} onChange={(event) => setField('accountingPrice', event.target.value)} /></Field>
+              <Field label="供应链采购价"><InventoryNumberInput type="number" min="0" step="0.01" max="9999999999.99" value={form.supplyChainPurchasePrice} onChange={(event) => setField('supplyChainPurchasePrice', event.target.value)} /></Field>
+              <Field label="门店进货价"><InventoryNumberInput type="number" min="0" step="0.01" max="9999999999.99" value={form.storePurchasePrice} onChange={(event) => setField('storePurchasePrice', event.target.value)} /></Field>
+              <Field label="市场员工购价"><InventoryNumberInput type="number" min="0" step="0.01" max="9999999999.99" value={form.marketStaffPurchasePrice} onChange={(event) => setField('marketStaffPurchasePrice', event.target.value)} /></Field>
+              <Field label="顾客零售价"><InventoryNumberInput type="number" min="0" step="0.01" max="9999999999.99" value={form.retailPrice} onChange={(event) => setField('retailPrice', event.target.value)} /></Field>
+              <Field label="核算价"><InventoryNumberInput type="number" min="0" step="0.01" max="9999999999.99" value={form.accountingPrice} onChange={(event) => setField('accountingPrice', event.target.value)} /></Field>
               {/*
                 市场折扣的边界与其它金额字段**不同**，不能套用 numeric(12,2) 那组：
                 列是 `numeric(8,4)`（db/schema/inventory.ts:82），业务侧
@@ -697,7 +714,7 @@ function SkuFormDialog({
                 所以合法区间是 0–100，不是 0–9999999999.99。
                 step 取 0.0001 以匹配列的 4 位小数（用小数写比率时 0.8125 也要能填）。
               */}
-              <Field label="市场折扣（25 表示 25%）"><Input type="number" min="0" step="0.0001" max="100" value={form.marketPurchaseDiscount} onChange={(event) => setField('marketPurchaseDiscount', event.target.value)} /></Field>
+              <Field label="市场折扣（25 表示 25%）"><InventoryNumberInput type="number" min="0" step="0.0001" max="100" value={form.marketPurchaseDiscount} onChange={(event) => setField('marketPurchaseDiscount', event.target.value)} /></Field>
               <Field label="市场进货价">
                 <div className="space-y-1">
                   {form.sourceType === '供应链' && (
@@ -706,7 +723,7 @@ function SkuFormDialog({
                       <option value="手工覆盖">手工覆盖</option>
                     </Select>
                   )}
-                  <Input
+                  <InventoryNumberInput
                     type="number" min="0" step="0.01" max="9999999999.99"
                     value={form.marketPurchasePrice}
                     placeholder={calculatedMarketPrice == null ? undefined : String(calculatedMarketPrice)}
@@ -719,7 +736,7 @@ function SkuFormDialog({
               {form.sourceType === '供应链' && form.marketPurchasePriceMode === '手工覆盖' && (
                 <Field label="手工覆盖原因 *"><Textarea value={form.marketPurchasePriceOverrideReason} onChange={(event) => setField('marketPurchasePriceOverrideReason', event.target.value)} /></Field>
               )}
-              <Field label="自采实际进货价"><Input type="number" min="0" step="0.01" max="9999999999.99" value={form.itemCompanyPurchasePrice} onChange={(event) => setField('itemCompanyPurchasePrice', event.target.value)} /></Field>
+              <Field label="自采实际进货价"><InventoryNumberInput type="number" min="0" step="0.01" max="9999999999.99" value={form.itemCompanyPurchasePrice} onChange={(event) => setField('itemCompanyPurchasePrice', event.target.value)} /></Field>
             </div>
           </section>
         )}

@@ -38,6 +38,9 @@ vi.mock('@/lib/permissions', () => ({
 vi.mock('@/lib/data-center/scope-sql', () => ({
   scopeFilterSql: vi.fn(() => ({})),
   scopeStoreSkeletonSql: vi.fn(() => ({})),
+  // #285：员工数口径抽到 technician-sql 单源后，该模块会 import orgAnchorScopeSql
+  //（无门店技师按锚定市场判可见）。漏了它整个 suite 会在 import 期就炸。
+  orgAnchorScopeSql: vi.fn(() => ({})),
 }))
 
 const mockCtx = {
@@ -62,6 +65,7 @@ import { getSalesBoard } from '../sales'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { prepareBoardContext } from '@/lib/data-center/context'
+import { resolveTimeRange } from '@/lib/data-center/time-range'
 
 /**
  * 按"调用顺序"配置 db.execute 返回值。
@@ -75,30 +79,46 @@ import { prepareBoardContext } from '@/lib/data-center/context'
  *   KPI 6: storeCount
  *   KPI 7: employeeCount
  *   明细 8: skeleton
- *   明细 9: technicianCount
- *   明细 10: storeRevenue(byStore)
- *   明细 11: shengmeiRevenue
- *   明细 12: newCustomerRevenue
- *   明细 13: trafficCustomerRevenue
- *   明细 14: storeConsume
- *   明细 15: shengmeiConsume
+ *   明细 9: openStores(by store)
+ *   明细 10: technicianCount(by store)
+ *   明细 11: technicianDirectByMarket  ← #285 新增
+ *   明细 12: storeRevenue(byStore)
+ *   明细 13: shengmeiRevenue
+ *   明细 14: newCustomerRevenue
+ *   明细 15: trafficCustomerRevenue
+ *   明细 16: storeConsume
+ *   明细 17: shengmeiConsume
+ *
+ * ⚠️ 本 mock 按**位置**喂数，往 Promise.all 里插一条查询就会让其后全部错位。
+ * #285 加 technicianDirectByMarket 时实测打翻了 11 条用例。下面的长度断言就是为此加的。
  */
 function setupExecuteQueue(opts: {
+  historyCopies?: number
   kpis?: number[] // 8 个标量值（默认全 100）
   skeleton?: Array<Record<string, unknown>>
-  detailMaps?: Array<Array<Record<string, unknown>>> // 7 个明细行表（tech + 6 业绩）
+  openStores?: Array<Record<string, unknown>>
+  detailMaps?: Array<Array<Record<string, unknown>>> // 8 个明细行表（tech by store + tech by market + 6 业绩）
 }) {
   const kpiVals = opts.kpis ?? [1000, 200, 800, 150, 300, 500, 5, 12]
   const skeleton = opts.skeleton ?? []
-  const detail = opts.detailMaps ?? [[], [], [], [], [], [], []]
+  const detail = opts.detailMaps ?? [[], [], [], [], [], [], [], []]
+
+  // 位置喂数的前提：段长必须与 sales.ts 对得上，对不上就在这里炸，别一路错位到断言里。
+  expect(kpiVals, 'KPI 标量数').toHaveLength(8)
+  expect(detail, '明细行表数（含 technicianDirectByMarket）').toHaveLength(8)
 
   const queue: unknown[] = [
     ...kpiVals.map((v) => [{ v }]),
+    ...kpiVals.flatMap((v) => Array.from({ length: opts.historyCopies ?? 0 }, () => [{ v: v / 2 }])),
     skeleton,
+    opts.openStores ?? skeleton.map((r) => ({ store_id: r.store_id, v: 1 })),
     ...detail,
   ]
   let i = 0
-  ;(db.execute as any).mockImplementation(() => Promise.resolve(queue[i++] ?? []))
+  ;(db.execute as any).mockImplementation(() => {
+    if (i >= queue.length) throw new Error('execute 队列耗尽：查询数与 mock 未对齐')
+    return Promise.resolve(queue[i++])
+  })
 }
 
 function mockSessionOk() {
@@ -198,7 +218,8 @@ describe('getSalesBoard — 明细表装配', () => {
     setupExecuteQueue({
       skeleton,
       detailMaps: [
-        [{ store_id: 'S1', v: 3 }], // tech
+        [{ store_id: 'S1', v: 3 }], // tech by store
+        [], // tech direct by market（本用例无直挂技师）
         [{ store_id: 'S1', v: 1000 }], // storeRevenue
         [{ store_id: 'S1', v: 200 }], // shengmeiRevenue
         [{ store_id: 'S1', v: 300 }], // newCustomerRevenue
@@ -233,15 +254,21 @@ describe('getSalesBoard — 明细表装配', () => {
     expect(s2.metrics.technicianCount).toBe(0)
   })
 
-  it('byMarket：按 marketId 聚合，门店数=骨架计数，业绩求和', async () => {
+  it('byMarket：按区间末在营门店计数，未开业和已关店骨架仍出零行', async () => {
     setupExecuteQueue({
-      skeleton,
+      skeleton: [
+        ...skeleton,
+        { store_id: 'FUTURE', store_name: '未开业', market_id: 'M1', market_name: '市场甲', opening_date: '2026-06-01' },
+        { store_id: 'CLOSED', store_name: '已关店', market_id: 'M1', market_name: '市场甲', closed_at: '2026-05-01' },
+      ],
+      openStores: skeleton.map((r) => ({ store_id: r.store_id, v: 1 })),
       detailMaps: [
         [
           { store_id: 'S1', v: 3 },
           { store_id: 'S2', v: 2 },
           { store_id: 'S3', v: 4 },
-        ], // tech
+        ], // tech by store
+        [], // tech direct by market
         [
           { store_id: 'S1', v: 1000 },
           { store_id: 'S2', v: 500 },
@@ -256,6 +283,13 @@ describe('getSalesBoard — 明细表装配', () => {
     })
     const res = await getSalesBoard(baseParams)
 
+    expect(db.execute).toHaveBeenCalledTimes(18)
+    expect(res.byStore).toHaveLength(5)
+    for (const id of ['FUTURE', 'CLOSED']) {
+      const row = res.byStore.find((r) => r.groupId === id)!
+      expect(row).toBeDefined()
+      expect(Object.values(row.metrics).every((v) => v === 0)).toBe(true)
+    }
     expect(res.byMarket).toHaveLength(2)
     const m1 = res.byMarket.find((r) => r.groupId === 'M1')!
     expect(m1.groupName).toBe('市场甲')
@@ -269,6 +303,93 @@ describe('getSalesBoard — 明细表装配', () => {
     expect(m2.metrics.storeCount).toBe(1)
     expect(m2.metrics.storeRevenue).toBe(700)
     expect(m2.metrics.revenuePerStore).toBe(700)
+  })
+
+
+  it('市场在营分母为0时四个店均均为null，仍保留骨架与原金额', async () => {
+    setupExecuteQueue({
+      skeleton,
+      openStores: [],
+      detailMaps: [[], [], [{ store_id: 'S1', v: 1000 }], [{ store_id: 'S1', v: 200 }], [], [], [{ store_id: 'S1', v: 800 }], [{ store_id: 'S1', v: 150 }]],
+    })
+    const res = await getSalesBoard(baseParams)
+    expect(res.byStore).toHaveLength(3)
+    expect(res.byStore.find((r) => r.groupId === 'S1')!.metrics.storeRevenue).toBe(1000)
+    const m1 = res.byMarket.find((r) => r.groupId === 'M1')!
+    expect(m1.metrics.storeCount).toBe(0)
+    for (const key of ['revenuePerStore', 'shengmeiRevenuePerStore', 'consumePerStore', 'shengmeiConsumePerStore']) {
+      expect(m1.metrics[key]).toBeNull()
+    }
+  })
+
+  it.each([
+    { type: 'all' as const },
+    { type: 'market' as const, id: 'M1' },
+    { type: 'store' as const, id: 'S1' },
+    { type: 'stores' as const, ids: ['S1', 'S3'] },
+  ])('scope=$type：市场门店数合计与KPI一致', async (scope) => {
+    const scoped = skeleton.filter((r) => scope.type === 'all'
+      || (scope.type === 'market' && r.market_id === scope.id)
+      || (scope.type === 'store' && r.store_id === scope.id)
+      || (scope.type === 'stores' && scope.ids.includes(r.store_id)))
+    const openStores = scoped.filter((r) => r.store_id !== 'S2').map((r) => ({ store_id: r.store_id, v: 1 }))
+    ;(prepareBoardContext as any).mockResolvedValue({ ...mockCtx, scope })
+    setupExecuteQueue({ kpis: [0, 0, 0, 0, 0, 0, openStores.length, 0], skeleton: scoped, openStores })
+    const res = await getSalesBoard({ ...baseParams, scope })
+    expect(res.byMarket.reduce((sum, r) => sum + Number(r.metrics.storeCount), 0)).toBe(res.kpis.storeCount.value)
+    expect(res.byStore).toHaveLength(scoped.length)
+  })
+
+  // ── 直挂市场/部门的产能技师必须进分母（#285）────────────────────────────
+  //
+  // ⚠️ 这三条是闸门 2 GLM round-3 变异测试补上的：它把 sales.ts 里「并入直挂技师」
+  // 那个循环整段删掉，11 条 sales.test.ts **全绿** —— 该分支此前零覆盖。
+
+  it('直挂市场的技师并入该市场分母，且只加一次（不按门店数重复累加）', async () => {
+    setupExecuteQueue({
+      skeleton,
+      detailMaps: [
+        [{ store_id: 'S1', v: 3 }, { store_id: 'S2', v: 2 }], // tech by store，M1 合计 5
+        [{ market_id: 'M1', market_name: '市场甲', v: 4 }], // 直挂 4 人
+        [], [], [], [], [], [],
+      ],
+    })
+    const res = await getSalesBoard(baseParams)
+    const m1 = res.byMarket.find((r) => r.groupId === 'M1')!
+    // 5 + 4 = 9。若在门店循环内累加，M1 有两个门店会变成 5 + 4×2 = 13。
+    expect(m1.metrics.technicianCount).toBe(9)
+  })
+
+  it('市场下一个门店都没有时仍凭直挂技师出行', async () => {
+    setupExecuteQueue({
+      skeleton,
+      detailMaps: [
+        [{ store_id: 'S1', v: 2 }],
+        [{ market_id: 'M9', market_name: '品项公司', v: 1 }], // 该市场无任何门店
+        [], [], [], [], [], [],
+      ],
+    })
+    const res = await getSalesBoard(baseParams)
+    const m9 = res.byMarket.find((r) => r.groupId === 'M9')
+    expect(m9, '无门店的市场应凭直挂技师出现在 byMarket').toBeDefined()
+    expect(m9!.groupName).toBe('品项公司')
+    expect(m9!.metrics.technicianCount).toBe(1)
+    expect(m9!.metrics.storeCount).toBe(0)
+  })
+
+  it('直挂行 market_id 为 null 时跳过，不产生空 groupId 的市场行', async () => {
+    setupExecuteQueue({
+      skeleton,
+      detailMaps: [
+        [{ store_id: 'S1', v: 2 }],
+        [{ market_id: null, market_name: null, v: 7 }], // 锚不到市场的脏行
+        [], [], [], [], [], [],
+      ],
+    })
+    const res = await getSalesBoard(baseParams)
+    expect(res.byMarket.map((r) => r.groupId).sort()).toEqual(['M1', 'M2'])
+    const m1 = res.byMarket.find((r) => r.groupId === 'M1')!
+    expect(m1.metrics.technicianCount).toBe(2) // 那 7 人没被算进任何市场
   })
 
   it('byMarket 含 12 个 metrics 键（含 4 个店均派生）', async () => {
@@ -320,5 +441,28 @@ describe('getSalesBoard — meta 透传 + scope=store 门店数', () => {
     const res = await getSalesBoard({ ...baseParams, scope: { type: 'store', id: 'S1' } })
     expect(res.kpis.storeCount.value).toBe(0)
     expect(res.kpis.revenuePerStore.value).toBeNull()
+  })
+})
+
+
+describe('getSalesBoard — year 对比去重 (#311)', () => {
+  it('按值相同的历史区间复用查询，8 个 KPI 共减少 8 次 SQL，输出与旧实现快照一致', async () => {
+    const timeRange = resolveTimeRange({ preset: 'year' }, new Date('2026-09-29T04:00:00Z'))
+    expect(timeRange.previous).not.toBe(timeRange.lastYear)
+    expect(timeRange.previous).toEqual(timeRange.lastYear)
+    vi.mocked(prepareBoardContext).mockResolvedValue({
+      ...mockCtx,
+      meta: { ...mockCtx.meta, timeRange: { ...timeRange.current, presetLabel: timeRange.presetLabel, previous: timeRange.previous, lastYear: timeRange.lastYear } },
+      comparison: timeRange,
+      enabled: true,
+    })
+    setupExecuteQueue({ historyCopies: 1 })
+    const result = await getSalesBoard({ ...baseParams, timeRange: { preset: 'year' }, withComparison: true })
+    expect(db.execute).toHaveBeenCalledTimes(26)
+    for (const cell of Object.values(result.kpis)) {
+      expect(cell.mom).toEqual(cell.yoy)
+    }
+    // 快照在 b272a15e 的三路 runner 实现上生成，重构后只改调用次数断言。
+    expect(result).toMatchSnapshot()
   })
 })

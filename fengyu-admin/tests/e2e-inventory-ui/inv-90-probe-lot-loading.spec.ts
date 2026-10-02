@@ -23,7 +23,7 @@
 
 import { test } from '@playwright/test'
 import { BASE, INVT_ACCOUNTS, INVT_PASS, TOPO, login, readCtx } from './_helpers/env'
-import { selectContaining } from './_helpers/ui'
+import { pickSku, selectContaining } from './_helpers/ui'
 
 test.setTimeout(300_000)
 
@@ -52,11 +52,12 @@ test('probe：批次下拉是否永久停留在「加载库存批次...」', asy
 
   const dialog = page.getByRole('dialog')
   const selects = dialog.locator('select')
+  const skuBox = dialog.getByRole('combobox', { name: '明细 1 库存 SKU', exact: true })
   await selects.nth(0).selectOption('分院调货出库')
   await selectContaining(selects.nth(1), `门店 · ${TOPO.STORE_A_NAME}`)
   await selectContaining(selects.nth(2), `门店 · ${TOPO.STORE_B_NAME}`)
   await page.waitForTimeout(500)
-  await selectContaining(selects.nth(4), inv01.supplySkuName)
+  await pickSku(skuBox, inv01.supplySkuName)
 
   const lotSel = selects.nth(3)
   // 每 5 秒采样一次，持续 60 秒

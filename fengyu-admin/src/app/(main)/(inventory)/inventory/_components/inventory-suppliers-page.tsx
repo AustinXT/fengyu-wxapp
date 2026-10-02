@@ -22,6 +22,7 @@ import { Pagination } from '@/components/ui/pagination'
 import { Select } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
+import { normalizePage } from '@/lib/paging'
 
 interface SupplierForm {
   name: string
@@ -63,15 +64,17 @@ export default function InventorySuppliersPage({
   total,
   canCreate,
   canUpdate,
+  creationOwnerLabel = '供应链共有',
 }: {
   rows: InventorySupplierRow[]
   total: number
   canCreate: boolean
   canUpdate: boolean
+  creationOwnerLabel?: string
 }) {
   const router = useRouter()
   const { get, setMany } = useUrlFilters()
-  const page = Math.max(1, Number(get('page', '1')) || 1)
+  const page = normalizePage(get('page', '1'))
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get('size')))
     ? Number(get('size'))
     : 20
@@ -210,6 +213,7 @@ export default function InventorySuppliersPage({
       header: '供应商名称',
       cell: (row) => <span className="font-medium">{row.name}</span>,
     },
+    { key: 'ownerMarketName', header: '归属市场', cell: (row) => row.ownerMarketName ?? '供应链共有' },
     { key: 'contactName', header: '联系人', cell: (row) => row.contactName || '—' },
     { key: 'phone', header: '联系电话', cell: (row) => row.phone || '—' },
     { key: 'address', header: '地址', cell: (row) => row.address || '—' },
@@ -235,7 +239,7 @@ export default function InventorySuppliersPage({
     {
       key: 'actions',
       header: '操作',
-      cell: (row) => canUpdate ? (
+      cell: (row) => canUpdate && row.canManage ? (
         <div className="flex items-center gap-1">
           <Button variant="link" size="sm" className="h-auto px-1" onClick={() => openEdit(row)}>
             <Pencil /> 编辑
@@ -307,6 +311,7 @@ export default function InventorySuppliersPage({
         <DialogHeader>
           <DialogTitle>{editing ? '编辑供应商' : '新建供应商'}</DialogTitle>
         </DialogHeader>
+        <p className="mt-3 text-sm text-[#666666]">归属市场：{editing ? (editing.ownerMarketName ?? '供应链共有') : creationOwnerLabel}（归属不可修改）</p>
         <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
           {/*
             这些字段原本是 <div><label>名称</label><Input/></div> —— label 既没包裹控件也没有

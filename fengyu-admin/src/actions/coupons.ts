@@ -24,6 +24,7 @@ import {
 } from '@/lib/export-pagination'
 import { resolveOrgNodeToStoreIds } from '@/lib/org-scope'
 import { clampCouponQuantity } from '@/lib/coupon-quantity'
+import { resolvePaging } from '@/lib/paging'
 
 /**
  * coupon_templates.valid_from / valid_to 写入：入参是 date input 日期串（'YYYY-MM-DD'）。
@@ -290,7 +291,10 @@ export const getTemplates = withPermission(
       .select()
       .from(couponTemplates)
       // 默认排序：最近编辑过的模板浮顶（admin.sys.spec.md §5）
-      .orderBy(desc(couponTemplates.updatedAt), desc(couponTemplates.createdAt))
+      // #282：虽然是「取回后在组件里 slice」的内存分页，但 coupons 页是 force-dynamic，
+      // 翻页走 useUrlFilters 的 router.replace → Server Component **重新执行本查询**，
+      // 所以两次翻页拿到的是两次独立执行的结果，同样受非唯一排序键影响。
+      .orderBy(desc(couponTemplates.updatedAt), desc(couponTemplates.createdAt), asc(couponTemplates.templateId))
 
     // 聚合每个模板的已发放数量（不受 status 过滤，反映总发放量）
     const counts = await db
@@ -912,9 +916,12 @@ export const getCustomersForBatchIssue = withPermission(
       pageSize?: number
     },
   ): Promise<{ data: BatchCouponCustomer[]; total: number }> => {
-    const page = Math.max(1, filters.page || 1)
-    const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
-    const offset = (page - 1) * pageSize
+    const { page, pageSize, offset } = resolvePaging({
+      page: filters.page,
+      pageSize: filters.pageSize,
+      defaultPageSize: 20,
+      allowedPageSizes: [10, 20, 50],
+    })
 
     const conditions: (SQL | undefined)[] = [
       isNotNull(clientWechatUsers.phone),
@@ -964,7 +971,7 @@ export const getCustomersForBatchIssue = withPermission(
         .leftJoin(stores, eq(clientWechatUsers.boundStoreId, stores.storeId))
         .where(whereClause)
         // 例外：picker 字母序
-        .orderBy(asc(clientWechatUsers.name))
+        .orderBy(asc(clientWechatUsers.name), asc(clientWechatUsers.userId))
         .limit(pageSize)
         .offset(offset),
     ])

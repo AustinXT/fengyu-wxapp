@@ -7,15 +7,25 @@
  *
  * 口径权威：notes/references/metrics.md。
  */
+import type { CalendarDate } from '@/lib/calendar-date'
+import type { DeltaDisplay } from '@/lib/delta-display'
+
+export type { DeltaDisplay }
 
 // ─────────────────────────────────────────────
-// scope（集团/授权汇总/市场/门店）
+// scope（集团/授权汇总/市场/门店/多店）
 // ─────────────────────────────────────────────
 export type DataCenterScope =
   | { type: 'all' }
   | { type: 'authorized' }
   | { type: 'market'; id: string }
   | { type: 'store'; id: string }
+  /**
+   * 多店（#376）：授权门店内任选的子集。`ids` 去重升序、至少 2 家（1 家编成 store）。
+   * URL 编码为 `scope=stores&scopeId=a,b`（单 key 逗号串，重复 key 会被 collapseQuery 压成首值）。
+   * 全选 / 恰好勾满一个市场时由 `canonicalizeScope` 折叠成 all|authorized / market。
+   */
+  | { type: 'stores'; ids: string[] }
 
 // ─────────────────────────────────────────────
 // 时间维度
@@ -24,7 +34,7 @@ export type TimeRangePreset = 'today' | 'week' | 'month' | 'year' | 'custom'
 
 export type TimeRangeInput =
   | { preset: 'today' | 'week' | 'month' | 'year' }
-  | { preset: 'custom'; start: string; end: string } // YYYY-MM-DD
+  | { preset: 'custom'; start: CalendarDate; end: CalendarDate } // YYYY-MM-DD，只能经 @/lib/calendar-date 校验得到（#308）
 
 /** 解析后的单个日期区间（闭区间，YYYY-MM-DD） */
 export interface ResolvedRange {
@@ -35,7 +45,9 @@ export interface ResolvedRange {
 /** resolveTimeRange 的输出：本期 + 上期(环比) + 去年同期(同比) */
 export interface ResolvedTimeRange {
   current: ResolvedRange
-  previous: ResolvedRange | null // 环比：上一个等长周期
+  // 环比：上一周期的**日历同期**（不是完整的上一周/上一月）。长度关系与两条日历例外
+  // （month clamp / year 跨闰年）见 time-range.ts 头注释与 metrics.md §数据中心板块专属指标
+  previous: ResolvedRange | null
   lastYear: ResolvedRange | null // 同比：去年同期
   presetLabel: string // '今日' / '本周' / '本月' / '今年' / 'YYYY-MM-DD ~ YYYY-MM-DD'
 }
@@ -61,11 +73,17 @@ export interface ProductBoardParams extends BoardParams {
 // ─────────────────────────────────────────────
 export type MetricUnit = 'amount' | 'count' | 'percent'
 
-/** KPI 卡片单元（带同比/环比）。value=null 或 delta=null → 前端显示 '--' */
+/**
+ * KPI 卡片单元（带同比/环比）。`value=null` → 前端显示 '--'。
+ *
+ * `mom`/`yoy` 自 #310/#315 起是**判别联合**而非裸数值：决策 1 要把「算不出」的三种成因
+ * （负基期已转正 / 负基期未转正 / 零基期）分别展示，裸 `number | null` 表达不了。
+ * 构造一律走 `resolveDeltaDisplay`，别手写字面量。
+ */
 export interface KpiCell {
   value: number | null
-  mom?: number | null // 环比 delta%（小数，0.12 = +12%）
-  yoy?: number | null // 同比 delta%
+  mom?: DeltaDisplay // 环比
+  yoy?: DeltaDisplay // 同比
   unit: MetricUnit
 }
 
@@ -90,7 +108,24 @@ export interface RankingRow {
 /** 各板块返回的公共信封 */
 export interface BoardMeta {
   scope: { type: DataCenterScope['type']; id: string | null; name: string }
-  timeRange: { start: string; end: string; presetLabel: string }
+  /**
+   * `previous`/`lastYear` 自 #310 起随当期一并下发——此前它们从不出仓，
+   * 前端**物理上拿不到基期区间**，于是「本月」与「自定义同起止日」给出两个不同的环比值
+   * （实测 +30.76% vs +46.39%，差 15.63pp）时，用户得不到任何解释线索。
+   *
+   * 这是**正确的语义差异**（「本月」比上月同期、「自定义」比紧邻前一等长区间），
+   * 不是 bug，但必须让用户能看见分母才说得清。`month` 分支在上月天数不足时还会 clamp
+   * （3/31 看本月 → 基期 2/1~2/28，短 3 天），同样只有露出区间才能自行判断。
+   *
+   * `null` = 该基期不存在（如 `withComparison: false` 的明细表），前端不渲染 hover。
+   */
+  timeRange: {
+    start: string
+    end: string
+    presetLabel: string
+    previous: { start: string; end: string } | null
+    lastYear: { start: string; end: string } | null
+  }
 }
 
 // ─────────────────────────────────────────────
@@ -114,6 +149,10 @@ export interface CustomerBoardResult extends BoardMeta {
 /** 人效板块 */
 export interface EfficiencyBoardResult extends BoardMeta {
   kpis: Record<string, KpiCell>
+  /** 范围内没有在营门店（#423）：技师人均 KPI 均为 null，前端显示「--」并加说明 */
+  noStoreScope: boolean
+  /** byMarket 中没有在营门店的市场名（品项公司等），这些行的技师人均为 null（#423） */
+  noStoreMarkets: string[]
   byMarket: BreakdownRow[]
   /** 按技师人效明细（员工粒度，labels 带门店/职级；metrics = 当月业绩 + 销售额按
    *  salesCategoryEnum 4 枚举值拆分 + 实耗合计 + 纳客数/项目数/服务人头/服务人次） */
@@ -140,14 +179,39 @@ export interface ProductBoardResult extends BoardMeta {
 export interface ScopeOptionStore {
   storeId: string
   storeName: string
+  /**
+   * 只关店、组织节点仍启用（#422）：照常可选（有关店前的历史数据），下拉标「（已关店）」。
+   * 纯展示，缺省 = 未关店；判定在 `lib/store-closed-label`，不参与取数范围。
+   */
+  closed?: boolean
 }
 export interface ScopeOptionMarket {
   id: string
   name: string
   stores: ScopeOptionStore[]
+  /**
+   * 账号角色范围直接覆盖该市场（总部全开恒 true）；门店级账号补进来的祖先市场为 false（#399）。
+   * 只影响「无在营门店的市场」能否作为默认范围 / 计入可切换范围，缺省视为 false。
+   */
+  granted?: boolean
+}
+/**
+ * 账号权限内、组织节点已停用的门店：不进下拉，仅用于识别 URL 里的停用门店（#293）。
+ * 判定与取数 SQL 的启用门店过滤同源（只看 org_nodes.is_active），这样「已停用」必然等于「取不到数」。
+ */
+export interface ScopeOptionInactiveStore extends ScopeOptionStore {
+  // ⚠️ 多店全部停用时由 findInactiveScopeStore 合成一项：storeId 为逗号串、storeName 为合并店名（#376）。
+  //    消费方只用于展示空态文案，不得把 storeId 当单个门店 id 查找。
+  /** 所属市场节点；筛选器据此回显市场下拉（市场不在数据源时回显落空，不影响空态） */
+  marketId: string | null
 }
 export interface DataCenterScopeOptions {
   /** 当前账号的最高授权层级：store 也可能由多条门店角色组成多店范围。 */
   topLevel: 'all' | 'market' | 'store'
   markets: ScopeOptionMarket[]
+  /**
+   * 权限内已停用的门店（#293）。URL 指向其中一家时页面渲染「该门店已停用」空态，
+   * 而不是满屏 0（在营门店本期无业绩才显示 0，两者必须可区分）。
+   */
+  inactiveStores: ScopeOptionInactiveStore[]
 }

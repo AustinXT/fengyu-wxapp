@@ -14,7 +14,6 @@ import { useUrlFilters } from '@/lib/hooks/use-url-filters'
 import type {
   InventoryPromotionPlanInput,
   InventoryPromotionPlanRow,
-  InventorySkuRow,
 } from '@/lib/inventory/types'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogDescription, AlertDialogFooter, AlertDialogTitle } from '@/components/ui/alert-dialog'
 import { Badge } from '@/components/ui/badge'
@@ -23,9 +22,12 @@ import { DataTable, type Column } from '@/components/ui/data-table'
 import { Dialog, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Input } from '@/components/ui/input'
+import { InventoryNumberInput } from './inventory-number-input'
 import { Pagination } from '@/components/ui/pagination'
 import { Select } from '@/components/ui/select'
+import { InventorySkuSearchSelect } from './inventory-sku-search-select'
 import { Textarea } from '@/components/ui/textarea'
+import { normalizePage } from '@/lib/paging'
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100]
 
@@ -39,6 +41,8 @@ interface MarketOption {
 interface PromotionDraftItem {
   key: string
   skuId: string
+  /** 编辑已有方案时带回的商品名，给选择器回显兜底（该商品可能已停用、搜不出来）。换商品时清掉。 */
+  skuLabel?: string
   marketUnitDiscount: string
   reportMinQuantity: string
   reportMaxQuantity: string
@@ -76,14 +80,14 @@ function newDraftItem(): PromotionDraftItem {
   }
 }
 
-function emptyForm(defaultMarketId = ''): PromotionForm {
+function emptyForm(): PromotionForm {
   const today = todayYmd()
   return {
     name: '',
     ruleType: '单品阶梯',
     startsAt: today,
     endsAt: today,
-    scopeMarketId: defaultMarketId,
+    scopeMarketId: '',
     status: '启用',
     remark: '',
     items: [newDraftItem()],
@@ -102,6 +106,7 @@ function toForm(row: InventoryPromotionPlanRow): PromotionForm {
     items: row.items.map((item) => ({
       key: String(item.id),
       skuId: item.skuId,
+      skuLabel: item.skuName,
       marketUnitDiscount: String(item.marketUnitDiscount),
       reportMinQuantity: item.reportMinQuantity == null ? '' : String(item.reportMinQuantity),
       reportMaxQuantity: item.reportMaxQuantity == null ? '' : String(item.reportMaxQuantity),
@@ -136,19 +141,15 @@ function formatQuantityRange(min: number | null | undefined, max: number | null 
 export default function InventoryPromotionsPage({
   rows,
   marketOptions,
-  skuOptions,
   canCreate,
   canUpdate,
   canViewPrice,
-  canManageGlobal,
 }: {
   rows: InventoryPromotionPlanRow[]
   marketOptions: MarketOption[]
-  skuOptions: Pick<InventorySkuRow, 'skuId' | 'productCode' | 'productName' | 'specName'>[]
   canCreate: boolean
   canUpdate: boolean
   canViewPrice: boolean
-  canManageGlobal: boolean
 }) {
   const router = useRouter()
   const { get, setMany } = useUrlFilters()
@@ -188,7 +189,7 @@ export default function InventoryPromotionsPage({
   // 分页在**筛选之后**做：本页三个筛选都在上面的 useMemo 里，
   // 若先切页再筛，用户只会筛到当前页那一屏的匹配项。
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get('size'))) ? Number(get('size')) : 20
-  const rawPage = Math.max(1, Number(get('page', '1')) || 1)
+  const rawPage = normalizePage(get('page', '1'))
   // searchInput 是本地 state，打字时 filteredRows 立刻变短，而重置 page 的 setMany
   // 要等 300ms debounce —— 这中间 page 会越界，不夹一下会闪一屏空列表。
   const totalPages = Math.max(1, Math.ceil(filteredRows.length / pageSize))
@@ -204,7 +205,8 @@ export default function InventoryPromotionsPage({
     if (rawPage > totalPages) setMany({ page: '' })
   }, [rawPage, totalPages, setMany])
 
-  const canCreatePlan = canCreate && (canManageGlobal || marketOptions.length > 0)
+  // 维护方只有总部供应链（#354），全局方案永远可建，不再按「有无可选市场」决定入口
+  const canCreatePlan = canCreate
   const readOnly = mode === 'view'
 
   function closeEditor(open: boolean) {
@@ -215,7 +217,8 @@ export default function InventoryPromotionsPage({
 
   function openCreate() {
     setSelectedPlan(null)
-    setForm(emptyForm(marketOptions.length === 1 ? marketOptions[0].locationId : ''))
+    // 维护方是总部供应链（#354），新建默认全局方案，需要时再指定市场
+    setForm(emptyForm())
     setMode('create')
   }
 
@@ -408,7 +411,7 @@ export default function InventoryPromotionsPage({
       key: 'actions',
       header: '操作',
       cell: (row) => {
-        const canEditRow = canUpdate && (row.scopeMarketId !== null || canManageGlobal)
+        const canEditRow = canUpdate
         return (
           <div className="flex items-center gap-1">
             <Button variant="link" size="sm" className="h-auto px-1" onClick={() => openPlan(row, 'view')}>
@@ -524,7 +527,7 @@ export default function InventoryPromotionsPage({
                 disabled={readOnly || saving}
                 onChange={(event) => setField('scopeMarketId', event.target.value)}
               >
-                {(canManageGlobal || form.scopeMarketId === '') && <option value="">全部市场</option>}
+                <option value="">全部市场</option>
                 {marketOptions.map((market) => (
                   <option key={market.locationId} value={market.locationId}>{market.name}</option>
                 ))}
@@ -576,30 +579,31 @@ export default function InventoryPromotionsPage({
                     )}
                   </div>
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                    <label className="block space-y-2 sm:col-span-2">
-                      <span className="block text-sm font-medium">库存商品 *</span>
-                      <Select value={item.skuId} disabled={readOnly || saving} onChange={(event) => updateItem(index, { skuId: event.target.value })}>
-                        <option value="">请选择库存商品</option>
-                        {skuOptions.map((sku) => (
-                          <option key={sku.skuId} value={sku.skuId}>
-                            {sku.productCode} · {sku.productName}{sku.specName ? `（${sku.specName}）` : ''}
-                          </option>
-                        ))}
-                      </Select>
-                    </label>
+                    {/* 复合控件不放进 <label>（只能含一个关联控件），见 inventory-operations-page 的 FormField group */}
+                    <div role="group" aria-labelledby={`promotion-item-${item.key}-sku`} className="block space-y-2 sm:col-span-2">
+                      <span id={`promotion-item-${item.key}-sku`} className="block text-sm font-medium">库存商品 *</span>
+                      <InventorySkuSearchSelect
+                        value={item.skuId}
+                        disabled={readOnly || saving}
+                        onChange={(skuId) => updateItem(index, { skuId, skuLabel: undefined })}
+                        placeholder="请选择库存商品"
+                        ariaLabel={`明细 ${index + 1} 库存商品`}
+                        selectedLabel={item.skuLabel}
+                      />
+                    </div>
                     <label className="block space-y-2">
                       <span className="block text-sm font-medium">{form.ruleType === '组合' ? '组合数量下限 *' : '数量下限'}</span>
-                      <Input type="number" min="0" step="1" max="9999999999.99" placeholder={form.ruleType === '组合' ? '必填' : '留空不限'} value={item.reportMinQuantity} readOnly={readOnly} disabled={saving} onChange={(event) => updateItem(index, { reportMinQuantity: event.target.value })} />
+                      <InventoryNumberInput type="number" min="0" step="1" max="9999999999.99" placeholder={form.ruleType === '组合' ? '必填' : '留空不限'} value={item.reportMinQuantity} readOnly={readOnly} disabled={saving} onChange={(event) => updateItem(index, { reportMinQuantity: event.target.value })} />
                     </label>
                     <label className="block space-y-2">
                       <span className="block text-sm font-medium">数量上限</span>
-                      <Input type="number" min="0" step="1" max="9999999999.99" placeholder="留空不限" value={item.reportMaxQuantity} readOnly={readOnly} disabled={saving} onChange={(event) => updateItem(index, { reportMaxQuantity: event.target.value })} />
+                      <InventoryNumberInput type="number" min="0" step="1" max="9999999999.99" placeholder="留空不限" value={item.reportMaxQuantity} readOnly={readOnly} disabled={saving} onChange={(event) => updateItem(index, { reportMaxQuantity: event.target.value })} />
                     </label>
                     {canViewPrice && (
                       <>
                         <label className="block space-y-2">
                           <span className="block text-sm font-medium">单价优惠 *</span>
-                          <Input type="number" min="0" step="0.01" max="9999999999.99" value={item.marketUnitDiscount} readOnly={readOnly} disabled={saving} onChange={(event) => updateItem(index, { marketUnitDiscount: event.target.value })} />
+                          <InventoryNumberInput type="number" min="0" step="0.01" max="9999999999.99" value={item.marketUnitDiscount} readOnly={readOnly} disabled={saving} onChange={(event) => updateItem(index, { marketUnitDiscount: event.target.value })} />
                         </label>
                       </>
                     )}

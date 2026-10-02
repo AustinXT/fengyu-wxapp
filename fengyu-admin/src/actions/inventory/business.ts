@@ -9,6 +9,9 @@ import {
   createItemCompanyReplenishment as createItemCompanyReplenishmentImpl,
   createInventoryConversion as createInventoryConversionImpl,
   createMarketReplenishment as createMarketReplenishmentImpl,
+  deleteMarketReplenishmentDraft as deleteMarketReplenishmentDraftImpl,
+  saveMarketReplenishmentDraft as saveMarketReplenishmentDraftImpl,
+  voidMarketReportSummary as voidMarketReportSummaryImpl,
   createMarketReportSummary as createMarketReportSummaryImpl,
   resolveInventorySkuSupplierStatus as resolveInventorySkuSupplierStatusImpl,
   createMarketStaffPurchase as createMarketStaffPurchaseImpl,
@@ -18,6 +21,8 @@ import {
   createSelfPurchasedReceipt as createSelfPurchasedReceiptImpl,
   createStoreAllocation as createStoreAllocationImpl,
   createStoreReplenishmentRequest as createStoreReplenishmentRequestImpl,
+  deleteStoreReplenishmentDraft as deleteStoreReplenishmentDraftImpl,
+  saveStoreReplenishmentDraft as saveStoreReplenishmentDraftImpl,
   getShipmentReceiptProgress as getShipmentReceiptProgressImpl,
   listMarketEmployeeOptions as listMarketEmployeeOptionsImpl,
   listSupplyChainEmployeeOptions as listSupplyChainEmployeeOptionsImpl,
@@ -40,6 +45,7 @@ import {
   type CreateExternalMarketOutboundInput,
   type CreateInventoryConversionInput,
   type CreateMarketReplenishmentInput,
+  type SaveMarketReplenishmentDraftInput,
   type MarketPromotionSelectionInput,
   type CreateMarketStaffPurchaseInput,
   type CreateSupplyChainStaffPurchaseInput,
@@ -60,6 +66,19 @@ export const createStoreReplenishmentRequest = withPermission(
   'inventory:store_operate',
   async (session, input: CreateStoreReplenishmentInput) =>
     createStoreReplenishmentRequestImpl(session, input),
+)
+
+/** 门店报货草稿（#348）：与新建 / 提交同一权限；提交走 createStoreReplenishmentRequest({ draftId })。 */
+export const saveStoreReplenishmentDraft = withPermission(
+  'inventory:store_operate',
+  async (session, input: CreateStoreReplenishmentInput) =>
+    saveStoreReplenishmentDraftImpl(session, input),
+)
+
+export const deleteStoreReplenishmentDraft = withPermission(
+  'inventory:store_operate',
+  async (session, input: { draftId: string; reason?: string | null }) =>
+    deleteStoreReplenishmentDraftImpl(session, input),
 )
 
 export const summarizeStoreReplenishmentRequests = withPermission(
@@ -96,6 +115,19 @@ export const createMarketReplenishment = withPermission(
     createMarketReplenishmentImpl(session, input),
 )
 
+/** 市场报货草稿（#348）：与新建 / 提交同一权限，草稿本身不占用门店报货。 */
+export const saveMarketReplenishmentDraft = withPermission(
+  'inventory:market_operate',
+  async (session, input: SaveMarketReplenishmentDraftInput) =>
+    saveMarketReplenishmentDraftImpl(session, input),
+)
+
+export const deleteMarketReplenishmentDraft = withPermission(
+  'inventory:market_operate',
+  async (session, input: { draftId: string; reason?: string | null }) =>
+    deleteMarketReplenishmentDraftImpl(session, input),
+)
+
 export const createItemCompanyReplenishment = withPermission(
   'inventory:supply_chain_operate',
   async (session, input: CreateItemCompanyReplenishmentInput) =>
@@ -116,6 +148,12 @@ export const createMarketReportSummary = withPermission(
   'inventory:supply_chain_operate',
   async (session, input: CreateMarketReportSummaryInput) =>
     createMarketReportSummaryImpl(session, input),
+)
+
+export const voidMarketReportSummary = withPermission(
+  'inventory:supply_chain_operate',
+  async (session, input: { summaryId: string; reason: string }) =>
+    voidMarketReportSummaryImpl(session, input),
 )
 
 export const resolveInventorySkuSupplierStatus = withPermission(
@@ -274,8 +312,9 @@ export const createExternalMarketOutbound = withPermission(
     createExternalMarketOutboundImpl(session, input),
 )
 
-export const createInventoryConversion = withAnyPermission(
-  ['inventory:supply_chain_operate', 'inventory:market_operate', 'inventory:store_operate'],
+// 库存转换仅供应链可做（#343，9/18 会议 §2.15），市场/门店权限不再放行。
+export const createInventoryConversion = withPermission(
+  'inventory:supply_chain_operate',
   async (session, input: CreateInventoryConversionInput) =>
     createInventoryConversionImpl(session, input),
 )

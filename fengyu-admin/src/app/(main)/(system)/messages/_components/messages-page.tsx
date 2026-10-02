@@ -42,6 +42,7 @@ import {
   AlertDialogFooter,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
+import { normalizePage } from '@/lib/paging'
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
@@ -104,7 +105,7 @@ export default function MessagesPage({ messages, messageTypes, total, canSend, c
   const storeFilter = get('store')
   const dateFrom = get('from')
   const dateTo = get('to')
-  const currentPage = Math.max(1, Number(get('page', '1')) || 1)
+  const currentPage = normalizePage(get('page', '1'))
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get('size')))
     ? Number(get('size'))
     : 20

@@ -3,6 +3,7 @@
  *
  * 这里不依赖数据库、Node API 或 Server Action，允许客户端仅以类型形式引用。
  */
+import { DATA_CENTER_DASHBOARD_ACTION, DATA_CENTER_REPORTS } from './data-center/reports'
 
 export const EXPORT_JOB_TYPES = [
   'orders',
@@ -16,6 +17,12 @@ export const EXPORT_JOB_TYPES = [
   'points',
   'cards',
   'inventory-stocks',
+  'inventory-movements',
+  'inventory-pending-receipts',
+  'pickup-records',
+  'market-report-summary-sources',
+  'settlement-market-details',
+  'settlement-store-details',
   'products',
   'mall-products',
   'coupons',
@@ -38,7 +45,8 @@ export const EXPORT_JOB_STATUSES = [
 
 export type ExportJobStatus = (typeof EXPORT_JOB_STATUSES)[number]
 
-export const DATA_CENTER_EXPORT_VIEWS = [
+/** 旧 4 板块的导出视图。板块页的 `tab` 是遗留深链参数，导出时剔除。 */
+export const DATA_CENTER_BOARD_EXPORT_VIEWS = [
   'sales-market',
   'sales-store',
   'customer-market-reg',
@@ -51,6 +59,43 @@ export const DATA_CENTER_EXPORT_VIEWS = [
   'efficiency-staff',
   'efficiency-store-ranking',
   'efficiency-staff-ranking',
+] as const
+
+export type DataCenterBoardExportView = (typeof DATA_CENTER_BOARD_EXPORT_VIEWS)[number]
+
+/**
+ * 经营明细报表（#367 起）的导出视图，由各页面单登记。报表页的 `tab` 可能是页内视角参数
+ * （如一览表三视角），导出时**保留**——剔掉会按默认视角出数，且两个只差视角的导出会被去重成同一个任务。
+ *
+ * ⚠ 视图名一律 `report-<页面>-...` 前缀（`DATA_CENTER_REPORT_VIEW_PREFIX`）。export-worker 的
+ * `queryDataCenter` 历史上按 `sales-` / `customer-` / `product-` 前缀分发板块取数，撞前缀的视图会被派给
+ * 旧板块、静默导出错内容（#372 起报表视图最先分发，registry.test 守护前缀）。
+ */
+export const DATA_CENTER_REPORT_VIEW_PREFIX = 'report-'
+
+export const DATA_CENTER_REPORT_EXPORT_VIEWS = [
+  'report-operating-master',
+  'report-remaining-cards',
+  'report-daily-overview',
+  'report-customer-frequency',
+  'report-commission-daily',
+  'report-commission-detail',
+] as const satisfies readonly `${typeof DATA_CENTER_REPORT_VIEW_PREFIX}${string}`[]
+
+export type DataCenterReportExportView = (typeof DATA_CENTER_REPORT_EXPORT_VIEWS)[number]
+
+const REPORT_EXPORT_VIEW_SET: ReadonlySet<string> = new Set(DATA_CENTER_REPORT_EXPORT_VIEWS)
+
+export function isDataCenterReportExportView(view: string): view is DataCenterReportExportView {
+  return REPORT_EXPORT_VIEW_SET.has(view)
+}
+
+/** 日常数据一览表（#369）：一个视图，`tab` 参数决定导出哪个视角（☆ 默认只导当前页签） */
+export const DAILY_OVERVIEW_EXPORT_VIEW = 'report-daily-overview' satisfies DataCenterReportExportView
+
+export const DATA_CENTER_EXPORT_VIEWS = [
+  ...DATA_CENTER_BOARD_EXPORT_VIEWS,
+  ...DATA_CENTER_REPORT_EXPORT_VIEWS,
 ] as const
 
 export type DataCenterExportView = (typeof DATA_CENTER_EXPORT_VIEWS)[number]
@@ -102,10 +147,47 @@ export const EXPORT_PERMISSIONS_BY_TYPE: Record<ExportJobType, readonly [string,
   points: ['point_transaction:list'],
   cards: ['sale_item:list'],
   'inventory-stocks': ['inventory:export'],
+  'inventory-movements': ['inventory:export'],
+  'inventory-pending-receipts': ['inventory:export'],
+  'pickup-records': ['pickup_record:list'],
+  'market-report-summary-sources': ['inventory:export'],
+  'settlement-market-details': ['inventory:export'],
+  'settlement-store-details': ['inventory:export'],
   products: ['product:list'],
   'mall-products': ['product:list'],
   coupons: ['coupon:list'],
   'data-center': ['data_center:dashboard'],
+}
+
+/**
+ * data-center 各视图的导出权限：**全部满足**（#367）。
+ *
+ * `EXPORT_PERMISSIONS_BY_TYPE` 是「任一即可」语义，往 `'data-center'` 数组里加新 key 只会放宽、
+ * 收紧不了——只有 `data_center:dashboard` 的账号照样能发起顾客明细 / 员工提成视图的导出。
+ * 经营明细报表的视图按这里登记「dashboard + 专用权限点」，`createExportJob` / `retryMyExportJob`
+ * 逐项校验且要求由同一角色授权提供（与页面 / 取数 Server Action 的 `withAllPermissions` 同一口径）。
+ * `Record` 让新增视图时漏登记在 tsc 就报错；新视图的权限组合直接引用 `data-center/reports.ts` 的常量
+ * （`DATA_CENTER_CUSTOMER_DETAIL_ACTIONS` / `DATA_CENTER_STAFF_COMMISSION_ACTIONS`），与所属报表页同源。
+ */
+export const DATA_CENTER_VIEW_REQUIRED_ACTIONS: Record<DataCenterExportView, readonly [string, ...string[]]> = {
+  'sales-market': [DATA_CENTER_DASHBOARD_ACTION],
+  'sales-store': [DATA_CENTER_DASHBOARD_ACTION],
+  'customer-market-reg': [DATA_CENTER_DASHBOARD_ACTION],
+  'customer-market-ops': [DATA_CENTER_DASHBOARD_ACTION],
+  'customer-store-reg': [DATA_CENTER_DASHBOARD_ACTION],
+  'customer-store-ops': [DATA_CENTER_DASHBOARD_ACTION],
+  'product-market': [DATA_CENTER_DASHBOARD_ACTION],
+  'product-store': [DATA_CENTER_DASHBOARD_ACTION],
+  'efficiency-market': [DATA_CENTER_DASHBOARD_ACTION],
+  'efficiency-staff': [DATA_CENTER_DASHBOARD_ACTION],
+  'efficiency-store-ranking': [DATA_CENTER_DASHBOARD_ACTION],
+  'efficiency-staff-ranking': [DATA_CENTER_DASHBOARD_ACTION],
+  'report-operating-master': DATA_CENTER_REPORTS.operatingMaster.requiredActions,
+  'report-remaining-cards': DATA_CENTER_REPORTS.remainingCards.requiredActions,
+  'report-daily-overview': DATA_CENTER_REPORTS.dailyOverview.requiredActions,
+  'report-customer-frequency': DATA_CENTER_REPORTS.customerFrequency.requiredActions,
+  'report-commission-daily': DATA_CENTER_REPORTS.commissionDaily.requiredActions,
+  'report-commission-detail': DATA_CENTER_REPORTS.commissionDetail.requiredActions,
 }
 
 export const EXPORT_PERMISSION_ACTIONS = Array.from(
@@ -132,6 +214,12 @@ export const EXPORT_LABEL_BY_TYPE: Record<ExportJobType, string> = {
   points: '积分流水',
   cards: '疗程卡列表',
   'inventory-stocks': '库存明细',
+  'inventory-movements': '进出明细',
+  'inventory-pending-receipts': '收货跟进',
+  'pickup-records': '提货记录',
+  'market-report-summary-sources': '汇总单来源明细',
+  'settlement-market-details': '市场结算明细',
+  'settlement-store-details': '分院结算明细',
   products: '商品管理',
   'mall-products': '商城商品',
   coupons: '优惠券模板',
@@ -159,6 +247,12 @@ export function exportJobLabel(
     'efficiency-staff': '人效明细-按技师',
     'efficiency-store-ranking': '人效-门店排名榜',
     'efficiency-staff-ranking': '人效-员工排名榜',
+    'report-operating-master': '经营数据主表',
+    'report-remaining-cards': '顾客剩余卡项清单',
+    'report-daily-overview': '日常数据一览表',
+    'report-customer-frequency': '顾客频率表',
+    'report-commission-daily': '员工提成日报',
+    'report-commission-detail': '提成明细',
   }
   return viewLabels[payload.view as DataCenterExportView]
 }

@@ -24,6 +24,7 @@ import type { AuthSession, SaleOrder, SaleItem, DateBasis, OrderStatus, SaleOrde
 import { revalidatePath } from 'next/cache'
 import { scopeCondition, isInScope, requireAdmin, isDepositOrderApprover } from '@/lib/permissions'
 import { withPermission, withAnyPermission } from '@/lib/with-permission'
+import { ORDER_DETAIL_PAGE_CAPABILITIES } from '@/lib/order-detail-access'
 import { logOperation, logTransition, logUpdate } from '@/lib/operation-log'
 import { ApiError, parseErrorPrefix } from '@/lib/api-error'
 import { businessErrorMessage } from '@/lib/action-error'
@@ -68,6 +69,7 @@ import { INVENTORY_LINKAGE_ENABLED } from '@/lib/inventory-feature-flags'
 import { getInvalidEmployeeAssignmentId } from '@/lib/employee-assignment-server'
 import { classifySaleOrderDocumentType } from '@/lib/document-type'
 import { cashAmountDisplay, isWorkfineLegacy, paymentMethodDisplay } from '@/lib/workfine-legacy'
+import { resolvePaging } from '@/lib/paging'
 
 // drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
 const opener = alias(staffWechatUsers, 'opener') as unknown as typeof staffWechatUsers
@@ -566,10 +568,10 @@ async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string
          AND item_direction = '转出'
          AND ref_sale_item_id IS NOT NULL
        GROUP BY ref_sale_item_id
-      HAVING SUM(waived_amount::numeric) > 0
+      -- 包含 Δ_row=0 的付清/overpay 行，也必须还原 pending_received 快照
     ),
     locked_source AS (
-      SELECT src.sale_item_id, src.sale_order_id, waived.waived, waived.orig_pending
+      SELECT src.sale_item_id, src.sale_order_id, src.sale_amount::numeric AS source_sale_amount, waived.waived, waived.orig_pending
         FROM sale_items src
         JOIN waived ON waived.ref_sale_item_id = src.sale_item_id
        ORDER BY src.sale_item_id
@@ -602,6 +604,7 @@ async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string
     SELECT w.ref_sale_item_id AS sale_item_id,
            locked_source.sale_order_id,
            w.waived,
+           (locked_source.source_sale_amount + w.waived > 0) AS has_positive_source,
            (locked_source.sale_item_id IS NOT NULL) AS source_found,
            (r.sale_item_id IS NOT NULL) AS restored_ok
       FROM waived w
@@ -609,7 +612,7 @@ async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string
       LEFT JOIN restored r ON r.sale_item_id = w.ref_sale_item_id
      ORDER BY locked_source.sale_order_id, w.ref_sale_item_id
   `)
-  // 没有任何行被豁免过时这条语句返回空集；非数组一律按「无可还原」处理
+  // 没有转出引用时这条语句返回空集；非数组一律按「无可还原」处理
   const restoredWaive: Array<Record<string, unknown>> = Array.isArray(restoredWaiveRaw)
     ? (restoredWaiveRaw as unknown as Array<Record<string, unknown>>)
     : []
@@ -710,7 +713,7 @@ async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string
   // （行级豁免额全部来自已退款、本无真实欠款）时上面会 continue，但源行 sale_amount 已被
   // CTE **无条件**还原 —— 不重算就会留下偏高的 paid_sessions（付清后退款 40% 的 10 次卡会
   // 停在 10，正确值 6），把已退款的权益重新放出来。
-  for (const refOrderId of [...new Set(restoredWaive.map((r) => r.sale_order_id as string))].sort()) {
+  for (const refOrderId of [...new Set(restoredWaive.filter((r) => r.has_positive_source === true).map((r) => r.sale_order_id as string))].sort()) {
     const recalcRes = await tx.execute(sql`
       UPDATE sale_items
          SET paid_sessions = CASE
@@ -727,14 +730,11 @@ async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string
           WHERE out_item.sale_order_id = ${saleOrderId}
             AND out_item.item_direction = '转出'
             AND out_item.ref_sale_item_id IS NOT NULL
-            -- 必须与正向作用域一致（只含真正被豁免过的行）。少了这条会把同单其它被折抵行
-            -- 一起重算——已全退、被 STEP 2.5 压成 paid_sessions=0 的 0 元赠品卡会命中
-            -- sale_amount <= 0 兜底重回满次数，而 paid_sessions 是「已退款卡消失」的唯一机制。
-            AND out_item.waived_amount::numeric > 0
        )
          AND sale_items.sale_order_id = ${refOrderId}
+         AND sale_items.sale_amount > 0
     `)
-    // 影响行数必为 >= 1：作用域来自「本单 waived_amount > 0 的转出行」，其源行刚被上面的 CTE
+    // 影响行数必为 >= 1：作用域来自「本单转出行引用的正金额源行」，其源行刚被上面的 CTE
     // 还原过、source_found / restored_ok 都已校验。为 0 只可能是 op 子查询取不到原单
     // （孤儿数据）—— 此时源行金额已还原、paid_sessions 没还原，而下面还会把归因凭据清零，
     // 必须显式抛出。订单级还原量为 0 的那条路径也走这里，不会被上面的 continue 绕过。
@@ -1267,9 +1267,12 @@ export interface PaginatedOrders {
 export const getOrdersPaginated = withPermission(
   'sale_order:list',
   async (session, filters: OrderFilters = {}): Promise<PaginatedOrders> => {
-  const page = Math.max(1, filters.page || 1)
-  const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
-  const offset = (page - 1) * pageSize
+  const { page, pageSize, offset } = resolvePaging({
+    page: filters.page,
+    pageSize: filters.pageSize,
+    defaultPageSize: 20,
+    allowedPageSizes: [10, 20, 50],
+  })
 
   // 构建 WHERE 条件（DB 级过滤，与导出共用同一构建器）
   const whereClause = and(...buildOrderConditions(session, filters))
@@ -1298,7 +1301,7 @@ export const getOrdersPaginated = withPermission(
     .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
     .where(whereClause)
     // 例外：业务时间优先（订单日期比"最近编辑"更符合管理员直觉）
-    .orderBy(desc(saleOrders.saleOrderDatetime))
+    .orderBy(desc(saleOrders.saleOrderDatetime), desc(saleOrders.saleOrderId))
     .limit(pageSize)
     .offset(offset)
 
@@ -3066,7 +3069,8 @@ export const exportAllocationOrders = withPermission(
 // 订单详情页可由订单查看者（sale_order:list）或退款相关角色
 // （sale_order:refund_create 提单人 / sale_order:refund_approve 审批人）访问
 export const getOrderById = withAnyPermission(
-  ['sale_order:list', 'sale_order:refund_create', 'sale_order:refund_approve'],
+  // 与 /orders/[id] 页面守卫、各处「跳转订单详情」链接同一单源（#350）
+  [...ORDER_DETAIL_PAGE_CAPABILITIES],
   async (session, saleOrderId: string): Promise<SaleOrder | null> => {
   // 2026-07-08 修复 T1：与 getOrders 对齐，left join clientWechatUsers 做 name/phone 兜底。
   const rows = await db
@@ -3626,7 +3630,8 @@ export const updatePaymentPerformanceAttributionDate = withPermission(
  */
 // 详情页支付流水：订单查看者或退款相关角色（提单人 / 审批人）均可读
 export const getOrderPayments = withAnyPermission(
-  ['sale_order:list', 'sale_order:refund_create', 'sale_order:refund_approve'],
+  // 与 /orders/[id] 页面守卫、各处「跳转订单详情」链接同一单源（#350）
+  [...ORDER_DETAIL_PAGE_CAPABILITIES],
   async (session, saleOrderId: string): Promise<import('@/lib/types').SaleOrderPayment[]> => {
   // scope 校验：只有订单所在门店在 scope 内才允许查看流水
   const [order] = await db
@@ -5867,12 +5872,20 @@ export const createConversionOrder = withPermission(
       name: clientWechatUsers.name,
       customerType: clientWechatUsers.customerType,
       memberLevel: clientWechatUsers.memberLevel,
+      boundStoreId: clientWechatUsers.boundStoreId,
+      isCrossStoreTemp: clientWechatUsers.isCrossStoreTemp,
     })
     .from(clientWechatUsers)
     .where(eq(clientWechatUsers.userId, data.clientUserId))
     .limit(1)
   if (!client) {
     return { success: false, message: '顾客不存在' }
+  }
+  if (!client.boundStoreId) {
+    return { success: false, message: '顾客未注册小程序或未绑定门店' }
+  }
+  if (client.boundStoreId !== data.storeId && !client.isCrossStoreTemp) {
+    return { success: false, message: '该顾客不属于当前门店，无法开单' }
   }
   const getCustomerMarketScope = createCustomerMarketScopeProvider(data.clientUserId)
 
@@ -6052,6 +6065,7 @@ export const createConversionOrder = withPermission(
 
       type OutItem = {
         refSaleItemId: string
+        sourceStoreId: string
         skuId: string | null
         productName: string | null
         productType: '疗程卡' | '家居产品' | null
@@ -6072,13 +6086,13 @@ export const createConversionOrder = withPermission(
         orderWaiveAmount: number
         /** 折抵后钉给 pending_received 的**毛已付**（净实收 + 该行已退款额） */
         pinnedPendingReceived: number
+        waiveEligible: boolean
         refPendingReceived: number
       }
       const outItems: OutItem[] = []
 
       for (const row of held) {
-        // 归属校验：store_id / client_user_id / direction / 状态
-        if (row.store_id !== data.storeId) throw new ApiError('INVALID_STATE', 'CARD_STORE_MISMATCH: 所选卡不属于当前门店')
+        // 来源门店可不同；顾客、权益方向和状态仍须锁内逐行复核。
         if (row.client_user_id !== data.clientUserId) throw new ApiError('INVALID_STATE', 'CARD_OWNER_MISMATCH: 所选卡不属于该顾客')
         const isEntitlement = isConvertibleEntitlementRow({
           item_direction: row.item_direction as string,
@@ -6142,7 +6156,10 @@ export const createConversionOrder = withPermission(
             received: row.received as string,
             unitRealPrice: row.unit_real_price as string,
           })
-          qty = Math.max(0, Number(row.quantity ?? 0) - Number(row.picked_up_quantity ?? 0))
+          qty = Math.max(0, Number(row.quantity ?? 0)
+            - Number(row.picked_up_quantity ?? 0)
+            - Number(row.refunded_quantity ?? 0)
+            - Number(row.converted_quantity ?? 0))
           lineAmount = Math.round(home.amount * 100) / 100
         }
 
@@ -6195,6 +6212,7 @@ export const createConversionOrder = withPermission(
 
         outItems.push({
           refSaleItemId: row.sale_item_id as string,
+          sourceStoreId: row.store_id as string,
           skuId: (row.sku_id as string) ?? null,
           productName: (row.product_name as string) ?? null,
           productType: productType as OutItem['productType'],
@@ -6219,6 +6237,7 @@ export const createConversionOrder = withPermission(
           pinnedPendingReceived: Math.round((refReceived + refRefunded) * 100) / 100,
           // 原行 pending_received 快照：关单回滚必须还原，否则历史行（原本 pending=0）的
           // 分摊权重被永久改写。
+          waiveEligible,
           refPendingReceived: Math.round(Number(row.pending_received ?? 0) * 100) / 100,
         })
       }
@@ -6644,7 +6663,7 @@ export const createConversionOrder = withPermission(
             .where(
               and(
                 eq(saleItems.saleItemId, out.refSaleItemId),
-                eq(saleItems.storeId, data.storeId),
+                eq(saleItems.storeId, out.sourceStoreId),
                 sql`COALESCE(${saleItems.remainingSessions}, 0) >= ${out.quantity}`,
               ),
             )
@@ -6660,7 +6679,7 @@ export const createConversionOrder = withPermission(
             .where(
               and(
                 eq(saleItems.saleItemId, out.refSaleItemId),
-                eq(saleItems.storeId, data.storeId),
+                eq(saleItems.storeId, out.sourceStoreId),
                 eq(saleItems.productType, '家居产品'),
                 sql`(COALESCE(${saleItems.pickedUpQuantity}, 0) + COALESCE(${saleItems.refundedQuantity}, 0) + COALESCE(${saleItems.convertedQuantity}, 0) + ${out.quantity}) <= ${saleItems.quantity}`,
               ),
@@ -6680,14 +6699,14 @@ export const createConversionOrder = withPermission(
       const waiveByOrder = new Map<string, number>()
       for (const out of outItems) {
         const waive = out.waiveAmount
-        if (!(waive > 0)) continue
+        if (!out.waiveEligible) continue
         const updItem = await tx
           .update(saleItems)
           .set({
             saleAmount: sql`${saleItems.saleAmount} - ${waive}`,
             waivedAmount: sql`${saleItems.waivedAmount} + ${waive}`,
             // 把「逐行实付草稿」钉到该行**毛已付**（净实收 + 该行已退款额）。这是 D3 的承重墙：
-            // STEP 1 Branch B 见 waived_amount > 0 就按本列**固定预留**该行的 received（不再丢进
+            // STEP 1 Branch B 见未关闭转出引用且权益耗尽 就按本列**固定预留**该行的 received（不再丢进
             // 比例池），预留额同时从 untargeted 扣除 → 该行 received 恒等于毛已付、同单其它行
             // 分到的钱不变；再由 STEP 1.5 扣掉该行退款额得到净额，恰好等于下调后的 sale_amount。
             // ⚠ 不能钉成净实收：STEP 1.5 会再扣一次退款，付清后退过款的行终值会低于新应付，
@@ -8099,7 +8118,7 @@ export const recordPayment = withPermission(
                 -- targeted（通常 0），而它的 remaining_sessions 已注销为 0 →
                 -- (session_count − 0) > paid_sessions 永久违反 D3，原单从此回款/退款/回调全失败。
                 -- 触发条件很普通：同一原单里另一行发起定向回款即可。
-                WHEN si.waived_amount::numeric > 0 THEN si.pending_received
+                WHEN (EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = si.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭') AND (CASE WHEN si.product_type = '疗程卡' THEN COALESCE(si.remaining_sessions, 0) = 0 ELSE (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)) >= si.quantity END)) THEN si.pending_received
                 ELSE COALESCE(rp.delta, 0)
               END,
               updated_at = NOW()

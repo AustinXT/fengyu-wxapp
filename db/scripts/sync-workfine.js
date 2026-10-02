@@ -37,8 +37,42 @@ const MSSQL_CONFIG = {
 // DATABASE_URL 必填且必须精确指向业务库（db/CLAUDE.md 硬规则：显式传值 + 断言 host/port/dbname）。
 // 实现见 _lib/assert-db-target.js —— 它同时挡住 `?host=` 与 `?%68ost=`（百分号编码）两层 query 覆盖绕过。
 // 仅在直接执行时校验——本目录部分脚本的导出函数被 __tests__ require，顶层 exit 会打断测试进程。
-const { assertDbTargetOrExit } = require('./_lib/assert-db-target')
+const { assertDbTargetOrExit, isProdDbTarget } = require('./_lib/assert-db-target')
 if (require.main === module) assertDbTargetOrExit(process.env.DATABASE_URL)
+
+/**
+ * 对**生产库**硬拒绝（issue #318）。
+ *
+ * 业务方 2026-04-16 已决定「上线后不再执行 WorkFine 同步」（见
+ * `notes/tickets/2026-04-16-client-rebind-phone.md`），本脚本自那以后只用于历史迁移与
+ * 上线前刷新。但这只是**流程约定**，代码层面谁都能对着生产库跑 —— 而它的
+ * `staff_wechat_users` UPSERT 直接写 `is_resigned`、既不取 `admin:active_count` 也不复核
+ * 「至少留一名在职超级管理员」。#318 收紧认证之后，一旦把最后一名超管标成离职，
+ * 后果是**没人能登录管理后台**。
+ *
+ * 所以这里挡在门口，而且是**无条件**的 —— 不留环境变量开关。
+ *
+ * 第一版留了 `ALLOW_PROD_WORKFINE_SYNC=1` 作为放行阀门，codex 谱系第 6 轮指出那等于没关：
+ * 「生产只剩一名超管时设置该变量运行同步」这条反例照样能把后台锁死，而 cron 巡检只能事后告警。
+ * 它说得对 —— 一个环境变量不构成决策成本。既然业务上「上线后不再执行」，就让它在代码层面
+ * 也不可执行：真有必要（比如某次一次性数据补录）只能改这里的代码并走一次 code review，
+ * 那才是与后果相称的门槛。
+ *
+ * cron 侧的 `activeAdminCount` 巡检（0 人 → critical）仍保留 —— 它兜的是裸 SQL 等本函数
+ * 管不到的路径。
+ */
+function assertProdSyncAllowedOrExit() {
+  if (!isProdDbTarget(process.env.DATABASE_URL)) return
+  console.error([
+    '✗ 拒绝对生产库运行 WorkFine 同步（无条件，没有环境变量可以放行）。',
+    '  业务方 2026-04-16 已决定上线后不再执行该同步；本脚本仅用于历史迁移 / 上线前刷新。',
+    '  它的 staff_wechat_users UPSERT 会直接写 is_resigned，且不校验「至少留一名在职超级管理员」——',
+    '  把最后一名超管标成离职就会让所有人无法登录管理后台（#318）。',
+    '  确需对生产库执行：改掉本函数并走 code review —— 门槛就是要与后果相称。',
+  ].join('\n'))
+  process.exit(1)
+}
+if (require.main === module) assertProdSyncAllowedOrExit()
 
 const PG_CONFIG = {
   connectionString: process.env.DATABASE_URL?.trim(),
@@ -129,6 +163,29 @@ function log(domain, msg) {
 
 // ─── 1. 同步 org_nodes + stores ──────────────────────────────
 
+/**
+ * 门店 UPSERT（参数：$1 store_id, $2 store_name, $3 org_node_id, $4 opening_date, $5 bed_count, $6 is_closed）。
+ *
+ * is_closed ↔ closed_at 双写一致（schema 不变量；admin updateStore 首次关店同样记当天）：
+ * 关店且原本无闭店日期 → 记今天；已有闭店日期保留；重新开业 → 清空。
+ * 只动营业时间轴，不碰 org_nodes.is_active（关店不联动停用节点，#401）。
+ * ⚠️ closed_at 精度 = 同步周期：记的是「本脚本首次观测到关店」的那天，不是 WorkFine 真实闭店日。
+ *
+ * 抽成常量导出供 `__tests__/sync-workfine-store-upsert*.test.js` 守护（闸门 2 codex round-6 P2）。
+ */
+const STORE_UPSERT_SQL = `
+        INSERT INTO stores (store_id, store_name, org_node_id, opening_date, bed_count, is_closed, closed_at)
+        VALUES ($1, $2, $3, $4, $5, $6, CASE WHEN $6 THEN (now() AT TIME ZONE 'Asia/Shanghai')::date END)
+        ON CONFLICT (store_id) DO UPDATE SET
+          store_name = EXCLUDED.store_name,
+          org_node_id = EXCLUDED.org_node_id,
+          opening_date = EXCLUDED.opening_date,
+          bed_count = EXCLUDED.bed_count,
+          is_closed = EXCLUDED.is_closed,
+          closed_at = CASE WHEN EXCLUDED.is_closed THEN COALESCE(stores.closed_at, EXCLUDED.closed_at) END,
+          updated_at = now()
+`
+
 async function syncOrgNodesAndStores(mssqlPool, pgPool, dryRun) {
   log('ORG+STORES', '开始同步...')
 
@@ -197,17 +254,7 @@ async function syncOrgNodesAndStores(mssqlPool, pgPool, dryRun) {
       // stores 详情
       const storeId = hashId('store', storeName)
       const isClosed = toBool(row.is_closed_raw)
-      await client.query(`
-        INSERT INTO stores (store_id, store_name, org_node_id, opening_date, bed_count, is_closed)
-        VALUES ($1, $2, $3, $4, $5, $6)
-        ON CONFLICT (store_id) DO UPDATE SET
-          store_name = EXCLUDED.store_name,
-          org_node_id = EXCLUDED.org_node_id,
-          opening_date = EXCLUDED.opening_date,
-          bed_count = EXCLUDED.bed_count,
-          is_closed = EXCLUDED.is_closed,
-          updated_at = now()
-      `, [storeId, storeName, storeOrgNodeId, toDateStr(row.opening_date), row.bed_count || null, isClosed])
+      await client.query(STORE_UPSERT_SQL, [storeId, storeName, storeOrgNodeId, toDateStr(row.opening_date), row.bed_count || null, isClosed])
 
       storeCount++
     }
@@ -1220,3 +1267,5 @@ async function main() {
 
 // 仅在直接执行时运行：被 require 时不得有副作用（顶层校验同理，见文件头部）
 if (require.main === module) main()
+
+module.exports = { STORE_UPSERT_SQL }

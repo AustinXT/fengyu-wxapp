@@ -17,6 +17,7 @@ interface LoginPayload {
   availableLoginLevels?: LoginLevel[];
   scopedStores?: ScopedStore[];
   inventoryStoreIds?: string[];
+  inventoryOperateStoreIds?: string[];
 }
 
 /** 把云函数返回的登录数据写入 globalData，并推导 loginLevel / currentStoreId */

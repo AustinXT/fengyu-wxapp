@@ -344,6 +344,90 @@
       "when": 1789999039383,
       "tag": "0048_hesitant_scarlet_spider",
       "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1790239563071,
+      "tag": "0049_purchase_order_all_lines_inbound",
+      "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1790269580605,
+      "tag": "0050_data_center_report_permissions",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1790295411207,
+      "tag": "0051_commission_price_threshold",
+      "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1790302157503,
+      "tag": "0052_shipment_from_market_report",
+      "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1790307069052,
+      "tag": "0053_stocktake_zero_quantity",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1790333373116,
+      "tag": "0054_pickup_frozen_amount",
+      "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1790673195829,
+      "tag": "0055_inventory_location_identity_guard",
+      "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1790758190587,
+      "tag": "0056_allocation_finance_save",
+      "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "7",
+      "when": 1790819962098,
+      "tag": "0057_oval_calypso",
+      "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1790834272000,
+      "tag": "0058_store_surplus_standard_price",
+      "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1790904222525,
+      "tag": "0059_market_supplier_owner",
+      "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1790906092154,
+      "tag": "0060_summary_void_store_settlement",
+      "breakpoints": true
     }
   ]
 }

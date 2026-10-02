@@ -5,7 +5,7 @@ import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import type { AdminMerchant, MerchantMarketOption } from "@/actions/merchants"
-import type { OnboardingListItem } from "@/actions/lakala-onboarding"
+import type { OnboardingListItem, OnboardingListResult } from "@/actions/lakala-onboarding"
 import type { MarketStoreFilterOptions } from "@/lib/market-store-filter-types"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -18,6 +18,7 @@ import { formatDateTime } from "@/lib/utils"
 import MarketStoreFilter from "@/components/market-store-filter"
 import { OnboardingList } from "../onboarding/_components/onboarding-page"
 import { PreserveListContextLink } from "@/components/return-context"
+import { normalizePage } from "@/lib/paging"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
@@ -28,6 +29,8 @@ export default function MerchantsPage({
   canCreate,
   canOnboard = false,
   onboardingApplications = [],
+  onboardingTotal = 0,
+  onboardingCounts = { missing: 0, ready: 0, reviewing: 0, completed: 0 },
   filterOptions,
 }: {
   merchants: AdminMerchant[]
@@ -36,6 +39,8 @@ export default function MerchantsPage({
   canCreate: boolean
   canOnboard?: boolean
   onboardingApplications?: OnboardingListItem[]
+  onboardingTotal?: number
+  onboardingCounts?: OnboardingListResult["counts"]
   filterOptions: MarketStoreFilterOptions
 }) {
   const router = useRouter()
@@ -47,7 +52,7 @@ export default function MerchantsPage({
   const enabledFilter = get("enabled")
   const marketFilter = get("market")
   const storeFilter = get("store")
-  const currentPage = Math.max(1, Number(get("page", "1")) || 1)
+  const currentPage = normalizePage(get("page", "1"))
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
 
   // 搜索防抖 300ms
@@ -189,7 +194,7 @@ export default function MerchantsPage({
 
         {canOnboard && (
           <TabsContent value="onboarding">
-            <OnboardingList applications={onboardingApplications} canCreate={canCreate} embedded />
+            <OnboardingList applications={onboardingApplications} total={onboardingTotal} counts={onboardingCounts} filterOptions={filterOptions} canCreate={canCreate} embedded />
           </TabsContent>
         )}
       </Tabs>

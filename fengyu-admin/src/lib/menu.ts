@@ -1,16 +1,21 @@
 import {
   Boxes,
   CalendarCheck,
+  CalendarDays,
   ChartNoAxesCombined,
+  ClipboardList,
   CreditCard,
+  FileSpreadsheet,
   FileText,
   Gauge,
   Gift,
   Grid3x3,
+  HandCoins,
   History,
   Landmark,
   LayoutDashboard,
   LineChart,
+  ListChecks,
   MessageSquare,
   Network,
   Package,
@@ -24,6 +29,7 @@ import {
   SlidersHorizontal,
   Stethoscope,
   Activity,
+  ArrowLeftRight,
   Store,
   Ticket,
   TrendingUp,
@@ -38,8 +44,15 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import type { AuthSession } from './types'
-import { INVENTORY_ENTRY_ENABLED } from './inventory-feature-flags'
+import { INVENTORY_ENTRY_ENABLED, INVENTORY_LINKAGE_ENABLED } from './inventory-feature-flags'
 import { isAdminScope } from './session-role-guards'
+import { scopeSessionToActions, scopeSessionToAllActions } from './action-scope'
+import {
+  DATA_CENTER_DASHBOARD_ACTION,
+  DATA_CENTER_REPORT_LIST,
+  type DataCenterMenuSection,
+  type DataCenterReportKey,
+} from './data-center/reports'
 
 export interface MenuItem {
   label: string
@@ -49,12 +62,22 @@ export interface MenuItem {
   requiredActions: string[]
   /** 除 requiredActions 外，还必须同时具备的权限。 */
   requiredAllActions?: string[]
+  /**
+   * requiredAllActions 必须由**同一条角色授权**同时提供（与页面 / 取数 action 的 `withAllPermissions` 同口径）。
+   * 不设时按全部角色的权限并集判定：两个角色各给一半时菜单会显示、点进去却是 403。
+   */
+  allActionsFromSameRole?: boolean
   /** 指向同一功能的历史深链，沿用该菜单项的高亮和父级展开状态。 */
   matchPaths?: string[]
   /** 仅向持有指定组织范围的账号显示；总部账号可按配置进入下级业务。 */
   allowedScopeTypes?: Array<'总部' | '市场' | '门店'>
   /** 临时关闭导航入口；页面、权限和深链保持可用。 */
   hidden?: boolean
+  /**
+   * 父级内的分段小标题（目前仅「数据中心」使用）。可见子项跨两个及以上分段时侧边栏才渲染小标题，
+   * 同一分段的子项须在 children 里相邻。
+   */
+  section?: DataCenterMenuSection
 }
 
 export interface MenuParent {
@@ -66,6 +89,35 @@ export interface MenuParent {
 }
 
 export type MenuNode = MenuItem | MenuParent
+
+const DATA_CENTER_REPORT_ICONS: Record<DataCenterReportKey, LucideIcon> = {
+  dailyOverview: ClipboardList,
+  customerFrequency: CalendarDays,
+  remainingCards: ListChecks,
+  operatingMaster: FileSpreadsheet,
+  commissionDaily: HandCoins,
+  commissionDetail: HandCoins,
+}
+
+/**
+ * 经营明细报表入口（#367），来自 `lib/data-center/reports.ts` 登记表：
+ * 可见 = 有 dashboard 且同时具备该页全部权限（顾客明细 / 员工提成类要求专用权限点）；
+ * `menu.enabled=false` 的页面骨架已就绪但内容未交付，入口隐藏、深链可用。
+ */
+function dataCenterReportMenuItems(): MenuItem[] {
+  return DATA_CENTER_REPORT_LIST.flatMap((report) => report.menu
+    ? [{
+        label: report.title,
+        icon: DATA_CENTER_REPORT_ICONS[report.key],
+        href: report.path,
+        requiredActions: [DATA_CENTER_DASHBOARD_ACTION],
+        requiredAllActions: [...report.requiredActions],
+        allActionsFromSameRole: true,
+        section: report.menu.section,
+        hidden: !report.menu.enabled,
+      }]
+    : [])
+}
 
 /**
  * 侧边栏按业务域组织；URL 仍保持为原有扁平地址。
@@ -112,9 +164,11 @@ export const MENU_CONFIG: MenuNode[] = [
   {
     label: '库存管理',
     icon: Boxes,
-    hidden: !INVENTORY_ENTRY_ENABLED,
+    hidden: !INVENTORY_LINKAGE_ENABLED,
     children: [
       { label: '库存查询', icon: PackageCheck, href: '/inventory/stocks', requiredActions: ['inventory:stock_list'] },
+      { label: '进出明细', icon: ArrowLeftRight, href: '/inventory/movements', requiredActions: ['inventory:stock_list'] },
+      { label: '收货跟进', icon: ArrowLeftRight, href: '/inventory/pending-receipts', requiredActions: ['inventory:list'] },
       {
         label: '供应链业务',
         icon: Factory,
@@ -147,9 +201,8 @@ export const MENU_CONFIG: MenuNode[] = [
         label: '货款结算',
         icon: Landmark,
         href: '/inventory/settlements',
-        // 只读报表全部是金额字段：门店价格档（无任一价格查看权限）不暴露入口。
-        requiredActions: ['inventory:supply_chain_price_view', 'inventory:market_price_view'],
-        requiredAllActions: ['inventory:list'],
+        requiredActions: ['inventory:store_settlement_view'],
+        allowedScopeTypes: ['门店'],
       },
       {
         label: '资料配置',
@@ -173,13 +226,16 @@ export const MENU_CONFIG: MenuNode[] = [
   },
   {
     // 4 个板块各占一条独立路径：itemMatchesPath 只比 pathname，挂 `?tab=` 会让子项同时高亮。
+    // 经营明细报表（#367）同样一页一条路径，按「看板 / 经营明细 / 员工收入」分段；下钻子页不进菜单，
+    // 靠 itemMatchesPath 的前缀匹配高亮父页（提成明细 → 员工提成日报）。
     label: '数据中心',
     icon: LineChart,
     children: [
-      { label: '销售', icon: TrendingUp, href: '/data-center/sales', requiredActions: ['data_center:dashboard'] },
-      { label: '客量', icon: Users, href: '/data-center/customer', requiredActions: ['data_center:dashboard'] },
-      { label: '人效', icon: Gauge, href: '/data-center/efficiency', requiredActions: ['data_center:dashboard'] },
-      { label: '品项', icon: PieChart, href: '/data-center/product', requiredActions: ['data_center:dashboard'] },
+      { label: '销售', icon: TrendingUp, href: '/data-center/sales', requiredActions: ['data_center:dashboard'], section: '看板' },
+      { label: '客量', icon: Users, href: '/data-center/customer', requiredActions: ['data_center:dashboard'], section: '看板' },
+      { label: '人效', icon: Gauge, href: '/data-center/efficiency', requiredActions: ['data_center:dashboard'], section: '看板' },
+      { label: '品项', icon: PieChart, href: '/data-center/product', requiredActions: ['data_center:dashboard'], section: '看板' },
+      ...dataCenterReportMenuItems(),
     ],
   },
   {
@@ -214,7 +270,10 @@ export function hasMenuItemAccess(
   return item.hidden !== true
     && item.requiredActions.some((action) => actions.includes(action))
     && (item.requiredAllActions?.every((action) => actions.includes(action)) ?? true)
-    && (!item.allowedScopeTypes || !scopeTypes || item.allowedScopeTypes.some((scope) => scopeTypes.includes(scope)))
+    && (!item.allowedScopeTypes || !scopeTypes || item.allowedScopeTypes.some((scope) => scopeTypes.includes(scope))
+      // 保留供应链/市场的既有结算入口；新动作本身不向这两个层级授金额权。
+      || (item.href === '/inventory/settlements'
+        && ['inventory:supply_chain_price_view', 'inventory:market_price_view'].some((action) => actions.includes(action))))
 }
 
 export function flattenMenuItems(nodes: readonly MenuNode[] = MENU_CONFIG): MenuItem[] {
@@ -245,13 +304,21 @@ export function getVisibleMenuItems(session: AuthSession): MenuNode[] {
   const scopeTypes = isAdminScope(session)
     ? (['总部', '市场', '门店'] as const)
     : session.roles.map((role) => role.scopeType)
+  // 同角色判定复用 withAllPermissions 的收窄函数，菜单与页面闸门不会各算各的
+  const visibleItem = (item: MenuItem) => hasMenuItemAccess(item, actions, scopeTypes)
+    && (item.href !== '/inventory/settlements' || isAdminScope(session)
+      || scopeSessionToActions(session, ['inventory:store_settlement_view']).roles.some((role) =>
+        role.scopeType === '门店'
+        || role.actions?.some((action) => ['inventory:supply_chain_price_view', 'inventory:market_price_view'].includes(action))))
+    && (!item.allActionsFromSameRole || !item.requiredAllActions
+      || scopeSessionToAllActions(session, item.requiredAllActions).roles.length > 0)
   return MENU_CONFIG.reduce<MenuNode[]>((visible, node) => {
     if (!isMenuParent(node)) {
-      if (hasMenuItemAccess(node, actions, scopeTypes)) visible.push(node)
+      if (visibleItem(node)) visible.push(node)
       return visible
     }
     if (node.hidden) return visible
-    const children = node.children.filter((item) => hasMenuItemAccess(item, actions, scopeTypes))
+    const children = node.children.filter(visibleItem)
     if (children.length > 0) visible.push({ ...node, children })
     return visible
   }, [])

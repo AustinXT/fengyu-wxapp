@@ -1,8 +1,8 @@
 // packageMy/inventory/inventory.ts — 库存管理首页
 import { canAccessInventory } from '../../utils/role'
 
-type CategoryKey = 'stocks' | 'procurement' | 'sale' | 'transfer' | 'scrap'
-type OperateDocType = '门店报货' | '分院调货出库' | '院退货' | '院产品报损'
+type CategoryKey = 'stocks' | 'procurement' | 'sale' | 'transfer' | 'scrap' | 'stocktake'
+type OperateDocType = '门店报货' | '分院调货出库' | '院退货' | '院产品报损' | '分院库存盘点'
 
 interface Category {
   key: CategoryKey
@@ -26,6 +26,7 @@ const CATEGORIES: Category[] = [
   { key: 'sale', title: '退货记录', desc: '院退货 / 顾客退货', icon: 'shop-o', color: '#5E8BB3' },
   { key: 'transfer', title: '门店调货', desc: '同市场门店调货', icon: 'exchange', color: '#9061C2' },
   { key: 'scrap', title: '报损记录', desc: '产品损耗 / 异常', icon: 'warning-o', color: '#D4820A' },
+  { key: 'stocktake', title: '盘点记录', desc: '账面 / 实盘 / 差异', icon: 'todo-list-o', color: '#7B5E2B' },
 ]
 
 const OPERATIONS: Operation[] = [
@@ -33,6 +34,7 @@ const OPERATIONS: Operation[] = [
   { docType: '分院调货出库', title: '同市场调货', desc: '向同市场门店发起调货', icon: 'exchange', color: '#9061C2' },
   { docType: '院退货', title: '院退货', desc: '提交待审批的退货单', icon: 'revoke', color: '#5E8BB3' },
   { docType: '院产品报损', title: '产品报损', desc: '登记异常损耗和原因', icon: 'warning-o', color: '#D4820A' },
+  { docType: '分院库存盘点', title: '门店盘点', desc: '逐个录入实盘数，账面数自动记录', icon: 'todo-list-o', color: '#7B5E2B' },
 ]
 
 Page({

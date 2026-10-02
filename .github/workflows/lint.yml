@@ -6,7 +6,21 @@ on:
       - 'fengyu-admin/src/**/*.ts'
       - 'fengyu-admin/src/**/*.tsx'
       - 'fengyu-admin/src/**/*.js'
+      # 预构建产物（package.json 的 export-worker 直跑它）：单独被换回旧版时要让新鲜度守护跑一遍（#298）
+      - 'fengyu-admin/dist/export-worker.mjs'
       - 'fengyu-staff/cloudfunctions/**/*.js'
+      # 经营分析站：analyst 全量 vitest（analyst-tests job，#436）+ staffApi 的
+      # cross-end-store-active-snapshot（#421）。依赖清单 / vitest 与 tsconfig 路径配置
+      # 同样左右测试收集与模块解析，一并触发（理由同下方 admin / 云函数依赖清单）。
+      - 'fengyu-analyst/src/**'
+      - 'fengyu-analyst/package.json'
+      - 'fengyu-analyst/package-lock.json'
+      - 'fengyu-analyst/vitest.*'
+      - 'fengyu-analyst/tsconfig.json'
+      - 'fengyu-analyst/.npmrc'
+      # analyst-tests 会在 db/ 里 npm ci（drizzle-orm/pg-core 从那里解析），只升 db 依赖的 PR 也要跑一遍
+      - 'db/package.json'
+      - 'db/package-lock.json'
       - 'fengyu-client/cloudfunctions/**/*.js'
       - 'scripts/lint-cas-guards.mjs'
       - '.claude/skills/remote-deploy/**'
@@ -23,6 +37,20 @@ on:
       - 'fengyu-admin/package.json'
       - 'fengyu-admin/package-lock.json'
       - 'fengyu-admin/bun.lock'
+      # 云函数两端的依赖清单同理（#276）。上面那条 `fengyu-*/cloudfunctions/**/*.js`
+      # 的 glob **不匹配 .json**，所以「只升 vitest/pg 版本号」的 PR 一个 paths 条目都
+      # 命中不到 → 整个 workflow 的全部 job 都不触发 → 877 + 2343 个用例一条不跑，
+      # 而依赖升级（尤其 vitest 主版本改 mock 行为）恰恰是最该让守护跑一遍的那次。
+      - 'fengyu-client/cloudfunctions/clientApi/package.json'
+      - 'fengyu-client/cloudfunctions/clientApi/package-lock.json'
+      # vitest 会自动发现 vitest.workspace.* / vitest.projects.*，它们能整个接管
+      # 文件收集。非 .js 后缀（如 .json）不在上面的 glob 里，得单列。
+      - 'fengyu-client/cloudfunctions/clientApi/vitest.*'
+      # .npmrc 也左右 npm ci 的行为（engine-strict 等），改它必须让 CI 跑一遍 ——
+      # 尤其 node18 canary：engine-strict=true 会让它因 vite 的 engines 直接装不上。
+      - 'fengyu-client/cloudfunctions/clientApi/.npmrc'
+      - 'fengyu-staff/cloudfunctions/staffApi/package.json'
+      - 'fengyu-staff/cloudfunctions/staffApi/package-lock.json'
       # 测试目录也要触发：只删守护断言（不动 src）的 PR 同样该让 CI 跑一遍。
       # ⚠️ E2E（tests/e2e-inventory-ui）需要活的 dev 实例 + PG，CI 里跑不了，
       #    触发它只是为了让**单测**守护有机会拦下「只改测试」的回归。
@@ -32,6 +60,9 @@ on:
       # （它们是页面级解码量与"URL 有效但出不来图"的唯一兜底）。
       # 不加这条路径的话，「只删 lazy-load」的 PR 根本不触发 workflow，守护等于不存在。
       - 'fengyu-staff/miniprogram/components/bundle-picker/**'
+      # cross-end-staff-output-note.test.js 读这个页面的 wxml，钉员工排行榜口径说明与 admin
+      # STAFF_OUTPUT_SCOPE_NOTE 逐字一致（#299）。不加这条，「只改 wxml 文案」的 PR 不触发 CI，两端分叉无人拦。
+      - 'fengyu-staff/miniprogram/pages/mgmt-dashboard/**'
       # bucket 白名单与档位上界有**三份**副本：两端云函数的 utils/image.js
       # 加上前端净化器 miniprogram/utils/cart.ts。第三份的守护（cart.test.ts 的
       # 闭环断言，它 require 真实云函数模块比对）此前不在任何 workflow 的触发面里 ——
@@ -121,6 +152,30 @@ jobs:
         working-directory: fengyu-staff/cloudfunctions/staffApi
         run: npx vitest run
 
+  # 经营分析站（#436，先落 #382 的 analyst 这一块）：此前 analyst 的 vitest 从不进 CI，
+  # #421 的 AST / 行为守护、#436 的 scope 最后一跳守护都只在本地跑得到。
+  # 跑全量、不点名文件（理由同上面 staffApi job）；全部 mock 了 db，不碰数据库，本地约 2 秒。
+  analyst-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install analyst deps
+        working-directory: fengyu-analyst
+        run: npm ci
+      # analyst 直接 import `../../../db/schema/org`，那里的 `drizzle-orm/pg-core` 按 node 规则
+      # 从 db/ 目录向上找 node_modules —— 只装 analyst 的依赖会整文件加载失败（同 admin job 的说明）。
+      - name: Install db schema deps
+        working-directory: db
+        run: npm ci --omit=dev
+      - name: Run analyst full test suite (含 #421 在营口径 / #436 scope 最后一跳守护)
+        working-directory: fengyu-analyst
+        run: npx vitest run
+
   # 三份副本里的第三份（前端净化器）。cart.test.ts 的闭环守护 require 真实云函数
   # 模块比对 bucket 白名单与档位上界 —— 不进 CI 的话，两端云函数改了而 cart.ts 漏改
   # （或反过来）全都测不出来，封面会在购物车里静默变占位。
@@ -140,6 +195,81 @@ jobs:
       - name: Run client miniprogram tests
         working-directory: fengyu-client/miniprogram
         run: npx vitest run
+
+  # clientApi 的 36 个测试文件 / 885 用例此前**不在任何 CI job 里**。
+  # 其中 `__tests__/utils/lakala-cross-copy.test.js` 是拉卡拉签名/配置的字节一致守护
+  # （clientApi ↔ payNotify 全文比对 + 三端 normalizePem 检查）—— 写得好好的，一次没跑过。
+  #
+  # #232 就想加这个 job，但 `__tests__/routes/order.test.js` 有一条过时断言长期红着
+  # （#154 删了 pickup_totals CTE 却没改测试），加进来 CI 直接红，只能先不加。
+  # 那条断言已在 #276 修正，这个 job 才补得上。
+  #
+  # ⚠️ 跑**全量**，不要退回手工文件清单，理由同上面 staffApi job 的注释：
+  # 新加的守护默认不进网，而漏加的那一次正好就是守护失效的那一次 ——
+  # lakala-cross-copy 就是这么掉进洞里的。这条由该文件自己的 meta-guard 反向锁住。
+  #
+  # 只装 clientApi 自己的依赖即可：测试零跨端 `require()`，跨端一致性守护全部走
+  # `fs.readFileSync` 纯文本比对（不加载对端模块，因而不需要对端 node_modules）；
+  # `db/pg` 由 `__tests__/setup.js` 注入 require.cache mock 掉，不碰数据库。
+  # 本地 36 文件 / 887 用例约 2.7 秒。
+  clientapi-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      # ⚠️ 已知局限：云函数生产运行时是 Nodejs18.15（见 cloudbaserc.example.json），
+      # 这里却跑 node 22 —— 只在 18.15 上炸的写法（如 Array.prototype.toSorted）
+      # 本 job 测不出来，会给出运行时兼容性的假绿。
+      # **不是没想到，是当前工具链跑不了**：vite 7.3.1 的 engines 是
+      # `^20.19.0 || >=22.12.0`，实测在 node 18.15 下 vitest 直接
+      # ERR_REQUIRE_ESM 起不来（连一条用例都跑不到）。要真正覆盖 18.15
+      # 得先降 vitest/vite 大版本，那是仓库级决策，不在本 PR 范围。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # ⚠️ 只用 `npm ci`，**不要**加 `|| npm install` 兜底：npm ci 在 package.json 与
+      # package-lock.json 不一致时正确失败，而 npm install 会就地重写 lockfile 继续跑，
+      # 让 job 变绿 —— 合入的仍是过不了干净 npm ci 的依赖状态。那恰好抵消了上面
+      # 把两个依赖清单加进 paths 的目的。已实测纯净环境 npm ci 可通过。
+      - name: Install clientApi deps
+        working-directory: fengyu-client/cloudfunctions/clientApi
+        run: npm ci
+      - name: Run clientApi full test suite (含 lakala 跨副本字节一致守护)
+        working-directory: fengyu-client/cloudfunctions/clientApi
+        run: npx vitest run
+
+  # 上面那个 job 跑在 node 22（vite 7 不支持 18），测不出只在生产运行时 Nodejs18.15
+  # 炸的写法。这个 canary 把那个缺口补上一半：**生产代码是纯 CJS、不依赖 vite**，
+  # 所以哪怕 vitest 跑不起来，也能用 node 18.15 逐个 require 生产模块 ——
+  # 顶层语法错误、以及 require 链上用到的 20+ API（如 Array.prototype.toSorted）
+  # 会在这里当场炸。
+  #
+  # 诚实的局限：只覆盖**模块加载期**，handler 函数体深处才走到的 20+ API 仍测不出来。
+  # 要完整覆盖得把 vite 降到 6（vitest 3.2.4 允许 ^5 || ^6 || ^7），那是独立的依赖
+  # 变更，应单独 PR 以便回滚。
+  clientapi-node18-canary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18.15'
+      - name: Install clientApi deps
+        working-directory: fengyu-client/cloudfunctions/clientApi
+        run: npm ci
+      - name: Require all production modules under Nodejs18.15
+        working-directory: fengyu-client/cloudfunctions/clientApi
+        run: |
+          node -e "
+          const fs = require('fs')
+          const mods = fs.readdirSync('routes').filter((f) => f.endsWith('.js'))
+          for (const m of mods) require('./routes/' + m)
+          require('./index.js')
+          console.log('OK: required ' + mods.length + ' route modules + index.js on ' + process.version)
+          "
 
   cross-end-snapshots-admin:
     runs-on: ubuntu-latest
@@ -180,6 +310,38 @@ jobs:
         working-directory: fengyu-admin
         run: npx vitest run src/lib/__tests__/action-error.test.ts
 
+      # 客量板口径守护（#298）：一次/二次客活「到店天数」的跨定义整段快照
+      # （admin visitDaysSql / staff mgmt-traffic / cron monthly_activity 三方）+ once/twice 映射行为测试。
+      # 不进 CI 的话，任一侧改回服务单行数或对调一次/二次，GitHub 检查照样全绿。
+      # dist-freshness：导出走预构建产物 dist/export-worker.mjs，改口径不重建则 Excel 仍是旧数字。
+      - name: Run customer board caliber guards (#298)
+        working-directory: fengyu-admin
+        run: |
+          npx vitest run \
+            src/actions/data-center/__tests__/consistency.customer.test.ts \
+            src/actions/data-center/__tests__/customer.test.ts \
+            src/export-worker/dist-freshness.test.ts
+
+      # 客量板会员门槛单源（#292）：分桶 / 经营人数门槛读 system_configs、固定档位 SPEND_BUCKET_FLOORS
+      # 的两端整段快照（在 consistency.customer.test.ts，上一步已跑）+ 「改配置值后客量板与品项板同步变化」
+      # 行为测试 + 无 Next 缓存上下文（导出进程）下读门槛不抛（真实 unstable_cache，不 mock）。
+      # 不进 CI 的话，把 1990 写回 SQL、让两端档位漂移或让导出进程读门槛再次抛错，GitHub 检查照样全绿。
+      - name: Run customer board member-threshold guards (#292)
+        working-directory: fengyu-admin
+        run: |
+          npx vitest run \
+            src/actions/data-center/__tests__/member-threshold-sync.test.ts \
+            src/lib/member-threshold.no-next-cache.test.ts
+
+      # #300：三处生美 SQL 的完整等值与单端回退守护在 admin 测试文件中。
+      # staff/client 任一端源码改动都会触发本 workflow，必须实际执行此守护。
+      - name: Run sales board caliber guards (#300)
+        working-directory: fengyu-admin
+        run: |
+          npx vitest run \
+            src/actions/data-center/__tests__/consistency.sales.test.ts \
+            src/actions/data-center/__tests__/sales.test.ts
+
       # SKU 供货商关联档案（#132）：`supplierId` 三态（undefined=不动 / null=清空 / id=写两列）
       # 与「供货商必须是 select 而不是自由文本」的守护。不进 CI 的话，把下拉改回 <Input>、
       # 或让 engine 重新收自由文本，GitHub 检查照样全绿 —— 而 issue 的根因正是自由文本。
@@ -200,3 +362,53 @@ jobs:
             src/lib/inventory/engine.test.ts \
             src/lib/inventory/stocktake.test.ts \
             'src/app/(main)/(inventory)/inventory/docs/[id]/page.test.tsx'
+
+      # 提货冻结出库金额 + 提货记录导出（#341）：冻结金额 helper、单件 / 合并 × 联动开 / 关的写入接线、
+      # GCK 明细逐列（数量 / 库存快照 / 赠送 / 成本快照）与单头类型、列表 / 详情 / 导出的字段映射、
+      # keyset 分页与跨页接线、页面两列与「—」三态、删除审计留存。不进 CI 的话，把出库金额误绑成单价
+      # 或让导出只取第一页，GitHub 检查照样全绿（跨端守护在 staffApi 全量里跑，这里补 admin 侧行为）。
+      - name: Run pickup frozen amount guards (#341)
+        working-directory: fengyu-admin
+        run: |
+          npx vitest run \
+            src/lib/pickup-amount.test.ts \
+            src/actions/pickup-records.amount.test.ts \
+            src/actions/pickup-records.linkage.test.ts \
+            src/actions/pickup-records.delete.test.ts \
+            src/export-worker/registry.test.ts \
+            'src/app/(main)/(operations)/pickup-records/_components/pickup-records-page.test.tsx'
+
+      # 员工维度口径说明（#299）：人效板「员工排名榜」5 个指标 Tab 与「按技师人效」显示
+      # STAFF_OUTPUT_SCOPE_NOTE，「门店排名榜」不显示。两端逐字一致在 staffApi 全量里跑，这里补 admin 侧展示位置；
+      # 不进 CI 的话，漏传 note 或把说明误挂到门店榜，GitHub 检查照样全绿。
+      - name: Run staff output note guards (#299)
+        working-directory: fengyu-admin
+        run: npx vitest run 'src/app/(main)/(analytics)/data-center/_components/efficiency/efficiency-board.test.tsx'
+
+      # 汇总单来源明细 + 货款结算下钻与退货冲减（#349）：投影单源（单据类型表、端点方向、
+      # 审批日归期、市场退货按市场价）、汇总与下钻同源、价格列按段取、来源明细 keyset。
+      # 不进 CI 的话，把院退货端点交换写反、把门店价随市场段返回、让汇总与下钻各写一套 SQL、
+      # 或漏映射加权标准单价，GitHub 检查照样全绿 —— 后三种本地跑也未必发现。
+      # 分页守护由下方 #365 步骤覆盖，已补记基线的拉卡拉入驻分页查询。
+      - name: Run inventory settlement detail guards (#349)
+        working-directory: fengyu-admin
+        run: |
+          npx vitest run \
+            src/lib/inventory/settlements.test.ts \
+            src/lib/inventory/settlement-details.test.ts \
+            src/lib/inventory/market-report-summary-detail.test.ts \
+            src/lib/export-job-types.test.ts \
+            'src/app/(main)/(inventory)/inventory/_components/inventory-settlements-page.test.tsx' \
+            'src/app/(main)/(inventory)/inventory/_components/inventory-operations-page.test.tsx' \
+            'src/app/(main)/(inventory)/inventory/docs/[id]/page.test.tsx'
+      - name: Run supplier ownership guards (#365)
+        working-directory: fengyu-admin
+        run: |
+          npx vitest run \
+            src/lib/inventory/supplier-access.test.ts \
+            src/lib/inventory/engine.test.ts \
+            src/lib/inventory/business.test.ts \
+            src/lib/__tests__/pagination-tiebreak.test.ts \
+            'src/app/(main)/(inventory)/inventory/_components/inventory-suppliers-page.test.tsx' \
+            'src/app/(main)/(inventory)/inventory/_components/inventory-skus-page.test.tsx' \
+            'src/app/(main)/(inventory)/inventory/_components/inventory-operations-page.test.tsx'

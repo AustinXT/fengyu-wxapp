@@ -6,6 +6,8 @@ vi.mock('@/db', () => ({
     update: vi.fn(),
     insert: vi.fn(),
     transaction: vi.fn(),
+    // getMarketStoreIds 走原生 SQL
+    execute: vi.fn().mockResolvedValue([]),
   },
 }))
 
@@ -15,6 +17,8 @@ vi.mock('@db/org', () => ({
     storeName: 'store_name',
     orgNodeId: 'org_node_id',
     updatedAt: 'updated_at',
+    isClosed: 'is_closed',
+    closedAt: 'closed_at',
   },
   orgNodes: {
     id: 'id',
@@ -30,7 +34,11 @@ vi.mock('drizzle-orm', () => ({
   eq: vi.fn((a, b) => ({ type: 'eq', a, b })),
   and: vi.fn((...args) => ({ type: 'and', args })),
   asc: vi.fn((col) => ({ type: 'asc', col })),
-  sql: Object.assign(vi.fn(() => ({})), { raw: vi.fn() }),
+  // 保留模板实参：取锁那条断言要能看见 SQL 文本里的 lock key（#318）
+  sql: Object.assign(vi.fn((...args: unknown[]) => ({ type: 'sql', args })), {
+    raw: vi.fn((v: string) => v),
+    param: vi.fn((v: unknown) => ({ param: v })),
+  }),
 }))
 
 vi.mock('drizzle-orm/pg-core', () => ({
@@ -49,10 +57,19 @@ vi.mock('@/lib/permissions', () => ({
   requirePermission: vi.fn(),
   scopeCondition: vi.fn(() => undefined), // admin 返回 undefined（不过滤）
   hasPermission: vi.fn((session: any, action: string) => session.permissions.actions.includes(action)),
+  isAdminScope: vi.fn(() => true), // 默认 admin（不按树复判 scope）
+  isInScope: vi.fn(() => true),
 }))
 
 vi.mock('@/lib/node-scope', () => ({
   isNodeInScope: vi.fn(() => Promise.resolve(true)), // 默认在 scope 内
+}))
+
+// 「节点是否还在管辖范围内」按当前树判（#318 第 6 轮）；SQL 语义由真库冒烟负责
+vi.mock('@/lib/org-ancestry', () => ({
+  isNodeWithinScopeRoots: vi.fn(() => Promise.resolve(true)),
+  // 那条 SQL 抽到 lib 里了，语义由真库冒烟负责（#318 第 8 轮）
+  findSiblingStoreIds: vi.fn(() => Promise.resolve([])),
 }))
 
 vi.mock('@/lib/operation-log', () => ({
@@ -65,11 +82,27 @@ vi.mock('next/cache', () => ({
   revalidatePath: vi.fn(),
 }))
 
-import { getStores, getAvailableStoreNodes, createStore, updateStore } from './stores'
+import { getStores, getAvailableStoreNodes, createStore, updateStore, getMarketStoreIds } from './stores'
 import { db } from '@/db'
+import { isAdminScope, isInScope } from '@/lib/permissions'
+import { isNodeWithinScopeRoots, findSiblingStoreIds } from '@/lib/org-ancestry'
 import { getSession } from '@/lib/auth'
 import { scopeCondition } from '@/lib/permissions'
 import { isNodeInScope } from '@/lib/node-scope'
+import { logOperation, logUpdate } from '@/lib/operation-log'
+import { shanghaiToday } from '@/lib/datetime'
+
+/**
+ * ⚠️ `vi.clearAllMocks()` 只清调用记录、**不清 mockImplementation** —— 某条用例给共享桩设的
+ * 实现会泄漏到后面所有用例。这个**顶层** `beforeEach` 先于各 describe 自己的那个执行，
+ * 而后者的 `clearAllMocks()` 不会清掉这里设的实现，所以顺序是安全的。
+ */
+beforeEach(() => {
+  ;(isAdminScope as any).mockReturnValue(true)
+  ;(isNodeWithinScopeRoots as any).mockResolvedValue(true)
+  ;(isInScope as any).mockReturnValue(true)
+  ;(findSiblingStoreIds as any).mockResolvedValue([])
+})
 
 const mockSession = {
   employeeId: 'ADMIN-001',
@@ -192,14 +225,90 @@ describe('createStore — 挂载到门店节点', () => {
     ;(db.select as any).mockReturnValue({ from })
   }
 
-  /** mock db.transaction：tx.insert(stores).values(...)；valuesImpl 控制 insert 行为（resolve/reject） */
-  function mockInsertTx(valuesImpl: any) {
+  /**
+   * mock db.transaction：tx.insert(stores).values(...)；valuesImpl 控制 insert 行为（resolve/reject）。
+   *
+   * 创建走事务了（#318 第 5 轮）：取组织树锁 + 锁内重读节点类型 + INSERT + 审计同一事务，
+   * 所以 tx 还要有 `execute`（取锁）与 `select`（重读节点类型）。
+   * @param lockedNodeType 锁内重读到的节点类型；传别的值就能造「事务外是门店、锁内已被改掉」
+   */
+  function mockInsertTx(valuesImpl: any, lockedNodeType: string | null = '门店') {
     const txInsert = vi.fn().mockReturnValue({ values: valuesImpl })
-    ;(db.transaction as any).mockImplementation(async (fn: any) => fn({ insert: txInsert }))
-    return { txInsert }
+    const txExecute = vi.fn().mockResolvedValue([])
+    const txSelect = vi.fn().mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue(
+            // 门店名以组织节点为权威，锁内一并复读（#318 第 7 轮）
+            lockedNodeType === null ? [] : [{ type: lockedNodeType, name: '南昌蓝茉店' }],
+          ),
+        }),
+      }),
+    })
+    ;(db.transaction as any).mockImplementation(async (fn: any) => fn({
+      insert: txInsert, execute: txExecute, select: txSelect,
+    }))
+    return { txInsert, txExecute }
   }
 
   const storeNode = { id: 'node-门店-1', name: '南昌蓝茉店', type: '门店' }
+
+  /**
+   * `stores.org_node_id` 是「门店 ↔ 组织节点」映射的写入方，而 org 侧改类型的守卫要查
+   * 「本节点上有没有门店映射」。两边不共锁就能交叉穿透（codex 第 5 轮 P1）。
+   */
+  it('创建取的是与 org 侧同一把组织树锁', async () => {
+    mockNodeLookup(storeNode)
+    const t = mockInsertTx(vi.fn().mockResolvedValue({}))
+
+    const result = await createStore(baseStoreData)
+
+    expect(result.success).toBe(true)
+    expect(JSON.stringify(t.txExecute.mock.calls[0][0])).toContain('org_nodes:reparent')
+  })
+
+  it('锁内重读发现节点已不是门店类型 → 拒绝且不 INSERT', async () => {
+    mockNodeLookup(storeNode)
+    const values = vi.fn().mockResolvedValue({})
+    mockInsertTx(values, '部门')
+
+    const result = await createStore(baseStoreData)
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('不是门店类型')
+    expect(values).not.toHaveBeenCalled()
+  })
+
+  /**
+   * 节点是否**还**在管辖范围内要按当前树判（codex 第 6 轮 P1）：
+   * 事务外走的是 session 快照，窗口是整个 JWT 寿命 —— 节点在登录后被改挂到另一个市场，
+   * 旧 session 照样放行。
+   */
+  it('非 admin：节点已被挪出管辖子树 → 拒绝且不 INSERT', async () => {
+    mockNodeLookup(storeNode)
+    const values = vi.fn().mockResolvedValue({})
+    mockInsertTx(values)
+    ;(isAdminScope as any).mockReturnValue(false)
+    ;(isNodeWithinScopeRoots as any).mockResolvedValue(false)
+
+    const result = await createStore(baseStoreData)
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('无权在该节点下创建门店')
+    expect(values).not.toHaveBeenCalled()
+  })
+
+  it('锁内重读发现节点已被删除 → 拒绝且不 INSERT', async () => {
+    mockNodeLookup(storeNode)
+    const values = vi.fn().mockResolvedValue({})
+    mockInsertTx(values, null)
+
+    const result = await createStore(baseStoreData)
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('门店节点不存在')
+    expect(values).not.toHaveBeenCalled()
+  })
 
   it('节点不存在 → 友好提示', async () => {
     mockNodeLookup(null)
@@ -257,9 +366,102 @@ describe('createStore — 挂载到门店节点', () => {
     mockInsertTx(vi.fn().mockRejectedValue(new Error('connection lost')))
     await expect(createStore(baseStoreData)).rejects.toThrow('connection lost')
   })
+
+  /**
+   * is_closed ↔ closed_at 双写一致（#422）：UI 不传 isClosed，但 Server Action 可直调，
+   * 建档即关店时原先只写 is_closed=true、closed_at 留空。
+   */
+  it('isClosed=true → 同时写 closedAt=今天（上海），审计记下关店状态', async () => {
+    mockNodeLookup(storeNode)
+    const values = vi.fn().mockResolvedValue({})
+    mockInsertTx(values)
+    const result = await createStore({ ...baseStoreData, isClosed: true })
+    expect(result.success).toBe(true)
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ isClosed: true, closedAt: shanghaiToday() }))
+    expect((logOperation as any).mock.calls[0][4]).toEqual({
+      storeName: '南昌蓝茉店', orgNodeId: 'node-门店-1', isClosed: true, closedAt: shanghaiToday(),
+    })
+  })
+
+  it.each([
+    ['未传 isClosed', {}],
+    ['isClosed=false', { isClosed: false }],
+  ])('%s → closedAt 为 null', async (_label, extra) => {
+    mockNodeLookup(storeNode)
+    const values = vi.fn().mockResolvedValue({})
+    mockInsertTx(values)
+    await createStore({ ...baseStoreData, ...extra })
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ isClosed: false, closedAt: null }))
+  })
+
+  it('isClosed 传非布尔值（字符串 "true"）→ 按未关店建档，不写闭店日期', async () => {
+    mockNodeLookup(storeNode)
+    const values = vi.fn().mockResolvedValue({})
+    mockInsertTx(values)
+    await createStore({ ...baseStoreData, isClosed: 'true' } as any)
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ isClosed: false, closedAt: null }))
+  })
+
+  it('多塞的 closedAt 不会被写进库（建档只按 isClosed 推导）', async () => {
+    mockNodeLookup(storeNode)
+    const values = vi.fn().mockResolvedValue({})
+    mockInsertTx(values)
+    await createStore({ ...baseStoreData, closedAt: '2020-01-01' } as any)
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ isClosed: false, closedAt: null }))
+  })
 })
 
 // ── updateStore ─────────────────────────────────────────────────────────────
+
+/**
+ * `getMarketStoreIds` 原先既不校验入参门店是否在 scope 内、也不过滤结果 ——
+ * 市场 A 的管理员传一个市场 B 的 storeId 就能枚举 B 的全部门店 id（#318 第 7 轮 GLM P2）。
+ */
+describe('getMarketStoreIds — scope 隔离', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('非 admin：入参门店不在 scope 内 → 直接返回空，连查询都不发', async () => {
+    ;(isAdminScope as any).mockReturnValue(false)
+    ;(isInScope as any).mockReturnValue(false)
+
+    const result = await getMarketStoreIds('store-other-market')
+
+    expect(result).toEqual([])
+    expect(findSiblingStoreIds).not.toHaveBeenCalled()
+  })
+
+  it('非 admin：结果里超出 scope 的兄弟门店被过滤掉', async () => {
+    ;(isAdminScope as any).mockReturnValue(false)
+    ;(isInScope as any).mockImplementation((_s: any, id: string) => id !== 'store-outside')
+    ;(findSiblingStoreIds as any).mockResolvedValue(['store-mine', 'store-outside'])
+
+    const result = await getMarketStoreIds('store-mine')
+
+    expect(result).toEqual(['store-mine'])
+  })
+
+  it('admin：不过滤', async () => {
+    ;(isAdminScope as any).mockReturnValue(true)
+    ;(isInScope as any).mockReturnValue(true)
+    ;(findSiblingStoreIds as any).mockResolvedValue(['a', 'b'])
+
+    const result = await getMarketStoreIds('a')
+
+    expect(result).toEqual(['a', 'b'])
+  })
+
+  /** 兄弟集合为空（门店没映射/查不到）→ 兜底成 [自身]，不能返回空让调用方误判 */
+  it('查不到兄弟 → 兜底返回自身', async () => {
+    ;(isAdminScope as any).mockReturnValue(true)
+    ;(isInScope as any).mockReturnValue(true)
+    ;(findSiblingStoreIds as any).mockResolvedValue([])
+
+    expect(await getMarketStoreIds('solo')).toEqual(['solo'])
+  })
+})
 
 describe('updateStore — count 检测 + 节点名同步', () => {
   beforeEach(() => {
@@ -331,6 +533,156 @@ describe('updateStore — count 检测 + 节点名同步', () => {
     const result = await updateStore('STORE-001', { storeName: '撞名' })
     expect(result.success).toBe(false)
     expect(result.message).toContain('同市场下已有同名门店')
+  })
+  /**
+   * ## 写库字段必须走显式白名单（#318 第 7 轮 GLM P1）
+   *
+   * `data: Partial<{…}>` 只是编译期类型；Server Action 是可直接调用的端点，
+   * 入参原样到达。裸 `{ ...data }` 进 `.set()` 时，客户端多塞一个 `orgNodeId`
+   * （`stores` 的合法列）就能改掉「门店 ↔ 组织节点」映射 ——
+   * 绕过 `createStore` 那三层守卫（① 锁 / 锁内复读节点类型 / 按树复判 scope）。
+   * 同理还能改 `storeId`（主键）与 `updatedAt`（伪造乐观锁基线）。
+   */
+  it.each(['orgNodeId', 'storeId', 'updatedAt', 'createdAt'])(
+    '多塞的 %s 不会被写进库（显式白名单）',
+    async (extraKey) => {
+      const { txUpdate } = setupUpdateTx(1)
+      ;(db.select as any).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ storeName: '旧名' }]) }),
+        }),
+      })
+
+      const result = await updateStore('store-1', {
+        storeName: '新名',
+        [extraKey]: 'INJECTED',
+      } as any)
+
+      expect(result.success).toBe(true)
+      const written = txUpdate.mock.results[0].value.set.mock.calls[0][0]
+      expect(Object.keys(written), `${extraKey} 不该出现在写库字段里`).not.toContain(extraKey)
+      expect(written.storeName, '白名单内的字段照常写').toBe('新名')
+    },
+  )
+
+})
+
+// ── updateStore — is_closed ↔ closed_at 双写（#422）────────────────────────────
+
+describe('updateStore — 关店时 closedAt 推导', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    ;(db.select as any).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ storeName: '南昌蓝茉店', isClosed: true, closedAt: '2026-01-05' }]),
+        }),
+      }),
+    })
+  })
+
+  /** tx.update().set().where() → { count }；tx.select 模拟落库后回读到的闭店日期 */
+  function setupTx(count: number, closedAtAfter: string | null) {
+    const set = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count }) })
+    const txUpdate = vi.fn().mockReturnValue({ set })
+    const limit = vi.fn().mockResolvedValue([{ closedAt: closedAtAfter }])
+    const txSelect = vi.fn().mockReturnValue({
+      from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit }) }),
+    })
+    ;(db.transaction as any).mockImplementation(async (fn: any) => fn({ update: txUpdate, select: txSelect }))
+    return { set, txSelect }
+  }
+
+  /** 把 mock 的 sql 模板对象拍平成文本：字符串片段 + 插值（列名 / 参数值） */
+  function sqlText(v: any): string {
+    const [strings, ...values] = v.args
+    return strings.reduce((acc: string, part: string, i: number) => acc + part + (i < values.length ? String(values[i]) : ''), '')
+  }
+
+  /**
+   * 已关店再关店不能覆盖原闭店日期（与 sync-workfine STORE_UPSERT_SQL 的
+   * `COALESCE(stores.closed_at, ...)` 一致）。写成 SET 内的 COALESCE、而不是按事务外读到的
+   * before 判断 —— 后者在并发重新开业时会留下 is_closed=true + closed_at=NULL。
+   */
+  it('isClosed=true → closedAt 写成 COALESCE(原 closed_at, 今天)，已有日期保留', async () => {
+    const { set } = setupTx(1, '2026-01-05')
+    const result = await updateStore('STORE-001', { isClosed: true })
+    expect(result.success).toBe(true)
+    const written = set.mock.calls[0][0]
+    expect(written.isClosed).toBe(true)
+    expect(written.closedAt?.type, 'closedAt 必须是 SQL 表达式而非固定日期').toBe('sql')
+    expect(sqlText(written.closedAt)).toBe(`COALESCE(closed_at, ${shanghaiToday()}::date)`)
+  })
+
+  it('审计记录的是落库后的真实闭店日期，不是 SQL 表达式', async () => {
+    const { txSelect } = setupTx(1, '2026-01-05')
+    await updateStore('STORE-001', { isClosed: true })
+    expect(txSelect).toHaveBeenCalledTimes(1)
+    const after = (logUpdate as any).mock.calls[0][5]
+    expect(after).toEqual({ isClosed: true, closedAt: '2026-01-05' })
+  })
+
+  it('更新 0 行（门店不存在 / 乐观锁冲突）→ 不回读、不记审计', async () => {
+    const { txSelect } = setupTx(0, null)
+    const result = await updateStore('STORE-001', { isClosed: true }, '2026-01-01T00:00:00.000Z')
+    expect(result.success).toBe(false)
+    expect(txSelect).not.toHaveBeenCalled()
+    expect(logUpdate).not.toHaveBeenCalled()
+  })
+
+  it('isClosed=false（重新开业）→ closedAt 清空，不回读', async () => {
+    const { set, txSelect } = setupTx(1, null)
+    await updateStore('STORE-001', { isClosed: false })
+    expect(set.mock.calls[0][0]).toEqual({ isClosed: false, closedAt: null })
+    expect(txSelect).not.toHaveBeenCalled()
+  })
+
+  /**
+   * closedAt 不接受直传（#422 pr-ready P2）：直调 Server Action 传 closedAt 曾能写出
+   * is_closed 与 closed_at 不一致的行，而系统概览门店数按 closed_at 历史化。
+   */
+  it.each([
+    ['关店 + closedAt=null', { isClosed: true, closedAt: null }, true],
+    ['关店 + 任意日期', { isClosed: true, closedAt: '2026-03-01' }, true],
+    ['重新开业 + 日期', { isClosed: false, closedAt: '2026-01-01' }, false],
+  ])('多塞 closedAt（%s）→ 忽略，仍按 isClosed 推导', async (_label, data, closing) => {
+    const { set } = setupTx(1, '2026-01-05')
+    await updateStore('STORE-001', data as any)
+    const written = set.mock.calls[0][0]
+    expect(written.isClosed).toBe(closing)
+    if (closing) expect(sqlText(written.closedAt)).toBe(`COALESCE(closed_at, ${shanghaiToday()}::date)`)
+    else expect(written.closedAt).toBeNull()
+  })
+
+  it('只传 closedAt（不带 isClosed）→ 不写任何闭店字段', async () => {
+    const { set } = setupTx(1, null)
+    await updateStore('STORE-001', { bedCount: 6, closedAt: '2026-03-01' } as any)
+    expect(set.mock.calls[0][0]).toEqual({ bedCount: 6 })
+  })
+
+  it.each([
+    ['只传 closedAt', { closedAt: '2026-03-01' }],
+    ['只传非白名单字段', { orgNodeId: 'node-x' }],
+    ['空对象', {}],
+  ])('白名单过滤后无可写字段（%s）→ 友好拒绝，不开事务', async (_label, data) => {
+    setupTx(1, null)
+    const result = await updateStore('STORE-001', data as any)
+    expect(result).toEqual({ success: false, message: '没有可更新的字段' })
+    expect(db.select, '早退在查旧值之前').not.toHaveBeenCalled()
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('isClosed 传非布尔值（字符串 "false"）→ 按未关店处理', async () => {
+    const { set } = setupTx(1, null)
+    await updateStore('STORE-001', { isClosed: 'false' } as any)
+    expect(set.mock.calls[0][0]).toEqual({ isClosed: false, closedAt: null })
+  })
+
+  it('不碰 isClosed → 不写 closedAt', async () => {
+    const { set } = setupTx(1, null)
+    await updateStore('STORE-001', { bedCount: 6 })
+    expect(Object.keys(set.mock.calls[0][0])).toEqual(['bedCount'])
   })
 })
 

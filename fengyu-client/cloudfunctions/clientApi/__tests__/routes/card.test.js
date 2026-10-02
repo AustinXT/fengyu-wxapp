@@ -4,7 +4,9 @@
  */
 
 const pg = globalThis.__mocks__.pg
-const { createBoundCtx, createCtx } = require('../helpers')
+const {
+  createBoundCtx, createCtx, sqlConjuncts, sliceBetweenAnchors, sliceUpdateWhere,
+} = require('../helpers')
 
 let routes
 beforeEach(() => {
@@ -246,5 +248,86 @@ describe('card.history', () => {
     expect(typeof ctx.result.records[0].amount).toBe('number')
     expect(ctx.result.records[0].amount).toBe(500)
     expect(ctx.result.records[1].amount).toBe(-120.5)
+  })
+})
+
+/**
+ * `_closeExpiredPendingByUser`（充值时顺带关掉过期待支付单）的 CAS 门。
+ *
+ * 这是**第二条**会把待支付单置「已关闭」的路径，守卫与 order.closeExpiredOrder 同源，
+ * 但释放侧原本漏了一道门：CAS UPDATE 影响 0 行时仍无条件释放优惠券。
+ * 由于上面的 SELECT 没有行锁，选出来之后、CAS 之前这张单完全可能被并发支付掉；
+ * 那时把**已经用于支付**的券退回「未使用」，券可再次抵扣 —— 直接的资金损失。
+ * （issue #215 双谱系评审 round-4 报出的既有 P0，顺带修掉。）
+ */
+describe('card 充值路径的过期单清理 — 券释放必须跟着 CAS 走', () => {
+  /** 直接驱动 _closeExpiredPendingByUser，返回它执行过的 SQL 列表 */
+  async function runCleanup({ closeRowCount }) {
+    const executed = []
+    const clientQuery = vi.fn(async (sql) => {
+      executed.push(sql)
+      if (/SELECT sale_order_id FROM sale_orders/.test(sql)) {
+        return { rows: [{ sale_order_id: 'FY-EXPIRED' }], rowCount: 1 }
+      }
+      if (/UPDATE sale_orders SET status = '已关闭'/.test(sql)) {
+        return { rows: [], rowCount: closeRowCount }
+      }
+      return { rows: [], rowCount: 0 }
+    })
+    await routes._closeExpiredPendingByUser({ query: clientQuery }, 'user-001')
+    return executed
+  }
+
+  test('CAS 命中（关成了）→ 释放该单的优惠券', async () => {
+    const executed = await runCleanup({ closeRowCount: 1 })
+    expect(executed.some((s) => /UPDATE sale_orders SET status = '已关闭'/.test(s))).toBe(true)
+    expect(executed.some((s) => /UPDATE user_coupons/.test(s))).toBe(true)
+  })
+
+  test('CAS 落空（单子已被并发支付）→ 绝不释放优惠券', async () => {
+    const executed = await runCleanup({ closeRowCount: 0 })
+    expect(executed.some((s) => /UPDATE sale_orders SET status = '已关闭'/.test(s))).toBe(true)
+    // 这张单此刻已经是「已支付」，那张券正被它消费着，退回去就能再花一次
+    expect(executed.some((s) => /UPDATE user_coupons/.test(s))).toBe(false)
+  })
+})
+
+/**
+ * 充值路径的过期单清理，其关单守卫必须与 `order.closeExpiredOrder` 的 UPDATE 同源
+ * （issue #215）。
+ *
+ * ⚠️ 这条锁**必须待在 card.test.js**：改 card.js 守卫的人跑的是这个文件。
+ * 它先前借住在 order.test.js（为了复用 conjuncts），改守卫的人全绿通过却不会
+ * 想到去 order 的测试文件里看一眼（双谱系评审 round-5 P3）。
+ * 规范化 helper 已提到 `__tests__/helpers.js`，两边共用。
+ */
+describe('card 充值路径的关单守卫 — 与 order.closeExpiredOrder 同源', () => {
+  test('card.js 的第三份守卫副本：条件集合必须是三条守卫 + 转换单排除，且必须是纯合取', () => {
+    // `_closeExpiredPendingByUser` 是**第二条**会把待支付单置「已关闭」的路径（顾客充值时触发），
+    // 守卫在这三条之外多一条 `sale_order_type <> '转换单'` —— 条件严格强化、命中集合是真子集，
+    // 方向安全。少了任何一条，充值路径就会去关「顾客那边正显示着没有倒计时」的单，
+    // 口径分叉当场复发。
+    const { readFileSync } = require('fs')
+    const { resolve } = require('path')
+    const cardSrc = readFileSync(resolve(__dirname, '../../routes/card.js'), 'utf8')
+
+    // 函数体窗口 + WHERE 切片都走 fail-loud helper（锚点缺失即抛，不静默切出一大段）
+    const fnBody = sliceBetweenAnchors(
+      cardSrc,
+      'async function _closeExpiredPendingByUser(',
+      '\n/**',
+    )
+    const cardWhere = sliceUpdateWhere(fnBody)
+
+    // ⚠️ 同样不能只做 `toContain`：`AND → OR` 会让充值路径去关**不属于当前顾客、
+    // 或仍有在途支付意图**的订单，而四个子串照样都在（codex 评审 round-3 P1）。
+    // `conjuncts` 内部对 OR 直接判失败，并把条件规范化成集合做**全等**比较 ——
+    // 给充值路径再加一条强化条件也会在这里转红，那时按新口径更新本断言即可。
+    expect(sqlConjuncts(cardWhere)).toEqual([
+      "lakala_out_order_no IS NULL",
+      "opened_by IS NULL",
+      "sale_order_type <> '转换单'",
+      "status = '待支付'",
+    ])
   })
 })

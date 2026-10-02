@@ -9,7 +9,7 @@ import { loginAttempts } from '@db/login-attempt'
 import { staffWechatUsers } from '@db/user'
 import { permissionRoleDefinitions, permissionRoles } from '@db/permission'
 import { orgNodes } from '@db/org'
-import { eq, sql } from 'drizzle-orm'
+import { eq, and, sql } from 'drizzle-orm'
 import { computeRoleActions, expandRoleScope, canAccessAdmin } from '@/lib/permissions'
 import { decryptPassword } from '@/lib/password-transit'
 import { JWT_SECRET } from '@/lib/jwt-secret'
@@ -73,6 +73,33 @@ async function checkLock(phone: string): Promise<string | null> {
 }
 
 /**
+ * 一个真实形状的 bcrypt hash（cost 12），内容是随机口令，**永远不会有人匹配上它**。
+ * 只用来在「查不到人 / 没有密码记录」这两条早退路径上烧掉一次等量的 bcrypt 计算。
+ */
+const DUMMY_PASSWORD_HASH = '$2a$12$C6UzMDM.H6dfI/f/IKcEe.KTSjS0Nn7Dm0MhJ7tVqCJIxMdkb5J5u'
+
+/**
+ * 拉平登录失败路径的耗时（issue #318，GLM 第 2 轮 P3）。
+ *
+ * 文案统一成同一句只挡住了**内容**信道，还剩一条**时序**信道：查不到人时直接返回，
+ * 不跑 bcrypt；「人存在但密码错」要跑一次 cost-12 的 compare（几十到上百毫秒）。
+ * 两者耗时差一个数量级，于是登录接口成了按手机号枚举「在职且有后台凭证」账号的 oracle。
+ *
+ * 本次给 `login` 加 `is_resigned = false` 过滤**放大**了这条信道 —— 离职的人从「慢路径」
+ * 掉到了「快路径」，等于把「此人已离职」重新变成可探测信息，正是 AC5 要挡的。
+ * 所以早退前烧掉一次等量 compare。
+ *
+ * ⚠️ 不追求严格恒定时间（JS 里做不到），只把数量级拉平到同一档。
+ */
+async function burnPasswordCompare(password: string): Promise<void> {
+  try {
+    await compare(password, DUMMY_PASSWORD_HASH)
+  } catch {
+    // 只为烧时间，任何异常都不该影响登录失败的返回值
+  }
+}
+
+/**
  * 记录一次登录失败：原子 UPSERT 自增 fail_count；
  * 达到阈值则写入 locked_until。并发安全（依赖 phone 唯一索引 + ON CONFLICT 原子自增）。
  */
@@ -122,14 +149,29 @@ export async function login(
     return { success: false, message: '手机号或密码错误' }
   }
 
-  // 通过 phone 查找员工
+  /**
+   * 通过 phone 查找员工 —— **必须排除离职**（issue #318）。
+   *
+   * 原先不判 `is_resigned`：只要 `admin_passwords` 还有记录，离职员工就能继续登录后台。
+   * 配上「离职 ⇒ 角色已清空」这个**会破的**不变量（`sync-workfine.js:381` 的 UPSERT
+   * 直接改 `is_resigned` 而完全不碰 `permission_roles`），一旦出现「离职行 + 残留角色」，
+   * 该账号就带着原有权限继续可用。
+   *
+   * 生产实测（2026-09-23）：2 人已离职却仍持后台登录凭证（王雯馨 2026-08-23 离职、
+   * 关文星 2026-08-08 离职），两人当前角色数均为 0、离职后无任何操作日志 ——
+   * 加这道过滤是纯收紧，零误伤。
+   *
+   * ⚠️ 查不到时走的是与密码错误**完全相同**的那一句 —— 不能让「此人已离职」变成
+   * 一个可探测的信号（登录接口本来就是无鉴权入口）。
+   */
   const [staff] = await db
     .select({ employeeId: staffWechatUsers.employeeId, name: staffWechatUsers.name, phone: staffWechatUsers.phone })
     .from(staffWechatUsers)
-    .where(eq(staffWechatUsers.phone, phone))
+    .where(and(eq(staffWechatUsers.phone, phone), eq(staffWechatUsers.isResigned, false)))
     .limit(1)
 
   if (!staff) {
+    await burnPasswordCompare(password)
     await recordFailure(phone)
     return { success: false, message: '手机号或密码错误' }
   }
@@ -142,6 +184,7 @@ export async function login(
     .limit(1)
 
   if (!pwRow) {
+    await burnPasswordCompare(password)
     await recordFailure(phone)
     return { success: false, message: '手机号或密码错误' }
   }
@@ -247,7 +290,16 @@ export async function getSessionFromCookie(): Promise<AuthSession | null> {
     const employeeId = payload.employeeId as string
     if (!employeeId) return null
 
-    // 查询员工信息
+    /**
+     * 查询员工信息 —— 同样**排除离职**（issue #318）。
+     *
+     * 只在 `login` 加过滤不够：JWT 有 24h 有效期，登录之后被标离职的人手上那张 token
+     * 仍然通得过 `jwtVerify`。这里一并过滤，离职后**下一次请求**就失效
+     * （返回 null ⇒ middleware 按未登录处理 ⇒ redirect `/login`）。
+     *
+     * 代价是「误标离职」会立刻把人踢出后台 —— 那是期望行为，而不是缺陷：
+     * 改回在职即恢复，比让一个已离职账号继续持权限安全得多。
+     */
     const [staff] = await db
       .select({
         employeeId: staffWechatUsers.employeeId,
@@ -255,7 +307,7 @@ export async function getSessionFromCookie(): Promise<AuthSession | null> {
         phone: staffWechatUsers.phone,
       })
       .from(staffWechatUsers)
-      .where(eq(staffWechatUsers.employeeId, employeeId))
+      .where(and(eq(staffWechatUsers.employeeId, employeeId), eq(staffWechatUsers.isResigned, false)))
       .limit(1)
 
     if (!staff) return null
@@ -431,10 +483,16 @@ export async function checkMustChange(): Promise<boolean> {
     const employeeId = payload.employeeId as string
     if (!employeeId) return false
 
+    /**
+     * 同样过滤离职（#318，GLM 第 2 轮 P3）—— 与 `login` / `getSessionFromCookie` 同一口径。
+     * 不过滤的话，离职者手里那张 24h 内的 JWT 仍能从这里拿到真实的 `mustChange`，
+     * 等于「token 还被系统部分承认」的信号，与 AC4「离职即失效」矛盾。
+     */
     const [pwRow] = await db
       .select({ mustChange: adminPasswords.mustChange })
       .from(adminPasswords)
-      .where(eq(adminPasswords.employeeId, employeeId))
+      .innerJoin(staffWechatUsers, eq(adminPasswords.employeeId, staffWechatUsers.employeeId))
+      .where(and(eq(adminPasswords.employeeId, employeeId), eq(staffWechatUsers.isResigned, false)))
       .limit(1)
 
     return pwRow?.mustChange ?? false

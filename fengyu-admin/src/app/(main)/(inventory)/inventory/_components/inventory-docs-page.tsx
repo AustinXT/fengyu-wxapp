@@ -1,5 +1,6 @@
 'use client'
 
+import Link from 'next/link'
 import { useCallback, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { ClipboardList, Plus } from 'lucide-react'
@@ -17,10 +18,11 @@ import {
   type CreateInventoryDocInput,
   type InventoryDocItemInput,
   type InventoryDocRow,
+  type InventoryDocProcessProgress,
   type InventoryLotRow,
   type InventoryLocationFilterOptions,
   type InventoryLocationRow,
-  type InventorySkuRow,
+  type InventoryMarketTransferTarget,
   type InventoryDocType,
 } from '@/lib/inventory/types'
 import { Button } from '@/components/ui/button'
@@ -41,9 +43,15 @@ import { DocActionDialog, type DocActionSpec } from './doc-action-dialog'
 import { InventoryDocCreateForm } from './inventory-doc-create-form'
 import { useUrlFilters } from '@/lib/hooks/use-url-filters'
 import { PreserveListContextLink } from '@/components/return-context'
+import { normalizePage } from '@/lib/paging'
+import { inventoryDocStatusLabel } from '@/lib/inventory/doc-status-label'
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100]
 const GENERIC_DOC_TYPE_SET = new Set<InventoryDocType>(INVENTORY_GENERIC_DOC_TYPES)
+const PROCESS_PROGRESS_OPTIONS: InventoryDocProcessProgress[] = [
+  '未提交', '未汇总', '部分汇总', '已汇总', '未采购', '部分采购', '已采购',
+  '部分配货', '已配货', '部分发货', '已发货', '部分入库', '已入库',
+]
 
 /*
  * 从共享建单表单 re-export：单据中心与办理台共用同一份表单（#191），
@@ -64,28 +72,43 @@ export default function InventoryDocsPage({
   rows,
   total,
   locations,
-  skuOptions,
+  marketTransferTargets,
   canCreate,
   canApprove,
   canReceive,
+  receivableTargetOrgNodeIds,
+  canOpenOrderDetail = false,
   canViewPrice,
   initialDocType,
   allowedCreateDocTypes,
   locationFilterOptions,
   selectedOrgNodeId,
+  filterError,
 }: {
   rows: InventoryDocRow[]
   total: number
   locations: InventoryLocationRow[]
-  skuOptions: InventorySkuRow[]
+  /** 市场间调货出库的接收主体候选（#340），见共享表单同名 prop */
+  marketTransferTargets?: readonly InventoryMarketTransferTarget[]
   canCreate: boolean
   canApprove: boolean
   canReceive: boolean
+  /**
+   * 能收货的 target 组织节点（按收货权限收窄后的 scope，#340）；`null` = 不受限（超管）。
+   * 刻意必传、不给缺省：缺省成 null 就是 fail-open，漏传的调用方会把按钮放给所有行。
+   */
+  receivableTargetOrgNodeIds: readonly string[] | null
+  /**
+   * 「关联销售单」能否点进订单详情（#350），与 /orders/[id] 页面守卫同源。
+   * 缺省 false = 只显示单号纯文本（fail-closed：漏传不会给出点了 404 的链接）。
+   */
+  canOpenOrderDetail?: boolean
   canViewPrice: boolean
   initialDocType?: InventoryDocType
   allowedCreateDocTypes?: readonly InventoryDocType[]
   locationFilterOptions?: InventoryLocationFilterOptions
   selectedOrgNodeId?: string | null
+  filterError?: string
 }) {
   const router = useRouter()
   const { get, setMany } = useUrlFilters()
@@ -94,7 +117,7 @@ export default function InventoryDocsPage({
   const [open, setOpen] = useState(Boolean(initialDocType && GENERIC_DOC_TYPE_SET.has(initialDocType)))
   const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null)
 
-  const page = Math.max(1, Number(get('page', '1')) || 1)
+  const page = normalizePage(get('page', '1'))
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get('size'))) ? Number(get('size')) : 20
 
   const handleSearchChange = useCallback((value: string) => {
@@ -156,7 +179,26 @@ export default function InventoryDocsPage({
       header: '入库/接收',
       cell: (r) => r.targetOrgNodeName ?? '—',
     },
+    {
+      // #350：顾客出库（GCK）由提货服务产生，记着是哪张销售单的货；其余类型多为空
+      key: 'relatedSaleOrderId',
+      header: '关联销售单',
+      cell: (r) => {
+        if (!r.relatedSaleOrderId) return '—'
+        return canOpenOrderDetail && !anyDialogOpen && !actionBusy ? (
+          <Link
+            href={`/orders/${encodeURIComponent(r.relatedSaleOrderId)}`}
+            className="font-mono text-xs text-[var(--primary)] hover:underline"
+          >
+            {r.relatedSaleOrderId}
+          </Link>
+        ) : (
+          <span className="font-mono text-xs">{r.relatedSaleOrderId}</span>
+        )
+      },
+    },
     { key: 'docDate', header: '日期', cell: (r) => formatDate(r.docDate) },
+    { key: 'processProgress', header: '流程进度', cell: (r) => r.processProgress ?? '—' },
     {
       key: 'totalQuantity',
       header: '数量',
@@ -170,7 +212,7 @@ export default function InventoryDocsPage({
       header: '状态',
       cell: (r) => (
         <span className={r.status === '已完成' ? 'text-[#3D8A5A]' : r.status === '已驳回' ? 'text-[#888888]' : 'text-[#D4820A]'}>
-          {r.status}
+          {inventoryDocStatusLabel(r)}
         </span>
       ),
     },
@@ -209,7 +251,10 @@ export default function InventoryDocsPage({
               </Button>
             </>
           )}
-          {GENERIC_DOC_TYPE_SET.has(r.docType) && canReceive && r.status === '待收货' && (
+          {GENERIC_DOC_TYPE_SET.has(r.docType) && canReceive && r.status === '待收货'
+            // target 为空的单服务端必拒（「出库单缺少收货主体」），超管也不给按钮
+            && r.targetOrgNodeId !== null
+            && (receivableTargetOrgNodeIds === null || receivableTargetOrgNodeIds.includes(r.targetOrgNodeId)) && (
             <Button
               variant="ghost"
               size="sm"
@@ -225,8 +270,8 @@ export default function InventoryDocsPage({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-2">
           {locationFilterOptions && (
             <InventoryLocationFilter
               options={locationFilterOptions}
@@ -254,6 +299,12 @@ export default function InventoryDocsPage({
               <option key={status} value={status}>{status}</option>
             ))}
           </Select>
+          <DatePicker aria-label="开始日期" value={get('startDate')} onValueChange={(value) => setMany({ startDate: value, page: '' })} placeholder="开始日期" />
+          <DatePicker aria-label="结束日期" value={get('endDate')} onValueChange={(value) => setMany({ endDate: value, page: '' })} placeholder="结束日期" />
+          <Select value={get('processProgress')} onChange={(e) => setMany({ processProgress: e.target.value, page: '' })} aria-label="流程进度" className="w-40">
+            <option value="">全部进度</option>
+            {PROCESS_PROGRESS_OPTIONS.map((progress) => <option key={progress} value={progress}>{progress === '未采购' ? '未采购（含部分）' : progress}</option>)}
+          </Select>
           <Input
             className="w-64"
             placeholder="搜索单据 / 顾客 / 员工 / 备注"
@@ -267,6 +318,9 @@ export default function InventoryDocsPage({
               orgNodeId: locationFilterOptions?.defaultLocationId ?? '',
               docType: '',
               status: '',
+              startDate: '',
+              endDate: '',
+              processProgress: '',
               create: '',
               page: '',
             })}
@@ -288,7 +342,8 @@ export default function InventoryDocsPage({
         </div>
       </div>
 
-      <DataTable columns={columns} data={rows} emptyText="暂无库存单据" />
+      {filterError && <p role="alert" className="text-sm text-[#D94040]">{filterError}</p>}
+      <DataTable columns={columns} data={rows} emptyText={filterError ?? '暂无库存单据'} />
       <Pagination
         total={total}
         page={page}
@@ -309,7 +364,7 @@ export default function InventoryDocsPage({
           open={open}
           onOpenChange={setOpen}
           locations={locations}
-          skuOptions={skuOptions}
+          marketTransferTargets={marketTransferTargets}
           onSuccess={() => startTransition(() => router.refresh())}
           onStale={() => startTransition(() => router.refresh())}
           onBusyChange={setCreateDialogBusy}
@@ -411,7 +466,7 @@ function CreateDocDialog({
   open,
   onOpenChange,
   locations,
-  skuOptions,
+  marketTransferTargets,
   onSuccess,
   onStale,
   onBusyChange,
@@ -421,7 +476,7 @@ function CreateDocDialog({
   open: boolean
   onOpenChange: (open: boolean) => void
   locations: InventoryLocationRow[]
-  skuOptions: InventorySkuRow[]
+  marketTransferTargets?: readonly InventoryMarketTransferTarget[]
   onSuccess: () => void
   /** 状态/权限已变化时刷新列表（不关弹窗） */
   onStale: () => void
@@ -456,7 +511,7 @@ function CreateDocDialog({
           // 原生 <dialog> 关闭不卸载 children：关着时绝不能取批次数（见共享组件的 visible 注释）
           visible={open}
           locations={locations}
-          skuOptions={skuOptions}
+          marketTransferTargets={marketTransferTargets}
           initialDocType={initialDocType}
           allowedDocTypes={allowedDocTypes}
           onSuccess={() => {

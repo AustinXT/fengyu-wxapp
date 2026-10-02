@@ -2,25 +2,28 @@
 name: issue-dev
 description: |
   单条 issue 从摄入到 PR 的完整流水线：状态校验 → 开隔离 worktree → 调研 →
-  确定性分流 → 细化 → 实现 → 三层验证 → pr-ready 对抗审查 → 双谱系评审 →
-  PR base dev → 回收 worktree。全程在独立 worktree 内进行，起点仓库不受影响；
-  checkpoint 落 _tmp/issue-<N>/，可断点重入。需求歧义必停等拍板；
+  确定性分流 → 细化 → 实现 → 三层验证 → Codex 四维自审 → GLM-5.3[1M] + DeepSeek 双谱系评审 →
+  PR base dev 与断点归档。全程在独立 worktree 内进行，起点仓库不受影响；
+  checkpoint 按 issue 编号落本地临时目录，可断点重入。需求歧义必停等拍板；
   质量闸门不因维护期降级。
   当用户说"处理 issue #N"、"跑这个 issue"、"把这条 issue 做了"、
   "发车"、"issue-dev"时激活。
-argument-hint: '<issue 编号 or URL>，如: 70'
-user-invocable: true
 metadata:
   title: 单条 issue 开发流水线
   description_zh: 开隔离 worktree → 分流 → 实现 → 三层验证 → 双闸门评审 → PR base dev → 回收
   author: nvoyager
-  version: 2.1.0
+  version: 3.1.0
   license: MIT
 ---
 
-# issue-dev · 单条 issue 开发
+# issue-dev · Codex 开发与独立双谱系评审
 
-维护期定位：**需求没做对是事故；质量闸门是放手让 AI 执行的前提，不是可裁剪的精益求精**。"不精益求精"只体现在：粒度小、不做产品方向决策、不追求代码美学——验证与评审纪律一项不减。
+在 Codex 中用 `$issue-dev 70` 或自然语言调用；旧 `/issue-dev` 意图也照常处理。
+`.agents/skills` 已链接到 `.claude/skills`，维护这一份源文件即可，无须复制全局 skill。
+Codex 负责实现；外部 reviewer 固定 GLM-5.3[1M] + OpenCode、DeepSeek + Claude Code CLI。
+开发期间发现的维护建议落本地 backlog，不自动派生新 issue。
+
+维护期定位：**需求没做对是事故；质量闸门是放手让 AI 执行的前提，不是可裁剪的精益求精**。"不精益求精"只体现在：按验收归并交付、不做产品方向决策、不追求代码美学——验证与评审纪律一项不减。
 
 ## 0. 状态管理（长程执行的生命线）
 
@@ -40,7 +43,7 @@ metadata:
 | `triage.md` | 调研产出（§2） | §2 结束 |
 | `spec.md` | 细化产出（§4，同步回填 issue 评论） | §4 结束 |
 | `verify.md` | 三层验证结果（§6） | §6 结束 |
-| `review/` | pr-ready 四份 audit 存档 + 双谱系各轮输入输出 | §7 每轮 |
+| `review/` | Codex 四维自审 + GLM / DeepSeek 各轮输入输出 | §7 每轮 |
 
 **起点仓库只留一个指针**：`$BASE/_tmp/issue-<N>/WORKTREE`，内容就是 `$WT` 绝对路径一行。会话被压缩、cwd 漂到别处时，靠它找回现场。§8 交付时 checkpoint 整个归档回 `$BASE/_tmp/issue-<N>/`，然后 worktree 才允许删。
 
@@ -54,7 +57,12 @@ metadata:
 
 ## 1. 状态校验 + 开隔离 worktree（永远第一步）
 
-**每条 issue 都在独立 worktree 里开发，无例外**——小改动也开。起点仓库全程不动，你可以在它上面并行干别的。
+建 worktree 前先核验 issue 状态、评论与关联 PR：已关闭/已有在途 PR 则恢复或报告；
+merged 到 dev 的 PR 要对照验收和当前 `origin/dev` 实现，满足就列待关单，不重复开发。
+交付组沿用主编号 checkpoint，`state.md` 另记 `ISSUES=` 全部编号、分组理由与验收并集；
+所有编号进入 review 输入、PR 的 `Refs` 和交付摘要，不遗漏任何子单。组内技术步骤不派生 issue。
+
+**每项交付都在独立 worktree 里开发，无例外**——小改动也开。起点仓库全程不动，你可以在它上面并行干别的。
 
 ```bash
 BASE=$(git rev-parse --show-toplevel)
@@ -66,7 +74,7 @@ git fetch origin && git status && git log --oneline -3 origin/dev
 **② 重入判断先做**（早于任何创建动作）：
 
 ```bash
-git worktree list | grep "$BRANCH"
+git worktree list --porcelain | rg --fixed-strings "$BRANCH"
 ```
 
 命中 → 该分支的 worktree 已存在，取其路径当 `$WT`，`cd "$WT"` 后**读** `_tmp/issue-<N>/state.md` 从断点续跑（跳过 ③，④ 只补写缺失的 `WORKTREE` 指针，不覆盖 `state.md`）。**绝不重建**：同一分支不能在两个 worktree 同时 checkout，硬建必失败。
@@ -78,7 +86,7 @@ bash "$BASE/scripts/worktree-setup.sh" "$BRANCH" origin/dev
 WT="$BASE/.tree/$BRANCH"
 ```
 
-脚本已代办：`.env` ×4、`project.private.config.json` ×2、`miniprogram_npm` ×2、`fengyu-admin`/`db` 的 node_modules 软链、admin `PORT=3010`、`next-env.d.ts`、`version.ts`、`.claude/dev-launch.review.md`（§7 闸门 2 的配置，缺了评审会卡住）。
+脚本已代办：`.env` ×4、`project.private.config.json` ×2、`miniprogram_npm` ×2、admin/db/三处云函数的 node_modules 软链、admin `PORT=3010`、`next-env.d.ts`、`version.ts`、仓库内 `.agents/skills/issue-dev/references/review.md`（评审约定，不依赖本机旧评审配置）。
 
 **base 校验（必做）**——残留 worktree / 分叉分支会让新分支落到过时的 commit 上：
 
@@ -86,7 +94,7 @@ WT="$BASE/.tree/$BRANCH"
 git -C "$WT" log --oneline origin/dev..HEAD     # 必须为空
 ```
 
-非空 → `git -C "$WT" reset --hard origin/dev`（刚创建、分支上还无 commit，此时 reset 安全）。
+非空 → 先调查是否复用了在途分支。只对已证明没有用户工作的新分支纠正基线；不自动 reset 已有分支。
 
 **④ 进驻 + 落盘**：
 
@@ -98,12 +106,12 @@ echo "$WT" > "$BASE/_tmp/issue-<N>/WORKTREE"
 
 写 `$WT/_tmp/issue-<N>/state.md`，头三行记 `BASE=` / `WT=` / `BRANCH=`。
 
-**⑤ 起点仓库的脏改动不会被带进 worktree**——`git worktree add` 只基于 commit。这取代了原先「不 stash，后续用精确 `git add` 隔离」的权宜之计：隔离由 worktree 天然保证，**永远不要 stash**（stash 栈与其它会话共享）。⚠️ 反过来说，若起点仓库有**本条 issue 需要的**未提交改动，必须先在起点仓库 commit（或复制过去）再发车，否则 worktree 里看不到。
+**⑤ 起点仓库的脏改动不会被带进 worktree**——`git worktree add` 只基于 commit。这取代了原先「不 stash，后续用精确 `git add` 隔离」的权宜之计：隔离由 worktree 天然保证，**永远不要 stash**（stash 栈与其它会话共享）。⚠️ 反过来说，若起点仓库有**本条 issue 需要的**未提交改动，先核对归属，获本次任务授权的改动可精确复制到 worktree；不要代提交起点仓库的其它工作，否则 worktree 里看不到。
 
 ## 2. 摄入与调研（先别写代码）
 
 1. `gh issue view N --comments` 读全文 + 评论 + 关联 issue/PR + 最近合并的 sibling PR（套其改造模式）
-2. 定位涉及端：client / staff / admin / db / 云函数；口径存疑对照 `.42cog/` specs 与 MEMORY.md
+2. 定位涉及端：client / staff / admin / db / 云函数；口径存疑对照 `.42cog/` specs 与已有决策（memory 路径见评审参考）
 3. **是否已部分实现先 grep**——只补差量，别重做
 4. Bug 类先复现/确诊根因；跨层的先定位是哪层，**别猜**
 5. 产出写 `_tmp/issue-<N>/triage.md`：根因/涉及端/工作量粗估/已实现部分/风险点
@@ -113,12 +121,12 @@ echo "$WT" > "$BASE/_tmp/issue-<N>/WORKTREE"
 | 情形 | 行为 |
 |---|---|
 | 高确定性（根因明确 / 需求清晰有验收标准） | 一句话确认 → 直接进 §5，**后续验证评审照跑** |
-| 需求歧义 / 触业务口径（金额、权限、状态机、提成） | §4 集中列关键问题（每个给推荐 + tradeoff）→ 回填 issue 评论 → **停等拍板**；无人值守标记跳过 |
+| 需求歧义 / 未确定的新业务口径 | §4 集中列关键问题（每个给推荐 + tradeoff）→ 回填 issue 评论 → **停等拍板**；无人值守标记跳过 |
 | 已部分实现 | 核对已有部分，只补差量 |
 | 估算 > 3 天 | **拒绝无人值守**，先在 issue 评论拆步骤/子任务，等确认 |
 | 值不值得做存疑 | 给「做 / 不做 / 关闭」结论 + 理由，等拍板 |
 
-**触业务口径必问**——本项目大量口径 memory（回款/退款/提成/寄存单）都源于口径拍板，不替甲方决定。
+**未确定的业务口径才问**——先查 spec、issue / 评论和已确认决策；既有口径已经明确就执行，不能因为碰到金额/权限/提成重复确认。不替甲方决定新口径。
 
 ## 4. 细化 + 回填 issue
 
@@ -132,20 +140,22 @@ echo "$WT" > "$BASE/_tmp/issue-<N>/WORKTREE"
 
 ## 5. 实现
 
-- 动手前对照 MEMORY.md：diff 触到的概念（回款、退款、寄存单、积分、提成、权限……）先 cat 对应 memory，别撞已知口径
+- 动手前对照仓库 spec 与可用的旧 memory：diff 触到的概念（回款、退款、寄存单、积分、提成、权限……）先 cat 对应 memory，别撞已知口径
 - 跨端共有逻辑（refund-cascade / settlePoints / scope / error-codes 等）**改一端必 grep 其余端副本同步**
 - 结构性变更（枚举 / 删改字段 / 表结构）→ 先走 `wx-change-propagation` 扫全仓影响
-- 编码后自检（CLAUDE.md 规定）：admin → 同轮 `npx tsc --noEmit`；云函数 → SQL 参数化 + OPENID；`.wxml` → vant 陷阱表
+- 编码后自检（AGENTS.md 规定）：admin → 同轮 `npx tsc --noEmit`；云函数 → SQL 参数化 + OPENID；`.wxml` → vant 陷阱表
 - 每个可编译子步本地 commit（checkpoint）
 
 worktree 专属守卫（共享资源，隔离不到位的两处）：
 
-- **db migration**：所有 worktree 共享同一个 PG，同一时间只能有一个执行 `db:migrate`。worktree 内写 migration 文件没问题，**执行前先确认没有其它 worktree 在跑迁移**；新增 migration 前查两线 journal 尾部防撞号——`.tree/` 并行会放大撞号风险（已撞过两次）
+- **DB 变更独立开发、集中集成**：遵守仓库 `db/rollout/README.md`。issue worktree 只提交 schema/业务改动与 `db/rollout/requests/issue-N.md` 的迁移请求，不运行正式 `db:generate`、不抢长驻令牌；候选 SQL 与验证只用私有库。继续独立测试和评审，状态记「待迁移集成」，不阻塞后续 issue 发车。集中集成会话基于最新 dev 串行生成正式迁移，在生成/私有库验证/本地提交期间持短锁，结束即释放；未合并迁移仍是下一条生成的依赖，不能从旧 journal 撞号。业务库迁移只能在已授权部署中执行，dev/prod 分别登记执行状态。
 - **L2 e2e / 小程序 devtools**：`e2e-cloudfn` 各 worktree 共用 `TE2L2_` 命名空间，并发跑会互相污染；同 appid 的 devtools 不能同时开两处。单 worktree 串行跑无碍，多条并行时必须错开
+
+需迁移的 issue：先完成可独立验证的代码检查点和迁移请求。正式迁移尚未集成、私有库重放或完整双谱系评审未完成时，只能交付 draft，保留 worktree；不能把代码单测通过记作整体验收通过。迁移 PR 与业务 PR 互相引用、约束先迁库后发依赖代码；不自动 merge。
 
 ## 6. 三层验证（规则 · 判据 · 实效）
 
-三层都过才算过；结果写 `_tmp/issue-<N>/verify.md` 并更新 `state.md`。
+规则层和判据层必须通过，实效层列 merge 后人工验证项；结果写 `_tmp/issue-<N>/verify.md` 并更新 `state.md`。
 
 **规则层**（全部退出码 0，不过 → 先修实现或补测试，**不绕过**）。**先 `cd "$WT"` 再跑**——下列相对路径都以 worktree 根为基准，跑错仓库等于没验：
 
@@ -168,27 +178,22 @@ bun fengyu-staff/tests/e2e-cloudfn/run-all.mjs --filter <module>        # 云函
 - 在 issue 评论列「实效验证点」清单：dev 环境 admin 上点哪个页面看什么、微信开发者工具/真机走哪条路径
 - 这是 merge 后由用户执行的最终定标，不阻塞开 PR
 
-## 7. 评审双闸门（PR 前，硬纪律）
+## 7. 评审双闸门（PR 前）
 
-**闸门 1 · `/pr-ready`**（3 并行对抗 reviewer + simplify）：
-- 调用全局 `pr-ready` skill——它按项目模版（`templates/fengyu-wxapp.md`：invariant 触发表 / 评审维度 / 验收命令）派 sibling-auditor、concurrency-adversary、boundary-critic 三个并行 reviewer + 跑 `/simplify`，产出 P1/P2 audit 表与 PR description 草稿
-- 跑之前先 `git add` staged（pr-ready 只审 staged diff）
-- **P1 清零才进闸门 2**；audit 四份文件从 `$WT/.claude/notes/pr-ready/` 拷贝存档到 `$WT/_tmp/issue-<N>/review/`。worktree 模式下 `.claude/notes/pr-ready/` 已天然隔离在各自 worktree 内（不会被下一条 issue 冲掉），但**存档一步照做**——§8 会把整个 worktree 删掉，`_tmp/issue-<N>/review/` 是唯一能活下来的落点
+先读 [评审约定](references/review.md)，它包含四维自审、两路 CLI、输入材料、finding 裁决与故障规则。
 
-**闸门 2 · 双谱系评审**（两个不同谱系的前沿模型都通过才算过）：
-- 配置读 `$WT/.claude/dev-launch.review.md`（主链 codex/GPT 系 + opencode GLM 系，降级 DeepSeek/Gemini）。它已 gitignore，由 §1 的 `worktree-setup.sh` 从起点仓库拷入；**worktree 里没有 → 先看 `$BASE/.claude/dev-launch.review.md` 是否存在**，在就手动拷过去，确实两边都没有才停下按其首次配置流程问人
-- **喂法铁律**：评审输入（提示词 + diff + 验收标准 + invariant 摘要）落成文件，**stdin 重定向**喂，绝不把内容插值进 shell（反引号会被当命令执行）
-- 每轮输入输出存 `_tmp/issue-<N>/review/round-K-<谱系>.md`，按 P0/P1/P2/P3 分级逐条闭环
-- **收敛标准是「无 P0/P1/P2」，不是轮数**；某谱系挂掉（429/auth）→ 按降级链换谱系凑齐两个，**绝不降级为单评审**
-- 谱系全挂 → 停下报告，PR 标 draft 并注明"双谱系未完成"，不带病放行
+1. Codex 按 sibling / concurrency / boundary / simplify 四维审完整交付 diff，记录 `review/self-audit.md`；相关 invariant 全部有证据，P0/P1 清零后进入独立评审。
+2. 精确提交待审文件，准备 `review/context.md`，调用 `scripts/dual_review.py`。两路固定 GLM-5.3[1M] + DeepSeek；不得把开发者 Codex 计作独立谱系。
+3. 范围内 P0/P1/P2 修复并复验，逐条记录裁决。两路都审过同一最终 HEAD、无未处理的阻塞项才开 ready PR。范围外建议留本地 backlog，不自动派生 issues。
+4. harness 失败/材料不足/争议未收敛保留 worktree，可交付 draft 并说明缺口。账户级错误不空转、不自动更换谱系；不冒充通过。
 
 ## 8. 交付
 
 1. **精确 add**：`git add <明确文件列表>`——排除 version.ts、并发会话的无关改动，禁 `git add -A`
 2. conventional commit 带 issue 号：`fix(staff): 修复 xxx (#N)`
-3. 开 PR（body 落临时文件防反引号插值）：`gh pr create --base dev --title "..." --body-file /tmp/pr-body.md`
+3. `git push -u origin "$BRANCH"` 后开 PR（body 落临时文件防反引号插值）：`gh pr create --base dev --title "..." --body-file /tmp/pr-body.md`
 
-PR body 固定结构（大部分内容闸门 1 已生成草稿）：
+PR body 固定结构（由 Codex 按实际结果整理）：
 
 ```markdown
 ## 改了什么
@@ -207,14 +212,15 @@ PR body 固定结构（大部分内容闸门 1 已生成草稿）：
 - [ ] 实效层（merge 后人工）：<验证点清单>
 
 ## 评审
-- pr-ready：P1 0 / P2 <n>（详情 _tmp/issue-N/review/）
-- 双谱系：<谱系A> + <谱系B>，共 <K> 轮，收敛无 P0/P1/P2
+- Codex 四维自审：<invariant 与结论>
+- 独立双谱系：GLM-5.3[1M] / OpenCode + DeepSeek / Claude Code，最终 HEAD <SHA>，无未处理的范围内 P0/P1/P2
+- 范围外建议：<本地 backlog 路径与裁决，未自动建单>
 
-Closes #N
+Refs #N
 ```
 
 4. `gh issue comment N`：实现说明 + PR 链接 + 实效验证点清单
-5. **不自动 merge、不自动 close**——merge 由用户执行，`Closes #N` 随 merge 自动关单
+5. **不自动 merge、不自动 close**——merge 由用户执行，仓库默认分支未必是 dev，不能依赖 `Closes #N` 在合入 dev 时自动关单；PR 用 `Refs #N`，合并后核验并由用户决定关单
 6. 重大架构决策 / 生产操作 → 调 `dev-changedoc` 补 `docs/changes/`（⚠️ 多批 PR 改同一索引会冲突，resolve 保留所有行）
 
 ### 回收 worktree（顺序不可颠倒）
@@ -243,7 +249,7 @@ cd "$BASE" && git worktree remove "$WT"              # 若拒绝 → --force（�
 
 实测两点（省得临场犹豫）：`git worktree remove` **不**跟着 node_modules 软链去删起点仓库的依赖；gitignored 文件也**不**会让它拒绝——所以它通常一次就过，前两行 `rm` 是防御性的，别指望 git 帮你拦住误删。
 
-**④ 本地分支保留，不删**：分支还没 merge 进 dev，`git branch -d` 会拒绝；留着它，review 提意见要回改时 `bash scripts/worktree-setup.sh "$BRANCH"` 就能重建现场（这次不传 start-point，直接 checkout 已有分支）。
+**④ 本地分支保留，不删**：分支还没 merge 进 dev，`git branch -d` 会拒绝；留着它，PR review 提意见要回改时 `bash scripts/worktree-setup.sh "$BRANCH"` 就能重建现场（这次不传 start-point，直接 checkout 已有分支）。
 
 **⑤ 收尾**：更新 `$BASE/_tmp/issue-<N>/state.md` 为 `delivered`，删掉 `$BASE/_tmp/issue-<N>/WORKTREE` 指针，对话给 ≤200 字总结 + 关键路径。
 
@@ -256,13 +262,13 @@ cd "$BASE" && git worktree remove "$WT"              # 若拒绝 → --force（�
 | 中断重启 / 会话被压缩 | 读 `$BASE/_tmp/issue-<N>/WORKTREE` 找回 `$WT` → 读其 `state.md` + `git -C "$WT" log`，从断点续，不重做、不重建 worktree |
 | 发车时该分支的 worktree 已存在 | 复用它，读 `state.md` 续跑——同分支不能在两个 worktree 同时 checkout，重建必失败 |
 | `worktree-setup.sh` 报主仓 node_modules 不存在 | 先在**起点仓库** `cd fengyu-admin && bun install`（db 同理），再重跑脚本 |
-| base 校验 `origin/dev..HEAD` 非空 | 落到了分叉/残留分支上 → `git -C "$WT" reset --hard origin/dev`（仅限分支上还无 commit 时） |
+| base 校验 `origin/dev..HEAD` 非空 | 先调查是否为在途分支；不丢弃已有提交 |
 | `git worktree remove` 拒绝 | 漏清 node_modules 软链或 `_tmp`；清完重试，仍拒绝且三项核验已过 → `--force` |
 | git 状态异常 / 未知分支 | 先调查再动，不覆盖在途工作 |
 | 根因模糊 | 先定位层级再改，不猜 |
 | sibling 漂移（别的端副本已改过） | 以 snapshot 测试为准对齐，别单边改 |
 | 规则层缺检查手段（如 wxml 无 CLI 编译检查） | 判据层补人工走查项 + 实效层列真机验证点——是整改不是绕过 |
-| 评审 harness 版本参数变化 | 先 `--help` 核对，坑记回 `.claude/dev-launch.review.md` |
+| 评审 harness 版本参数变化 | 先 `--help` 核对，更新仓库内评审脚本/参考文档 |
 | 小程序审核被阻（前端发不了版） | 照常开发合入 dev，issue 评论标注"待审核通过后发版" |
-| 触及产品方向 / 业务口径 | 停下问人，不编造结论关 issue |
+| 新的产品方向 / 未确定业务口径 | 集中澄清，不编造结论；已有确认不重复问 |
 | 输出超长 | 落 `_tmp/issue-<N>/`，对话给路径 + 摘要 |

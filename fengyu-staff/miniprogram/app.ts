@@ -20,6 +20,8 @@ App<IAppOption>({
     managerStores: [] as ScopedStore[],
     managerStoreIds: [] as string[],
     inventoryStoreIds: [] as string[],
+    // null = 云端尚未下发该字段（旧版 staffApi），写权限判定回退到 inventoryStoreIds
+    inventoryOperateStoreIds: null as string[] | null,
     loginLevel: null as LoginLevel | null,
     currentStoreId: '' as string,
   },
@@ -75,6 +77,7 @@ App<IAppOption>({
     const managerStores = wx.getStorageSync('managerStores');
     const managerStoreIds = wx.getStorageSync('managerStoreIds');
     const inventoryStoreIds = wx.getStorageSync('inventoryStoreIds');
+    const inventoryOperateStoreIds = wx.getStorageSync('inventoryOperateStoreIds');
     const loginLevel = wx.getStorageSync('loginLevel');
     const currentStoreId = wx.getStorageSync('currentStoreId');
     if (staffWfId) this.globalData.staffWfId = staffWfId;
@@ -93,6 +96,7 @@ App<IAppOption>({
     if (managerStores) this.globalData.managerStores = managerStores;
     if (managerStoreIds) this.globalData.managerStoreIds = managerStoreIds;
     if (inventoryStoreIds) this.globalData.inventoryStoreIds = inventoryStoreIds;
+    if (Array.isArray(inventoryOperateStoreIds)) this.globalData.inventoryOperateStoreIds = inventoryOperateStoreIds;
     if (loginLevel) this.globalData.loginLevel = loginLevel;
     if (currentStoreId) this.globalData.currentStoreId = currentStoreId;
   },
@@ -111,11 +115,13 @@ App<IAppOption>({
           staffWfId, staffName, position, roles, skills, avatarUrl, phone,
           boundStoreName, boundStoreId,
           staffLevel, roleBindings, availableLoginLevels, scopedStores, managerStores, managerStoreIds, inventoryStoreIds,
+          inventoryOperateStoreIds,
         } = res.result.data;
         this.setStaffInfo({
           staffWfId, staffName, position, roles, skills, avatarUrl, phone,
           boundStoreName, boundStoreId,
           staffLevel, roleBindings, availableLoginLevels, scopedStores, managerStores, managerStoreIds, inventoryStoreIds,
+          inventoryOperateStoreIds,
         });
         // loginLevel 若本地已有且在 available 内则保留，否则 fallback available[0]
         const existingLogin = this.globalData.loginLevel;
@@ -205,6 +211,13 @@ App<IAppOption>({
       this.globalData.inventoryStoreIds = info.inventoryStoreIds || [];
       wx.setStorageSync('inventoryStoreIds', info.inventoryStoreIds || []);
     }
+    if ('inventoryOperateStoreIds' in info) {
+      // 旧版云端不返回该字段（解构出来是 undefined）：记 null，写权限判定回退并集，不能当成「无权」
+      const ids = Array.isArray(info.inventoryOperateStoreIds) ? info.inventoryOperateStoreIds : null;
+      this.globalData.inventoryOperateStoreIds = ids;
+      if (ids) wx.setStorageSync('inventoryOperateStoreIds', ids);
+      else wx.removeStorageSync('inventoryOperateStoreIds');
+    }
   },
 
   setLoginLevel(level) {
@@ -242,6 +255,7 @@ App<IAppOption>({
     this.globalData.managerStores = [];
     this.globalData.managerStoreIds = [];
     this.globalData.inventoryStoreIds = [];
+    this.globalData.inventoryOperateStoreIds = null;
     this.globalData.loginLevel = null;
     this.globalData.currentStoreId = '';
     // 清除临时页面状态

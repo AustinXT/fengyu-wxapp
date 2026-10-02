@@ -153,6 +153,10 @@ git --no-pager diff fengyu-client/miniprogram/utils/version.ts fengyu-staff/mini
 
 ## §3 Phase 2 — 数据库迁移（强制，不可跳过）
 
+先读仓库 `db/rollout/README.md` 与目标环境 `db/rollout/$ENV.md`，对照待发布代码核验迁移请求均已集成、review、私有库验证，并列出本次全部 pending migration 及额外脚本的前置/后置顺序。按目标库 journal 的 when/hash 只读核对实际状态，台账不能代替库事实。缺登记、在途迁移未集成、目标历史不一致或必要专项脚本未完成时停止依赖代码发布；仅生成计划不代表执行授权。
+
+执行成功后更新**当前环境**台账：实际 tag/hash、发布 SHA、时间、执行人、校验结果和脱敏证据；无 pending 时也记录只读核验依据。dev 成功不能同步把 prod 标成功。仍不自动执行回填/修复脚本：须先经已授权专项流程完成并登记结果。
+
 此阶段必须在任何会读取新 schema 的 admin 或云函数代码上线前完成。每次均显式传入目标库 URL，**绝不**使用 `db/.env` 的默认连接，也不输出 URL 中的凭据。
 
 ```bash

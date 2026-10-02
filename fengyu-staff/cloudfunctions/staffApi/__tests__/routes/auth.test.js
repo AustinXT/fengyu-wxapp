@@ -17,6 +17,26 @@ describe('auth.login', () => {
     cloud.getWXContext.mockReturnValue({ OPENID: 'staff-openid-001' })
   })
 
+  test('无门店市场 finance 登录回包仅下发管理层身份和合法市场绑定', async () => {
+    pg.query.mockImplementation(async (sql) => {
+      if (/FROM\s+staff_wechat_users\s+u/.test(sql)) return [{
+        employee_id: 'emp-px', phone: '13800009999', name: '品项财务',
+        position_name: '财务', is_resigned: false, skills: [], store_id: null,
+        store_name: null, market_name: null,
+      }]
+      if (/FROM\s+permission_roles\s+pr/.test(sql)) return [{
+        role: 'finance', scope_id: 'mkt-px', scope_type: '市场', scope_name: '品项公司',
+      }]
+      if (/FROM\s+permission_role_definitions/.test(sql)) return [{ role_key: 'finance', actions: ['data_center:dashboard'] }]
+      return []
+    })
+    const ctx = { event: {}, context: {}, auth: { openid: 'staff-openid-001' }, result: null }
+    await authRoutes.login(ctx)
+    expect(ctx.result.availableLoginLevels).toEqual(['management'])
+    expect(ctx.result.scopedStores).toEqual([])
+    expect(ctx.result.roleBindings).toMatchObject([{ scopeType: '市场', scopeId: 'mkt-px', scopeName: '品项公司' }])
+  })
+
   test('已注册的活跃员工返回完整信息（含 P2-14 skills）', async () => {
     pg.query
       .mockResolvedValueOnce([{
@@ -161,10 +181,12 @@ describe('auth.login', () => {
           ? [{ store_id: 'store-A' }, { store_id: 'store-B' }]
           : [{ store_id: 'store-A' }]
       }
-      if (/SELECT\s+store_id,\s+store_name\s+FROM\s+stores/.test(sql)) {
+      if (/SELECT\s+s\.store_id,\s+s\.store_name,[\s\S]*FROM\s+stores\s+s/.test(sql)) {
         return (params[0] || []).map((storeId) => ({
           store_id: storeId,
           store_name: storeId === 'store-A' ? 'A店' : 'B店',
+          // B 店组织节点已停用（#400）：仍在 scopedStores 里，只是 isActive=false
+          is_active: storeId === 'store-A',
         }))
       }
       return []
@@ -175,9 +197,72 @@ describe('auth.login', () => {
 
     // scopedStores = 全角色并集（A+B），管理层视图以它作为可见门店范围。
     expect(ctx.result.scopedStores.map((s) => s.storeId).sort()).toEqual(['store-A', 'store-B'])
+    // #400：停用门店不过滤（门店模式 currentStoreId / 门店切换依赖它），逐行带 isActive 供管理层默认范围跳过
+    expect(ctx.result.scopedStores).toEqual([
+      { storeId: 'store-A', storeName: 'A店', isActive: true },
+      { storeId: 'store-B', storeName: 'B店', isActive: false },
+    ])
+    const scopedSql = pg.query.mock.calls.map((c) => c[0]).find((s) => /FROM\s+stores\s+s/.test(s) && /store_node/.test(s))
+    expect(scopedSql).toContain('COALESCE(store_node.is_active, FALSE) AS is_active')
+    expect(scopedSql).not.toMatch(/is_closed|WHERE[\s\S]*is_active/)
     expect(ctx.result.availableLoginLevels).toEqual(['store', 'management'])
     // managerStores 仍仅 manager 绑定（A），仅供门店模式写授权使用。
     expect(ctx.result.managerStores.map((s) => s.storeId)).toEqual(['store-A'])
+  })
+
+  test('inventoryOperateStoreIds 只由 store_operate 绑定展开，不含其它库存动作的 scope（#352）', async () => {
+    pg.query.mockImplementation(async (sql, params = []) => {
+      if (/FROM\s+staff_wechat_users\s+u/.test(sql)) {
+        return [{
+          employee_id: 'emp-inv', phone: '139', name: '库存员兼市场财务',
+          position_name: '门店库存员', is_resigned: false, skills: [],
+          store_id: 'store-A', store_name: 'A店', market_name: 'M',
+        }]
+      }
+      if (/UPDATE staff_wechat_users SET last_login_at/.test(sql)) return []
+      if (/FROM\s+permission_roles\s+pr/.test(sql)) {
+        return [
+          { role: 'inventory_store_operator', scope_id: 'node-A', scope_type: '门店', scope_name: 'A店', actions: ['inventory:store_operate'] },
+          { role: 'finance', scope_id: 'node-M', scope_type: '市场', scope_name: 'M', actions: ['inventory:market_approve'] },
+        ]
+      }
+      if (/SELECT DISTINCT\s+s\.store_id/.test(sql)) {
+        const nodes = params[0] || []
+        return [
+          ...(nodes.includes('node-A') ? [{ store_id: 'store-A' }] : []),
+          ...(nodes.includes('node-M') ? [{ store_id: 'store-A' }, { store_id: 'store-B' }] : []),
+        ]
+      }
+      return []
+    })
+
+    const ctx = { event: {}, context: {}, auth: {}, result: null }
+    await authRoutes.login(ctx)
+
+    expect([...new Set(ctx.result.inventoryStoreIds)].sort()).toEqual(['store-A', 'store-B'])
+    expect(ctx.result.inventoryOperateStoreIds).toEqual(['store-A'])
+  })
+
+  test('超管绑定（无显式库存动作）也进 inventoryOperateStoreIds（与云端写鉴权对超管放行一致）', async () => {
+    pg.query.mockImplementation(async (sql) => {
+      if (/FROM\s+staff_wechat_users\s+u/.test(sql)) {
+        return [{
+          employee_id: 'emp-root', phone: '137', name: '超管', position_name: '总部',
+          is_resigned: false, skills: [], store_id: null, store_name: null, market_name: null,
+        }]
+      }
+      if (/UPDATE staff_wechat_users SET last_login_at/.test(sql)) return []
+      if (/FROM\s+permission_roles\s+pr/.test(sql)) {
+        return [{ role: 'admin', scope_id: 'org-hq', scope_type: '总部', scope_name: '总部', is_super_admin: true, actions: [] }]
+      }
+      if (/SELECT store_id FROM stores/.test(sql)) return [{ store_id: 'store-A' }, { store_id: 'store-B' }]
+      return []
+    })
+
+    const ctx = { event: {}, context: {}, auth: {}, result: null }
+    await authRoutes.login(ctx)
+
+    expect([...ctx.result.inventoryOperateStoreIds].sort()).toEqual(['store-A', 'store-B'])
   })
 })
 

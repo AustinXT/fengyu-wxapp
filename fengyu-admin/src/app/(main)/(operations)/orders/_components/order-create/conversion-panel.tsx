@@ -66,7 +66,10 @@ function groupHeldCards(cards: HeldCardCandidate[]): GroupedHeldCardCandidate[] 
   return groupTreatmentCards(cards, {
     getId: (card) => card.saleItemId,
     getQuantity: (card) => card.quantity,
-    getIdentity: (card) => getTreatmentCardBusinessIdentity(card),
+    getIdentity: (card) => {
+      const identity = getTreatmentCardBusinessIdentity(card)
+      return card.productType === '疗程卡' ? identity : { ...identity, sourceId: card.saleItemId }
+    },
   }).map((group) => {
     const primary = group.primary
     return {
@@ -241,11 +244,11 @@ export function ConversionPanel({
               <p className="text-xs text-[#999999] py-4 text-center">正在加载候选卡…</p>
             )}
             {!loading && groupedHeldCards.length === 0 && (
-              <p className="text-xs text-[#999999] py-4 text-center">该顾客在当前门店无可折抵项</p>
+              <p className="text-xs text-[#999999] py-4 text-center">该顾客暂无可折抵项</p>
             )}
             {!loading && groupedHeldCards.length > 0 && filteredHeldCards.length === 0 && (
               <p className="text-xs text-[#999999] py-4 text-center">
-                {hasCardFilters ? "未找到匹配的折抵项" : "该顾客在当前门店无可折抵项"}
+                {hasCardFilters ? "未找到匹配的折抵项" : "该顾客暂无可折抵项"}
               </p>
             )}
             <div className="space-y-1 max-h-72 overflow-y-auto">
@@ -256,6 +259,10 @@ export function ConversionPanel({
                 // 数量为 0 的纯余数行（次数已用完 / 件已全提，只剩不足一整次(件)的已付余额）
                 // 单独提示，否则操作员会以为这行是空的、不敢选。
                 const remainQty = c.remainingQty ?? 0
+                const unitCents = Math.round(Number(c.unitRealPrice) * 100)
+                const paidQty = c.saleOrderType === '寄存单' || Number(c.saleAmount) <= 0 || unitCents <= 0
+                  ? remainQty
+                  : Math.min(remainQty, Math.floor(Math.round(Number(c.deductibleAmount) * 100) / unitCents))
                 const remainLabel = remainQty > 0
                   ? `注销 ${remainQty} ${c.unit}`
                   : `仅余额（无剩余${c.productType === '疗程卡' ? '次数' : '件数'}）`
@@ -280,11 +287,13 @@ export function ConversionPanel({
                           {c.productName ?? c.saleItemId}
                         </span>
                         <span className="text-[var(--primary)] font-semibold shrink-0">
-                          ¥{c.deductibleAmount}
+                          可折金额 ¥{c.deductibleAmount}
                         </span>
                       </div>
+                      <div className="text-[#777777] mt-0.5">购买门店：{c.storeName || c.storeId}</div>
                       <div className="text-[#999999] mt-0.5 flex items-center gap-2">
                         <span>{c.productType}</span>
+                        {c.productType === "家居产品" && <span>可折 {paidQty} {c.unit}</span>}
                         <span>{remainLabel}</span>
                         {c.productType === '疗程卡' && c.cardCount > 1 && <span>共 {c.cardCount} 张</span>}
                         {c.productType !== '疗程卡' && c.sourceItems.length > 1 && <span>可拆 {c.sourceItems.length} 行</span>}

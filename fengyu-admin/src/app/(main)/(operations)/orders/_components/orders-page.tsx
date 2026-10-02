@@ -40,6 +40,7 @@ import type { SaleOrder } from "@/lib/types";
 import type { MarketStoreFilterOptions } from "@/lib/market-store-filter-types";
 import MarketStoreFilter from "@/components/market-store-filter";
 import { paymentMethodDisplay } from "@/lib/workfine-legacy";
+import { normalizePage } from "@/lib/paging";
 
 const paymentMethodMap: Record<string, string> = {
   微信: "微信支付",
@@ -329,7 +330,7 @@ export default function OrdersPageClient({
   const hasPrepaidFilter = get("hasPrepaid");
   const conversionModeFilter = get("conversionMode");
 
-  const currentPage = Math.max(1, Number(get("page", "1")) || 1);
+  const currentPage = normalizePage(get("page", "1"));
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20;
 
   return (

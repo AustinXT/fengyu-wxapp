@@ -12,6 +12,7 @@ import { requireAdmin, isAdminScope } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
 import { revalidatePath } from 'next/cache'
 import { orgNodeInScopeCondition } from '@/lib/market-store-sql'
+import { resolvePaging } from '@/lib/paging'
 
 export interface LogFilter {
   operatorName?: string
@@ -132,9 +133,12 @@ export interface PaginatedLogs {
 export const getLogsPaginated = withPermission(
   'operation_log:list',
   async (session, filter: LogFilter = {}): Promise<PaginatedLogs> => {
-    const page = Math.max(1, filter.page || 1)
-    const pageSize = [20, 50, 100].includes(filter.pageSize ?? 0) ? filter.pageSize! : 20
-    const offset = (page - 1) * pageSize
+    const { page, pageSize, offset } = resolvePaging({
+      page: filter.page,
+      pageSize: filter.pageSize,
+      defaultPageSize: 20,
+      allowedPageSizes: [20, 50, 100],
+    })
     const conditions = await buildLogConditions(session, filter)
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined
 
@@ -148,7 +152,7 @@ export const getLogsPaginated = withPermission(
       .from(operationLogs)
       .where(whereClause)
       // 例外：日志型表无 updatedAt 列
-      .orderBy(desc(operationLogs.createdAt))
+      .orderBy(desc(operationLogs.createdAt), desc(operationLogs.id))
       .limit(pageSize)
       .offset(offset)
 

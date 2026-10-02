@@ -6,6 +6,7 @@ Component({
     state: { type: String, value: 'content' }, // 'loading' | 'empty' | 'error' | 'content'
     loadingText: { type: String, value: '' },
     emptyText: { type: String, value: '暂无数据' },
+    emptyHint: { type: String, value: '' }, // 空态第二行说明（如停用门店的去处提示）
     errorText: { type: String, value: '加载失败' },
     retryText: { type: String, value: '重试' },
   },

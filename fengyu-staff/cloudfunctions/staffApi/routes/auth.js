@@ -20,6 +20,7 @@ const {
   expandScopeStoreIds,
 } = require('../utils/scope')
 const { hasDataCenterDashboard } = require('../utils/permission-matrix')
+const { STORE_NODE_JOIN, STORE_IS_ACTIVE } = require('../utils/store-status')
 
 /**
  * 查询员工权限角色（带 scope 类型）
@@ -49,18 +50,23 @@ async function queryRoleBindings(employeeId) {
 }
 
 /**
- * 根据 scopeStoreIds 批量取店名，给前端门店下拉用
+ * 根据 scopeStoreIds 批量取店名，给前端门店下拉用。
+ *
+ * 逐行附 isActive（门店组织节点是否在营，#400）而**不过滤**：门店模式的 currentStoreId、
+ * 门店切换、进销存表单都以本列表为准，停用门店的员工不能因此丢掉自己的门店；
+ * 只有管理层看板的默认范围（computeDefaultScope）按 isActive 跳过停用门店。
  */
 async function fetchScopedStores(storeIds) {
   if (!storeIds || storeIds.length === 0) return []
   const rows = await pg.query(
-    `SELECT store_id, store_name
-     FROM stores
-     WHERE store_id = ANY($1::text[])
-     ORDER BY store_name ASC`,
+    `SELECT s.store_id, s.store_name, ${STORE_IS_ACTIVE} AS is_active
+     FROM stores s
+     ${STORE_NODE_JOIN}
+     WHERE s.store_id = ANY($1::text[])
+     ORDER BY s.store_name ASC`,
     [storeIds]
   )
-  return rows.map((r) => ({ storeId: r.store_id, storeName: r.store_name }))
+  return rows.map((r) => ({ storeId: r.store_id, storeName: r.store_name, isActive: r.is_active === true }))
 }
 
 /**
@@ -78,6 +84,7 @@ async function buildLevelPayload(employeeId) {
     staffLevel,
     scopeStoreIds,
     hasDashboardPermission,
+    roleBindings,
   )
   const scopedStores = await fetchScopedStores(scopeStoreIds)
   // managerStores：仅 manager 角色绑定的门店，保留给门店模式下的店长写操作。
@@ -92,7 +99,20 @@ async function buildLevelPayload(employeeId) {
     ].includes(action))
   ))
   const inventoryStoreIds = inventoryBindings.length > 0 ? await expandScopeStoreIds(inventoryBindings, pg) : []
-  return { roles, roleBindings, staffLevel, availableLoginLevels, scopedStores, managerStores, managerStoreIds, inventoryStoreIds }
+  // #352：门店库存写操作（建单 / 收货）只认 inventory:store_operate，且动作与 scope 必须来自**同一绑定**
+  // （assertInventoryWriteStoreScope）。上面的 inventoryStoreIds 是三动作 scope 的并集，前端拿它判写权限
+  // 会把「A 店 store_operate + B 市场 market_approve」的员工在 B 店放进写表单。单独下发只由
+  // store_operate（及超管）绑定展开的门店集合，前端写入口据此判定。
+  const inventoryOperateBindings = roleBindings.filter((binding) => (
+    binding.isSuperAdmin || binding.actions.includes('inventory:store_operate')
+  ))
+  const inventoryOperateStoreIds = inventoryOperateBindings.length > 0
+    ? await expandScopeStoreIds(inventoryOperateBindings, pg)
+    : []
+  return {
+    roles, roleBindings, staffLevel, availableLoginLevels, scopedStores, managerStores, managerStoreIds,
+    inventoryStoreIds, inventoryOperateStoreIds,
+  }
 }
 
 /**
@@ -135,6 +155,7 @@ async function login(ctx) {
       managerStores: [],
       managerStoreIds: [],
       inventoryStoreIds: [],
+      inventoryOperateStoreIds: [],
       skills: [],
       avatarUrl: null,
       boundStoreName: null,
@@ -152,7 +173,7 @@ async function login(ctx) {
   const isActive = user.employee_id && !user.is_resigned
   const level = isActive
     ? await buildLevelPayload(user.employee_id)
-    : { roles: [], roleBindings: [], staffLevel: null, availableLoginLevels: [], scopedStores: [], managerStores: [], managerStoreIds: [], inventoryStoreIds: [] }
+    : { roles: [], roleBindings: [], staffLevel: null, availableLoginLevels: [], scopedStores: [], managerStores: [], managerStoreIds: [], inventoryStoreIds: [], inventoryOperateStoreIds: [] }
 
   ctx.result = {
     isNewUser: false,
@@ -168,6 +189,7 @@ async function login(ctx) {
     managerStores: level.managerStores,
     managerStoreIds: level.managerStoreIds,
     inventoryStoreIds: level.inventoryStoreIds,
+    inventoryOperateStoreIds: level.inventoryOperateStoreIds,
     skills: isActive && Array.isArray(user.skills) ? user.skills : [],
     avatarUrl: user.avatar_url || null,
     boundStoreName: isActive ? user.store_name : null,
@@ -291,6 +313,7 @@ async function bindPhone(ctx) {
       managerStores: level.managerStores,
       managerStoreIds: level.managerStoreIds,
       inventoryStoreIds: level.inventoryStoreIds,
+      inventoryOperateStoreIds: level.inventoryOperateStoreIds,
       skills: Array.isArray(emp.skills) ? emp.skills : [],
       avatarUrl: emp.avatar_url || null,
       boundStoreName: emp.store_name,

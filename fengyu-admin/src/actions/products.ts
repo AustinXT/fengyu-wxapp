@@ -496,7 +496,10 @@ export const getAllSkus = withPermission(
       .leftJoin(projectSeriesLookup, eq(productSkus.projectSeriesId, projectSeriesLookup.id))
       .where(isNull(productSkus.deletedAt))
       // 例外：sortOrder 手工排序权重
-      .orderBy(asc(productSkus.sortOrder))
+      // #282：`sort_order` 默认 0（db/schema/product.ts:71），**未手工排序的 SKU 全部并列** ——
+    // 这是本次 28 处里并列面最大的一处。products 页 force-dynamic + router.replace 翻页，
+    // 每翻一页都是一次独立查询，非全序会直接造成重复/漏行。
+    .orderBy(asc(productSkus.sortOrder), asc(productSkus.skuId))
 
     return rows.map((r) => ({
       skuId: r.sku.skuId,
@@ -1516,7 +1519,11 @@ export const getProducts = withPermission(
       .leftJoin(skuCountSq, eq(products.productId, skuCountSq.productId))
       .where(isNull(products.deletedAt))
       // 例外：sortOrder 手工排序权重
-      .orderBy(asc(products.sortOrder))
+      // #282：同上 —— `sort_order` 默认 0（db/schema/product.ts:167），未手工排序的商品全部并列。
+      // mall 页 force-dynamic，翻页走 router.replace 重新执行本查询，非全序会重复/漏行。
+      // （同文件 getProductsByKind 的同款 orderBy **刻意不改**：那是开单 picker 的
+      //   一次性全量加载，不翻页，不存在跨次执行的问题。）
+      .orderBy(asc(products.sortOrder), asc(products.productId))
 
     return rows.map((r) => ({
       productId: r.product.productId,

@@ -18,7 +18,7 @@ vi.mock('@/lib/hooks/use-url-filters', () => ({
 import { ScopeTimeFilter } from './scope-time-filter'
 
 const multiStoreOptions: DataCenterScopeOptions = {
-  topLevel: 'store',
+  topLevel: 'store', inactiveStores: [],
   markets: [
     {
       id: 'M1',
@@ -41,55 +41,33 @@ beforeEach(() => {
   setMany.mockReset()
 })
 
-describe('ScopeTimeFilter 多门店权限', () => {
-  it('授权汇总时显示“全部授权门店”并允许选择市场', async () => {
+describe('ScopeTimeFilter 范围选择接线', () => {
+  it('写 URL 走父级 useUrlFilters 实例：勾选门店子集 → stores', async () => {
     params.scope = 'market'
     params.scopeId = 'M1'
     render(<ScopeTimeFilter scopeOptions={multiStoreOptions} />)
-
-    const [marketSelect, storeSelect] = screen.getAllByRole('combobox')
-    expect(marketSelect).not.toBeDisabled()
-    expect(screen.getByRole('option', { name: '全部授权门店' })).toBeInTheDocument()
-    expect(screen.getByRole('option', { name: '蓝莱店' })).toBeInTheDocument()
-    expect(screen.getByRole('option', { name: '绿湖店' })).toBeInTheDocument()
-
     const user = userEvent.setup()
-    await user.selectOptions(storeSelect, 'S2')
-    expect(setMany).toHaveBeenCalledWith({ scope: 'store', scopeId: 'S2' })
+    await user.click(screen.getByTestId('scope-picker-trigger'))
+    await user.click(screen.getByRole('checkbox', { name: '蓝莱店' }))
+    await user.click(screen.getByRole('checkbox', { name: '九江店' }))
+    await user.click(screen.getByRole('button', { name: '确定' }))
+    expect(setMany).toHaveBeenCalledWith({ scope: 'stores', scopeId: 'S2,S3' })
   })
 
-  it('从市场切回全部授权门店时清除 scopeId', async () => {
-    params.scope = 'market'
-    params.scopeId = 'M1'
-    render(<ScopeTimeFilter scopeOptions={multiStoreOptions} />)
-
-    const [marketSelect] = screen.getAllByRole('combobox')
-    const user = userEvent.setup()
-    await user.selectOptions(marketSelect, '')
-    expect(setMany).toHaveBeenCalledWith({ scope: 'authorized', scopeId: '' })
-  })
-
-  it('单店账号锁定市场和门店下拉', () => {
+  it('单店账号锁定范围选择', () => {
     params.scope = 'store'
     params.scopeId = 'S1'
     render(<ScopeTimeFilter scopeOptions={{
-      topLevel: 'store',
+      topLevel: 'store', inactiveStores: [],
       markets: [{ id: 'M1', name: '南昌市场', stores: [{ storeId: 'S1', storeName: '蓝莱店' }] }],
     }} />)
-
-    const [marketSelect, storeSelect] = screen.getAllByRole('combobox')
-    expect(marketSelect).toBeDisabled()
-    expect(storeSelect).toBeDisabled()
+    expect(screen.getByTestId('scope-picker-trigger')).toBeDisabled()
   })
 
-  it('总部账号切回全部市场时仍使用全局 all', async () => {
-    params.scope = 'market'
-    params.scopeId = 'M1'
-    render(<ScopeTimeFilter scopeOptions={{ ...multiStoreOptions, topLevel: 'all' }} />)
-
-    const [marketSelect] = screen.getAllByRole('combobox')
-    const user = userEvent.setup()
-    await user.selectOptions(marketSelect, '')
-    expect(setMany).toHaveBeenCalledWith({ scope: '', scopeId: '' })
+  it('URL 选中停用门店：回显「XX（已停用）」（#293）', () => {
+    params.scope = 'store'
+    params.scopeId = 'X1'
+    render(<ScopeTimeFilter scopeOptions={{ ...multiStoreOptions, inactiveStores: [{ storeId: 'X1', storeName: '九江中辉店', marketId: 'M2' }] }} />)
+    expect(screen.getByTestId('scope-picker-trigger')).toHaveTextContent('九江中辉店（已停用）')
   })
 })

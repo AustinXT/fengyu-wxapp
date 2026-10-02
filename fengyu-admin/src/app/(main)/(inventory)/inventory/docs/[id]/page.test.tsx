@@ -13,13 +13,19 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
 import type { InventoryDocDetail } from '@/lib/inventory/types'
 
-const { mockGetDoc, mockGetSession, mockRequireCaps } = vi.hoisted(() => ({
+const { mockGetDoc, mockGetSession, mockRequireCaps, mockGetSources, mockGetSourceMarkets } = vi.hoisted(() => ({
   mockGetDoc: vi.fn(),
   mockGetSession: vi.fn(),
   mockRequireCaps: vi.fn(),
+  mockGetSources: vi.fn(),
+  mockGetSourceMarkets: vi.fn(),
 }))
 
-vi.mock('@/actions/inventory/docs', () => ({ getInventoryCoreDocById: mockGetDoc }))
+vi.mock('@/actions/inventory/docs', () => ({
+  getInventoryCoreDocById: mockGetDoc,
+  listMarketReportSummarySources: mockGetSources,
+  listMarketReportSummarySourceMarkets: mockGetSourceMarkets,
+}))
 vi.mock('@/lib/auth', () => ({ getSession: mockGetSession }))
 vi.mock('@/lib/page-capability', () => ({ requireAllUiPageCapabilities: mockRequireCaps }))
 vi.mock('next/navigation', () => ({
@@ -121,7 +127,7 @@ function cellByHeader(skuId: string, header: string): string {
 describe('库存单据详情页 · 盘点三列（#131）', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockGetSession.mockResolvedValue({ employeeId: 'E1' })
+    mockGetSession.mockResolvedValue({ employeeId: 'E1', permissions: { actions: [] } })
   })
 
   it('盘点单渲染「账面数量 / 实盘数量 / 差异」三列，且没有原来的「数量」列', async () => {
@@ -221,7 +227,7 @@ describe('库存单据详情页 · 盘点三列（#131）', () => {
 describe('库存单据详情页 · 返回入口（#190）', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockGetSession.mockResolvedValue({ employeeId: 'E1' })
+    mockGetSession.mockResolvedValue({ employeeId: 'E1', permissions: { actions: [] } })
   })
 
   function backLink(): HTMLAnchorElement {
@@ -260,5 +266,339 @@ describe('库存单据详情页 · 返回入口（#190）', () => {
     const link = backLink()
     expect(link.textContent).not.toContain('办理台')
     expect(link.getAttribute('href')).toBe('/inventory/docs')
+  })
+})
+
+describe('库存单据详情页 · 采购订单市场行（#335）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockGetSession.mockResolvedValue({ employeeId: 'E1', permissions: { actions: [] } })
+  })
+
+  function purchaseOrder(overrides: Partial<InventoryDocDetail> = {}) {
+    return docFixture({
+      id: 'CGD-20260924-0001',
+      docType: '采购订单',
+      status: '待收货',
+      sourceOrgNodeId: null,
+      targetOrgNodeId: 'HQ',
+      totalAmount: 16000,
+      partiallyReceived: true,
+      items: [
+        itemFixture({ id: 1, skuId: 'SKU-SC', quantity: 10, fulfilledQuantity: 4, actualUnitPrice: 800, amount: 8000 }),
+        itemFixture({
+          id: 2, skuId: 'SKU-MKT', marketId: 'M1', marketName: '市场甲', quantity: 10, fulfilledQuantity: 3,
+          actualUnitPrice: 800, amount: 8000, marketActualUnitPrice: 950,
+        }),
+      ],
+      fulfillmentProgress: {
+        kind: '供应链采购收货',
+        items: [
+          { itemId: 1, purchasedQuantity: 10, receivedQuantity: 4, outstandingQuantity: 6 },
+          { itemId: 2, purchasedQuantity: 10, receivedQuantity: 3, outstandingQuantity: 7 },
+        ],
+      },
+      ...overrides,
+    } as Partial<InventoryDocDetail>)
+  }
+
+  it('状态显示派生的「部分入库」', async () => {
+    await renderPage(purchaseOrder())
+    expect(screen.getByText('部分入库')).toBeTruthy()
+  })
+
+  it('市场行同样列出已入库/待入库与市场结算价（参考）；发货直连报货单后不再有「已发货」列（#336）', async () => {
+    await renderPage(purchaseOrder())
+    expect(cellByHeader('SKU-MKT', '已入库')).toBe('3')
+    expect(cellByHeader('SKU-MKT', '待入库')).toBe('7')
+    expect(cellByHeader('SKU-MKT', '实际单价')).toBe('800')
+    expect(cellByHeader('SKU-MKT', '市场结算价（参考）')).toBe('950')
+    // 自用行没有市场结算价
+    expect(cellByHeader('SKU-SC', '市场结算价（参考）')).toBe('—')
+    expect(screen.queryByRole('columnheader', { name: '已发货' })).toBeNull()
+  })
+
+  it('#346 有金额时：单头显示「入库后实际金额」（Σ各行），进度多一列「已入库金额」；「金额」仍是下单金额', async () => {
+    await renderPage(purchaseOrder({
+      fulfillmentProgress: {
+        kind: '供应链采购收货',
+        items: [
+          // 自用行已入库 4 件按优惠价 700 = 2800，未入库 6 件 × 下单价 800 = 4800 → 7600
+          { itemId: 1, purchasedQuantity: 10, receivedQuantity: 4, outstandingQuantity: 6, receivedAmount: 2800, actualAmount: 7600 },
+          { itemId: 2, purchasedQuantity: 10, receivedQuantity: 3, outstandingQuantity: 7, receivedAmount: 2400, actualAmount: 8000 },
+        ],
+      },
+    } as Partial<InventoryDocDetail>))
+    const label = screen.getByText('入库后实际金额')
+    expect(label.nextElementSibling?.textContent).toBe('15600')
+    const orderAmount = screen.getAllByText('金额').find((element) => element.nextElementSibling?.textContent === '16000')
+    expect(orderAmount).toBeTruthy() // 单头「金额」仍是下单金额
+    expect(cellByHeader('SKU-SC', '已入库金额')).toBe('2800')
+    expect(cellByHeader('SKU-MKT', '已入库金额')).toBe('2400')
+  })
+
+  it('#346 任一行算不出入库后金额（历史按发货完结 / 缺下单价）时不显示单头合计，已入库金额列照常', async () => {
+    await renderPage(purchaseOrder({
+      fulfillmentProgress: {
+        kind: '供应链采购收货',
+        items: [
+          { itemId: 1, purchasedQuantity: 10, receivedQuantity: 4, outstandingQuantity: 6, receivedAmount: 2800, actualAmount: 7600 },
+          { itemId: 2, purchasedQuantity: 10, receivedQuantity: 0, outstandingQuantity: 0, receivedAmount: 0 },
+        ],
+      },
+    } as Partial<InventoryDocDetail>))
+    expect(screen.queryByText('入库后实际金额')).toBeNull()
+    expect(cellByHeader('SKU-SC', '已入库金额')).toBe('2800')
+  })
+
+  it('#346 价格被遮蔽（进度不带金额）时不出现「入库后实际金额」与「已入库金额」', async () => {
+    await renderPage(purchaseOrder({ totalAmount: undefined }))
+    expect(screen.queryByText('入库后实际金额')).toBeNull()
+    expect(screen.queryByRole('columnheader', { name: '已入库金额' })).toBeNull()
+  })
+
+  it('只有自用行的采购订单不出现市场结算价列', async () => {
+    await renderPage(purchaseOrder({
+      partiallyReceived: false,
+      items: [itemFixture({ id: 1, skuId: 'SKU-SC', quantity: 10, fulfilledQuantity: 0, actualUnitPrice: 800, amount: 8000 })],
+      fulfillmentProgress: {
+        kind: '供应链采购收货',
+        items: [{ itemId: 1, purchasedQuantity: 10, receivedQuantity: 0, outstandingQuantity: 10 }],
+      },
+    } as Partial<InventoryDocDetail>))
+    expect(screen.queryByRole('columnheader', { name: '已发货' })).toBeNull()
+    expect(screen.queryByRole('columnheader', { name: '市场结算价（参考）' })).toBeNull()
+    expect(screen.getAllByText('待收货').length).toBeGreaterThan(0)
+  })
+})
+
+describe('库存单据详情页 · 供应链采购入库单价优惠（#346）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockGetSession.mockResolvedValue({ employeeId: 'E1', permissions: { actions: [] } })
+  })
+
+  it('入库单明细显示标准进价 / 单价优惠 / 实际进价 / 金额，优惠可核对', async () => {
+    await renderPage(docFixture({
+      id: 'GRK-20260925-0001', docType: '供应链采购入库', sourceOrgNodeId: null, targetOrgNodeId: 'HQ', totalAmount: 160,
+      items: [itemFixture({ id: 1, skuId: 'SKU-SC', quantity: 2, standardUnitPrice: 100, unitDiscount: 20, actualUnitPrice: 80, amount: 160 })],
+    } as Partial<InventoryDocDetail>))
+    expect(cellByHeader('SKU-SC', '标准进价')).toBe('100')
+    expect(cellByHeader('SKU-SC', '单价优惠')).toBe('20')
+    expect(cellByHeader('SKU-SC', '实际进价')).toBe('80')
+    expect(cellByHeader('SKU-SC', '金额')).toBe('160')
+    expect(screen.queryByRole('columnheader', { name: '应付货款' })).toBeNull()
+  })
+})
+
+/**
+ * 顾客出库（GCK）的「关联销售单」（#350）：提货服务生成 GCK 时写了 related_sale_order_id，
+ * 详情页要能看到是哪张销售单的货，有权看订单的人可以点进订单详情。
+ */
+describe('库存单据详情页 · 关联销售单（#350）', () => {
+  const gck = () => docFixture({
+    id: 'GCK-20260924-0001',
+    docType: '院顾客产品出库',
+    relatedSaleOrderId: 'FY-XSD-WX-2609240001',
+    customerName: '张三',
+  } as never)
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('有订单查看权限：显示关联销售单并链接到订单详情', async () => {
+    mockGetSession.mockResolvedValue({
+      employeeId: 'E1',
+      permissions: { actions: ['sale_order:list', 'sale_item:list'] },
+    })
+    await renderPage(gck())
+    const link = screen.getByRole('link', { name: 'FY-XSD-WX-2609240001' })
+    expect(link.getAttribute('href')).toBe('/orders/FY-XSD-WX-2609240001')
+  })
+
+  it('无订单查看权限：只显示单号文本，不给点了 404 的链接', async () => {
+    mockGetSession.mockResolvedValue({ employeeId: 'E1', permissions: { actions: ['inventory:list'] } })
+    await renderPage(gck())
+    expect(screen.getByText('FY-XSD-WX-2609240001')).toBeTruthy()
+    expect(screen.queryByRole('link', { name: 'FY-XSD-WX-2609240001' })).toBeNull()
+  })
+
+  it('非提货单据没有关联销售单时显示占位符', async () => {
+    mockGetSession.mockResolvedValue({ employeeId: 'E1', permissions: { actions: ['sale_order:list'] } })
+    await renderPage(docFixture({ relatedSaleOrderId: null } as never))
+    const label = screen.getByText('关联销售单')
+    expect(label.nextElementSibling?.textContent).toBe('—')
+  })
+})
+
+describe('市场报货单的整单发货 / 入库进度（#336b）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockGetSession.mockResolvedValue({ employeeId: 'E1', permissions: { actions: [] } })
+  })
+
+  function marketReport(progress: Array<{ itemId: number; demand: number; shipped: number; received: number }>) {
+    return docFixture({
+      id: 'SBH-20260925-0001',
+      docType: '市场报货',
+      status: '已完成',
+      items: progress.map((row) => itemFixture({ id: row.itemId, skuId: `SKU-${row.itemId}`, quantity: row.demand })),
+      fulfillmentProgress: {
+        kind: '报货履约',
+        items: progress.map((row) => ({
+          itemId: row.itemId,
+          normalDemandQuantity: row.demand,
+          orderedQuantity: 0,
+          normalFulfilledQuantity: row.shipped,
+          giftFulfilledQuantity: 0,
+          normalReceivedQuantity: row.received,
+          giftReceivedQuantity: 0,
+        })),
+      },
+    } as Partial<InventoryDocDetail>)
+  }
+
+  it('报货 30 分两批发完、只收了第一批：已发 30 未发 0，未全部入库', async () => {
+    await renderPage(marketReport([{ itemId: 1, demand: 30, shipped: 30, received: 10 }]))
+    expect(screen.getByText('已发 30 / 报货 30（未发 0）')).toBeTruthy()
+    expect(screen.getByText('未全部入库（已收 10 / 报货 30）')).toBeTruthy()
+  })
+
+  it('每一行正常量都收齐才算全部入库', async () => {
+    await renderPage(marketReport([
+      { itemId: 1, demand: 5, shipped: 5, received: 5 },
+      { itemId: 2, demand: 3, shipped: 3, received: 3 },
+    ]))
+    expect(screen.getByText('已全部入库（已收 8）')).toBeTruthy()
+  })
+
+  it('合计已收等于报货、但有一行没收齐（另一行多收）：仍是未全部入库', async () => {
+    await renderPage(marketReport([
+      { itemId: 1, demand: 5, shipped: 5, received: 6 },
+      { itemId: 2, demand: 3, shipped: 3, received: 2 },
+    ]))
+    expect(screen.getByText('未全部入库（已收 8 / 报货 8）')).toBeTruthy()
+  })
+
+  it('报货单没有明细时不出进度字段（every() 空集为真，别显示成「已全部入库」）', async () => {
+    await renderPage(marketReport([]))
+    expect(screen.queryByText('入库进度')).toBeNull()
+  })
+
+  it('其它单据类型不出这两个字段', async () => {
+    await renderPage(docFixture())
+    expect(screen.queryByText('发货进度')).toBeNull()
+    expect(screen.queryByText('入库进度')).toBeNull()
+  })
+})
+
+describe('#363 市场报货参考价格与血缘主体', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockGetSession.mockResolvedValue({ employeeId: 'E1', permissions: { actions: [] } })
+  })
+
+  it.each([
+    ['市场档', { marketStandardUnitPrice: 100, marketUnitDiscount: 10, marketActualUnitPrice: 90, storeStandardUnitPrice: 150 }, true],
+    ['供应链档', { marketStandardUnitPrice: 100, marketUnitDiscount: 10, marketActualUnitPrice: 90 }, false],
+  ])('%s 使用快照展示；门店参考价只接受服务端可见字段', async (_tier, prices, storeVisible) => {
+    await renderPage(docFixture({
+      docType: '市场报货', totalAmount: 180,
+      items: [itemFixture({ quantity: 2, amount: 180, ...prices })],
+      lineage: [{ direction: '上游', relationType: '门店报货汇总', docId: 'DBH-1', docType: '门店报货', status: '已完成', docDate: '2026-09-16', totalQuantity: 2, linkedQuantity: 2, sourceOrgNodeName: '门店 A' }],
+    } as Partial<InventoryDocDetail>))
+    expect(cellByHeader('SKU-1', '市场单价')).toBe('100')
+    expect(cellByHeader('SKU-1', '单价优惠')).toBe('10')
+    expect(cellByHeader('SKU-1', '实际单价')).toBe('90')
+    expect(screen.queryByRole('columnheader', { name: '门店单价（参考）' }) !== null).toBe(storeVisible)
+    if (storeVisible) expect(cellByHeader('SKU-1', '门店单价（参考）')).toBe('150')
+    expect(screen.getByText('门店 A')).toBeInTheDocument()
+  })
+
+  it('无价格档不显示四列价格，缺失主体显示占位', async () => {
+    await renderPage(docFixture({ docType: '市场报货', items: [itemFixture({ quantity: 2 })] } as Partial<InventoryDocDetail>))
+    for (const name of ['市场单价', '单价优惠', '实际单价', '门店单价（参考）']) {
+      expect(screen.queryByRole('columnheader', { name })).toBeNull()
+    }
+    expect(screen.getByText('当前单据')).toBeInTheDocument()
+  })
+})
+
+describe('#349 汇总单来源明细', () => {
+  const sourceRow = (over: Record<string, unknown> = {}) => ({
+    id: '1',
+    marketId: 'M1',
+    marketName: '南昌凤御',
+    sourceDocId: 'MTH-20260920-0001',
+    sourceDocDate: '2026-09-20',
+    skuId: 'SKU-1',
+    skuName: '面膜',
+    specName: null,
+    batchNo: 'B1',
+    quantity: 3,
+    marketStandardUnitPrice: 1200,
+    marketUnitDiscount: 200,
+    marketActualUnitPrice: 1000,
+    amount: 3000,
+    promotionPlanNo: 'FA-1',
+    ...over,
+  })
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    // roles 必须存在：汇总单分支会读会话价格档，而 isAdminScope 要遍历 roles。
+    mockGetSession.mockResolvedValue({
+      employeeId: 'E1',
+      roles: [],
+      permissions: { actions: ['inventory:list', 'inventory:market_price_view'] },
+    })
+    // 市场选项现在由独立查询下发（不从行集派生）
+    mockGetSourceMarkets.mockResolvedValue([{ id: 'M1', name: '南昌凤御' }])
+  })
+
+  it('汇总单渲染来源明细，市场小计与合计同源', async () => {
+    mockGetSources.mockResolvedValue({
+      rows: [sourceRow(), sourceRow({ id: '2', sourceDocId: 'MTH-20260920-0002', quantity: 2, amount: 2000 })],
+      truncated: false,
+      priceVisible: true,
+    })
+    await renderPage(docFixture({ docType: '市场报货汇总', items: [itemFixture({})] } as Partial<InventoryDocDetail>))
+
+    expect(screen.getByRole('heading', { name: '来源明细' })).toBeInTheDocument()
+    expect(screen.getByText('MTH-20260920-0001')).toBeInTheDocument()
+    // 小计 5 件 / 5000.00 与合计各出现一次
+    expect(screen.getAllByText('5')).toHaveLength(2)
+    expect(screen.getAllByText('5000.00')).toHaveLength(2)
+  })
+
+  it('新表渲染在明细表之前，itemTable() 仍取到明细表', async () => {
+    mockGetSources.mockResolvedValue({ rows: [sourceRow()], truncated: false, priceVisible: true })
+    await renderPage(docFixture({
+      docType: '市场报货汇总',
+      items: [itemFixture({ skuId: 'SKU-MAIN', skuName: '汇总商品' })],
+    } as Partial<InventoryDocDetail>))
+    // 来源明细若被放到明细表之后，这里会取到来源表，断不到「汇总商品」
+    expect(within(itemTable()).getByText('汇总商品')).toBeInTheDocument()
+  })
+
+  it('无价格档时来源明细不渲染价格列', async () => {
+    mockGetSession.mockResolvedValue({ employeeId: 'E1', roles: [], permissions: { actions: ['inventory:list'] } })
+    mockGetSources.mockResolvedValue({
+      rows: [sourceRow({ marketStandardUnitPrice: null, marketUnitDiscount: null, marketActualUnitPrice: null, amount: null })],
+      truncated: false,
+      // 行级判据：档位不覆盖任何市场时服务端只下发 priceVisible=false
+      priceVisible: false,
+    })
+    await renderPage(docFixture({ docType: '市场报货汇总', items: [itemFixture({})] } as Partial<InventoryDocDetail>))
+    for (const name of ['市场单价', '单价优惠', '实际单价', '金额']) {
+      expect(screen.queryByRole('columnheader', { name })).toBeNull()
+    }
+  })
+
+  it('非汇总单不渲染来源明细，也不触发这次查询', async () => {
+    await renderPage(docFixture({ docType: '市场报货', items: [itemFixture({})] } as Partial<InventoryDocDetail>))
+    expect(screen.queryByRole('heading', { name: '来源明细' })).toBeNull()
+    expect(mockGetSources).not.toHaveBeenCalled()
   })
 })

@@ -15,6 +15,11 @@ const { assertEmployeeInScope, isStoreInScope, buildStoreScopeCondition } = requ
 const { shanghaiDateStr } = require('../utils/datetime')
 const { SALES_CATEGORIES, UNCATEGORIZED } = require('../utils/sales-categories')
 const {
+  SALE_PAYMENT_CONDITIONS,
+  SERVICE_ORDER_CONDITIONS,
+  serviceCommissionStatusCondition,
+} = require('../utils/allocation-list-conditions')
+const {
   SERVICE_ORDER_ASSIGNABLE_SKILLS,
   EMPLOYEE_ANCHOR_MARKET_JOIN,
   targetMarketJoin,
@@ -313,13 +318,15 @@ async function todayCommission(ctx) {
   // 今日分成金额 + 订单数
   const commissionRows = await pg.query(`
     SELECT
-      COALESCE(SUM(spia.allocated_amount::numeric), 0) AS today_amount,
+      COALESCE(SUM(ROUND(spia.allocated_amount::numeric *
+        COALESCE(sipe.performance_amount::numeric / NULLIF(spir.amount::numeric, 0), 0), 2)), 0) AS today_amount,
       COUNT(DISTINCT si.sale_order_id) AS order_count
     FROM sale_payment_item_allocations spia
     JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+    JOIN sale_reportable_item_events sipe ON sipe.receipt_id = spir.id
     JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
     JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
-    JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id
+    JOIN sale_reportable_payment_events spe ON spe.sale_payment_id = spir.sale_payment_id
     WHERE spia.employee_id = $1
       AND spia.is_void = false
       AND ${performanceEventWindow('spe', 2, 3)}
@@ -340,13 +347,15 @@ async function todayCommission(ctx) {
   // 本月分成金额 + 订单数（个人口径）
   const thisMonthCommRows = await pg.query(`
     SELECT
-      COALESCE(SUM(spia.allocated_amount::numeric), 0) AS amount,
+      COALESCE(SUM(ROUND(spia.allocated_amount::numeric *
+        COALESCE(sipe.performance_amount::numeric / NULLIF(spir.amount::numeric, 0), 0), 2)), 0) AS amount,
       COUNT(DISTINCT si.sale_order_id) AS order_count
     FROM sale_payment_item_allocations spia
     JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+    JOIN sale_reportable_item_events sipe ON sipe.receipt_id = spir.id
     JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
     JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
-    JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id
+    JOIN sale_reportable_payment_events spe ON spe.sale_payment_id = spir.sale_payment_id
     WHERE spia.employee_id = $1
       AND spia.is_void = false
       AND ${performanceEventWindow('spe', 2, 3)}
@@ -368,13 +377,15 @@ async function todayCommission(ctx) {
   // 上月分成金额 + 订单数
   const lastMonthCommRows = await pg.query(`
     SELECT
-      COALESCE(SUM(spia.allocated_amount::numeric), 0) AS amount,
+      COALESCE(SUM(ROUND(spia.allocated_amount::numeric *
+        COALESCE(sipe.performance_amount::numeric / NULLIF(spir.amount::numeric, 0), 0), 2)), 0) AS amount,
       COUNT(DISTINCT si.sale_order_id) AS order_count
     FROM sale_payment_item_allocations spia
     JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+    JOIN sale_reportable_item_events sipe ON sipe.receipt_id = spir.id
     JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
     JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
-    JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id
+    JOIN sale_reportable_payment_events spe ON spe.sale_payment_id = spir.sale_payment_id
     WHERE spia.employee_id = $1
       AND spia.is_void = false
       AND ${performanceEventWindow('spe', 2, 3)}
@@ -408,8 +419,8 @@ async function todayCommission(ctx) {
   if (isManager && eff) {
     const sc = buildStoreScopeCondition(ctx.auth, 'spe.store_id', 1)
     const storeRows = await pg.query(`
-      SELECT COALESCE(SUM(spe.amount::numeric), 0) AS store_revenue
-      FROM sale_order_performance_events spe
+      SELECT COALESCE(SUM(spe.performance_amount::numeric), 0) AS store_revenue
+      FROM sale_reportable_payment_events spe
       WHERE ${sc.sql}
         AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
         AND spe.status = '已支付'
@@ -453,8 +464,8 @@ async function monthlyCalendar(ctx) {
   const dailyRows = await pg.query(`
     SELECT
       spe.performance_date AS date,
-      SUM(spe.amount::numeric) AS amount
-    FROM sale_order_performance_events spe
+      SUM(spe.performance_amount::numeric) AS amount
+    FROM sale_reportable_payment_events spe
     WHERE ${sc.sql}
       AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
       AND spe.status = '已支付'
@@ -469,9 +480,9 @@ async function monthlyCalendar(ctx) {
   // 月度整店汇总
   const totalRows = await pg.query(`
     SELECT
-      COALESCE(SUM(spe.amount::numeric), 0) AS total_amount,
+      COALESCE(SUM(spe.performance_amount::numeric), 0) AS total_amount,
       COUNT(DISTINCT spe.sale_order_id) AS total_order_count
-    FROM sale_order_performance_events spe
+    FROM sale_reportable_payment_events spe
     WHERE ${sc.sql}
       AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
       AND spe.status = '已支付'
@@ -569,13 +580,22 @@ async function todoList(ctx) {
     )
     result.pendingUnbindCount = Number(unbindRows[0].cnt)
 
-    // 待提成分配订单（口径对齐 allocation.pendingList：仅销售单/转换单且非历史订单，避免内部单/寄存单/充值单/历史单致计数虚高）
+    // 待分配角标 = 销售 Tab 可分配回款事件 + 服务 Tab 已完成待分配服务单。
+    // 与两侧默认列表共用条件，COUNT 不受列表分页影响。
     const allocRows = await pg.query(
-      `SELECT COUNT(*) AS cnt FROM sale_orders WHERE store_id = $1 AND status = '已支付' AND allocation_status = '待分配'
-         AND sale_order_type IN ('销售单', '转换单') AND legacy_source IS DISTINCT FROM 'workfine'`,
-      [effectiveStoreId]
+      `SELECT
+         (SELECT COUNT(*)
+            FROM sale_order_payments p
+            JOIN sale_orders o ON o.sale_order_id = p.sale_order_id
+           WHERE ${SALE_PAYMENT_CONDITIONS.join('\n             AND ')}
+             AND p.allocation_status = $2) AS sale_cnt,
+         (SELECT COUNT(*)
+            FROM service_orders so
+           WHERE ${SERVICE_ORDER_CONDITIONS.join('\n             AND ')}
+             AND ${serviceCommissionStatusCondition(3)}) AS service_cnt`,
+      [effectiveStoreId, '待分配', '待分配']
     )
-    result.pendingAllocationCount = Number(allocRows[0].cnt)
+    result.pendingAllocationCount = Number(allocRows[0].sale_cnt) + Number(allocRows[0].service_cnt)
 
     // 待审批退款流水（2026-04-26 sale-order-domain-refactor：从 sale_order_payments 推断）
     const refundRows = await pg.query(
@@ -705,7 +725,8 @@ async function performanceDetail(ctx) {
 
   const allocRows = await pg.query(`
     SELECT
-      spia.allocated_amount AS alloc_amount,
+      ROUND(spia.allocated_amount::numeric *
+        COALESCE(sipe.performance_amount::numeric / NULLIF(spir.amount::numeric, 0), 0), 2) AS alloc_amount,
       COALESCE(spia.commission_amount, 0) AS commission_amount,
       spia.commission_rate,
       spia.allocation_ratio,
@@ -725,10 +746,11 @@ async function performanceDetail(ctx) {
       o.store_id
     FROM sale_payment_item_allocations spia
     JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+    JOIN sale_reportable_item_events sipe ON sipe.receipt_id = spir.id
     JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
     JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
     LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
-    JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id
+    JOIN sale_reportable_payment_events spe ON spe.sale_payment_id = spir.sale_payment_id
     WHERE spia.employee_id = $1
       AND spia.is_void = false
       AND ${performanceEventWindow('spe', 2, 3)}
@@ -738,7 +760,7 @@ async function performanceDetail(ctx) {
   // 服务提成明细（基于 service_commissions 表）
   // 口径：commission_amount = fixed_fee + consume_amount
   //       fixed_fee = sale_items.service_fee × session_used （固定手工费快照）
-  //       consume_amount = unit_real_price × session_used × commission_rate （消耗提成）
+  //       consume_amount = max(unit_real_price, 矩阵 price_threshold) × session_used × commission_rate （消耗提成，#379 阈值保底）
   // 旧实现曾用 unit_real_price × session_used 作为"服务提成"，这是消耗业绩金额口径，
   // 导致员工看到的数字虚高 3-5 倍，已修复。
   // 同上：salesCategory 不进 SQL，汇总恒全量
@@ -758,6 +780,7 @@ async function performanceDetail(ctx) {
       sc.consume_amount,
       sc.role_type,
       sc.commission_rate,
+      sc.allocation_ratio,
       sit.session_used,
       sit.unit_real_price AS service_unit_price,
       si.product_name,
@@ -849,6 +872,10 @@ async function performanceDetail(ctx) {
     commissionRate: Number(r.commission_rate || 0),
     sessionUsed: r.session_used,
     servicePrice: Number(r.service_unit_price || 0),
+    // #379 本行消耗提成是否按划卡单价阈值保底计：用**落库值**反推（落库 consume_amount 高于「真实单价 ×
+    // 次数 × 比例 × 费率」），不查当前矩阵——历史单不回溯，不能因为今天矩阵有阈值就标成「按阈值」。
+    // 容差 0.05：存量 2.4 万行（2026-07 起）落库值与重算值的最大正向偏差即 0.05（舍入/历史手改），零误报。
+    thresholdApplied: Number(r.consume_amount || 0) - Math.round(Number(r.service_unit_price || 0) * Number(r.session_used || 0) * Number(r.allocation_ratio || 0) * Number(r.commission_rate || 0) * 100) / 100 > 0.05,
     unit: r.unit || '次',
     customerName: r.customer_name,
     clientPhone: r.client_phone,

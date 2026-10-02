@@ -8,7 +8,8 @@ import {
   updateInventorySupplier as updateInventorySupplierImpl,
 } from '@/lib/inventory/engine'
 import type { InventorySupplierInput } from '@/lib/inventory/types'
-import { withPermission } from '@/lib/with-permission'
+import { SUPPLIER_MANAGE_ACTIONS } from '@/lib/inventory/supplier-access'
+import { withAnyPermission, withPermission } from '@/lib/with-permission'
 
 export const listInventorySuppliers = withPermission(
   'inventory:stock_list',
@@ -28,13 +29,13 @@ export const listInventorySupplierOptions = withPermission(
   async () => listInventorySupplierOptionsImpl(),
 )
 
-export const createInventorySupplier = withPermission(
-  'inventory:supply_chain_master_data_manage',
+export const createInventorySupplier = withAnyPermission(
+  SUPPLIER_MANAGE_ACTIONS,
   async (_session, input: InventorySupplierInput) => createInventorySupplierImpl(input),
 )
 
-export const updateInventorySupplier = withPermission(
-  'inventory:supply_chain_master_data_manage',
+export const updateInventorySupplier = withAnyPermission(
+  SUPPLIER_MANAGE_ACTIONS,
   async (_session, supplierId: string, input: Partial<InventorySupplierInput>) =>
     updateInventorySupplierImpl(supplierId, input),
 )

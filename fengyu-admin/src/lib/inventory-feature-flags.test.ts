@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { INVENTORY_ENTRY_ENABLED, INVENTORY_LINKAGE_ENABLED } from './inventory-feature-flags'
+import ts from 'typescript'
+import { runInNewContext } from 'node:vm'
 
 function readSource(relativePath: string): string {
   return readFileSync(resolve(process.cwd(), relativePath), 'utf8')
@@ -28,36 +29,34 @@ afterEach(() => {
 })
 
 describe('进销存发布开关 fail-closed', () => {
-  // tests/setup.ts 把 env 设成 'true'（与 dev 一致），这里验证开启态确实生效。
-  it('env=true 时开启', () => {
-    expect(INVENTORY_ENTRY_ENABLED).toBe(true)
-    expect(INVENTORY_LINKAGE_ENABLED).toBe(true)
-  })
-
-  it('env 缺失时关闭 —— prod 镜像不传 build-arg 即走此路径', async () => {
-    vi.stubEnv('NEXT_PUBLIC_INVENTORY_LINKAGE_ENABLED', undefined as unknown as string)
+  it.each([
+    ['true', 'false', true, false],
+    ['false', 'true', false, true],
+    ['true', 'true', true, true],
+    [undefined, undefined, false, false],
+    ['false', 'false', false, false],
+    ['1', 'TRUE', false, false],
+    ['', '', false, false],
+  ])('ENTRY=%s / LINKAGE=%s 独立控制', async (entry, linkage, entryExpected, linkageExpected) => {
+    vi.stubEnv('NEXT_PUBLIC_INVENTORY_ENTRY_ENABLED', entry)
+    vi.stubEnv('NEXT_PUBLIC_INVENTORY_LINKAGE_ENABLED', linkage)
     vi.resetModules()
     const mod = await import('./inventory-feature-flags')
-    expect(mod.INVENTORY_ENTRY_ENABLED).toBe(false)
-    expect(mod.INVENTORY_LINKAGE_ENABLED).toBe(false)
+    expect(mod.INVENTORY_ENTRY_ENABLED).toBe(entryExpected)
+    expect(mod.INVENTORY_LINKAGE_ENABLED).toBe(linkageExpected)
+    const { MENU_CONFIG } = await import('./menu')
+    const pickup = MENU_CONFIG.flatMap(item => 'children' in item ? item.children : []).find(item => item.href === '/pickup-records')
+    expect(pickup?.hidden).toBe(!entryExpected)
+    expect(MENU_CONFIG.find(item => item.label === '库存管理')?.hidden).toBe(!linkageExpected)
   })
 
-  it('只有字面量 true 才开启', async () => {
-    for (const value of ['false', '1', 'TRUE', '']) {
-      vi.stubEnv('NEXT_PUBLIC_INVENTORY_LINKAGE_ENABLED', value)
-      vi.resetModules()
-      const mod = await import('./inventory-feature-flags')
-      expect(mod.INVENTORY_LINKAGE_ENABLED, `env=${value} 不应开启`).toBe(false)
-    }
-  })
-
-  it('四端都没有硬编码 true', () => {
+  it('联动与 admin 入口禁止硬编码 true，staff 登记入口独立开放', () => {
     expect(hardcodedTrue('src/lib/inventory-feature-flags.ts', 'INVENTORY_ENTRY_ENABLED')).toBe(false)
     expect(hardcodedTrue('src/lib/inventory-feature-flags.ts', 'INVENTORY_LINKAGE_ENABLED')).toBe(false)
     for (const path of CLOUD_FN_FLAGS) {
       expect(hardcodedTrue(path, 'INVENTORY_LINKAGE_ENABLED'), path).toBe(false)
     }
-    expect(hardcodedTrue(MINIPROGRAM_FLAGS, 'INVENTORY_ENTRY_ENABLED')).toBe(false)
+    expect(hardcodedTrue(MINIPROGRAM_FLAGS, 'INVENTORY_ENTRY_ENABLED')).toBe(true)
     expect(hardcodedTrue(MINIPROGRAM_FLAGS, 'INVENTORY_LINKAGE_ENABLED')).toBe(false)
   })
 
@@ -67,18 +66,35 @@ describe('进销存发布开关 fail-closed', () => {
     }
   })
 
-  it('staff 小程序按 envVersion 判别（拿不到 process.env）', () => {
+  it.each(['develop', 'trial', 'release', undefined, 'throw'])('staff %s：登记开放，联动仅 develop', (version) => {
     const source = readSource(MINIPROGRAM_FLAGS)
-    expect(source).toContain('wx.getAccountInfoSync()')
-    expect(source).toContain("envVersion === 'develop'")
+    const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText
+    const exports: Record<string, boolean> = {}
+    runInNewContext(compiled, { exports, wx: { getAccountInfoSync() {
+      if (version === 'throw') throw new Error('unavailable')
+      return { miniProgram: { envVersion: version } }
+    } } })
+    expect(exports.INVENTORY_ENTRY_ENABLED).toBe(true)
+    expect(exports.INVENTORY_LINKAGE_ENABLED).toBe(version === 'develop')
+  })
+
+  it('staff 只将提货入口接到 ENTRY，库存入口接到 LINKAGE', () => {
+    for (const page of ['workbench', 'profile']) {
+      const base = `../fengyu-staff/miniprogram/pages/${page}/${page}`
+      expect(readSource(`${base}.ts`)).toContain('inventoryLinkageEnabled: INVENTORY_LINKAGE_ENABLED')
+      const wxml = readSource(`${base}.wxml`)
+      expect(wxml).toMatch(/wx:if="{{[^}]*inventoryLinkageEnabled[^}]*}}"[^>]*(?:goInventory|onNavInventory)/)
+      expect(wxml).toMatch(/wx:if="{{[^}]*inventoryEntryEnabled[^}]*}}"[^>]*(?:goPickup|onNavPickup)/)
+    }
   })
 })
 
 describe('prod 环境模板守护', () => {
   // prod 的 inventory_cutover_states 为空表，开关一开提货即全量失败。
   // 期初库存导入并核验为「已初始化」之前，这两个键必须保持 false。
-  it('prod.env.example 两个键都是 false', () => {
+  it('prod.env.example 登记开启、两个联动键仍 false', () => {
     const source = readSource('../envs/prod.env.example')
+    expect(source).toMatch(/^NEXT_PUBLIC_INVENTORY_ENTRY_ENABLED=true$/m)
     expect(source).toMatch(/^INVENTORY_LINKAGE_ENABLED=false$/m)
     expect(source).toMatch(/^NEXT_PUBLIC_INVENTORY_LINKAGE_ENABLED=false$/m)
   })
@@ -90,6 +106,9 @@ describe('prod 环境模板守护', () => {
   })
 
   it('admin 构建链把 NEXT_PUBLIC_ 开关传进镜像', () => {
+    expect(readSource('../docker/docker-compose.yml')).toContain('NEXT_PUBLIC_INVENTORY_ENTRY_ENABLED: ${NEXT_PUBLIC_INVENTORY_ENTRY_ENABLED:-false}')
+    expect(readSource('../docker/Dockerfile.admin')).toContain('ARG NEXT_PUBLIC_INVENTORY_ENTRY_ENABLED=')
+    expect(readSource('../.claude/skills/remote-deploy/deploy-common.sh')).toContain('--build-arg NEXT_PUBLIC_INVENTORY_ENTRY_ENABLED=')
     expect(readSource('../docker/Dockerfile.admin')).toContain('ARG NEXT_PUBLIC_INVENTORY_LINKAGE_ENABLED=')
     expect(readSource('../.claude/skills/remote-deploy/deploy-common.sh'))
       .toContain('--build-arg NEXT_PUBLIC_INVENTORY_LINKAGE_ENABLED=')

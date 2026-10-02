@@ -151,6 +151,9 @@ function mockPaginatedChain(total: number, dataRows: any[]) {
 }
 
 const mockCardRow = {
+  // #182：疗程卡的已转走金额/次数必须显式给出（真实查询带转出行聚合），缺省即 fail-closed
+  convertedAmount: '0',
+  convertedQuantity: 0,
   saleItemId: 'SI-001',
   saleOrderId: 'FY-XSD-WX-2604100001',
   productName: '蜜语水润嫩肤护理',
@@ -440,6 +443,16 @@ describe('getCustomerHeldCards — 权限与 scope', () => {
     expect(result).toEqual([])
     expect(db.select).not.toHaveBeenCalled()
   })
+
+  it('当前店在 scope 内时，候选不再按来源门店过滤', async () => {
+    ;(isInScope as any).mockReturnValue(true)
+    mockSelectRows([{ saleItemId: 'away', storeId: 'store-999', storeName: '汇东店',
+      productType: '疗程卡', saleOrderType: '寄存单', unitRealPrice: '100.00',
+      remainingSessions: 1, quantity: 1 }])
+    const rows = await getCustomerHeldCards('user-1', 'store-1')
+    expect(rows[0]).toMatchObject({ saleItemId: 'away', storeId: 'store-999', storeName: '汇东店' })
+    expect(eq).not.toHaveBeenCalledWith('store_id', 'store-1')
+  })
 })
 
 describe('getCustomerHeldCards — 数据映射', () => {
@@ -655,6 +668,9 @@ const mockCardDetailSession = {
 }
 
 const mockCardDetailRow = {
+  // #182：疗程卡的已转走金额/次数必须显式给出（真实查询带转出行聚合），缺省即 fail-closed
+  convertedAmount: '0',
+  convertedQuantity: 0,
   saleItemId: 'SI-001',
   saleOrderId: 'FY-XSD-WX-2604100001',
   productName: '蜜语水润嫩肤护理',
@@ -837,6 +853,9 @@ function mockExportChain(rows: any[]) {
 }
 
 const mockExportRow = {
+  // #182：疗程卡的已转走金额/次数必须显式给出（真实查询带转出行聚合），缺省即 fail-closed
+  convertedAmount: '0',
+  convertedQuantity: 0,
   productName: '蜜语水润嫩肤护理',
   specName: '蜜语水润嫩肤护理 10次卡',
   sessionCount: 10,

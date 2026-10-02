@@ -8,6 +8,7 @@ import { getMarketStoreFilterOptions } from "@/actions/stores"
 import { listOnboardingApplications } from "@/actions/lakala-onboarding"
 import { getSession } from "@/lib/auth"
 import { hasUiCapability } from "@/lib/permission-contract"
+import type { OnboardingStatusGroup } from "@/actions/lakala-onboarding"
 import MerchantsPageClient from "./_components/merchants-page"
 
 export const dynamic = "force-dynamic"
@@ -35,7 +36,14 @@ export default async function Page({
     }),
     getMerchantMarketOptions(),
     getMarketStoreFilterOptions(),
-    canOnboard ? listOnboardingApplications() : Promise.resolve([]),
+    canOnboard ? listOnboardingApplications({
+      search: params.oq,
+      marketId: params.omarket,
+      storeId: params.ostore,
+      status: params.ostatus as OnboardingStatusGroup | undefined,
+      page: params.opage ? Number(params.opage) : undefined,
+      pageSize: params.osize ? Number(params.osize) : undefined,
+    }) : Promise.resolve({ data: [], total: 0, counts: { missing: 0, ready: 0, reviewing: 0, completed: 0 } }),
   ])
 
   return (
@@ -46,7 +54,9 @@ export default async function Page({
         markets={markets}
         canCreate={canCreate}
         canOnboard={canOnboard}
-        onboardingApplications={onboardingApplications}
+        onboardingApplications={onboardingApplications.data}
+        onboardingTotal={onboardingApplications.total}
+        onboardingCounts={onboardingApplications.counts}
         filterOptions={filterOptions}
       />
     </Suspense>

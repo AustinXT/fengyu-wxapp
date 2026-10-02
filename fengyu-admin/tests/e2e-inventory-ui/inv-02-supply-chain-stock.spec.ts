@@ -8,8 +8,7 @@
  *   C. 供应链备货：品项公司报货需求 → 采购订单（供应链行）→ 供应链采购入库
  *      —— 总部批次由此产生，是 INV-03 三级主链的前提
  *
- * ⚠️ 建单失败时 inventory-docs-page.tsx:402 走的是原生 alert()，不是 toast。
- * 必须挂 page.on('dialog') 接管，否则弹窗会阻塞整个页面。这本身是 UX 发现之一。
+ * 同时监听原生弹窗和页面 toast，记录门禁负例的用户可见反馈。
  */
 
 import { test, expect } from '@playwright/test'
@@ -30,6 +29,7 @@ import {
   type Verdict,
 } from './_helpers/env'
 import { closeCutoverGate, openCutoverGate, readCutoverStatus } from './_helpers/cutover'
+import { pickCandidateDoc, pickSku } from './_helpers/ui'
 
 test.setTimeout(420_000)
 
@@ -39,6 +39,8 @@ const OVERFLOW_REMARK = `${NS}-盘溢-${STAMP}`
 
 test('INV-02：门禁 fail-closed → 开闸 → 供应链备货', async ({ browser }) => {
   const verdicts: Verdict[] = []
+  // 即使前置失败，也不能让 INV-10 消费上一次运行的门禁结论。
+  writeCtx('inv02_gate', { at: new Date().toISOString() })
   const inv01 = readCtx<{ supplySkuId: string; supplySkuName: string; supplierName: string }>('inv01')
   if (!inv01?.supplySkuId) {
     throw new Error('缺少 INV-01 上下文，请先跑 inv-01-master-data.spec.ts')
@@ -55,35 +57,40 @@ test('INV-02：门禁 fail-closed → 开闸 → 供应链备货', async ({ brow
     await dialog.accept('').catch(() => dialog.dismiss().catch(() => null))
   })
 
+  let gateNeedsReopen = false
   try {
     await login(page, INVT_ACCOUNTS.ADM.phone, INVT_PASS)
 
     // ══ A. 门禁关闭态：写入必须被拒 ════════════════════════════════
     console.log('[INV-02] A: 关闸并验证 fail-closed')
     closeCutoverGate()
+    gateNeedsReopen = true
     recordVerdict(verdicts, 'gate: 已置为关闭态', readCutoverStatus() === '待初始化', readCutoverStatus())
 
-    const docsBefore = Number(psql(`SELECT count(*) FROM inventory_docs`))
-    await createOverflowDoc(page, inv01.supplySkuName, GATE_PROBE_REMARK)
+    const gateToast = await createOverflowDoc(page, inv01.supplySkuName, GATE_PROBE_REMARK)
 
-    const docsAfterBlocked = Number(psql(`SELECT count(*) FROM inventory_docs`))
+    // 共享 dev 库会有其它测试建单；只核对本轮唯一备注的门禁探针。
+    const gateProbeRows = Number(psql(`SELECT count(*) FROM inventory_docs WHERE remark = ${sqlStr(GATE_PROBE_REMARK)}`))
     recordVerdict(
       verdicts,
       'gate: 关闭态下建单未落库（fail-closed 生效）',
-      docsAfterBlocked === docsBefore,
-      `before=${docsBefore} after=${docsAfterBlocked}`,
+      gateProbeRows === 0,
+      `本轮探针匹配单据数=${gateProbeRows}`,
     )
-    // 功能上门禁已生效（单据没落库）。这里单独考察「用户能不能看懂为什么被拒」。
-    // 实测：通用建单弹窗 catch 里是 alert((err as Error).message)，而 Server Action
-    // 抛出的 ApiError 在**生产构建**下被 Next.js 统一脱敏成 "An error occurred in the
-    // Server Components render..."，业务文案「库存期初尚未导入并核验完成」完全丢失。
-    // 用户只看到一句英文技术提示，不知道该做什么 —— 记为 UX 发现而非功能失败。
-    const gateAlert = nativeDialogs.find((d) => /期初|暂不可办理/.test(d.message))
+    // 报告只消费本轮实际可见反馈，不再转述历史上的原生 alert 结论。
+    const gateVisibleText = gateToast || nativeDialogs.map((d) => d.message).join(' / ')
+    const gateError = {
+      at: new Date().toISOString(),
+      page: '/inventory/docs → 新建库存单据（期初门禁）',
+      blocked: gateProbeRows === 0,
+      visibleText: gateVisibleText,
+    }
+    writeCtx('inv02_gate', gateError)
     recordVerdict(
       verdicts,
-      'UX-ERRMSG-01: 拒绝原因应可读（期望含「期初」/「暂不可办理」，实测将失败）',
-      Boolean(gateAlert),
-      gateAlert?.message ?? `实际提示: ${nativeDialogs.map((d) => d.message).join(' || ')}`,
+      'UX-ERRMSG-01: 拒绝原因应可读',
+      /期初|暂不可办理/.test(gateVisibleText),
+      `实际提示: ${gateVisibleText || '(无)'}`,
     )
     // UX 规则 #4：建单失败用原生 alert 而非页面内提示
     recordVerdict(
@@ -96,6 +103,7 @@ test('INV-02：门禁 fail-closed → 开闸 → 供应链备货', async ({ brow
     // ══ B. 开闸后同一张单应成功 ═══════════════════════════════════
     console.log('[INV-02] B: 开闸')
     openCutoverGate()
+    gateNeedsReopen = false
     recordVerdict(verdicts, 'gate: 已开闸', readCutoverStatus() === '已初始化', readCutoverStatus())
 
     await page.reload()
@@ -134,8 +142,8 @@ test('INV-02：门禁 fail-closed → 开闸 → 供应链备货', async ({ brow
 
     const REQ_REMARK = `${NS}-品项报货-${STAMP}`
     await selectByLabel(page, '供应链库存主体', { label: '品牌总部' })
-    await selectContaining(
-      page.locator('select').filter({ hasText: '选择库存商品' }).first(),
+    await pickSku(
+      page.getByRole('combobox', { name: '选择库存商品', exact: true }).first(),
       inv01.supplySkuName,
     )
     await fillByLabel(page, '数量', '100')
@@ -162,9 +170,7 @@ test('INV-02：门禁 fail-closed → 开闸 → 供应链备货', async ({ brow
     await expect(page.getByRole('heading', { name: '采购订单' })).toBeVisible({ timeout: 15_000 })
 
     const PO_REMARK = `${NS}-供应链采购-${STAMP}`
-    const sourceRow = page.locator('label').filter({ hasText: reqId }).first()
-    await sourceRow.waitFor({ state: 'visible', timeout: 20_000 })
-    await sourceRow.locator('input[type="checkbox"]').check()
+    await pickCandidateDoc(page, '来源报货单', reqId)
     await page.waitForTimeout(1500)   // 勾选后要拉明细
     await selectByLabel(page, '供应链库存主体', { label: '品牌总部' })
     await fillByLabel(page, '采购数量', '100')
@@ -207,7 +213,7 @@ test('INV-02：门禁 fail-closed → 开闸 → 供应链备货', async ({ brow
 
     const GRK_REMARK = `${NS}-供应链入库-${STAMP}`
     const BATCH_NO = `${NS}-B${STAMP}`
-    await selectByLabel(page, '采购订单', { contains: poId })
+    await pickCandidateDoc(page, '采购订单', poId)
     await page.waitForTimeout(1500)
     // 「供应链库存主体」不可由操作人自由改：候选唯一时直接是只读展示（#189），
     // 候选多个时也会在选定采购订单后 disabled={Boolean(doc)} 随单锁定。
@@ -258,6 +264,8 @@ test('INV-02：门禁 fail-closed → 开闸 → 供应链备货', async ({ brow
     })
     console.log(`[INV-02] 原生弹窗累计捕获 ${nativeDialogs.length} 个:`, JSON.stringify(nativeDialogs))
   } finally {
+    // A 段断言或 UI 失败也要恢复 dev 门禁，否则其它验收会被本测试阻塞。
+    if (gateNeedsReopen) openCutoverGate()
     await ctx.close()
     summarize(2, verdicts)
   }
@@ -345,7 +353,7 @@ async function createOverflowDoc(
   page: import('@playwright/test').Page,
   skuName: string,
   remark: string,
-) {
+): Promise<string> {
   await page.goto(`${BASE}/inventory/docs`)
   await page.waitForLoadState('networkidle')
   await page.getByRole('button', { name: /新建/ }).first().click()
@@ -358,12 +366,14 @@ async function createOverflowDoc(
   await selects.nth(2).selectOption({ label: `市场 · ${TOPO.MARKET_NAME}` })  // 入库/接收主体
   await dialog.locator('textarea').first().fill(remark)
 
-  // 明细行：SKU（唯一的 select，因盘溢不需批次选择器）+ 数量
-  await selectContaining(dialog.locator('select').last(), skuName)
+  // 明细行：SKU（可检索 combobox，#339；盘溢不需批次选择器）+ 数量
+  await pickSku(dialog.getByRole('combobox', { name: '明细 1 库存 SKU', exact: true }), skuName)
   await dialog.getByPlaceholder('数量').fill('10')
 
   await dialog.getByRole('button', { name: '提交' }).click()
-  // 成功则弹窗关闭；失败走原生 alert（已由 page.on('dialog') 接管）
-  await page.waitForTimeout(3000)
+  // 等待反馈完成后读取；固定睡 3 秒可能在慢响应时把空白误作当前反馈。
+  await page.locator('[data-sonner-toast]').first().waitFor({ state: 'visible', timeout: 10_000 }).catch(() => null)
+  const toastText = (await page.locator('[data-sonner-toast]').first().innerText().catch(() => '')).trim()
   await page.keyboard.press('Escape').catch(() => null)
+  return toastText
 }

@@ -19,8 +19,10 @@ import { Button } from '@/components/ui/button'
 import { DataTable, type Column } from '@/components/ui/data-table'
 import { Dialog, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { InventoryNumberInput } from './inventory-number-input'
 import { Pagination } from '@/components/ui/pagination'
 import { Select } from '@/components/ui/select'
+import { normalizePage } from '@/lib/paging'
 
 interface ComponentFormRow {
   inventorySkuId: string
@@ -54,7 +56,7 @@ export default function InventorySkuMappingsPage({
 }) {
   const router = useRouter()
   const { get, setMany } = useUrlFilters()
-  const page = Math.max(1, Number(get('page', '1')) || 1)
+  const page = normalizePage(get('page', '1'))
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get('size')))
     ? Number(get('size'))
     : 20
@@ -265,7 +267,7 @@ export default function InventorySkuMappingsPage({
                     </label>
                     <label className="block space-y-1.5 text-sm font-medium">
                       <span>每件数量</span>
-                      <Input
+                      <InventoryNumberInput
                         type="number"
                         min={1}
                         step={1}

@@ -7,7 +7,7 @@
   />
   <view class="mgmt-scope-tag">
     <text>范围：</text>
-    <text class="mgmt-scope-tag-value">{{scopeName || (scopeType === 'all' ? '全部市场' : '')}}</text>
+    <text class="mgmt-scope-tag-value">{{scopeName || (scopeType === 'all' ? '全部市场' : '')}}{{scopeInactive ? '（已停用）' : ''}}</text>
   </view>
 </view>
 
@@ -123,6 +123,7 @@
   <!-- 复购情况 -->
   <view class="pc-subsection">
     <view class="pc-subsection-title">复购情况</view>
+    <scroll-view scroll-x class="pc-table-scroll">
     <view class="pc-table pc-table--repurchase">
       <view class="pc-table-header">
         <view class="pc-col pc-col-name">品项</view>
@@ -151,5 +152,6 @@
         </view>
       </mgmt-data-state>
     </view>
+    </scroll-view>
   </view>
 </view>

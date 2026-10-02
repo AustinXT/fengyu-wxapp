@@ -375,8 +375,8 @@ Page({
           unitRealPrice: Number(it.unit_real_price || 0).toFixed(2),
           unitPrice: Number(it.unit_price || 0).toFixed(2),
           hasDiscount: Number(it.unit_price || 0) > Number(it.unit_real_price || 0),
-          quantity: Number(it.quantity || 1),
-          cardCount: Number(it.quantity || 1),
+          quantity: Number(it.quantity ?? 1),
+          cardCount: Number(it.quantity ?? 1),
           pendingReceived: Number(it.pending_received || 0).toFixed(2),
           remark: it.remark || '',
         };

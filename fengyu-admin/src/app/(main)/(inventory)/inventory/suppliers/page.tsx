@@ -1,4 +1,6 @@
 import { Suspense } from 'react'
+import { listInventoryLocations } from '@/actions/inventory/locations'
+import { supplierCreationOwner } from '@/lib/inventory/supplier-access'
 import { listInventorySuppliers } from '@/actions/inventory/suppliers'
 import { getSession } from '@/lib/auth'
 import { hasUiCapability } from '@/lib/permission-contract'
@@ -23,11 +25,20 @@ export default async function Page({
   const pageSize = params.size ? Number(params.size) : 20
   const session = await getSession()
   requireAllUiPageCapabilities(session, ['inventory:stock_list'])
-  const [suppliers] = await Promise.all([
+  const [suppliers, locations] = await Promise.all([
     listInventorySuppliers({ keyword: params.q, onlyActive, page, pageSize }),
+    listInventoryLocations(),
   ])
-  const canCreate = hasUiCapability(session.permissions.actions, 'inventory:supply_chain_master_data_manage')
-  const canUpdate = canCreate
+  const canUpdate = hasUiCapability(session.permissions.actions, 'inventory:supply_chain_master_data_manage')
+    || hasUiCapability(session.permissions.actions, 'inventory:market_sku_manage')
+  let canCreate = canUpdate
+  let creationOwnerLabel = '供应链共有'
+  if (canCreate) {
+    try {
+      const owner = supplierCreationOwner(session)
+      if (owner) creationOwnerLabel = locations.find((row) => row.locationId === owner)?.name ?? owner
+    } catch { canCreate = false }
+  }
 
   return (
     <div className="p-6">
@@ -38,6 +49,7 @@ export default async function Page({
           total={suppliers.total}
           canCreate={canCreate}
           canUpdate={canUpdate}
+          creationOwnerLabel={creationOwnerLabel}
         />
       </Suspense>
     </div>

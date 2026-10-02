@@ -21,7 +21,7 @@ import {
 import { isGateOpen, openCutoverGate } from './_helpers/cutover'
 import {
   clickAndExpectToast, docIdByRemark, docStatus, fillByLabel, lotQtyAll,
-  openOperation, reservationStates, selectByLabel, selectContaining, selectLotWithQty,
+  openOperation, pickCandidateDoc, reservationStates, pickSku, selectByLabel, selectContaining, selectLotWithQty,
   skuSelect, submitForm,
 } from './_helpers/ui'
 
@@ -57,7 +57,7 @@ test('INV-04：退货双链 —— 预留机制 / 审批回库 / 驳回释放', 
     await openOperation(page, 'store', '门店退货申请')
     await selectByLabel(page, '退货主体', { contains: TOPO.STORE_A_NAME })
     await selectByLabel(page, '回库主体', { contains: TOPO.MARKET_NAME })
-    await selectContaining(skuSelect(page), inv01.supplySkuName)
+    await pickSku(skuSelect(page), inv01.supplySkuName)
     await selectLotWithQty(page, '来源批次', QTY.storeReturn)
     await fillByLabel(page, '数量', String(QTY.storeReturn))
     await fillByLabel(page, '退货原因', 'INVT-质量问题')
@@ -94,7 +94,7 @@ test('INV-04：退货双链 —— 预留机制 / 审批回库 / 驳回释放', 
     // ══ A-2. 市场审批通过 ═════════════════════════════════════════
     console.log('[INV-04] A-2 市场审批门店退货')
     await openOperation(page, 'market', '审批门店退货')
-    await selectByLabel(page, '待审批退货单', { contains: storeReturnId })
+    await pickCandidateDoc(page, '待审批退货单', storeReturnId)
     await page.waitForTimeout(1500)
     await fillByLabel(page, '备注', 'INVT-同意退货')
     await clickAndExpectToast(page, '审批并回库', /退货已审批回库/)
@@ -123,7 +123,7 @@ test('INV-04：退货双链 —— 预留机制 / 审批回库 / 驳回释放', 
     await openOperation(page, 'market', '市场退货申请')
     await selectByLabel(page, '退货主体', { contains: TOPO.MARKET_NAME })
     await selectByLabel(page, '回库主体', { contains: '品牌总部' })
-    await selectContaining(skuSelect(page), inv01.supplySkuName)
+    await pickSku(skuSelect(page), inv01.supplySkuName)
     await selectLotWithQty(page, '来源批次', QTY.marketReturnRejected)
     await fillByLabel(page, '数量', String(QTY.marketReturnRejected))
     await fillByLabel(page, '退货原因', 'INVT-多发')
@@ -136,7 +136,7 @@ test('INV-04：退货双链 —— 预留机制 / 审批回库 / 驳回释放', 
 
     console.log('[INV-04] B-2 供应链驳回')
     await openOperation(page, 'supply-chain', '审批市场退货')
-    await selectByLabel(page, '待审批退货单', { contains: rejectId })
+    await pickCandidateDoc(page, '待审批退货单', rejectId)
     await page.waitForTimeout(1500)
     await fillByLabel(page, '备注', 'INVT-不同意退货')
     await clickAndExpectToast(page, '驳回退货', /退货申请已驳回/)
@@ -165,7 +165,7 @@ test('INV-04：退货双链 —— 预留机制 / 审批回库 / 驳回释放', 
     await openOperation(page, 'market', '市场退货申请')
     await selectByLabel(page, '退货主体', { contains: TOPO.MARKET_NAME })
     await selectByLabel(page, '回库主体', { contains: '品牌总部' })
-    await selectContaining(skuSelect(page), inv01.supplySkuName)
+    await pickSku(skuSelect(page), inv01.supplySkuName)
     await selectLotWithQty(page, '来源批次', QTY.marketReturnApproved)
     await fillByLabel(page, '数量', String(QTY.marketReturnApproved))
     await fillByLabel(page, '退货原因', 'INVT-滞销')
@@ -175,7 +175,7 @@ test('INV-04：退货双链 —— 预留机制 / 审批回库 / 驳回释放', 
 
     console.log('[INV-04] C-2 供应链审批通过')
     await openOperation(page, 'supply-chain', '审批市场退货')
-    await selectByLabel(page, '待审批退货单', { contains: approveId })
+    await pickCandidateDoc(page, '待审批退货单', approveId)
     await page.waitForTimeout(1500)
     await fillByLabel(page, '备注', 'INVT-同意')
     await clickAndExpectToast(page, '审批并回库', /退货已审批回库/)

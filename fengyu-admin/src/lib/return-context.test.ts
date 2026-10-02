@@ -23,6 +23,11 @@ describe("return context", () => {
     "//evil.example/path",
     "javascript:alert(1)",
     "/safe\\evil",
+    // 点段归一化后变成协议相对 URL
+    "/..//evil.example",
+    "/.//evil.example",
+    "/%2e%2e//evil.example",
+    "/a/..//evil.example/x",
   ])("拒绝非本站返回地址 %s", (raw) => {
     expect(resolveReturnTo(raw, "/products")).toBe("/products")
   })

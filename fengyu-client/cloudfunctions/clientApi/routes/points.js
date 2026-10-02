@@ -87,7 +87,7 @@ async function history(ctx) {
     SELECT pt.id, pt.type, pt.amount, pt.ref_order_id, pt.created_at
     FROM point_transactions pt
     WHERE pt.user_id = $1
-    ORDER BY pt.created_at DESC
+    ORDER BY pt.created_at DESC, pt.id DESC
     LIMIT $2 OFFSET $3
   `, [userId, pageSize, offset])
 

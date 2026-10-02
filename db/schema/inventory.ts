@@ -57,6 +57,7 @@ export const inventorySkus = pgTable(
     purchaseCategory: text('purchase_category'),
     sourceType: text('source_type').notNull().default('供应链'),
     ownerMarketId: text('owner_market_id').references(() => orgNodes.id),
+    standardPrice: numeric('standard_price', { precision: 12, scale: 2 }),
     retailPrice: numeric('retail_price', { precision: 12, scale: 2 }),
     accountingPrice: numeric('accounting_price', { precision: 12, scale: 2 }),
     supplyChainPurchasePrice: numeric('supply_chain_purchase_price', {
@@ -117,7 +118,9 @@ export const inventorySkus = pgTable(
     ),
     check(
       'chk_inventory_skus_prices_nonnegative',
-      sql`COALESCE(${table.retailPrice}, 0) >= 0
+      sql`COALESCE(${table.standardPrice}, 0) >= 0
+       AND ${table.standardPrice} IS DISTINCT FROM 'NaN'::numeric
+       AND COALESCE(${table.retailPrice}, 0) >= 0
        AND COALESCE(${table.accountingPrice}, 0) >= 0
        AND COALESCE(${table.supplyChainPurchasePrice}, 0) >= 0
        AND COALESCE(${table.marketPurchasePrice}, 0) >= 0
@@ -330,6 +333,7 @@ export const inventorySuppliers = pgTable(
   {
     supplierId: text('supplier_id').primaryKey(),
     name: text('name').notNull(),
+    ownerMarketId: text('owner_market_id').references(() => orgNodes.id),
     contactName: text('contact_name'),
     phone: varchar('phone', { length: 30 }),
     address: text('address'),
@@ -342,7 +346,9 @@ export const inventorySuppliers = pgTable(
       .$onUpdate(() => sql`NOW()`),
   },
   (table) => [
-    uniqueIndex('uq_inventory_suppliers_name').on(table.name),
+    uniqueIndex('uq_inventory_suppliers_shared_name').on(table.name).where(sql`${table.ownerMarketId} IS NULL`),
+    uniqueIndex('uq_inventory_suppliers_market_name').on(table.ownerMarketId, table.name).where(sql`${table.ownerMarketId} IS NOT NULL`),
+    index('idx_inventory_suppliers_owner_market').on(table.ownerMarketId),
     index('idx_inventory_suppliers_active').on(table.isActive),
   ],
 )
@@ -514,7 +520,7 @@ export const inventoryDocs = pgTable(
         '院入库','分院调货出库','分院调货入库','市场间调货出库','市场间调货入库',
         '员工购出库','供应链员工购出库','内部领用','非凤御市场出库','市场退货','市场退货入库',
         '供应链退货入库','院退货','院顾客产品出库','院顾客退货','市场产品报损',
-        '院产品报损','市场产品盘溢','市场库存盘点','分院库存盘点','库存转换出库',
+        '院产品报损','市场产品盘溢','院产品盘溢','市场库存盘点','分院库存盘点','库存转换出库',
         '库存转换入库','期初库存'
       )`,
     ),
@@ -553,9 +559,10 @@ export const inventoryDocItems = pgTable(
      */
     supplierId: text('supplier_id').references(() => inventorySuppliers.supplierId),
     /**
-     * 行级市场归属。NULL = 品项公司自用行（走供应链采购入库），非 NULL = 市场行（走品项公司发货）。
+     * 行级市场归属。NULL = 品项公司自用行，非 NULL = 来自市场报货汇总的市场行。
      *
-     * 采购订单收敛成单一 doc_type 后，下游链路分流不再看单据类型而是看本列（#194）。
+     * 采购订单的所有行都走供应链采购入库、按供应链采购价计金额（#335），本列只是来源追溯标记，
+     * 不再决定下游链路（#194 时曾按它分流）。
      */
     marketId: text('market_id').references(() => orgNodes.id),
     productSeries: text('product_series'),
@@ -619,7 +626,12 @@ export const inventoryDocItems = pgTable(
     index('idx_inventory_doc_items_market').on(table.marketId),
     index('idx_inventory_doc_items_promotion').on(table.promotionPlanId),
     uniqueIndex('uq_inventory_doc_items_id_doc').on(table.id, table.docId),
-    check('chk_inventory_doc_items_qty', sql`${table.quantity} > 0`),
+    /**
+     * #351：盘点单的数量是实盘数，0（账上有货、货架上没有）必须能录，所以 CHECK 只拦负数。
+     * 「非盘点类型仍须 > 0」按 doc_id 查 doc_type 才能判断，CHECK 做不到，交给 trigger
+     * `inventory_assert_doc_item_quantity`（见迁移）兜底；admin engine / staffApi 两端同规则。
+     */
+    check('chk_inventory_doc_items_qty', sql`${table.quantity} >= 0`),
     check(
       'chk_inventory_doc_items_promotion_rule_type',
       sql`${table.promotionRuleTypeSnapshot} IS NULL OR ${table.promotionRuleTypeSnapshot} IN ('单品阶梯','组合')`,
@@ -694,8 +706,8 @@ export const inventoryDocLinks = pgTable(
       'chk_inventory_doc_links_relation_type',
       sql`${table.relationType} IN (
         '门店报货汇总','市场报货汇总','市场报货采购订单','报货汇总采购订单','品项公司报货采购订单',
-        '采购订单发货','采购订单赠送发货','发货收货','采购订单供应链采购入库',
-        '门店报货配货','门店报货赠送配货','退货回库','库存转换','历史关联'
+        '采购订单发货','采购订单赠送发货','市场报货发货','市场报货赠送发货','发货收货','采购订单供应链采购入库',
+        '门店报货配货','门店报货赠送配货','退货回库','库存转换','盘点盘溢','历史关联'
       )`,
     ),
   ],

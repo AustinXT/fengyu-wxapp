@@ -3,7 +3,7 @@
  *
  * 同目录另外两个测试文件走「读源码正则」的守护风格（那两个组件一个 2800 行、一个 600 行，
  * 渲染 mock 成本远高于收益）。但清场这件事不一样：它防的是「用户再点一次就多建一张
- * 实扣库存的单」，而正则只能证明 `setItems([defaultItem()])` 这行字还在源码里 ——
+ * 实扣库存的单」，而正则只能证明 `setItems([defaultItem(docType)])` 这行字还在源码里 ——
  * 证明不了它真的在提交成功后跑到了、更证明不了跑的顺序对。
  * 这个组件依赖少（两个 action + 几个 UI 组件），值得用真渲染钉住。
  */
@@ -20,16 +20,13 @@ const { mockCreateDoc, mockListLots } = vi.hoisted(() => ({
 vi.mock('@/actions/inventory/docs', () => ({ createInventoryCoreDoc: mockCreateDoc }))
 vi.mock('@/actions/inventory/stocks', () => ({ listInventoryLotOptions: mockListLots }))
 vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn() } }))
+vi.mock('./inventory-sku-search-select', () => import('./__stubs__/inventory-sku-search-select.stub'))
 
 import { InventoryDocCreateForm } from './inventory-doc-create-form'
 
 const LOCATIONS = [
   { locationId: 'LOC-M1', orgNodeId: 'NODE-M1', name: '市场一部', locationType: '市场', isActive: true },
   { locationId: 'LOC-M2', orgNodeId: 'NODE-M2', name: '市场二部', locationType: '市场', isActive: true },
-] as never
-
-const SKUS = [
-  { skuId: 'SKU-1', productCode: 'P001', productName: '测试商品' },
 ] as never
 
 function renderForm(overrides: Record<string, unknown> = {}) {
@@ -39,7 +36,6 @@ function renderForm(overrides: Record<string, unknown> = {}) {
     <InventoryDocCreateForm
       visible
       locations={LOCATIONS}
-      skuOptions={SKUS}
       initialDocType={'市场产品盘溢' as never}
       allowedDocTypes={['市场产品盘溢'] as never}
       onSuccess={onSuccess}
@@ -84,6 +80,23 @@ describe('共享建单表单的清场行为（#191）', () => {
     vi.clearAllMocks()
     mockListLots.mockResolvedValue([])
     mockCreateDoc.mockResolvedValue({ success: true, id: 'FY-CK-260919-0001' })
+  })
+
+  it('#469 外部 type=button 提交仍拦住负数、超上限与非法步长', async () => {
+    renderForm()
+    const quantity = fillOneLine() as HTMLInputElement
+    for (const raw of ['-1', '99999999999', '1.005']) {
+      fireEvent.change(quantity, { target: { value: raw } })
+      fireEvent.blur(quantity)
+      expect(screen.getByRole('alert')).toHaveTextContent(/不能小于|不能大于|步长/)
+      fireEvent.click(screen.getByRole('button', { name: '提交' }))
+      expect(mockCreateDoc).not.toHaveBeenCalled()
+    }
+    fireEvent.change(quantity, { target: { value: '1' } })
+    fireEvent.blur(quantity)
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '提交' }))
+    await waitFor(() => expect(mockCreateDoc).toHaveBeenCalledTimes(1))
   })
 
   it('提交成功后明细、备注、主体、日期全部回到初始草稿', async () => {
@@ -222,7 +235,6 @@ describe('提交失败后批次重新取数（#191）', () => {
       <InventoryDocCreateForm
         visible
         locations={LOCATIONS}
-        skuOptions={SKUS}
         initialDocType={'市场产品报损' as never}
         allowedDocTypes={['市场产品报损'] as never}
         onSuccess={vi.fn()}
@@ -278,7 +290,6 @@ describe('共享建单表单的主体字段（#189 × #191）', () => {
       <InventoryDocCreateForm
         visible
         locations={soleLocation}
-        skuOptions={SKUS}
         initialDocType={'市场产品盘溢' as never}
         allowedDocTypes={['市场产品盘溢'] as never}
         onSuccess={vi.fn()}
@@ -366,7 +377,6 @@ describe('批次取数的 id 空间（#191）', () => {
       <InventoryDocCreateForm
         visible
         locations={storeLocation}
-        skuOptions={SKUS}
         initialDocType={'院产品报损' as never}
         allowedDocTypes={['院产品报损'] as never}
         onSuccess={vi.fn()}
@@ -394,5 +404,296 @@ describe('批次取数的 id 空间（#191）', () => {
     })
     await waitFor(() => expect(mockCreateDoc).toHaveBeenCalled())
     expect(mockCreateDoc.mock.calls[0][0].sourceOrgNodeId).toBe('NODE-S1')
+  })
+})
+
+describe('市场间调货出库的接收主体候选（#340）', () => {
+  /** 单市场账号：scope 内只有自己的市场与下属门店 */
+  const SCOPED_LOCATIONS = [
+    { locationId: 'LOC-M1', orgNodeId: 'NODE-M1', name: '市场一部', locationType: '市场', isActive: true },
+    { locationId: 'S1', orgNodeId: 'NODE-S1', name: '一部门店', locationType: '门店', isActive: true },
+  ] as never
+  /** 不按 scope 的全部启用市场（含调出市场自己） */
+  const TARGETS = [
+    { orgNodeId: 'NODE-M1', name: '市场一部' },
+    { orgNodeId: 'NODE-M2', name: '市场二部' },
+    { orgNodeId: 'NODE-M3', name: '市场三部' },
+  ]
+
+  function optionValues(select: HTMLSelectElement) {
+    return [...select.options].map((option) => option.value).filter(Boolean)
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockListLots.mockResolvedValue([])
+    mockCreateDoc.mockResolvedValue({ success: true, id: 'MTO-260924-0001' })
+  })
+
+  it('单市场账号：发起端自动带出本市场，接收端列出其他市场、不含自己', () => {
+    renderForm({
+      locations: SCOPED_LOCATIONS,
+      marketTransferTargets: TARGETS,
+      initialDocType: '市场间调货出库',
+      allowedDocTypes: ['市场间调货出库'],
+    })
+    // 发起端只留市场 → 唯一候选 → 只读并已落定（门店不在市场间调货的发起候选里）
+    expect(document.querySelector('output[data-fixed-subject="NODE-M1"]')).not.toBeNull()
+    const target = selectByPlaceholder('入库/接收主体')
+    expect(optionValues(target)).toEqual(['NODE-M2', 'NODE-M3'])
+  })
+
+  it('能以 scope 外的市场为接收主体提交', async () => {
+    const { onSuccess } = renderForm({
+      locations: SCOPED_LOCATIONS,
+      marketTransferTargets: TARGETS,
+      initialDocType: '市场间调货出库',
+      allowedDocTypes: ['市场间调货出库'],
+    })
+    fireEvent.change(selectByPlaceholder('入库/接收主体'), { target: { value: 'NODE-M3' } })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '提交' }))
+    })
+    await waitFor(() => expect(onSuccess).toHaveBeenCalledWith('MTO-260924-0001'))
+    expect(mockCreateDoc).toHaveBeenCalledWith(expect.objectContaining({
+      docType: '市场间调货出库',
+      sourceOrgNodeId: 'NODE-M1',
+      targetOrgNodeId: 'NODE-M3',
+    }))
+  })
+
+  it('多市场账号把发起市场改成已选的接收市场时，接收端被清空', () => {
+    renderForm({
+      locations: LOCATIONS,
+      marketTransferTargets: TARGETS,
+      initialDocType: '市场间调货出库',
+      allowedDocTypes: ['市场间调货出库'],
+    })
+    fireEvent.change(selectByPlaceholder('出库/发起主体'), { target: { value: 'NODE-M1' } })
+    fireEvent.change(selectByPlaceholder('入库/接收主体'), { target: { value: 'NODE-M2' } })
+    expect(selectByPlaceholder('入库/接收主体').value).toBe('NODE-M2')
+    fireEvent.change(selectByPlaceholder('出库/发起主体'), { target: { value: 'NODE-M2' } })
+    const target = selectByPlaceholder('入库/接收主体')
+    expect(target.value).toBe('')
+    expect(optionValues(target)).toEqual(['NODE-M1', 'NODE-M3'])
+  })
+
+  it('全局只有一个启用市场：接收端不会被自动填成发起市场自己', () => {
+    renderForm({
+      locations: SCOPED_LOCATIONS,
+      marketTransferTargets: [{ orgNodeId: 'NODE-M1', name: '市场一部' }],
+      initialDocType: '市场间调货出库',
+      allowedDocTypes: ['市场间调货出库'],
+    })
+    expect(document.querySelector('output[data-fixed-subject="NODE-M1"]')).not.toBeNull()
+    const target = selectByPlaceholder('暂无可用主体')
+    expect(target.value).toBe('')
+    expect(target.disabled).toBe(true)
+  })
+
+  it('其他单据类型（分院调货出库）的接收主体候选与改前一致：仍取 scope 内 locations', () => {
+    renderForm({
+      locations: SCOPED_LOCATIONS,
+      marketTransferTargets: TARGETS,
+      initialDocType: '分院调货出库',
+      allowedDocTypes: ['分院调货出库'],
+    })
+    expect(optionValues(selectByPlaceholder('入库/接收主体'))).toEqual(['NODE-M1', 'NODE-S1'])
+    expect(optionValues(selectByPlaceholder('出库/发起主体'))).toEqual(['NODE-M1', 'NODE-S1'])
+  })
+})
+
+describe('盘点单实盘数：0 可提交、留空拦下（#351）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockListLots.mockResolvedValue([])
+    mockCreateDoc.mockResolvedValue({ success: true, id: 'FY-MPD-260925-0001' })
+  })
+
+  function renderStocktake() {
+    return renderForm({ initialDocType: '市场库存盘点', allowedDocTypes: ['市场库存盘点'] })
+  }
+
+  function fillStocktakeLine(quantity: string) {
+    fireEvent.change(selectByPlaceholder('出库/发起主体'), { target: { value: 'NODE-M1' } })
+    fireEvent.change(selectByPlaceholder('库存 SKU'), { target: { value: 'SKU-1' } })
+    fireEvent.change(screen.getByPlaceholderText('数量'), { target: { value: quantity } })
+  }
+
+  it('实盘填 0 照常提交，payload 里的数量就是 0', async () => {
+    const { onSuccess } = renderStocktake()
+    fillStocktakeLine('0')
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '提交' }))
+    })
+
+    await waitFor(() => expect(onSuccess).toHaveBeenCalledWith('FY-MPD-260925-0001'))
+    expect(mockCreateDoc).toHaveBeenCalledWith(expect.objectContaining({
+      docType: '市场库存盘点',
+      items: [expect.objectContaining({ skuId: 'SKU-1', quantity: 0 })],
+    }))
+  })
+
+  it.each([
+    ['空串', ''],
+    ['纯空白', '   '],
+  ])('实盘数留空（%s）不提交，提示第几行要填', async (_label, value) => {
+    const { toast } = await import('sonner')
+    renderStocktake()
+    fillStocktakeLine(value)
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '提交' }))
+    })
+
+    // 不拦的话 `Number('' || 0)` 会把这行当成「实盘 0」送出去，凭空多一笔盘亏
+    expect(mockCreateDoc).not.toHaveBeenCalled()
+    expect(toast.error).toHaveBeenCalledWith('明细 1 请填写实盘数（货架上没有就填 0）')
+  })
+
+  it('盘点新行数量默认留空：不填直接提交被拦（默认 1 会被当成「实盘 1」）', async () => {
+    const { toast } = await import('sonner')
+    renderStocktake()
+    expect((screen.getByPlaceholderText('数量') as HTMLInputElement).value).toBe('')
+    fireEvent.change(selectByPlaceholder('出库/发起主体'), { target: { value: 'NODE-M1' } })
+    fireEvent.change(selectByPlaceholder('库存 SKU'), { target: { value: 'SKU-1' } })
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '提交' }))
+    })
+
+    expect(mockCreateDoc).not.toHaveBeenCalled()
+    expect(toast.error).toHaveBeenCalledWith('明细 1 请填写实盘数（货架上没有就填 0）')
+    // 「添加明细」加出来的行同样留空
+    fireEvent.click(screen.getByRole('button', { name: '添加明细' }))
+    expect(screen.getAllByPlaceholderText('数量').map((el) => (el as HTMLInputElement).value)).toEqual(['', ''])
+  })
+
+  it('在盘点与非盘点之间切类型时，数量回到新类型的默认值', () => {
+    renderForm({ initialDocType: undefined, allowedDocTypes: ['市场产品盘溢', '市场库存盘点'] })
+    const docTypeSelect = screen.getByRole('option', { name: '市场库存盘点' }).closest('select') as HTMLSelectElement
+    const quantity = () => (screen.getByPlaceholderText('数量') as HTMLInputElement).value
+    // 不传 initialDocType：类型下拉可切（传了会被 isDocTypeLocked 锁死，本用例就测不到真实交互）
+    expect(docTypeSelect.disabled).toBe(false)
+    expect(docTypeSelect.value).toBe('市场产品盘溢')
+    expect(quantity()).toBe('1')
+
+    fireEvent.change(docTypeSelect, { target: { value: '市场库存盘点' } })
+    expect(quantity(), '盘溢的「1」不能带进盘点当实盘 1').toBe('')
+
+    fireEvent.change(screen.getByPlaceholderText('数量'), { target: { value: '0' } })
+    fireEvent.change(docTypeSelect, { target: { value: '市场产品盘溢' } })
+    expect(quantity(), '盘点的 0 带回盘溢必被拒').toBe('1')
+  })
+
+  it('提交在途时单据类型锁住：否则成功清场会按旧类型把盘点行重置成「1」', async () => {
+    let resolveCreate: (value: unknown) => void = () => {}
+    mockCreateDoc.mockImplementationOnce(() => new Promise((resolve) => { resolveCreate = resolve }))
+    const { onSuccess } = renderForm({ initialDocType: undefined, allowedDocTypes: ['市场产品盘溢', '市场库存盘点'] })
+    const docTypeSelect = screen.getByRole('option', { name: '市场库存盘点' }).closest('select') as HTMLSelectElement
+    expect(docTypeSelect.disabled, '前提：空闲时类型可切').toBe(false)
+    fireEvent.change(selectByPlaceholder('出库/发起主体'), { target: { value: 'NODE-M1' } })
+    fireEvent.change(selectByPlaceholder('库存 SKU'), { target: { value: 'SKU-1' } })
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '提交' }))
+    })
+    expect(docTypeSelect.disabled, '在途时类型下拉必须禁用').toBe(true)
+    // 即便绕过 disabled 直接派发 change，也不能换类型
+    fireEvent.change(docTypeSelect, { target: { value: '市场库存盘点' } })
+
+    await act(async () => {
+      resolveCreate({ success: true, id: 'FY-PY-260925-0001' })
+    })
+    await waitFor(() => expect(onSuccess).toHaveBeenCalledWith('FY-PY-260925-0001'))
+    expect(docTypeSelect.value).toBe('市场产品盘溢')
+    expect((screen.getByPlaceholderText('数量') as HTMLInputElement).value).toBe('1')
+    await waitFor(() => expect(docTypeSelect.disabled).toBe(false))
+  })
+
+  it('非盘点单不受留空拦截影响：仍交给服务端按「必须大于 0」判', async () => {
+    renderForm()
+    fireEvent.change(selectByPlaceholder('出库/发起主体'), { target: { value: 'NODE-M1' } })
+    fireEvent.change(selectByPlaceholder('库存 SKU'), { target: { value: 'SKU-1' } })
+    fireEvent.change(screen.getByPlaceholderText('数量'), { target: { value: '' } })
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '提交' }))
+    })
+
+    expect(mockCreateDoc).toHaveBeenCalledWith(expect.objectContaining({
+      docType: '市场产品盘溢',
+      items: [expect.objectContaining({ quantity: 0 })],
+    }))
+  })
+})
+
+describe('市场间调货批次的赠送标记与参考进价（#359）', () => {
+  const SCOPED_LOCATIONS = [
+    { locationId: 'LOC-M1', orgNodeId: 'NODE-M1', name: '市场一部', locationType: '市场', isActive: true },
+  ] as never
+  const TARGETS = [{ orgNodeId: 'NODE-M1', name: '市场一部' }, { orgNodeId: 'NODE-M2', name: '市场二部' }]
+  const LOTS = [
+    { id: 1, batchNo: 'B001', isGift: false, availableQuantity: 8, expiryDate: null, marketActualUnitPrice: 27 },
+    { id: 2, batchNo: 'G002', isGift: true, availableQuantity: 3, expiryDate: null, marketActualUnitPrice: 0 },
+  ]
+  const referenceNote = () => screen.queryByRole('note', { name: '明细 1 来源批次参考进价' })
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockCreateDoc.mockResolvedValue({ success: true, id: 'MTO-260925-0001' })
+  })
+
+  async function openTransfer(docType = '市场间调货出库', lots: unknown[] = LOTS) {
+    mockListLots.mockResolvedValue(lots)
+    const result = renderForm({
+      locations: SCOPED_LOCATIONS,
+      marketTransferTargets: TARGETS,
+      initialDocType: docType,
+      allowedDocTypes: [docType],
+    })
+    await act(async () => {
+      fireEvent.change(selectByPlaceholder('库存 SKU'), { target: { value: 'SKU-1' } })
+    })
+    await waitFor(() => expect(screen.getByRole('option', { name: /^B001 · 可用 8$/ })).toBeTruthy())
+    return { ...result, lotSelect: screen.getByRole('combobox', { name: '明细 1 来源批次' }) as HTMLSelectElement }
+  }
+
+  it('选项带赠送标记；选中批次显示黄色参考进价并随切换更新；提交 payload 不含参考价', async () => {
+    const { lotSelect } = await openTransfer()
+    expect(screen.getByRole('option', { name: /^G002（赠送） · 可用 3$/ })).toBeTruthy()
+    expect(referenceNote()).toBeNull()
+    fireEvent.change(lotSelect, { target: { value: '1' } })
+    expect(referenceNote()?.textContent).toBe('参考进价 27.00')
+    fireEvent.change(lotSelect, { target: { value: '2' } })
+    expect(referenceNote()?.textContent).toBe('参考进价 0.00（赠送批次）')
+    // 改数量不影响参考值
+    fireEvent.change(screen.getByPlaceholderText('数量'), { target: { value: '2' } })
+    expect(referenceNote()?.textContent).toBe('参考进价 0.00（赠送批次）')
+
+    // 接收端除自己外只剩市场二部：唯一候选自动落定
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '提交' }))
+    })
+    await waitFor(() => expect(mockCreateDoc).toHaveBeenCalledTimes(1))
+    expect(mockCreateDoc.mock.calls[0][0]).toMatchObject({ docType: '市场间调货出库', targetOrgNodeId: 'NODE-M2' })
+    expect(JSON.stringify(mockCreateDoc.mock.calls[0][0])).not.toMatch(/marketActualUnitPrice|参考/)
+  })
+
+  it('无价格档（接口不下发 marketActualUnitPrice）不渲染参考进价', async () => {
+    const { lotSelect } = await openTransfer('市场间调货出库', LOTS.map(({ marketActualUnitPrice: _price, ...lot }) => lot))
+    fireEvent.change(lotSelect, { target: { value: '1' } })
+    // 先确认确实选中了，否则「不渲染」是恒真
+    expect((screen.getByRole('combobox', { name: '明细 1 来源批次' }) as HTMLSelectElement).value).toBe('1')
+    expect(referenceNote()).toBeNull()
+  })
+
+  it('其他出库类型（市场产品报损）只加赠送标记，不显示参考进价', async () => {
+    const { lotSelect } = await openTransfer('市场产品报损')
+    expect(screen.getByRole('option', { name: /^G002（赠送） · 可用 3$/ })).toBeTruthy()
+    fireEvent.change(lotSelect, { target: { value: '1' } })
+    expect((screen.getByRole('combobox', { name: '明细 1 来源批次' }) as HTMLSelectElement).value).toBe('1')
+    expect(referenceNote()).toBeNull()
   })
 })

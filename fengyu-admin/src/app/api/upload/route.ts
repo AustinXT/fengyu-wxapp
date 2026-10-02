@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
-import { jwtVerify } from "jose"
 import { uploadFile } from "@/lib/cloudbase"
-import { JWT_SECRET } from "@/lib/jwt-secret"
+import { getSession } from "@/lib/auth"
 import { getImageDimensions } from "@/lib/image-dimensions"
 
 const ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"]
@@ -45,18 +44,18 @@ const MAX_EDGE = 12_000
 const MAX_PIXELS_FENGYUGUAN = 90_000_000
 const MAX_EDGE_FENGYUGUAN = 45_000
 
-const COOKIE_NAME = 'fy-admin-token'
-
 export async function POST(req: NextRequest) {
-  // 认证校验
-  const token = req.cookies.get(COOKIE_NAME)?.value
-  if (!token) {
+  /**
+   * 认证走 `getSession()`（与 `/api/ocr/*` 两个路由一致），**不要**只 `jwtVerify` 签名（#318）。
+   *
+   * JWT 是无状态的、有效期 24h：只验签名的话，员工被标离职后凭手里那张旧 token 还能继续往
+   * 对象存储写一整天。`getSession()` 会回库按 `is_resigned = false` 查人，离职后立即失效。
+   * 这是本仓唯一一个绕开 `getSession()` 的写接口 —— middleware 在 edge 运行时连不了库，
+   * 所以「离职即失效」这条只能落在 DB 回查这一层。
+   */
+  const session = await getSession()
+  if (!session) {
     return NextResponse.json({ error: "未授权" }, { status: 401 })
-  }
-  try {
-    await jwtVerify(token, JWT_SECRET)
-  } catch {
-    return NextResponse.json({ error: "令牌无效或已过期" }, { status: 401 })
   }
 
   try {

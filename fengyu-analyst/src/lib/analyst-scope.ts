@@ -3,6 +3,8 @@ import { orgNodes, stores } from "../../../db/schema/org"
 import { and, asc, eq, inArray, sql, type SQL } from "drizzle-orm"
 import { alias } from "drizzle-orm/pg-core"
 import type { AuthSession } from "./types"
+// 在营口径（#421，跟随数据中心 #401）：只看门店组织节点 is_active，不看门店关店标记
+import { activeStoreCondition } from "./store-status"
 
 export type AnalystScope =
   | { type: "all" }
@@ -95,7 +97,7 @@ export async function getAnalystScopeOptions(session: AuthSession): Promise<Anal
     .where(
       and(
         eq(storeNode.type, "门店"),
-        eq(stores.isClosed, false),
+        eq(storeNode.isActive, true),
         seeAll
           ? undefined
           : session.permissions.scopeStoreIds.length > 0
@@ -105,15 +107,19 @@ export async function getAnalystScopeOptions(session: AuthSession): Promise<Anal
     )
     .orderBy(asc(stores.storeName))
 
+  const markets = marketRows.map((market) => ({
+    id: market.id,
+    name: market.name,
+    stores: storeRows
+      .filter((store) => store.marketId === market.id)
+      .map((store) => ({ storeId: store.storeId, storeName: store.storeName })),
+  }))
+
   return {
     topLevel,
-    markets: marketRows.map((market) => ({
-      id: market.id,
-      name: market.name,
-      stores: storeRows
-        .filter((store) => store.marketId === market.id)
-        .map((store) => ({ storeId: store.storeId, storeName: store.storeName })),
-    })),
+    // 门店级账号的市场只是其门店的父节点：门店全部停用后该市场没有可看的数据，不再列出，
+    // 否则默认范围会落到零数据的市场，而不是「暂无可查看的数据范围」（#421）
+    markets: topLevel === "store" ? markets.filter((market) => market.stores.length > 0) : markets,
   }
 }
 
@@ -203,23 +209,6 @@ export function getAnalystScopeLabel(scope: AnalystScope, options: AnalystScopeO
   return "未知门店"
 }
 
-export async function validateAnalystScope(session: AuthSession, scope: AnalystScope): Promise<void> {
-  if (hasGlobalAnalystScope(session)) return
-
-  if (scope.type === "all") {
-    throw new Error("PERMISSION_DENIED: 无权查看全部数据")
-  }
-
-  if (scope.type === "market") {
-    const visibleMarketIds = await expandVisibleMarketIds(session)
-    if (visibleMarketIds === null || visibleMarketIds.includes(scope.id)) return
-    throw new Error("PERMISSION_DENIED: 越权访问其他市场数据")
-  }
-
-  if (session.permissions.scopeStoreIds.includes(scope.id)) return
-  throw new Error("PERMISSION_DENIED: 越权访问其他门店数据")
-}
-
 /**
  * 验证 scope 权限（基于已查询的 options，避免重复查询）
  */
@@ -249,11 +238,43 @@ export function validateAnalystScopeWithOptions(
 
 const VALID_COLUMN_NAME = /^[a-zA-Z_][a-zA-Z0-9_.]*$/
 
+/**
+ * 统计口径的门店过滤：在营门店（#421，跟随数据中心 #401）AND 账号权限 AND 所选范围。
+ * 所有「计入哪些数据」的条件都走它；只有「首次」基线（新客首单 / 复购首次进入）走 `scopeRangeSql`。
+ */
 export function scopeFilterSql(
   session: AuthSession,
   scope: AnalystScope,
   storeCol = "so.store_id",
 ): SQL {
+  const range = scopeRangeParts(session, scope, storeCol)
+  if (!range) return sql`FALSE`
+  // 统计始终排除当前已停用的门店；直接构造停用门店 URL 也只能得到零数据。
+  return sql.join([activeStoreCondition(range.col), ...range.parts], sql` AND `)
+}
+
+/**
+ * 只含账号权限 + 所选范围、**不含在营过滤**的门店条件，仅供「首次」基线使用（#421 拍板：首单判定用全历史）。
+ *
+ * 停用门店的历史单仍参与判定「是不是第一次」，否则在停用门店买过的老顾客换到在营门店后会被误判成新客 /
+ * 首次进入；调用方必须在归属门店上另叠 `activeStoreCondition`，停用门店的顾客才不会出现在结果里。
+ */
+export function scopeRangeSql(
+  session: AuthSession,
+  scope: AnalystScope,
+  storeCol = "so.store_id",
+): SQL {
+  const range = scopeRangeParts(session, scope, storeCol)
+  if (!range) return sql`FALSE`
+  return range.parts.length > 0 ? sql.join(range.parts, sql` AND `) : sql`TRUE`
+}
+
+/** 账号权限 + 所选范围的条件片段；账号无任何可见门店时返回 null（调用方输出 FALSE） */
+function scopeRangeParts(
+  session: AuthSession,
+  scope: AnalystScope,
+  storeCol: string,
+): { col: SQL; parts: SQL[] } | null {
   if (!VALID_COLUMN_NAME.test(storeCol)) {
     throw new Error(`INVALID_PARAMS: invalid storeCol parameter: ${storeCol}`)
   }
@@ -262,7 +283,7 @@ export function scopeFilterSql(
 
   if (!hasGlobalAnalystScope(session)) {
     const ids = session.permissions.scopeStoreIds
-    if (ids.length === 0) return sql`FALSE`
+    if (ids.length === 0) return null
     parts.push(sql`${col} IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})`)
   }
 
@@ -278,5 +299,5 @@ export function scopeFilterSql(
     )`)
   }
 
-  return parts.length > 0 ? sql.join(parts, sql` AND `) : sql`TRUE`
+  return { col, parts }
 }

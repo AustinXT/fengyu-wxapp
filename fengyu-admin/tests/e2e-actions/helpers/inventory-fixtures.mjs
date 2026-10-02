@@ -42,12 +42,15 @@ export const PROMO_ID = `${INS}_PROMO1`
 
 // 与 migration 0039 的角色 actions 完全一致（字面量对齐，勿增删）
 export const SUPPLY_CHAIN_ACTIONS = [
+  // #364 起结算页/action 的闸是 inventory:store_settlement_view，矩阵给这两个角色都加了
+  'inventory:store_settlement_view',
   'inventory:export', 'inventory:list', 'inventory:shipment_cancel_approve',
   'inventory:stock_list', 'inventory:supply_chain_approve',
   'inventory:supply_chain_master_data_manage', 'inventory:supply_chain_operate',
   'inventory:supply_chain_price_view',
 ]
 export const MARKET_FINANCE_ACTIONS = [
+  'inventory:store_settlement_view',
   'inventory:export', 'inventory:list', 'inventory:market_approve',
   'inventory:market_operate', 'inventory:market_price_view',
   'inventory:market_sku_manage', 'inventory:self_purchase_receive',
@@ -121,6 +124,22 @@ export function storeA1Session() {
     scopeId: STA1_ORG,
     scopeType: '门店',
     actions: STORE_OPERATOR_ACTIONS,
+    scopeStoreIds: [STA1_ID],
+    scopeOrgNodeIds: [STA1_ORG],
+  })
+}
+
+/**
+ * #364：门店店长**只持**「本店货款结算只读」动作，没有任何库存价格档。
+ * 用于验证门店独立结算授权能看到本店应付、且能看到本院的退货冲减。
+ */
+export function storeSettlementManagerSession() {
+  return session({
+    employeeId: EMP_STORE_A1,
+    role: 'manager',
+    scopeId: STA1_ORG,
+    scopeType: '门店',
+    actions: ['inventory:store_settlement_view'],
     scopeStoreIds: [STA1_ID],
     scopeOrgNodeIds: [STA1_ORG],
   })
@@ -368,7 +387,8 @@ export async function lotQuantity(lotId) {
 export async function docHeader(docId) {
   const rows = await pgQuery(
     `SELECT id, doc_type, status, source_org_node_id, target_org_node_id,
-            market_id, supplier_id, total_quantity, total_amount
+            market_id, supplier_id, total_quantity, total_amount,
+            remark, confirmed_at, cancellation_reason, cancelled_by
        FROM inventory_docs WHERE id = $1`,
     [docId],
   )
@@ -377,7 +397,7 @@ export async function docHeader(docId) {
 
 export async function docItems(docId) {
   return pgQuery(
-    `SELECT id, sku_id, is_gift, quantity, request_quantity, fulfilled_quantity,
+    `SELECT id, sku_id, batch_no, is_gift, quantity, request_quantity, fulfilled_quantity,
             supplier_id, market_id,
             standard_unit_price, unit_discount, actual_unit_price, amount,
             supply_chain_unit_cost, market_actual_unit_price, store_actual_unit_price, lot_id

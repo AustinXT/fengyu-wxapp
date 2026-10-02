@@ -12,6 +12,7 @@ import { isAdminScope, expandVisibleMarketIds, requireAdmin } from '@/lib/permis
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { pgErrorCode } from '@/lib/pg-error'
 import type { AuthSession } from '@/lib/types'
+import { resolvePaging } from '@/lib/paging'
 
 /**
  * 商户管理（拉卡拉收款商户档案，独立模块 /merchants）server actions。
@@ -108,9 +109,12 @@ function canAssignMerchantMarket(scope: MerchantMarketScope, marketOrgNodeId: st
 export const getMerchantsPaginated = withPermission(
   'merchant:list',
   async (session, filters: MerchantFilters = {}): Promise<PaginatedMerchants> => {
-    const page = Math.max(1, filters.page || 1)
-    const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
-    const offset = (page - 1) * pageSize
+    const { page, pageSize, offset } = resolvePaging({
+      page: filters.page,
+      pageSize: filters.pageSize,
+      defaultPageSize: 20,
+      allowedPageSizes: [10, 20, 50],
+    })
 
     const conditions: (SQL | undefined)[] = []
     // 商户名 / 商户号 ILIKE 搜索
@@ -175,7 +179,7 @@ export const getMerchantsPaginated = withPermission(
       .where(whereClause)
       .groupBy(lakalaMerchants.id)
       // 配置型「编辑即浮顶」
-      .orderBy(desc(lakalaMerchants.updatedAt))
+      .orderBy(desc(lakalaMerchants.updatedAt), desc(lakalaMerchants.id))
       .limit(pageSize)
       .offset(offset)
 

@@ -1,10 +1,10 @@
 # 库存管理 —— 交互合理性审计报告
 
 > 目标：http://101.34.242.103:3000（dev 环境 fengyu-admin）
-> 生成时间：2026/9/22 04:11:41
-> 生成方式：`bun run test:e2e:inventory-ui` 中的 `inv-10-ux-audit.spec.ts` 自动扫描 + 链路测试中的实测发现
+> 生成时间：2026/9/30 17:08:50
+> 生成方式：`inv-10-ux-audit.spec.ts` 自动扫描；链路证据以本报告对应 ctx 判定为准，未运行的链路列为未覆盖
 
-**共 5 条：P0 0 · P1 3 · P2 2**
+**共 6 条：P0 0 · P1 0 · P2 6**
 
 严重度口径：
 
@@ -18,11 +18,12 @@
 
 | 严重度 | 规则 | 位置 | 说明 | 证据 |
 |---|---|---|---|---|
-| P1 | 外键类字段应提供选择器 | `/inventory/suppliers → 新建供应商` | 字段「供应商名称」引用的是已有档案（命中关键词「供应商」），却渲染为 <input> 自由输入 | `label="供应商名称 *" control=<input>` |
-| P1 | 外键类字段应提供选择器 | `/inventory/promotions → 报货福利方案` | 字段「方案名称」引用的是已有档案（命中关键词「方案」），却渲染为 <input> 自由输入 | `label="方案名称 *" control=<input>` |
-| P1 | 业务错误提示被生产构建脱敏 | `全局（Server Action 错误路径）` | Server Action 抛出的 ApiError 在生产构建下被 Next.js 统一脱敏，用户看到的是「An error occurred in the Server Components render...」或一串 error digest 数字（如 1956068727），业务文案（「库存期初尚未导入并核验完成」等）完全丢失，用户无从判断该做什么 | `INV-02 期初门禁拦截、INV-07 员工加载失败均复现` |
 | P2 | 必填项无标记 | `/inventory/docs → 新建库存单据` | 表单共 4 个字段，既无 * 标记也无 required/aria-required —— 用户只能靠提交报错试出必填项 | `单据类型 / 单据日期 / 出库/发起主体 / 入库/接收主体` |
 | P2 | 提交按钮未在提交期间禁用 | `/inventory/operations/store → 门店报货（防重复提交）` | 按钮在提交过程中未见 disabled/aria-busy，快速双击存在重复建单风险（各表单内部有 saving 标志，但未反映到可访问性属性上） | — |
+| P2 | 批次下拉状态未覆盖（缺判定或来源库存） | `/inventory/docs → 新建库存单据（来源批次）` | 本轮缺少 INV-05 判定或来源库存证据，不能判断 #129 是否回归 | `INV-05 (缺失)：lotLoadingOk=undefined / 来源在手量=(未记) / 下拉可用=undefined / option 数=(未记)，本轮建出通用单据 (无)` |
+| P2 | 员工下拉候选未覆盖（本轮未跑 INV-07 或判定未执行） | `/inventory/operations/{market,supply-chain} → 员工购` | 本轮没有 INV-07 的员工下拉判定可转述（它没跑、或打开办理台前就挂了），因此**无法判定 #130 是否回归**。单跑 INV-10 时属正常 —— 这既不等于缺陷复现，也不等于已复核通过 | `ctx 无 inv07` |
+| P2 | 盘点账面数量未覆盖（本轮未跑 INV-06 或判定未执行） | `/inventory/docs → 市场库存盘点 / 分院库存盘点` | 没有 INV-06 的判定可转述（它没跑、或建单失败导致判定压根没执行），无法判定 stock_snapshot 是否落库。单跑 INV-10 时属正常 —— 注意这**不等于** #131 回归，别当成缺陷 | `ctx 无 inv06` |
+| P2 | 其它业务错误路径未覆盖 | `库存其它 Server Action 错误路径` | 本轮只受控触发 INV-02 期初门禁；员工加载失败及其它建单失败路径未执行负例，不能从门禁可读推断它们也可读 | `无对应路径的当轮错误反馈` |
 
 ## 复核说明
 
@@ -36,7 +37,7 @@
 - 原生 alert / prompt → 本 spec 全程挂着的 dialog 监听计数（#134 已修）
 - 盘点不记账面数 → `inv-06-stocktake-and-loss.spec.ts`
 - 供货商无外键 → `inv-01-master-data.spec.ts`（#132 已修）
-- 错误提示脱敏 → `inv-02-supply-chain-stock.spec.ts`
+- 错误提示脱敏 → `inv-02-supply-chain-stock.spec.ts` 的门禁负例与可见反馈
 
 （以上条目一律**实测再报**：本轮实测通过就不会出现在上表里。
 这几行只说明**万一出现**时证据来自哪支 spec，不代表它已复现。

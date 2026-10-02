@@ -1,0 +1,3600 @@
+/* ========================================================================
+ * 软件名称：美丫丫Beauty
+ * 源程序代码：客户端界面层鉴别材料
+ * 技术类型：微信小程序 TypeScript / WXML / WXSS
+ * 说明：本清单仅包含界面源程序，不含环境配置与云函数代码。
+ * ======================================================================== */
+/* ============================ 源程序前30页 ============================ */
+/* ========================================================================
+ * 文件：miniprogram/app.ts
+ * 功能：客户端页面逻辑与交互实现
+ * ======================================================================== */
+// app.ts — 凤御客户端小程序
+import { callClientApi } from './utils/cloud';
+import { getCloudEnv } from './utils/cloud-env';
+
+const LOGGED_OUT_KEY = 'clientLoggedOut';
+const LOGIN_STORAGE_KEYS = [
+  'userId',
+  'phone',
+  'userName',
+  'avatarUrl',
+  'boundStoreId',
+  'boundStoreName',
+  'boundMarketName',
+];
+
+App<IAppOption>({
+  globalData: {
+    userInfo: null as WechatMiniprogram.UserInfo | null,
+    userId: '' as string,
+    boundStoreName: '' as string,
+    boundStoreId: '' as string,
+    boundMarketName: '' as string,
+    statusBarHeight: 44,
+    navBarContentHeight: 44,
+    navBarHeight: 88,
+    logoHeight: 26,
+    // Ticket 2026-04-24 PR-C：多次回款"继续支付"灰度开关（默认开启；如需灰度下发可改为从 config 读）
+    continuePayEnabled: true,
+    // Ticket 2026-04-24 分享礼：从分享链接 query 捕获的邀请人 userId，手机号新注册时一次性写入并清空
+    pendingInviter: undefined,
+  },
+
+  onLaunch(options: WechatMiniprogram.App.LaunchShowOption) {
+    wx.cloud.init({ env: getCloudEnv(), traceUser: true });
+    // 解析分享礼 inv 参数（邀请人 userId）
+    this.capturePendingInviter(options);
+    // 计算导航栏高度（需在 UI 渲染前完成）
+    this.initNavBarInfo();
+    // 先从本地缓存恢复（快速展示）
+    this.restoreFromCache();
+    // 再从服务器同步最新数据（含 boundStoreName）
+    this.syncLoginState();
+  },
+
+  onShow(options: WechatMiniprogram.App.LaunchShowOption) {
+    // 用户后台返回或再次扫码分享链接时，重新捕获 inv
+    this.capturePendingInviter(options);
+  },
+
+  /**
+   * 从启动/显示参数解析分享礼邀请人 userId
+   * - 仅接受字符串且以 'FYGK-' 开头（客户 userId 前缀）
+   * - 已有值时不覆盖（保护第一次捕获的邀请人）
+   */
+  capturePendingInviter(options: WechatMiniprogram.App.LaunchShowOption) {
+    const raw = options?.query?.inv;
+    if (typeof raw !== 'string') return;
+    if (!raw.startsWith('FYGK-')) return;
+    if (this.globalData.pendingInviter) return;
+    this.globalData.pendingInviter = raw;
+    wx.setStorageSync('pendingInviter', raw);
+  },
+
+  initNavBarInfo() {
+    const windowInfo = wx.getWindowInfo();
+    const menuButton = wx.getMenuButtonBoundingClientRect();
+    const statusBarHeight = windowInfo.statusBarHeight ?? 44; // 折叠态 statusBarHeight 合法为 0，勿用 || 44
+    // 标题行高度 = 胶囊上下对称留白 * 2 + 胶囊高度
+    const contentHeight = menuButton.height + (menuButton.top - statusBarHeight) * 2;
+    this.globalData.statusBarHeight = statusBarHeight;
+    this.globalData.navBarContentHeight = contentHeight;
+    this.globalData.navBarHeight = statusBarHeight + contentHeight;
+    this.globalData.logoHeight = Math.round(menuButton.height * 0.8); // logo 跟胶囊高度，多端一致（rpx 在宽屏会放大，改 px 按胶囊比例）
+  },
+
+  restoreFromCache() {
+    const cachedInviter = wx.getStorageSync('pendingInviter');
+    if (!this.globalData.pendingInviter && cachedInviter) {
+      this.globalData.pendingInviter = cachedInviter as string;
+    }
+    if (this.isLoggedOut()) return;
+
+    const userId = wx.getStorageSync('userId');
+    const boundStoreId = wx.getStorageSync('boundStoreId');
+    const boundStoreName = wx.getStorageSync('boundStoreName');
+    const boundMarketName = wx.getStorageSync('boundMarketName');
+    if (userId) {
+      this.globalData.userId = userId;
+    }
+    if (boundStoreId) {
+      this.globalData.boundStoreId = boundStoreId;
+    }
+    if (boundStoreName) {
+      this.globalData.boundStoreName = boundStoreName;
+    }
+    if (boundMarketName) {
+      this.globalData.boundMarketName = boundMarketName;
+    }
+  },
+
+  async syncLoginState(force = false) {
+    if (this.isLoggedOut() && !force) return 'skipped' as const;
+
+    try {
+      const data = await callClientApi<{
+        userId: string | null; phone: string | null; name: string | null; avatarUrl: string | null;
+        memberLevel: string | null; customerType?: string | null; isMember?: boolean;
+        boundStoreId: string | null; boundStoreName: string | null; boundMarketName: string | null;
+      }>('auth.login', {});
+      wx.removeStorageSync(LOGGED_OUT_KEY);
+      this.globalData.userId = data.userId || '';
+      if (data.userId) {
+        wx.setStorageSync('userId', data.userId);
+      } else {
+        wx.removeStorageSync('userId');
+      }
+      if (data.phone) {
+        wx.setStorageSync('phone', data.phone);
+      } else {
+        wx.removeStorageSync('phone');
+      }
+      if (data.name) {
+        wx.setStorageSync('userName', data.name);
+      } else {
+        wx.removeStorageSync('userName');
+      }
+      if (data.avatarUrl) {
+        wx.setStorageSync('avatarUrl', data.avatarUrl);
+      } else {
+        wx.removeStorageSync('avatarUrl');
+      }
+      // 会员价分流缓存：统一经 setMemberFlag 写入（与后端 member-pricing isMember 同口径），
+      // memberLevel/customerType 一并刷新（降级/退会时写空，清掉旧值）。任何拿到最新会员资料处复用本 helper。
+      this.setMemberFlag(data);
+      // 同步服务器端绑定的门店（双向同步：绑定和解绑都要同步）
+      this.globalData.boundStoreId = data.boundStoreId || '';
+      wx.setStorageSync('boundStoreId', data.boundStoreId || '');
+      this.globalData.boundStoreName = data.boundStoreName || '';
+      wx.setStorageSync('boundStoreName', data.boundStoreName || '');
+      this.globalData.boundMarketName = data.boundMarketName || '';
+      wx.setStorageSync('boundMarketName', data.boundMarketName || '');
+      return data.userId && data.phone ? 'authenticated' as const : 'phone_required' as const;
+    } catch (err) {
+      console.error('[syncLoginState] failed:', err);
+      return 'failed' as const;
+    }
+  },
+
+  isLoggedOut() {
+    return wx.getStorageSync(LOGGED_OUT_KEY) === true;
+  },
+
+  clearLoginState() {
+    wx.setStorageSync(LOGGED_OUT_KEY, true);
+    LOGIN_STORAGE_KEYS.forEach((key) => wx.removeStorageSync(key));
+    this.clearMemberFlag();
+    this.globalData.userInfo = null;
+    this.globalData.userId = '';
+    this.globalData.boundStoreId = '';
+    this.globalData.boundStoreName = '';
+    this.globalData.boundMarketName = '';
+  },
+
+  /**
+   * 写入会员价分流标记 storage('isMember') + 顾客类型/等级缓存。
+   * 会员判定口径须与后端 clientApi/utils/member-pricing.js isMember() 一致：
+   * customerType === '会员客' 或 memberLevel 非空，任一满足即会员
+   * （后端 auth.login 已返回权威 isMember，优先用之，缺省时按同口径回退计算）。
+   * memberLevel/customerType 一并刷新（降级/退会时写空，清掉旧值）。
+   * 任何拿到最新会员资料处都应调用本 helper：onLaunch.syncLoginState / 绑定门店后 / 个人中心 onShow。
+   */
+  setMemberFlag(profile: { isMember?: boolean; customerType?: string | null; memberLevel?: string | null }) {
+    const customerType = profile.customerType || '';
+    const memberLevel = profile.memberLevel || '';
+    const isMember = typeof profile.isMember === 'boolean'
+      ? profile.isMember
+      : customerType === '会员客' || memberLevel !== '';
+    wx.setStorageSync('isMember', isMember);
+    wx.setStorageSync('customerType', customerType);
+    wx.setStorageSync('memberLevel', memberLevel);
+  },
+
+  /** 退出登录 / 账号失效时清除会员价分流标记，防止下一个账号沿用上一个账号的会员价划线。 */
+  clearMemberFlag() {
+    wx.removeStorageSync('isMember');
+    wx.removeStorageSync('customerType');
+    wx.removeStorageSync('memberLevel');
+  },
+
+  setUserInfo(info: { userId: string; boundStoreId?: string; boundStoreName?: string }) {
+    wx.removeStorageSync(LOGGED_OUT_KEY);
+    this.globalData.userId = info.userId;
+    wx.setStorageSync('userId', info.userId);
+    if (info.boundStoreId) {
+      this.globalData.boundStoreId = info.boundStoreId;
+      wx.setStorageSync('boundStoreId', info.boundStoreId);
+    }
+    if (info.boundStoreName) {
+      this.globalData.boundStoreName = info.boundStoreName;
+      wx.setStorageSync('boundStoreName', info.boundStoreName);
+    }
+  },
+
+  setStore(storeId: string, storeName: string, marketName?: string) {
+    wx.removeStorageSync(LOGGED_OUT_KEY);
+    this.globalData.boundStoreId = storeId;
+    wx.setStorageSync('boundStoreId', storeId);
+    this.globalData.boundStoreName = storeName;
+    wx.setStorageSync('boundStoreName', storeName);
+    if (marketName !== undefined) {
+      this.globalData.boundMarketName = marketName;
+      wx.setStorageSync('boundMarketName', marketName);
+    }
+  },
+});
+
+/* ========================================================================
+ * 文件：miniprogram/app.wxss
+ * 功能：客户端页面视觉样式
+ * ======================================================================== */
+/* app.wxss — 凤御客户端全局样式 */
+page {
+  font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue',
+               'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-size: 28rpx;
+  line-height: 1.5;
+  color: #1A1A1A;
+  background-color: #FAFAFA;
+
+  /* ===== 业务 CSS 变量（白红主题） ===== */
+  --color-primary:        #C0322A;  /* 中国红 - 品牌主色 */
+  --color-primary-light:  #FFF0EE;  /* 红色浅底 */
+  --color-primary-dark:   #9B1E14;  /* 深红 */
+  --color-bg-section:     #F5F5F5;  /* 区块背景 */
+  --color-text-title:     #333333;  /* 标题文字 */
+  --color-success:        #52C41A;
+  --color-warning:        #FAAD14;
+  --color-error:          #FF4D4F;
+  --color-text-primary:   #1A1A1A;  /* 主文字 - 深黑 */
+  --color-text-secondary: #666666;  /* 副文字 */
+  --color-text-hint:      #999999;  /* 提示文字 */
+  --color-border:         #E8E8E8;  /* 边框 */
+  --color-bg-page:        #FAFAFA;  /* 页面背景 - 浅灰白 */
+  --color-bg-card:        #FFFFFF;  /* 卡片背景 */
+
+  /* 状态色 */
+  --color-status-pending:  #D48806;
+  --color-status-confirm:  #C9986A;
+  --color-status-paid:     #389E0D;
+  --color-status-done:     #8C8C8C;
+  --color-status-failed:   #CF1322;
+  --color-status-serving:  #096DD9;
+
+  /* 阴影 */
+  --shadow-card:      0 2rpx 12rpx rgba(0, 0, 0, 0.04);
+  --shadow-elevated:  0 4rpx 20rpx rgba(0, 0, 0, 0.08);
+  --shadow-float:     0 8rpx 24rpx rgba(0, 0, 0, 0.12);
+
+  /* ===== Vant 主题覆盖（白红主题） ===== */
+  --button-primary-background-color: var(--color-primary);
+  --button-primary-border-color:     var(--color-primary);
+  --button-primary-color:            #FFFFFF;
+  --button-border-radius:            44rpx;
+  --sidebar-active-color:            var(--color-primary);
+  --sidebar-selected-color:          var(--color-primary);
+  --sidebar-selected-font-weight:    600;
+  --sidebar-width:                   180rpx;
+  --sidebar-padding:                 12rpx 24rpx 12rpx 16rpx;
+  --tab-active-color:                var(--color-primary);
+  --tabs-bottom-bar-color:           var(--color-primary);
+  --tag-primary-background-color:    var(--color-primary);
+  --checkbox-checked-icon-color:     var(--color-primary);
+  --radio-checked-icon-color:        var(--color-primary);
+  --search-action-color:             var(--color-primary);
+  --cell-right-icon-color:           var(--color-text-hint);
+  --submit-bar-button-background:    var(--color-primary);
+  --submit-bar-button-color:         #FFFFFF;
+  --loading-color:                   var(--color-primary);
+  --empty-image-size:                200rpx;
+}
+
+/* ===== 安全区 ===== */
+.safe-area-bottom {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* ===== 页面容器 ===== */
+.container {
+  min-height: 100vh;
+  background-color: var(--color-bg-page);
+}
+
+/* ===== 分割线 ===== */
+.divider {
+  height: 1px;
+  background-color: var(--color-border);
+}
+
+/* ===== 状态标签色 ===== */
+.status-pending    { color: var(--color-status-pending); }
+.status-partial    { color: var(--color-status-confirm); }
+.status-confirm    { color: var(--color-status-confirm); }
+.status-paid       { color: var(--color-status-paid); }
+.status-completed  { color: var(--color-status-done); }
+.status-refunded   { color: var(--color-status-failed); }
+.status-failed     { color: var(--color-status-failed); }
+.status-closed     { color: var(--color-status-done); }
+.status-serving    { color: var(--color-status-serving); }
+
+/* ===== 会员等级标签 ===== */
+.member-level-badge {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  padding: 4rpx 12rpx;
+  border-radius: 16rpx;
+  border: 1rpx solid rgba(192, 50, 42, 0.3);
+  font-size: 20rpx;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+}
+
+.member-level-badge--black {
+  background: #1A1A1A;
+  color: #FFD700;
+  border-color: #1A1A1A;
+}
+
+.member-level-badge--gold {
+  background: #FFF8E6;
+  color: #D4820A;
+  border-color: #D4820A;
+}
+
+.member-level-badge--pink {
+  background: #FDF0F5;
+  color: #C06088;
+  border-color: #C06088;
+}
+
+.member-level-badge--blue {
+  background: #F0F5FA;
+  color: #5E8BB3;
+  border-color: #5E8BB3;
+}
+
+.member-level-badge--green {
+  background: #F0F9F2;
+  color: #3D8A5A;
+  border-color: #3D8A5A;
+}
+
+.member-level-badge--default {
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+  border-color: rgba(192, 50, 42, 0.3);
+}
+
+/* ===== 价格组合 ===== */
+.price-group {
+  display: flex;
+  align-items: baseline;
+  gap: 2rpx;
+  color: var(--color-primary);
+}
+
+.price-symbol { font-size: 22rpx; font-weight: 600; }
+.price-integer { font-size: 40rpx; font-weight: 700; }
+.price-start   { font-size: 22rpx; color: var(--color-text-hint); margin-left: 4rpx; }
+
+/* ===== 商品封面占位 ===== */
+.cover-placeholder {
+  background: linear-gradient(135deg, var(--color-primary-light) 0%, #FDDAD8 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ===== 品牌红色渐变背景 ===== */
+.brand-gradient {
+  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-dark) 100%);
+}
+
+/* ===== 品牌红色文字 ===== */
+.text-gold {
+  color: var(--color-primary);
+}
+
+/* ===== 强调卡片 ===== */
+.card-dark {
+  background: var(--color-bg-card);
+  border-top: 4rpx solid var(--color-primary);
+  box-shadow: var(--shadow-elevated);
+  color: var(--color-text-primary);
+}
+
+.card-dark .card-title {
+  color: var(--color-primary);
+}
+
+/* ===== 美容师选择 Popup（全局复用） ===== */
+.staff-popup {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.staff-popup__title {
+  text-align: center;
+  font-size: 32rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  padding: 32rpx 0 20rpx;
+}
+
+.staff-list {
+  display: flex;
+  overflow-x: auto;
+  padding: 16rpx 24rpx 40rpx;
+  gap: 24rpx;
+}
+
+.staff-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10rpx;
+  flex-shrink: 0;
+  padding: 16rpx;
+  border-radius: 16rpx;
+  border: 2px solid transparent;
+  min-width: 120rpx;
+}
+
+.staff-item--active {
+  border-color: var(--color-primary);
+  background: var(--color-primary-light);
+}
+
+.staff-avatar {
+  width: 96rpx;
+  height: 96rpx;
+  background: var(--color-primary-light);
+  border-radius: 48rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+/* 美容师头像（image 模式；与 .staff-avatar 容器尺寸对齐） */
+.staff-avatar-img {
+  width: 96rpx;
+  height: 96rpx;
+  border-radius: 48rpx;
+}
+
+.staff-name {
+  font-size: 26rpx;
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+.staff-title,
+.staff-role {
+  font-size: 20rpx;
+  color: var(--color-text-hint);
+}
+
+.staff-empty {
+  width: 100%;
+  text-align: center;
+  padding: 40rpx 0;
+  font-size: 26rpx;
+  color: var(--color-text-hint);
+}
+
+/* ===== 列表分页底部（全局复用） ===== */
+.list-footer {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 32rpx 0 48rpx;
+}
+
+.list-footer__end {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+}
+
+/* ========================================================================
+ * 文件：miniprogram/pages/home/home.ts
+ * 功能：客户端页面逻辑与交互实现
+ * ======================================================================== */
+// pages/home/home.ts
+import Toast from "@vant/weapp/toast/toast";
+import { getCartCount, clearCart } from "../../utils/cart";
+import { callClientApi } from "../../utils/cloud";
+import { getCosBase } from "../../utils/cloud-env";
+import { getIsMember } from "../../utils/member-pricing";
+
+const app = getApp<IAppOption>();
+
+// CloudBase CDN 基础 URL（随 env 切换 dev/prod 桶）
+const CDN_BASE = `${getCosBase()}/fengyu-client`;
+
+interface Banner {
+  id: string;
+  title: string;
+  desc: string;
+  bgColor: string;
+  image: string;
+  link: string;
+}
+
+interface CategoryGroup {
+  category_id: string;
+  category_name: string;
+  sort_order: number;
+}
+
+interface Category {
+  category_id: string;
+  category_name: string;
+  category_group: string | null;
+  category_order: number;
+}
+
+interface SpuItem {
+  product_id: string;
+  name: string;
+  category_name: string;
+  cover_image: string;
+  min_price: string;
+  /** 会员价分流：仅会员且标价起价 > 会员起价时填标价起价（划线），否则空串 */
+  strike_min_price?: string;
+  /** 组合套餐标记：列表展示套餐总价，不带「起」字（普通单品多 SKU 起价才显示） */
+  is_bundle?: boolean;
+  is_recommend: boolean;
+  skuList?: any[];
+}
+
+interface SidebarItem {
+  id: string;
+  type: "title" | "category";
+  label: string;
+  categoryKey: string;
+  groupKey: string;
+}
+
+Page({
+  data: {
+    searchValue: "",
+    isSearching: false,
+    searchResults: [] as SpuItem[],
+    searchLoading: false,
+    boundStoreName: "",
+    banners: [] as Banner[],
+    currentBanner: 0,
+
+    // 侧边栏（扁平商品分类列表）
+    sidebarItems: [] as SidebarItem[],
+    activeCategoryKey: "",
+    sidebarScrollIntoView: "",
+
+    spuList: [] as SpuItem[],
+    isLoading: false,
+    loadError: false,
+    cartCount: 0,
+  },
+
+  // 所有一级分组
+  _allGroups: [] as CategoryGroup[],
+
+  // 所有二级分类
+  _allCategories: [] as Category[],
+
+  // 页面级 SPU 缓存：按分类名缓存已加载的 SPU 列表
+  _spuCache: {} as Record<string, SpuItem[]>,
+
+  // 所有分类 key 的有序列表（用于自动切换下一个分类）
+  _allCategoryKeys: [] as string[],
+
+  // 搜索防抖定时器
+  _searchTimer: null as number | null,
+
+  // 防止 scrolltolower 连续触发
+  _isLoadingNext: false,
+
+  onLoad() {
+    this._spuCache = {};
+    const storeName = app.globalData.boundStoreName || "";
+    this.setData({ boundStoreName: storeName });
+    this.loadShopInit();
+    this.loadBanners();
+    this.updateCartCount();
+  },
+
+  onShow() {
+    const storeName = app.globalData.boundStoreName || "";
+    if (storeName !== this.data.boundStoreName) {
+      // 切换门店时清空购物车和 SPU 缓存
+      clearCart();
+      this._spuCache = {};
+      this._allGroups = [];
+      this._allCategories = [];
+      this._allCategoryKeys = [];
+      this.setData({
+        boundStoreName: storeName,
+        sidebarItems: [],
+        activeCategoryKey: "",
+        spuList: [],
+        cartCount: 0,
+        isSearching: false,
+        searchResults: [],
+        searchValue: "",
+      });
+      this.loadShopInit();
+    } else {
+      this.updateCartCount();
+    }
+  },
+
+  updateCartCount() {
+    this.setData({ cartCount: getCartCount() });
+  },
+
+  onPullDownRefresh() {
+    // 退出搜索模式，重新加载全部数据
+    if (this.data.isSearching) {
+      this.setData({ isSearching: false, searchResults: [], searchValue: '' });
+    }
+    this.loadShopInit().finally(() => {
+      wx.stopPullDownRefresh();
+    });
+  },
+
+  // ===== 搜索（即时过滤 + 300ms 防抖） =====
+
+  onSearchInput(e: WechatMiniprogram.InputEvent) {
+    const value = e.detail.value;
+    this.setData({ searchValue: value });
+
+    // 清除上次定时器
+    if (this._searchTimer) {
+      clearTimeout(this._searchTimer);
+      this._searchTimer = null;
+    }
+
+    // 输入为空 → 立即退出搜索模式
+    if (!value.trim()) {
+      if (this.data.isSearching) {
+        this.setData({ isSearching: false, searchResults: [], searchLoading: false });
+      }
+      return;
+    }
+
+    // 300ms 防抖后执行搜索
+    this._searchTimer = setTimeout(() => {
+      this._searchTimer = null;
+      this._doSearch(value.trim());
+    }, 300) as unknown as number;
+  },
+
+  /** 回车/按钮点击：立即搜索（跳过防抖） */
+  async onSearchSubmit() {
+    if (this._searchTimer) {
+      clearTimeout(this._searchTimer);
+      this._searchTimer = null;
+    }
+    const value = this.data.searchValue.trim();
+    if (!value) {
+      if (this.data.isSearching) {
+        this.setData({ isSearching: false, searchResults: [] });
+      }
+      return;
+    }
+    await this._doSearch(value);
+  },
+
+  /** 实际搜索执行 */
+  async _doSearch(value: string) {
+    this.setData({ isSearching: true, searchLoading: true });
+
+    try {
+      // 全量搜索：调云函数按商品名跨全部分类搜索，不依赖前端 _spuCache/侧边栏分类结构
+      //（旧版 loadAllSpus 仅加载已挂进 _allCategoryKeys 的分类，会漏掉未挂侧边栏的分类商品）
+      const data = await callClientApi<{ spuList: SpuItem[] }>("product.search", { keyword: value });
+      // 会员价分流：会员看会员起价 + 划线标价起价；非会员只看标价起价
+      const isMember = getIsMember();
+      const results = (data?.spuList || []).map((spu: any) => ({
+        ...spu,
+        min_price: isMember ? (spu.priceFrom || "0") : (spu.listPriceFrom || spu.priceFrom || "0"),
+        strike_min_price: (isMember && Number(spu.listPriceFrom) > Number(spu.priceFrom)) ? spu.listPriceFrom : "",
+      }));
+      // 防止旧搜索结果覆盖新搜索（用户可能已继续输入）
+      if (this.data.searchValue.trim() === value) {
+        this.setData({ searchResults: results, searchLoading: false });
+      }
+    } catch (err) {
+      console.error("_doSearch error:", err);
+      if (this.data.searchValue.trim() === value) {
+        this.setData({ searchResults: [], searchLoading: false });
+      }
+    }
+  },
+
+  onSearchClear() {
+    if (this._searchTimer) {
+      clearTimeout(this._searchTimer);
+      this._searchTimer = null;
+    }
+    this.setData({ isSearching: false, searchResults: [], searchValue: "" });
+  },
+
+  // categoryKey 就是 category_id
+  _findCategoryId(categoryKey: string): string | undefined {
+    const cat = this._allCategories.find((c) => c.category_id === categoryKey);
+    return cat?.category_id;
+  },
+
+  // ===== 事件处理 =====
+
+  onSelectStore() {
+    wx.navigateTo({ url: "/pagesStore/store-select/store-select" });
+  },
+
+  onScanPay() {
+    wx.scanCode({
+      onlyFromCamera: false,
+      success: (res) => {
+        if (res.path) {
+          wx.navigateTo({ url: "/" + res.path });
+        } else if (res.result) {
+          wx.navigateTo({ url: `/pagesOrder/scan-pay/scan-pay?saleOrderId=${encodeURIComponent(res.result)}` });
+        }
+      },
+      fail: () => {
+        // 用户取消扫码，不提示
+      },
+    });
+  },
+
+  onBannerChange(e: WechatMiniprogram.CustomEvent<{ current: number }>) {
+    this.setData({ currentBanner: e.detail.current });
+  },
+
+  onBannerTap(e: WechatMiniprogram.TouchEvent) {
+    const url = e.currentTarget.dataset.url;
+    if (url) {
+      wx.navigateTo({
+        url,
+        fail: () => {
+          // Tab 页或无效路径时尝试 switchTab
+          wx.switchTab({ url, fail: () => {} });
+        },
+      });
+    }
+  },
+
+  // 宫格按钮点击
+  onGridTap(e: WechatMiniprogram.TouchEvent) {
+    const { type } = e.currentTarget.dataset as { type: string };
+
+    switch (type) {
+      case "coupon":
+        wx.navigateTo({ url: "/pagesCoupon/my-coupons/my-coupons" });
+        break;
+      case "treatment":
+        wx.navigateTo({ url: "/pagesOrder/treatment-cards/treatment-cards" });
+        break;
+      case "recharge":
+        wx.navigateTo({ url: "/pagesProfile/card-recharge/card-recharge" });
+        break;
+      case "experience":
+        // 体验卡 capability 化（ticket Round 2）：独立入口 → 列表 → 详情 → 严格独立 checkout
+        wx.navigateTo({ url: "/pagesExperience/list/list" });
+        break;
+      default:
+        break;
+    }
+  },
+
+  // 二级分类点击
+  onSidebarCategoryTap(e: WechatMiniprogram.TouchEvent) {
+    const { key } = e.currentTarget.dataset as { key: string };
+    if (key && key !== this.data.activeCategoryKey) {
+      this.switchToCategory(key);
+    }
+  },
+
+  switchToCategory(categoryKey: string) {
+    const catItem = this.data.sidebarItems.find((i) => i.categoryKey === categoryKey);
+    if (!catItem) return;
+
+    const cached = this._spuCache[categoryKey];
+
+    this.setData({
+      activeCategoryKey: categoryKey,
+      sidebarScrollIntoView: catItem.id,
+      spuList: cached || [],
+    });
+
+    if (!cached) {
+      this.loadSpuList(categoryKey);
+    }
+  },
+
+  // 商品列表滚动到底 → 自动切换到下一个分类
+  onScrollToLower() {
+    if (this._isLoadingNext) return;
+
+    const { activeCategoryKey } = this.data;
+    const currentIndex = this._allCategoryKeys.indexOf(activeCategoryKey);
+    if (currentIndex < 0 || currentIndex >= this._allCategoryKeys.length - 1) return;
+
+    const nextKey = this._allCategoryKeys[currentIndex + 1];
+    this._isLoadingNext = true;
+
+    this.switchToCategory(nextKey);
+
+    // 防止连续触发
+    setTimeout(() => {
+      this._isLoadingNext = false;
+    }, 500);
+  },
+
+  // ===== 数据加载 =====
+
+  async loadBanners() {
+    // 走云函数取 count/v（不受 wx.request 域名白名单限制），图片仍用 CDN_BASE 拼固定路径。
+    try {
+      const { count, v } = await callClientApi<{ count: number; v: number }>("config.banners", {});
+      if (count > 0) {
+        this.setData({
+          banners: Array.from({ length: count }, (_, i) => ({
+            id: String(i + 1),
+            title: "",
+            desc: "",
+            bgColor: "",
+            image: `${CDN_BASE}/banner/banner${i + 1}.jpg?v=${v}`,
+            link: "",
+          })),
+        });
+      }
+    } catch (err) {
+      // 轮播图非关键路径，静默失败即可
+      console.warn("[home] loadBanners failed", err);
+    }
+  },
+
+  async loadShopInit() {
+    try {
+      this.setData({ isLoading: true, loadError: false });
+      const initData = await callClientApi<{ groups?: CategoryGroup[]; categories: Category[]; spuList: any[] }>("product.shopInit", {});
+
+      const groups: CategoryGroup[] = initData?.groups || [];
+      const categories: Category[] = initData?.categories || [];
+      const spuList: SpuItem[] = initData?.spuList || [];
+
+      // 会员价分流：会员看会员起价 + 划线标价起价；非会员只看标价起价
+      const isMember = getIsMember();
+      const listWithPrice = spuList.map((spu: any) => ({
+        ...spu,
+        min_price: isMember ? (spu.priceFrom || "0") : (spu.listPriceFrom || spu.priceFrom || "0"),
+        strike_min_price: (isMember && Number(spu.listPriceFrom) > Number(spu.priceFrom)) ? spu.listPriceFrom : "",
+      }));
+
+      this._allGroups = groups;
+      this._allCategories = categories;
+
+      // 构建侧边栏（分组标题 + 二级分类）
+      this.buildSidebarItems();
+
+      // 缓存 shopInit 返回的商品列表（对应第一个二级分类）
+      const firstCatKey = this._allCategoryKeys[0] || "";
+      if (firstCatKey && listWithPrice.length > 0) {
+        this._spuCache[firstCatKey] = listWithPrice;
+      }
+
+      this.setData({
+        activeCategoryKey: firstCatKey,
+        spuList: firstCatKey ? (this._spuCache[firstCatKey] || []) : [],
+      });
+
+      if (firstCatKey && !this._spuCache[firstCatKey]) {
+        this.loadSpuList(firstCatKey);
+      }
+    } catch (err: any) {
+      console.error("loadShopInit error:", err);
+      Toast.fail(err?.message || "加载失败");
+      this.setData({ loadError: true });
+    } finally {
+      this.setData({ isLoading: false });
+    }
+  },
+
+  buildSidebarItems() {
+    const items: SidebarItem[] = [];
+    const allCategoryKeys: string[] = [];
+    let idx = 0;
+
+    if (this._allGroups.length > 0) {
+      // 有分组：按分组组织侧边栏
+      for (const group of this._allGroups) {
+        const children = this._allCategories.filter(c => c.category_group === group.category_name);
+        if (children.length === 0) continue;
+
+        const groupKey = `group:${group.category_name}`;
+        // 一级分组标题
+        items.push({ id: `sid-${idx++}`, type: "title", label: group.category_name, categoryKey: groupKey, groupKey: "" });
+
+        // 二级分类项（groupKey 关联所属分组）
+        for (const cat of children) {
+          items.push({ id: `sid-${idx++}`, type: "category", label: cat.category_name, categoryKey: cat.category_id, groupKey });
+          allCategoryKeys.push(cat.category_id);
+        }
+      }
+    } else {
+      // 降级：无分组时扁平展示
+      for (const cat of this._allCategories) {
+        items.push({ id: `sid-${idx++}`, type: "category", label: cat.category_name, categoryKey: cat.category_id, groupKey: "" });
+        allCategoryKeys.push(cat.category_id);
+      }
+    }
+
+    this._allCategoryKeys = allCategoryKeys;
+    this.setData({ sidebarItems: items });
+  },
+
+  async loadSpuList(categoryKey: string) {
+    this.setData({ isLoading: true });
+    const categoryId = this._findCategoryId(categoryKey);
+    if (!categoryId) {
+      this.setData({ isLoading: false });
+      return;
+    }
+    try {
+      const data = await callClientApi<{ spuList: SpuItem[] }>("product.spuList", { categoryId });
+
+      const spuList: SpuItem[] = data?.spuList || [];
+      // 会员价分流：会员看会员起价 + 划线标价起价；非会员只看标价起价
+      const isMember = getIsMember();
+      const listWithPrice = spuList.map((spu: any) => ({
+        ...spu,
+        min_price: isMember ? (spu.priceFrom || "0") : (spu.listPriceFrom || spu.priceFrom || "0"),
+        strike_min_price: (isMember && Number(spu.listPriceFrom) > Number(spu.priceFrom)) ? spu.listPriceFrom : "",
+      }));
+
+      // 写入缓存
+      this._spuCache[categoryKey] = listWithPrice;
+
+      // 仅在仍在查看该分类时更新
+      if (this.data.activeCategoryKey === categoryKey) {
+        this.setData({ spuList: listWithPrice });
+      }
+    } catch (err: any) {
+      console.error("loadSpuList error:", err);
+      Toast.fail(err?.message || "加载商品失败");
+    } finally {
+      this.setData({ isLoading: false });
+    }
+  },
+
+  // 点击商品卡片 → 跳转详情
+  onSpuTap(e: WechatMiniprogram.TouchEvent) {
+    const { productId } = e.currentTarget.dataset as { productId: string };
+    wx.navigateTo({ url: `/pagesShop/service-detail/service-detail?productId=${productId}` });
+  },
+
+  // 「购买」按钮 → 跳转详情页
+  onBuyTap(e: WechatMiniprogram.TouchEvent) {
+    const { productId } = e.currentTarget.dataset as { productId: string };
+    wx.navigateTo({ url: `/pagesShop/service-detail/service-detail?productId=${productId}` });
+  },
+
+  // 购物车 FAB → 跳转购物车页面
+  onCartTap() {
+    wx.navigateTo({ url: "/pagesShop/shopping-cart/shopping-cart" });
+  },
+});
+
+/* ========================================================================
+ * 文件：miniprogram/pages/home/home.wxml
+ * 功能：客户端页面界面结构
+ * ======================================================================== */
+<!-- pages/home/home.wxml — 首页 -->
+<wxs module="price">
+module.exports.min = function(n) {
+  var v = parseFloat(n) || 0;
+  var r = Math.round(v * 100) / 100;
+  return r % 1 === 0 ? '' + Math.round(r) : r.toFixed(2);
+}
+</wxs>
+<van-toast id="van-toast" />
+
+<view class="container">
+
+  <!-- 自定义导航栏 -->
+  <nav-bar />
+
+  <!-- 搜索栏 + 门店选择 + 扫码 -->
+  <view class="header">
+    <view class="header-left">
+      <view class="search-bar">
+        <van-icon name="search" size="32rpx" color="#999" />
+        <input
+          class="search-input"
+          placeholder="搜索服务、产品"
+          placeholder-style="color:#BBBBBB;font-size:26rpx;"
+          value="{{searchValue}}"
+          bindinput="onSearchInput"
+          bindconfirm="onSearchSubmit"
+          confirm-type="search"
+        />
+        <view class="search-btn" bindtap="onSearchSubmit">
+          <text class="search-btn-text">搜索</text>
+        </view>
+      </view>
+    </view>
+    <view class="header-right">
+      <view class="header-store" bindtap="onSelectStore">
+        <text class="store-name">{{boundStoreName || '选择门店'}}</text>
+        <van-icon name="arrow" size="28rpx" color="#666666" />
+      </view>
+      <view class="header-scan" bindtap="onScanPay">
+        <van-icon name="scan" size="36rpx" color="#C0322A" />
+      </view>
+    </view>
+  </view>
+
+  <!-- 顶部区域：轮播图 + 功能宫格（搜索时隐藏，腾出空间给结果列表） -->
+  <view class="top-section" wx:if="{{!isSearching}}">
+
+    <!-- ===== 1. 轮播图 ===== -->
+    <view class="section-banner" wx:if="{{banners.length > 0}}">
+      <swiper
+        class="banner-swiper"
+        indicator-dots="{{false}}"
+        autoplay="{{true}}"
+        interval="{{4000}}"
+        duration="{{500}}"
+        circular="{{true}}"
+        bindchange="onBannerChange"
+      >
+        <swiper-item wx:for="{{banners}}" wx:key="id">
+          <view class="banner-item" style="background: {{item.bgColor}};">
+            <image wx:if="{{item.image}}" class="banner-image" src="{{item.image}}" mode="aspectFill" />
+          </view>
+        </swiper-item>
+      </swiper>
+    </view>
+
+    <!-- ===== 2. 功能模块宫格区（5个一排） ===== -->
+    <view class="section-grid">
+      <view class="grid-row grid-row-5">
+        <view class="grid-item" bindtap="onGridTap" data-type="coupon">
+          <view class="grid-icon-wrap">
+            <van-icon name="coupon" size="44rpx" color="#C0322A" />
+          </view>
+          <text class="grid-label">我的券</text>
+        </view>
+        <view class="grid-item" bindtap="onGridTap" data-type="treatment">
+          <view class="grid-icon-wrap">
+            <image class="grid-icon-img" src="/images/icons/grid-calendar.png" mode="aspectFit" />
+          </view>
+          <text class="grid-label">我的疗程</text>
+        </view>
+        <view class="grid-item" bindtap="onGridTap" data-type="recharge">
+          <view class="grid-icon-wrap">
+            <van-icon name="gold-coin" size="44rpx" color="#C0322A" />
+          </view>
+          <text class="grid-label">充值卡</text>
+        </view>
+        <view class="grid-item" bindtap="onGridTap" data-type="experience">
+          <view class="grid-icon-wrap">
+            <van-icon name="gift" size="44rpx" color="#C0322A" />
+          </view>
+          <text class="grid-label">体验卡</text>
+        </view>
+      </view>
+    </view>
+
+  </view>
+
+  <!-- ===== 3. 商品目录区域（独立滚动） ===== -->
+  <view class="section-catalog">
+
+    <!-- 搜索结果模式 -->
+    <view wx:if="{{isSearching}}" class="search-results-area">
+      <view class="search-results-header">
+        <text class="search-results-title">搜索结果</text>
+        <view class="search-results-close" bindtap="onSearchClear">
+          <van-icon name="cross" size="28rpx" color="#999" />
+          <text class="search-results-close-text">返回</text>
+        </view>
+      </view>
+      <scroll-view class="search-results-scroll" scroll-y>
+        <van-loading wx:if="{{searchLoading}}" size="24px" vertical style="padding: 80rpx 0;">搜索中...</van-loading>
+        <van-empty wx:elif="{{searchResults.length === 0}}" description="未找到相关商品" />
+        <view wx:else class="spu-list">
+          <view
+            wx:for="{{searchResults}}"
+            wx:key="product_id"
+            class="spu-card"
+            bindtap="onSpuTap"
+            data-product-id="{{item.product_id}}"
+          >
+            <view class="spu-cover cover-placeholder" wx:if="{{!item.cover_image}}">
+              <van-icon name="photo-o" size="48rpx" color="#CCCCCC" />
+            </view>
+            <image wx:else class="spu-cover" src="{{item.cover_image}}" mode="aspectFill" lazy-load />
+            <view class="spu-body">
+              <text class="spu-name">{{item.name}}</text>
+              <view class="spu-footer">
+                <view class="price-group">
+                  <text class="price-symbol">¥</text>
+                  <text class="price-integer">{{price.min(item.min_price)}}</text>
+                  <text class="price-start" wx:if="{{!item.is_bundle}}">起</text>
+                  <text wx:if="{{item.strike_min_price}}" class="price-origin">¥{{price.min(item.strike_min_price)}}</text>
+                </view>
+                <view class="spu-buy-btn" catchtap="onBuyTap" data-product-id="{{item.product_id}}">
+                  <text class="spu-buy-text">购买</text>
+                </view>
+              </view>
+            </view>
+          </view>
+        </view>
+      </scroll-view>
+    </view>
+
+    <!-- 正常浏览模式 -->
+    <view wx:else class="catalog">
+
+      <!-- 左侧：自定义分类侧边栏（一级分组标题 + 二级分类可点击） -->
+      <scroll-view class="sidebar-scroll" scroll-y scroll-into-view="{{sidebarScrollIntoView}}">
+        <view
+          wx:for="{{sidebarItems}}"
+          wx:key="id"
+          id="{{item.id}}"
+        >
+          <!-- 一级分组标题 -->
+          <view wx:if="{{item.type === 'title'}}" class="sidebar-title">
+            <text class="sidebar-title-text">{{item.label}}</text>
+          </view>
+          <!-- 二级分类项 -->
+          <view
+            wx:else
+            class="sidebar-item {{activeCategoryKey === item.categoryKey ? 'sidebar-item--active' : ''}}"
+            bindtap="onSidebarCategoryTap"
+            data-key="{{item.categoryKey}}"
+          >
+            <text class="sidebar-item-text">{{item.label}}</text>
+          </view>
+        </view>
+      </scroll-view>
+
+      <!-- 右侧：商品列表（独立滚动，触底自动切换下一分类） -->
+      <scroll-view class="product-scroll" scroll-y bindscrolltolower="onScrollToLower" lower-threshold="100">
+
+        <!-- 骨架屏 -->
+        <view wx:if="{{isLoading && spuList.length === 0}}" class="skeleton-wrap">
+          <van-skeleton title avatar row="3" />
+          <van-skeleton title avatar row="3" style="margin-top:24rpx" />
+        </view>
+
+        <!-- 错误态 -->
+        <van-empty
+          wx:elif="{{loadError}}"
+          image="error"
+          description="加载失败，下拉刷新重试"
+        />
+
+        <!-- 空态 -->
+        <view wx:elif="{{spuList.length === 0}}">
+          <van-empty description="该分类暂无商品" />
+        </view>
+
+        <!-- SPU 卡片列表 -->
+        <view wx:else class="spu-list">
+          <view
+            wx:for="{{spuList}}"
+            wx:key="product_id"
+            class="spu-card"
+            bindtap="onSpuTap"
+            data-product-id="{{item.product_id}}"
+          >
+            <!-- 左侧封面 -->
+            <view class="spu-cover cover-placeholder" wx:if="{{!item.cover_image}}">
+              <van-icon name="photo-o" size="48rpx" color="#CCCCCC" />
+            </view>
+            <image
+              wx:else
+              class="spu-cover"
+              src="{{item.cover_image}}"
+              mode="aspectFill"
+              lazy-load
+            />
+
+            <!-- 右侧信息 -->
+            <view class="spu-body">
+              <!-- 商品名 -->
+              <text class="spu-name">{{item.name}}</text>
+
+              <!-- 底部：价格 + 按钮 -->
+              <view class="spu-footer">
+                <view class="price-group">
+                  <text class="price-symbol">¥</text>
+                  <text class="price-integer">{{price.min(item.min_price)}}</text>
+                  <text class="price-start" wx:if="{{!item.is_bundle}}">起</text>
+                  <text wx:if="{{item.strike_min_price}}" class="price-origin">¥{{price.min(item.strike_min_price)}}</text>
+                </view>
+                <view class="spu-buy-btn" catchtap="onBuyTap" data-product-id="{{item.product_id}}">
+                  <text class="spu-buy-text">购买</text>
+                </view>
+              </view>
+            </view>
+          </view>
+
+          <!-- 加载提示 -->
+          <view wx:if="{{isLoading}}" class="load-more-hint">
+            <van-loading size="20px" />
+          </view>
+        </view>
+
+        <!-- 底部留白，确保单个商品也能触发滚动切换下一分类 -->
+        <view class="scroll-bottom-spacer" wx:if="{{spuList.length > 0}}" />
+
+      </scroll-view>
+    </view>
+
+  </view>
+
+  <!-- 右下角悬浮购物车按钮 -->
+  <view class="cart-fab" bindtap="onCartTap" wx:if="{{cartCount > 0}}">
+    <van-icon name="shopping-cart-o" size="48rpx" color="#FFFFFF" />
+    <view class="cart-fab-badge">{{cartCount > 99 ? '99+' : cartCount}}</view>
+  </view>
+
+</view>
+
+/* ========================================================================
+ * 文件：miniprogram/pages/home/home.wxss
+ * 功能：客户端页面视觉样式
+ * ======================================================================== */
+/* pages/home/home.wxss — 首页样式 */
+
+.container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--color-bg-page);
+}
+
+/* ===== 搜索栏 + 门店选择 + 扫码 ===== */
+.header {
+  display: flex;
+  align-items: center;
+  padding: 16rpx 24rpx;
+  background: var(--color-bg-card);
+  flex-shrink: 0;
+}
+
+.header-left {
+  flex: 1;
+  margin-right: 16rpx;
+}
+
+/* 自定义搜索栏 */
+.search-bar {
+  display: flex;
+  align-items: center;
+  height: 64rpx;
+  background: var(--color-bg-section);
+  border-radius: 32rpx;
+  border: 1rpx solid var(--color-border);
+  padding: 0 20rpx;
+  gap: 12rpx;
+  overflow: hidden;
+}
+
+.search-input {
+  flex: 1;
+  font-size: 26rpx;
+  color: var(--color-text-title);
+  line-height: 64rpx;
+  height: 64rpx;
+}
+
+.search-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 48rpx;
+  padding: 0 20rpx;
+  background: var(--color-primary);
+  border-radius: 24rpx;
+  flex-shrink: 0;
+}
+
+.search-btn-text {
+  font-size: 24rpx;
+  color: var(--color-bg-card);
+  font-weight: 500;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  flex-shrink: 0;
+}
+
+.header-store {
+  display: flex;
+  align-items: center;
+  gap: 8rpx;
+  padding: 12rpx 20rpx;
+  background: var(--color-primary-light);
+  border: 1rpx solid rgba(192, 50, 42, 0.2);
+  border-radius: 40rpx;
+}
+
+.header-scan {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 60rpx;
+  height: 60rpx;
+  background: var(--color-primary-light);
+  border: 1rpx solid rgba(192, 50, 42, 0.2);
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.store-name {
+  font-size: 26rpx;
+  font-weight: 500;
+  color: var(--color-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 200rpx;
+}
+
+/* ===== 顶部区域（轮播图 + 宫格） ===== */
+.top-section {
+  flex-shrink: 0;
+}
+
+/* ===== 1. 轮播图 ===== */
+.section-banner {
+  padding: 16rpx 16rpx 12rpx;
+}
+
+.banner-swiper {
+  height: 260rpx;
+  border-radius: 16rpx;
+  overflow: hidden;
+}
+
+.banner-item {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.banner-image {
+  width: 100%;
+  height: 100%;
+}
+
+/* ===== 2. 功能模块宫格区（5个一排） ===== */
+.section-grid {
+  padding: 0 16rpx 12rpx;
+}
+
+.grid-row-5 {
+  display: flex;
+  gap: 8rpx;
+}
+
+.grid-row-5 .grid-item {
+  flex: 1;
+  padding: 16rpx 8rpx;
+}
+
+.grid-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 20rpx 16rpx;
+  background: var(--color-bg-card);
+  border-radius: 16rpx;
+  box-sizing: border-box;
+}
+
+.grid-item-active {
+  background: var(--color-primary-light);
+}
+
+.grid-icon-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 72rpx;
+  height: 72rpx;
+  background: var(--color-primary-light);
+  border-radius: 50%;
+  margin-bottom: 8rpx;
+}
+
+.grid-icon-img {
+  width: 44rpx;
+  height: 44rpx;
+}
+
+.grid-label {
+  font-size: 22rpx;
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+.grid-label-active {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+/* ===== 3. 商品目录区域（独立滚动） ===== */
+.section-catalog {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+  background: var(--color-bg-card);
+}
+
+/* ===== 搜索结果区域 ===== */
+.search-results-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.search-results-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16rpx 24rpx;
+  background: var(--color-bg-card);
+  border-bottom: 1rpx solid var(--color-border);
+  flex-shrink: 0;
+}
+
+.search-results-title {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.search-results-close {
+  display: flex;
+  align-items: center;
+  gap: 4rpx;
+}
+
+.search-results-close-text {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+}
+
+.search-results-scroll {
+  flex: 1;
+  height: 0;
+  min-height: 0;
+  padding: 16rpx;
+  box-sizing: border-box;
+  background: var(--color-bg-page);
+}
+
+/* ===== 分类 + 商品双栏布局 ===== */
+.catalog {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+/* ===== 自定义侧边栏 ===== */
+.sidebar-scroll {
+  width: 200rpx;
+  flex-shrink: 0;
+  background: var(--color-bg-section);
+}
+
+.sidebar-title {
+  padding: 20rpx 12rpx 8rpx;
+}
+
+.sidebar-title-text {
+  font-size: 28rpx;
+  font-weight: 800;
+  color: var(--color-text-primary);
+  letter-spacing: 2rpx;
+}
+
+.sidebar-item {
+  padding: 16rpx 12rpx 16rpx 28rpx;
+}
+
+.sidebar-item--active {
+  background: var(--color-bg-card);
+}
+
+.sidebar-item-text {
+  font-size: 24rpx;
+  color: var(--color-text-title);
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-item--active .sidebar-item-text {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+/* ===== 右侧商品滚动区 ===== */
+.product-scroll {
+  flex: 1;
+  padding: 0 16rpx 16rpx;
+  background: var(--color-bg-page);
+}
+
+/* ===== 骨架屏 ===== */
+.skeleton-wrap {
+  padding: 16rpx;
+}
+
+/* ===== SPU 卡片列表 ===== */
+.spu-list {
+  padding-bottom: 32rpx;
+}
+
+.spu-card {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  background: var(--color-bg-card);
+  border-radius: 12rpx;
+  overflow: hidden;
+  margin-bottom: 12rpx;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.spu-cover {
+  width: 250rpx;
+  height: 160rpx;
+  flex-shrink: 0;
+  display: block;
+}
+
+.cover-placeholder {
+  width: 250rpx;
+  height: 160rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-bg-section);
+}
+
+.spu-body {
+  flex: 1;
+  min-width: 0;
+  padding: 16rpx 16rpx 14rpx;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-height: 160rpx;
+  box-sizing: border-box;
+}
+
+
+.spu-name {
+  font-size: 26rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  line-height: 1.4;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  word-break: break-all;
+  min-width: 0;
+}
+
+.spu-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.price-group {
+  display: flex;
+  align-items: baseline;
+}
+
+.price-symbol {
+  font-size: 22rpx;
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.price-integer {
+  font-size: 30rpx;
+  color: var(--color-primary);
+  font-weight: 700;
+}
+
+.price-start {
+  font-size: 20rpx;
+  color: var(--color-primary);
+  margin-left: 2rpx;
+}
+
+/* 会员价分流：划线标价起价 */
+.price-origin {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+  text-decoration: line-through;
+  margin-left: 8rpx;
+}
+
+.spu-buy-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 48rpx;
+  padding: 0 20rpx;
+  background: var(--color-primary);
+  border-radius: 24rpx;
+  flex-shrink: 0;
+}
+
+.spu-buy-text {
+  font-size: 24rpx;
+  color: var(--color-bg-card);
+  font-weight: 600;
+  letter-spacing: 2rpx;
+}
+
+/* ===== 底部留白（保证可滚动触发下一分类） ===== */
+.scroll-bottom-spacer {
+  height: 60vh;
+}
+
+/* ===== 加载提示 ===== */
+.load-more-hint {
+  display: flex;
+  justify-content: center;
+  padding: 24rpx 0;
+}
+
+/* ===== 右下角悬浮购物车按钮 ===== */
+.cart-fab {
+  position: fixed;
+  right: 40rpx;
+  bottom: calc(env(safe-area-inset-bottom) + 60rpx);
+  width: 104rpx;
+  height: 104rpx;
+  background: var(--color-primary);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 8rpx 24rpx rgba(192, 50, 42, 0.45);
+
+  z-index: 100;
+}
+
+.cart-fab-badge {
+  position: absolute;
+  top: -8rpx;
+  right: -8rpx;
+  min-width: 36rpx;
+  height: 36rpx;
+  padding: 0 8rpx;
+  background: var(--color-error);
+  border-radius: 18rpx;
+  font-size: 22rpx;
+  color: var(--color-bg-card);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+}
+
+/* ========================================================================
+ * 文件：miniprogram/pages/appointment/appointment.ts
+ * 功能：客户端页面逻辑与交互实现
+ * ======================================================================== */
+// pages/appointment/appointment.ts
+import Toast from '@vant/weapp/toast/toast';
+import Dialog from '@vant/weapp/dialog/dialog';
+import { callClientApi } from '../../utils/cloud';
+import { formatAppointmentTime } from '../../utils/format';
+
+const PAGE_SIZE = 20;
+const app = getApp<IAppOption>();
+
+const STATUS_MAP: Record<string, { label: string; type: string; color: string; textColor: string }> = {
+  '待确认': { label: '待确认', type: 'warning',  color: '#FFF7E6', textColor: '#D48806' },
+  '已确认': { label: '已确认', type: 'primary',  color: '#F2E8DC', textColor: '#A0785A' },
+  '已完成': { label: '已完成', type: 'success',  color: '#F0FAF0', textColor: '#389E0D' },
+  '已取消': { label: '已取消', type: 'default',  color: '#F5F5F5', textColor: '#8C8C8C' },
+  '已关闭': { label: '已关闭', type: 'default',  color: '#F5F5F5', textColor: '#8C8C8C' },
+};
+
+// Tab name → 数据库 status 映射
+const TAB_STATUS_MAP: Record<string, string> = {
+  'pending':   '待确认',
+  'confirmed': '已确认',
+  'cancelled': '已取消',
+};
+
+interface AppointmentServiceItem {
+  itemKey: string;
+  productName: string;
+  sessionText: string;
+}
+
+Page({
+  data: {
+    activeTab: 'all',
+    list: [] as any[],
+    isLoading: false,
+    loadingMore: false,
+    loadError: false,
+    hasMore: true,
+    isLoggedOut: false,
+  },
+
+  _page: 1,
+
+  onShow() {
+    if (app.isLoggedOut()) {
+      this.clearPrivateData();
+      return;
+    }
+    this.setData({ isLoggedOut: false });
+    this.loadList();
+  },
+
+  onPullDownRefresh() {
+    if (app.isLoggedOut()) {
+      this.clearPrivateData();
+      wx.stopPullDownRefresh();
+      return;
+    }
+    this.loadList().finally(() => wx.stopPullDownRefresh());
+  },
+
+  onReachBottom() {
+    if (this.data.hasMore && !this.data.loadingMore && !this.data.isLoading) {
+      this.loadMore();
+    }
+  },
+
+  onTabChange(e: WechatMiniprogram.CustomEvent<{ name: string }>) {
+    this.setData({ activeTab: e.detail.name });
+    this.loadList();
+  },
+
+  _mapItems(raw: any[]) {
+    return raw.map(item => {
+      const meta = STATUS_MAP[item.status] || STATUS_MAP['已关闭'];
+      const rawTime = String(item.appointment_time);
+      return {
+        ...item,
+        status_label:     meta.label,
+        statusType:       meta.type,
+        statusColor:      meta.color,
+/* ============================ 源程序后30页 ============================ */
+        displayDate: formatShortDate(r.createdAt),
+        displayAmount: formatAmount(r.amount),
+        isPositive: Number(r.amount) >= 0,
+      }));
+      this.setData({ transactions });
+    } catch (err: any) {
+      Toast.fail(err.message || '加载失败');
+    } finally {
+      this.setData({ txLoading: false });
+    }
+  },
+});
+
+/* ========================================================================
+ * 文件：miniprogram/pagesProfile/prepaid-cards/prepaid-cards.wxml
+ * 功能：客户端页面界面结构
+ * ======================================================================== */
+<!-- pagesProfile/prepaid-cards/prepaid-cards.wxml — 充值卡 -->
+<wxs module="fmt">
+module.exports.price = function(n) { return (Math.round((n || 0) * 100) / 100).toFixed(2) }
+</wxs>
+<van-toast id="van-toast" />
+
+<view class="container">
+
+  <!-- 加载骨架 -->
+  <view wx:if="{{isLoading}}" class="skeleton-wrap">
+    <van-skeleton title row="4" />
+  </view>
+
+  <block wx:else>
+
+    <!-- 错误态 -->
+    <van-empty
+      wx:if="{{loadError}}"
+      image="error"
+      description="加载失败，下拉刷新重试"
+    />
+
+    <!-- 总余额 -->
+    <view class="balance-header brand-gradient">
+      <text class="balance-label">充值卡总余额（元）</text>
+      <text class="balance-value">{{fmt.price(totalBalance)}}</text>
+    </view>
+
+    <!-- 空态 -->
+    <van-empty wx:if="{{cards.length === 0}}" description="暂无充值卡" />
+
+    <!-- 卡片列表 -->
+    <view wx:else class="card-list">
+      <view
+        class="card-item {{selectedCardId === item.cardId ? 'card-active' : ''}}"
+        wx:for="{{cards}}"
+        wx:key="cardId"
+        bindtap="onSelectCard"
+        data-card-id="{{item.cardId}}"
+      >
+        <view class="card-main">
+          <view class="card-info">
+            <text class="card-store">{{item.storeName || '通用卡'}}</text>
+            <text class="card-id">卡号: {{item.cardId}}</text>
+          </view>
+          <view class="card-balance-wrap">
+            <text class="card-balance-value">{{fmt.price(item.balance)}}</text>
+            <text class="card-balance-label">余额（元）</text>
+          </view>
+          <van-icon name="{{selectedCardId === item.cardId ? 'arrow-up' : 'arrow-down'}}" size="28rpx" color="var(--color-text-hint)" />
+        </view>
+
+        <!-- 展开的消费明细 -->
+        <view wx:if="{{selectedCardId === item.cardId}}" class="tx-section">
+          <view wx:if="{{txLoading}}" class="tx-loading">
+            <van-loading size="32rpx" color="#999">加载中...</van-loading>
+          </view>
+          <view wx:elif="{{transactions.length === 0}}" class="tx-empty">
+            <text class="loading-text">暂无消费记录</text>
+          </view>
+          <view wx:else class="tx-list">
+            <view class="tx-item" wx:for="{{transactions}}" wx:for-item="tx" wx:key="id">
+              <view class="tx-info">
+                <text class="tx-desc">{{tx.type || '消费'}}</text>
+                <text class="tx-date">{{tx.displayDate}}</text>
+              </view>
+              <text class="tx-amount {{tx.isPositive ? 'tx-positive' : 'tx-negative'}}">{{tx.displayAmount}}</text>
+            </view>
+          </view>
+        </view>
+      </view>
+
+      <!-- 底部提示 -->
+      <view class="footer-note">
+        <text class="footer-note-text">仅显示最近半年消费明细</text>
+      </view>
+    </view>
+
+  </block>
+
+</view>
+
+/* ========================================================================
+ * 文件：miniprogram/pagesProfile/prepaid-cards/prepaid-cards.wxss
+ * 功能：客户端页面视觉样式
+ * ======================================================================== */
+/* pagesProfile/prepaid-cards/prepaid-cards.wxss */
+
+.container {
+  min-height: 100vh;
+  background: var(--color-bg-page);
+}
+
+.skeleton-wrap {
+  padding: 24rpx 32rpx;
+}
+
+/* 总余额 */
+.balance-header {
+  padding: 48rpx 36rpx;
+  display: flex;
+  flex-direction: column;
+  gap: 12rpx;
+}
+
+.balance-label {
+  font-size: 26rpx;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.balance-value {
+  font-size: 60rpx;
+  font-weight: 700;
+  color: #FFFFFF;
+}
+
+/* 卡片列表 */
+.card-list {
+  padding: 24rpx 32rpx;
+}
+
+.card-item {
+  background: var(--color-bg-card);
+  border-radius: 16rpx;
+  margin-bottom: 20rpx;
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+
+.card-active {
+  border: 1rpx solid var(--color-primary);
+}
+
+.card-main {
+  display: flex;
+  align-items: center;
+  padding: 28rpx 24rpx;
+  gap: 20rpx;
+}
+
+.card-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6rpx;
+}
+
+.card-store {
+  font-size: 30rpx;
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+.card-id {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+}
+
+.card-balance-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4rpx;
+}
+
+.card-balance-value {
+  font-size: 36rpx;
+  font-weight: 600;
+  color: var(--color-primary);
+}
+
+.card-balance-label {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+}
+
+/* 展开的消费明细 */
+.tx-section {
+  border-top: 1rpx solid var(--color-border);
+  padding: 20rpx 24rpx;
+}
+
+.tx-loading,
+.tx-empty {
+  text-align: center;
+  padding: 20rpx 0;
+}
+
+.tx-list {
+  max-height: 600rpx;
+  overflow-y: auto;
+}
+
+.tx-item {
+  display: flex;
+  align-items: center;
+  padding: 16rpx 0;
+  border-bottom: 1rpx solid var(--color-border);
+}
+
+.tx-item:last-child {
+  border-bottom: none;
+}
+
+.tx-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4rpx;
+}
+
+.tx-desc {
+  font-size: 26rpx;
+  color: var(--color-text-primary);
+}
+
+.tx-date {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+}
+
+.tx-amount {
+  font-size: 28rpx;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.tx-positive {
+  color: var(--color-success);
+}
+
+.tx-negative {
+  color: var(--color-text-secondary);
+}
+
+/* 底部提示 */
+.footer-note {
+  text-align: center;
+  padding: 24rpx 0 16rpx;
+}
+
+.footer-note-text {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+}
+
+.loading-text {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+}
+
+/* ========================================================================
+ * 文件：miniprogram/pagesProfile/card-recharge/recharge.ts
+ * 功能：客户端页面逻辑与交互实现
+ * ======================================================================== */
+/**
+ * 充值卡档位匹配 — 与 cloudfunctions/clientApi/routes/card.js 同源逻辑
+ *
+ * 后端是权威方：本前端函数仅用于实时展示（折扣、实付预览），
+ * 实际生效的实付金额以 card.recharge 接口返回的 payAmount 为准。
+ *
+ * 2026-05-21 三端统一：档位/边界从 system_configs 经 API 注入，前端不再硬编码 RECHARGE_TIERS。
+ * 算法与 staff/admin/backend `matchTier` 字节同义。
+ */
+
+export interface RechargeTier {
+  faceValue: number;
+  payAmount: number;
+  discount: number;
+}
+
+export interface RechargeConfig {
+  tiers: RechargeTier[];
+  minAmount: number;
+  maxAmount: number;
+}
+
+export interface MatchTierResult {
+  discount: number;
+  payAmount: number;
+}
+
+/**
+ * 按充值面值匹配折扣并算出实付金额
+ *
+ * 精确命中 → 取 tier.payAmount；非命中 → 找最大 faceValue ≤ amount 的档位，按 payAmount/faceValue 比例算
+ *
+ * @throws Error('INVALID_PARAMS: ...') 校验失败时抛错
+ */
+export function matchTier(amount: number, cfg: RechargeConfig): MatchTierResult {
+  if (typeof amount !== 'number' || !Number.isFinite(amount)) {
+    throw new Error('INVALID_PARAMS: 充值金额格式错误');
+  }
+  // 浮点容差：39.8 * 100 在 JS 里不是精确的 3980，严格 !== 会误判
+  if (Math.abs(Math.round(amount * 100) - amount * 100) > 1e-6) {
+    throw new Error('INVALID_PARAMS: 充值金额最多保留 2 位小数');
+  }
+  if (amount < cfg.minAmount) {
+    throw new Error(`INVALID_PARAMS: 最低充值金额 ¥${cfg.minAmount}`);
+  }
+  if (amount > cfg.maxAmount) {
+    throw new Error(`INVALID_PARAMS: 单次充值上限 ¥${cfg.maxAmount}`);
+  }
+  const hit = cfg.tiers.find(t => t.faceValue === amount);
+  if (hit) {
+    const discount = amount > 0 ? Math.round((hit.payAmount / amount) * 100) / 100 : 1;
+    return { discount, payAmount: hit.payAmount };
+  }
+  let baseTier = cfg.tiers[0];
+  for (const t of cfg.tiers) {
+    if (amount >= t.faceValue) baseTier = t;
+  }
+  const ratio = baseTier.payAmount / baseTier.faceValue;
+  const payAmount = Math.round(amount * ratio * 100) / 100;
+  const discount = Math.round(ratio * 100) / 100;
+  return { discount, payAmount };
+}
+
+/** 格式化金额为 2 位小数字符串（去尾零） */
+export function formatAmount(n: number): string {
+  if (!Number.isFinite(n)) return '0';
+  const r = Math.round(n * 100) / 100;
+  return r % 1 === 0 ? String(r) : r.toFixed(2);
+}
+
+/* ========================================================================
+ * 文件：miniprogram/pagesProfile/card-recharge/card-recharge.ts
+ * 功能：客户端页面逻辑与交互实现
+ * ======================================================================== */
+// pagesProfile/card-recharge/card-recharge.ts
+import Toast from '@vant/weapp/toast/toast';
+import Dialog from '@vant/weapp/dialog/dialog';
+import { callClientApi, bindPhoneWithCloudID } from '../../utils/cloud';
+import { matchTier, formatAmount, RechargeConfig } from './recharge';
+
+const app = getApp<IAppOption>();
+
+interface TierVM {
+  faceValue: number;
+  discount: number;
+  payAmount: number;
+  discountLabel: string;
+  payAmountLabel: string;
+  bonusLabel: string;
+}
+
+/** 折扣 0.99 → "9.9 折" */
+function formatDiscountLabel(d: number): string {
+  return (d * 10).toFixed(1).replace(/\.0$/, '') + ' 折';
+}
+
+Page({
+  data: {
+    configLoading: true,
+    boundStoreName: '',
+    boundStoreId: '',
+
+    tiers: [] as TierVM[],
+    minAmount: 500,
+    maxAmount: 100000,
+
+    selectedTier: 0,        // 选中的预设档面值；0 = 未选
+    customMode: false,      // 是否处于"自定义金额"模式
+    customInput: '',
+    customPayAmount: 0,
+    customDiscountLabel: '',
+    customPayAmountLabel: '',
+    customBonus: 0,
+    customBonusLabel: '',
+    customError: '',
+
+    // CTA
+    ctaText: '请选择充值金额',
+    ctaDisabled: true,
+
+    // 提交态
+    submitting: false,
+
+    // 手机绑定
+    showPhoneBind: false,
+    phoneBinding: false,
+    // 绑定成功后延迟自动重提期间锁定提交入口，防止手点+定时器双触发重复建单
+    autoResubmitPending: false,
+  },
+
+  _config: null as RechargeConfig | null,
+  _pendingFaceValue: 0,    // 手机绑定流程后自动重提交（纯逻辑层，不参与渲染）
+
+  onLoad() {
+    const storeId = app.globalData.boundStoreId || '';
+    const storeName = app.globalData.boundStoreName || '';
+    this.setData({ boundStoreId: storeId, boundStoreName: storeName });
+    this.loadConfig();
+  },
+
+  onShow() {
+    // 用户可能从门店选择页返回，更新一次
+    const storeId = app.globalData.boundStoreId || '';
+    const storeName = app.globalData.boundStoreName || '';
+    if (storeId !== this.data.boundStoreId || storeName !== this.data.boundStoreName) {
+      this.setData({ boundStoreId: storeId, boundStoreName: storeName });
+    }
+  },
+
+  async loadConfig() {
+    try {
+      this.setData({ configLoading: true });
+      const data = await callClientApi<RechargeConfig>('card.rechargeConfig', {});
+      if (!data || !Array.isArray(data.tiers) || !Number.isFinite(data.minAmount) || !Number.isFinite(data.maxAmount)) {
+        throw new Error('档位配置返回为空');
+      }
+      this._config = data;
+      const tiers: TierVM[] = data.tiers.map(t => ({
+        faceValue: t.faceValue,
+        discount: t.discount,
+        payAmount: t.payAmount,
+        discountLabel: formatDiscountLabel(t.discount),
+        payAmountLabel: formatAmount(t.payAmount),
+        bonusLabel: formatAmount(t.faceValue - t.payAmount),
+      }));
+      this.setData({
+        tiers,
+        minAmount: data.minAmount,
+        maxAmount: data.maxAmount,
+        configLoading: false,
+      });
+    } catch (err: any) {
+      this._config = null;
+      this.setData({ configLoading: false });
+      Toast.fail((err?.message || '加载档位失败').replace(/^[A-Z_]+:\s*/, ''));
+    }
+  },
+
+  // ============ 选择档位 ============
+
+  onTierTap(e: WechatMiniprogram.TouchEvent) {
+    const faceValue = Number(e.currentTarget.dataset.faceValue);
+    if (!faceValue) return;
+    const tier = this.data.tiers.find(t => t.faceValue === faceValue);
+    if (!tier) return;
+
+    this.setData({
+      selectedTier: faceValue,
+      customMode: false,
+      customInput: '',
+      customError: '',
+      customPayAmount: 0,
+    });
+    this.updateCta();
+  },
+
+  // ============ 自定义金额 ============
+
+  onCustomFocus() {
+    this.setData({ customMode: true, selectedTier: 0 });
+    this.updateCta();
+  },
+
+  onCustomInput(e: WechatMiniprogram.InputEvent) {
+    const raw = (e.detail.value || '').trim();
+    this.setData({ customInput: raw, customMode: true, selectedTier: 0 });
+
+    if (!raw) {
+      this.setData({
+        customError: '',
+        customPayAmount: 0,
+        customDiscountLabel: '',
+        customPayAmountLabel: '',
+        customBonus: 0,
+        customBonusLabel: '',
+      });
+      this.updateCta();
+      return;
+    }
+
+    const amount = Number(raw);
+    const cfg = this._config;
+    if (!cfg) {
+      this.setData({
+        customError: '档位配置加载失败，请下拉刷新',
+        customPayAmount: 0,
+        customDiscountLabel: '',
+        customPayAmountLabel: '',
+        customBonus: 0,
+        customBonusLabel: '',
+      });
+      this.updateCta();
+      return;
+    }
+    try {
+      const { discount, payAmount } = matchTier(amount, cfg);
+      const bonus = Math.round((amount - payAmount) * 100) / 100;
+      this.setData({
+        customError: '',
+        customPayAmount: payAmount,
+        customDiscountLabel: formatDiscountLabel(discount),
+        customPayAmountLabel: formatAmount(payAmount),
+        customBonus: bonus,
+        customBonusLabel: formatAmount(bonus),
+      });
+    } catch (err: any) {
+      const msg = (err?.message || '').replace(/^INVALID_PARAMS:\s*/, '') || '金额不合法';
+      this.setData({
+        customError: msg,
+        customPayAmount: 0,
+        customDiscountLabel: '',
+        customPayAmountLabel: '',
+        customBonus: 0,
+        customBonusLabel: '',
+      });
+    }
+    this.updateCta();
+  },
+
+  /** 综合当前金额选择刷新 CTA 文案/可用态 */
+  updateCta() {
+    const { customMode, customInput, customPayAmount, customError, selectedTier, tiers } = this.data;
+
+    let payAmount = 0;
+    if (customMode) {
+      if (!customInput) {
+        this.setData({ ctaText: '请输入充值金额', ctaDisabled: true });
+        return;
+      }
+      if (customError || customPayAmount <= 0) {
+        this.setData({ ctaText: '请输入有效金额', ctaDisabled: true });
+        return;
+      }
+      payAmount = customPayAmount;
+    } else if (selectedTier) {
+      const tier = tiers.find(t => t.faceValue === selectedTier);
+      if (!tier) {
+        this.setData({ ctaText: '请选择充值金额', ctaDisabled: true });
+        return;
+      }
+      payAmount = tier.payAmount;
+    } else {
+      this.setData({ ctaText: '请选择充值金额', ctaDisabled: true });
+      return;
+    }
+
+    this.setData({ ctaText: `立即充值 ¥${formatAmount(payAmount)}`, ctaDisabled: false });
+  },
+
+  // ============ 提交充值 ============
+
+  async onRecharge() {
+    if (this.data.submitting || this.data.ctaDisabled) return;
+
+    // 算出待充值的面值
+    let faceValue: number;
+    if (this.data.customMode) {
+      faceValue = Number(this.data.customInput);
+    } else {
+      faceValue = this.data.selectedTier;
+    }
+
+    if (!faceValue || faceValue <= 0) {
+      Toast.fail('请选择或输入充值金额');
+      return;
+    }
+
+    // 前置：未绑定门店直接拦截（云函数也会校验，前端先拦免一次往返）
+    if (!this.data.boundStoreId) {
+      Toast('请先绑定门店');
+      Dialog.confirm({
+        title: '请先绑定门店',
+        message: '充值卡需绑定门店，便于后续到店核销',
+        confirmButtonText: '去绑定',
+        cancelButtonText: '取消',
+      }).then(() => {
+        wx.navigateTo({ url: '/pagesStore/store-select/store-select' });
+      }).catch(() => {});
+      return;
+    }
+
+    // 纯逻辑层暂存（手机绑定后回填重提交），不参与渲染 → 挂 this._ 不进 data
+    this._pendingFaceValue = faceValue;
+    await this.doRecharge(faceValue);
+  },
+
+  async doRecharge(faceValue: number) {
+    if (this.data.submitting || this.data.autoResubmitPending) return;
+    this.setData({ submitting: true });
+    try {
+      // 仅建单，付款方式选择 + 支付触发由 checkout 页统一处理
+      const created = await callClientApi<{ saleOrderId: string }>('card.recharge', { faceValue });
+      const saleOrderId = created?.saleOrderId;
+      if (!saleOrderId) throw new Error('创建充值订单失败');
+
+      wx.redirectTo({
+        url: `/pagesOrder/checkout/checkout?saleOrderId=${saleOrderId}`,
+      });
+    } catch (err: any) {
+      if (err?.errorType === 'PHONE_REQUIRED') {
+        // 登出态先免费 OPENID 恢复会话（同号老账号免消耗付费手机号验证），失败才弹付费授权
+        if (app.isLoggedOut()) {
+          const status = await app.syncLoginState(true);
+          if (status === 'authenticated') {
+            Toast.success('已恢复登录');
+            const pending = this._pendingFaceValue;
+            // 本 catch 无 finally，须手动释放提交锁后再延迟重试
+            this.setData({ submitting: false });
+            if (pending > 0) {
+              setTimeout(() => this.doRecharge(pending), 0);
+            }
+            return;
+          }
+        }
+        this.setData({ showPhoneBind: true, submitting: false });
+        return;
+      }
+      if (err?.data?.pendingOrderNo) {
+        Dialog.confirm({
+          title: '您有待支付订单',
+          message: '请先完成或取消上一笔订单后再充值',
+          confirmButtonText: '去支付',
+          cancelButtonText: '我知道了',
+        }).then(() => {
+          wx.redirectTo({
+            url: `/pagesOrder/checkout/checkout?saleOrderId=${err.data.pendingOrderNo}`,
+          });
+        }).catch(() => {});
+        this.setData({ submitting: false });
+        return;
+      }
+      const rawMsg = (err?.message || '').replace(/^[A-Z_]+:\s*/, '');
+      Toast.fail(rawMsg || '充值失败，请重试');
+      this.setData({ submitting: false });
+    }
+  },
+
+  // ============ 手机绑定 ============
+
+  onClosePhoneBind() {
+    this.setData({ showPhoneBind: false });
+  },
+
+  async onGetPhoneNumber(e: WechatMiniprogram.CustomEvent<{ cloudID?: string; errMsg?: string }>) {
+    if (this.data.phoneBinding) return;
+    const { cloudID, errMsg } = e.detail;
+    if (!cloudID) {
+      if (errMsg?.includes('auth deny')) Toast.fail('您拒绝了授权');
+      return;
+    }
+    this.setData({ phoneBinding: true });
+    try {
+      await bindPhoneWithCloudID(cloudID);
+      this.setData({ showPhoneBind: false });
+      Toast.success('绑定成功');
+      const pending = this._pendingFaceValue;
+      if (pending > 0) {
+        // 延迟窗口内锁住提交入口防手点+定时器双触发重复建单
+        this.setData({ autoResubmitPending: true });
+        setTimeout(() => {
+          this.setData({ autoResubmitPending: false });
+          this.doRecharge(pending);
+        }, 800);
+      }
+    } catch (err: any) {
+      Toast.fail(err?.message || '绑定失败，请重试');
+    } finally {
+      this.setData({ phoneBinding: false });
+    }
+  },
+});
+
+/* ========================================================================
+ * 文件：miniprogram/pagesProfile/card-recharge/card-recharge.wxml
+ * 功能：客户端页面界面结构
+ * ======================================================================== */
+<!-- pagesProfile/card-recharge/card-recharge.wxml — 充值卡充值页 -->
+<van-toast id="van-toast" />
+<van-dialog id="van-dialog" />
+
+<view class="container">
+
+  <!-- 顶部说明 -->
+  <view class="hero">
+    <view class="hero-title">选择充值金额</view>
+    <view class="hero-sub">金额越大优惠越大</view>
+    <view wx:if="{{boundStoreName}}" class="hero-store">
+      <van-icon name="shop-o" size="24rpx" color="rgba(255,255,255,0.85)" />
+      <text class="hero-store-text">充值至：{{boundStoreName}}</text>
+    </view>
+  </view>
+
+  <!-- 加载档位 -->
+  <view wx:if="{{configLoading}}" class="loading-block">
+    <van-loading size="20px" />
+  </view>
+
+  <view wx:else class="body">
+
+    <!-- 预设档卡片 -->
+    <view class="section-title">推荐充值</view>
+    <view class="tier-grid">
+      <view
+        wx:for="{{tiers}}"
+        wx:key="faceValue"
+        class="tier-card {{selectedTier === item.faceValue && !customMode ? 'tier-card--active' : ''}}"
+        data-face-value="{{item.faceValue}}"
+        bindtap="onTierTap"
+      >
+        <view class="tier-face">¥{{item.faceValue}}</view>
+        <view class="tier-discount">{{item.discountLabel}}</view>
+        <view class="tier-pay">实付 ¥{{item.payAmountLabel}}</view>
+        <view wx:if="{{item.faceValue - item.payAmount > 0}}" class="tier-bonus">送 ¥{{item.bonusLabel}}</view>
+      </view>
+    </view>
+
+    <!-- 自定义金额 -->
+    <view class="section-title">自定义金额</view>
+    <view class="custom-card {{customMode ? 'custom-card--active' : ''}}">
+      <view class="custom-input-row">
+        <text class="custom-currency">¥</text>
+        <input
+          class="custom-input"
+          type="digit"
+          placeholder="输入充值金额"
+          placeholder-style="color:#BBBBBB"
+          value="{{customInput}}"
+          bindinput="onCustomInput"
+          bindfocus="onCustomFocus"
+        />
+      </view>
+      <view wx:if="{{customError}}" class="custom-hint custom-hint--error">{{customError}}</view>
+      <view wx:elif="{{customMode && customPayAmount > 0}}" class="custom-hint">
+        匹配 <text class="custom-hint-strong">{{customDiscountLabel}}</text>
+        ｜实付 <text class="custom-hint-strong">¥{{customPayAmountLabel}}</text>
+        <text wx:if="{{customBonus > 0}}" class="custom-hint-bonus">（送 ¥{{customBonusLabel}}）</text>
+      </view>
+      <view wx:else class="custom-hint custom-hint--placeholder">
+        最低 ¥{{minAmount}}，最高 ¥{{maxAmount}}
+      </view>
+    </view>
+
+    <!-- 底部说明 -->
+    <view class="footer-note">
+      <view class="footer-note-line">· 充值卡可在凤御双连锁门店消费，无使用期限</view>
+      <view class="footer-note-line">· 充值后不支持退款</view>
+    </view>
+
+  </view>
+
+  <!-- 底部 sticky CTA -->
+  <view wx:if="{{!configLoading}}" class="cta-bar safe-bottom">
+    <button
+      class="cta-btn {{ctaDisabled ? 'cta-btn--disabled' : ''}}"
+      disabled="{{ctaDisabled || submitting}}"
+      loading="{{submitting}}"
+      bindtap="onRecharge"
+    >
+      {{ctaText}}
+    </button>
+  </view>
+
+</view>
+
+<!-- 手机绑定弹窗 -->
+<van-dialog
+  use-slot
+  show="{{showPhoneBind}}"
+  show-cancel-button
+  cancel-button-text="暂不绑定"
+  confirm-button-text="授权绑定"
+  bind:close="onClosePhoneBind"
+>
+  <view class="phone-bind-wrap">
+    <view class="phone-bind-title">需要绑定手机号</view>
+    <view class="phone-bind-desc">充值需先绑定手机号，便于后续核销与售后</view>
+    <button
+      class="phone-bind-btn"
+      open-type="getPhoneNumber"
+      bindgetphonenumber="onGetPhoneNumber"
+      disabled="{{phoneBinding}}"
+      loading="{{phoneBinding}}"
+    >
+      获取手机号
+    </button>
+  </view>
+</van-dialog>
+
+/* ========================================================================
+ * 文件：miniprogram/pagesProfile/card-recharge/card-recharge.wxss
+ * 功能：客户端页面视觉样式
+ * ======================================================================== */
+/* pagesProfile/card-recharge/card-recharge.wxss */
+
+.container {
+  min-height: 100vh;
+  background: var(--color-bg-page);
+  padding-bottom: 200rpx;  /* 给底部 CTA 留位 */
+}
+
+/* ===== 顶部 hero ===== */
+
+.hero {
+  background: linear-gradient(135deg, #C0322A 0%, #9B1E14 100%);
+  padding: 56rpx 36rpx 48rpx;
+  color: #FFFFFF;
+  display: flex;
+  flex-direction: column;
+  gap: 12rpx;
+}
+
+.hero-title {
+  font-size: 40rpx;
+  font-weight: 700;
+}
+
+.hero-sub {
+  font-size: 26rpx;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.hero-store {
+  margin-top: 16rpx;
+  display: inline-flex;
+  align-items: center;
+  gap: 8rpx;
+  padding: 10rpx 18rpx;
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 24rpx;
+  align-self: flex-start;
+}
+
+.hero-store-text {
+  font-size: 24rpx;
+  color: rgba(255, 255, 255, 0.95);
+}
+
+/* ===== 加载态 ===== */
+
+.loading-block {
+  padding: 80rpx 0;
+  text-align: center;
+}
+
+/* ===== 主体 ===== */
+
+.body {
+  padding: 32rpx 24rpx 0;
+}
+
+.section-title {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  padding: 8rpx 12rpx 16rpx;
+}
+
+/* ===== 预设档卡片 ===== */
+
+.tier-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16rpx;
+  margin-bottom: 32rpx;
+}
+
+.tier-card {
+  background: var(--color-bg-card);
+  border-radius: 16rpx;
+  padding: 28rpx 16rpx;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8rpx;
+  border: 2rpx solid transparent;
+  transition: all 0.15s;
+  position: relative;
+}
+
+.tier-card--active {
+  border-color: var(--color-primary);
+  background: var(--color-primary-light);
+}
+
+.tier-face {
+  font-size: 36rpx;
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+
+.tier-card--active .tier-face {
+  color: var(--color-primary);
+}
+
+.tier-discount {
+  font-size: 24rpx;
+  color: var(--color-primary);
+  font-weight: 500;
+  padding: 2rpx 12rpx;
+  background: var(--color-primary-light);
+  border-radius: 16rpx;
+}
+
+.tier-card--active .tier-discount {
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.tier-pay {
+  font-size: 22rpx;
+  color: var(--color-text-secondary);
+  margin-top: 4rpx;
+}
+
+.tier-bonus {
+  font-size: 20rpx;
+  color: var(--color-primary);
+  font-weight: 500;
+}
+
+/* ===== 自定义金额 ===== */
+
+.custom-card {
+  background: var(--color-bg-card);
+  border-radius: 16rpx;
+  padding: 28rpx 24rpx;
+  margin-bottom: 32rpx;
+  border: 2rpx solid transparent;
+  transition: border-color 0.15s;
+}
+
+.custom-card--active {
+  border-color: var(--color-primary);
+}
+
+.custom-input-row {
+  display: flex;
+  align-items: baseline;
+  gap: 12rpx;
+  padding-bottom: 16rpx;
+  border-bottom: 1rpx solid var(--color-border);
+}
+
+.custom-currency {
+  font-size: 32rpx;
+  color: var(--color-text-primary);
+}
+
+.custom-input {
+  flex: 1;
+  font-size: 36rpx;
+  color: var(--color-text-primary);
+}
+
+.custom-hint {
+  font-size: 24rpx;
+  color: var(--color-text-secondary);
+  padding-top: 14rpx;
+  line-height: 1.5;
+}
+
+.custom-hint--placeholder {
+  color: var(--color-text-hint);
+}
+
+.custom-hint--error {
+  color: var(--color-status-failed, #C0322A);
+}
+
+.custom-hint-strong {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.custom-hint-bonus {
+  color: var(--color-primary);
+}
+
+/* ===== 支付方式 ===== */
+
+.pay-method-card {
+  background: var(--color-bg-card);
+  border-radius: 16rpx;
+  overflow: hidden;
+  margin-bottom: 32rpx;
+}
+
+.pay-icon {
+  width: 40rpx;
+  height: 40rpx;
+  margin-right: 16rpx;
+}
+
+/* ===== 支付宝二维码弹窗 ===== */
+
+.alipay-qr-popup {
+  padding: 48rpx 40rpx calc(48rpx + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.alipay-qr-popup__title {
+  font-size: 32rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin-bottom: 32rpx;
+}
+
+.alipay-qr-popup__image {
+  width: 400rpx;
+  height: 400rpx;
+  border-radius: 16rpx;
+  background: var(--color-bg-section);
+  margin-bottom: 24rpx;
+}
+
+.alipay-qr-popup__amount {
+  display: flex;
+  align-items: baseline;
+  gap: 4rpx;
+  margin-bottom: 16rpx;
+}
+
+.alipay-qr-popup__symbol {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--color-primary);
+}
+
+.alipay-qr-popup__price {
+  font-size: 52rpx;
+  font-weight: 700;
+  color: var(--color-primary);
+}
+
+.alipay-qr-popup__tips {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+  margin-bottom: 40rpx;
+}
+
+.alipay-qr-popup__btn {
+  width: 100% !important;
+}
+
+/* ===== 底部说明 ===== */
+
+.footer-note {
+  padding: 16rpx 12rpx 32rpx;
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+}
+
+.footer-note-line {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+  line-height: 1.6;
+}
+
+/* ===== 底部 CTA ===== */
+
+.cta-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: #FFFFFF;
+  padding: 20rpx 24rpx;
+  border-top: 1rpx solid var(--color-border);
+  z-index: 100;
+}
+
+.safe-bottom {
+  padding-bottom: calc(20rpx + env(safe-area-inset-bottom));
+}
+
+.cta-btn {
+  width: 100%;
+  background: var(--color-primary);
+  color: #FFFFFF;
+  font-size: 30rpx;
+  font-weight: 500;
+  border-radius: 40rpx;
+  padding: 12rpx 0;
+  border: none;
+}
+
+.cta-btn::after {
+  border: none;
+}
+
+.cta-btn--disabled {
+  background: #CCCCCC !important;
+  color: #FFFFFF !important;
+}
+
+/* ===== 手机绑定弹窗 ===== */
+
+.phone-bind-wrap {
+  padding: 40rpx 32rpx;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16rpx;
+}
+
+.phone-bind-title {
+  font-size: 32rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.phone-bind-desc {
+  font-size: 26rpx;
+  color: var(--color-text-secondary);
+  text-align: center;
+  line-height: 1.5;
+}
+
+.phone-bind-btn {
+  display: none;  /* van-dialog 的 confirm 按钮已触发，此处隐藏占位 */
+}
+
+/* ========================================================================
+ * 文件：miniprogram/pagesProfile/member-benefits/member-benefits.ts
+ * 功能：客户端页面逻辑与交互实现
+ * ======================================================================== */
+// pagesProfile/member-benefits/member-benefits.ts
+// 分享礼门面页：规则说明 + 一键分享 + 我的分享礼券
+import Toast from '@vant/weapp/toast/toast';
+import { formatDate, formatDiscount } from '../../utils/format';
+import { callClientApi } from '../../utils/cloud';
+
+const app = getApp<IAppOption>();
+
+interface ShareGiftRule {
+  enabled: boolean;
+  percent?: number;
+  minFaceValue?: number;
+  maxFaceValue?: number;
+  validityDays?: number;
+}
+
+Page({
+  data: {
+    rule: { enabled: false } as ShareGiftRule,
+    percentLabel: '',
+    coupons: [] as any[],
+    isLoading: true,
+    loadError: false,
+    loggedIn: false,
+  },
+
+  onLoad() {
+    this.setData({ loggedIn: !!app.globalData.userId });
+    this.loadAll();
+  },
+
+  onShow() {
+    // 从首单结清后返回，分享礼券可能刚发放，刷新一次
+    if (!this.data.isLoading) {
+      this.loadAll();
+    }
+  },
+
+  onPullDownRefresh() {
+    this.loadAll().finally(() => wx.stopPullDownRefresh());
+  },
+
+  async loadAll() {
+    this.setData({ isLoading: true, loadError: false });
+    try {
+      const rule = await callClientApi<ShareGiftRule>('config.shareGift', {});
+      const percentLabel = rule.enabled && rule.percent
+        ? `${Math.round(Number(rule.percent) * 100)}%`
+        : '';
+      this.setData({ rule, percentLabel });
+
+      // 登录后才有「我的分享礼券」可查
+      let coupons: any[] = [];
+      if (app.globalData.userId) {
+        const data = await callClientApi<{ coupons: any[] }>('coupon.list', {});
+        coupons = (data?.coupons || [])
+          // 分享礼券的 coupon_id 形如 sg-{role}-{saleOrderId}，纯前端识别
+          .filter((c) => typeof c.couponId === 'string' && c.couponId.indexOf('sg-') === 0)
+          .map((c) => ({
+            ...c,
+            discountLabel: formatDiscount(c),
+            expireAtFmt: formatDate(c.expireAt),
+            usedAtFmt: c.usedAt ? formatDate(c.usedAt) : '',
+          }));
+      }
+      this.setData({ coupons });
+    } catch (err: any) {
+      Toast.fail(err.message || '加载失败');
+      this.setData({ loadError: true });
+    } finally {
+      this.setData({ isLoading: false });
+    }
+  },
+
+  onShareAppMessage() {
+    // 分享礼：统一回首页并附带邀请人 inv 参数
+    const userId = app.globalData.userId;
+    const invSuffix = userId ? `?inv=${encodeURIComponent(userId)}` : '';
+    return {
+      title: '凤御美容 — 邀请有礼，首单到账各得好礼',
+      path: `/pages/home/home${invSuffix}`,
+    };
+  },
+});
+
+/* ========================================================================
+ * 文件：miniprogram/pagesProfile/member-benefits/member-benefits.wxml
+ * 功能：客户端页面界面结构
+ * ======================================================================== */
+<!-- pagesProfile/member-benefits/member-benefits.wxml -->
+<van-toast id="van-toast" />
+
+<!-- 加载态 -->
+<view wx:if="{{isLoading}}" class="skeleton-wrap">
+  <van-skeleton title row="4" />
+</view>
+
+<block wx:else>
+  <!-- 规则说明卡 -->
+  <view class="hero">
+    <view class="hero__badge">🎁 邀请有礼</view>
+    <block wx:if="{{rule.enabled}}">
+      <view class="hero__title">分享好友，双方都有礼</view>
+      <view class="hero__desc">
+        好友通过你的分享首次下单并结清，你和好友<text class="hero__strong">各得一张代金券</text>。
+      </view>
+      <view class="hero__rule">
+        券面值 = 好友首单实付的 <text class="hero__strong">{{percentLabel}}</text>（{{rule.minFaceValue}}~{{rule.maxFaceValue}} 元），自到账起 {{rule.validityDays}} 天内有效。
+      </view>
+
+      <view class="steps">
+        <view class="step">
+          <view class="step__no">1</view>
+          <view class="step__txt">点击下方按钮把小程序分享给好友</view>
+        </view>
+        <view class="step">
+          <view class="step__no">2</view>
+          <view class="step__txt">好友进入并绑定门店、完成首单结清</view>
+        </view>
+        <view class="step">
+          <view class="step__no">3</view>
+          <view class="step__txt">系统自动给你和好友各发一张代金券</view>
+        </view>
+      </view>
+
+      <button class="share-btn" open-type="share">
+        <van-icon name="share-o" size="36rpx" custom-class="share-btn__icon" />
+        立即分享给好友
+      </button>
+      <view class="hero__tip">储值卡全额抵扣（实付 0 元）的订单不发分享礼。</view>
+    </block>
+    <block wx:else>
+      <view class="hero__title">活动暂未开启</view>
+      <view class="hero__desc">分享礼活动暂未开启，敬请期待～</view>
+    </block>
+  </view>
+
+  <!-- 我的分享礼 -->
+  <view class="section" wx:if="{{loggedIn}}">
+    <view class="section__head">我的分享礼</view>
+
+    <van-empty
+      wx:if="{{loadError}}"
+      image="error"
+      description="加载失败，下拉刷新重试"
+    />
+    <van-empty
+      wx:elif="{{coupons.length === 0}}"
+      description="还没有分享礼，快分享给好友吧"
+    />
+
+    <view wx:else class="coupon-list">
+      <view
+        wx:for="{{coupons}}"
+        wx:key="couponId"
+        class="coupon-card {{item.status !== '未使用' ? 'coupon-card--disabled' : ''}}"
+      >
+        <view class="coupon-card__left">
+          <text class="coupon-card__amount">{{item.discountLabel}}</text>
+          <text class="coupon-card__type">{{item.couponType}}</text>
+        </view>
+        <view class="coupon-card__right">
+          <text class="coupon-card__name">{{item.name}}</text>
+          <text class="coupon-card__expire">
+            <block wx:if="{{item.status === '已使用'}}">已于 {{item.usedAtFmt || '—'}} 使用</block>
+            <block wx:else>有效期至 {{item.expireAtFmt || '—'}}</block>
+          </text>
+          <text class="coupon-card__desc" wx:if="{{item.description}}">{{item.description}}</text>
+        </view>
+        <view class="coupon-card__stamp" wx:if="{{item.status === '已使用'}}">已使用</view>
+        <view class="coupon-card__stamp coupon-card__stamp--expired" wx:elif="{{item.status === '已过期'}}">已过期</view>
+      </view>
+    </view>
+  </view>
+
+  <!-- 未登录提示 -->
+  <view class="section" wx:else>
+    <van-empty description="登录后可查看你获得的分享礼" />
+  </view>
+</block>
+
+/* ========================================================================
+ * 文件：miniprogram/pagesProfile/member-benefits/member-benefits.wxss
+ * 功能：客户端页面视觉样式
+ * ======================================================================== */
+/* pagesProfile/member-benefits/member-benefits.wxss */
+
+page {
+  background: var(--color-bg-page);
+}
+
+.skeleton-wrap {
+  padding: 32rpx;
+}
+
+/* 规则说明卡 */
+.hero {
+  margin: 24rpx;
+  padding: 40rpx 32rpx 32rpx;
+  border-radius: 20rpx;
+  background: linear-gradient(135deg, var(--color-primary) 0%, #D4A76A 100%);
+  color: #fff;
+  box-shadow: var(--shadow-card);
+}
+
+.hero__badge {
+  display: inline-block;
+  font-size: 24rpx;
+  background: rgba(255, 255, 255, 0.22);
+  border-radius: 999rpx;
+  padding: 6rpx 20rpx;
+}
+
+.hero__title {
+  font-size: 40rpx;
+  font-weight: 700;
+  margin-top: 20rpx;
+}
+
+.hero__desc {
+  font-size: 26rpx;
+  line-height: 1.6;
+  margin-top: 16rpx;
+  opacity: 0.95;
+}
+
+.hero__rule {
+  font-size: 24rpx;
+  line-height: 1.6;
+  margin-top: 12rpx;
+  opacity: 0.9;
+}
+
+.hero__strong {
+  font-weight: 700;
+}
+
+.steps {
+  margin-top: 28rpx;
+  display: flex;
+  flex-direction: column;
+  gap: 16rpx;
+}
+
+.step {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+}
+
+.step__no {
+  width: 40rpx;
+  height: 40rpx;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.25);
+  color: #fff;
+  font-size: 24rpx;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.step__txt {
+  font-size: 25rpx;
+  line-height: 1.4;
+}
+
+.share-btn {
+  margin-top: 36rpx;
+  width: 100%;
+  height: 88rpx;
+  line-height: 88rpx;
+  border-radius: 999rpx;
+  background: #fff;
+  color: var(--color-primary);
+  font-size: 30rpx;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.share-btn::after {
+  border: none;
+}
+
+.share-btn__icon {
+  margin-right: 10rpx;
+}
+
+.hero__tip {
+  font-size: 22rpx;
+  opacity: 0.8;
+  margin-top: 20rpx;
+  text-align: center;
+}
+
+/* 我的分享礼 */
+.section {
+  margin: 24rpx;
+}
+
+.section__head {
+  font-size: 30rpx;
+  font-weight: 700;
+  color: var(--color-text-title);
+  margin: 8rpx 0 20rpx;
+}
+
+.coupon-list {
+  display: flex;
+  flex-direction: column;
+  gap: 24rpx;
+}
+
+.coupon-card {
+  display: flex;
+  background: #fff;
+  border-radius: 16rpx;
+  overflow: hidden;
+  position: relative;
+  box-shadow: var(--shadow-card);
+}
+
+.coupon-card--disabled {
+  opacity: 0.6;
+}
+
+.coupon-card__left {
+  width: 200rpx;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, var(--color-primary) 0%, #D4A76A 100%);
+  color: #fff;
+  padding: 32rpx 16rpx;
+}
+
+.coupon-card--disabled .coupon-card__left {
+  background: linear-gradient(135deg, #999 0%, #bbb 100%);
+}
+
+.coupon-card__amount {
+  font-size: 48rpx;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.coupon-card__type {
+  font-size: 22rpx;
+  margin-top: 8rpx;
+  opacity: 0.85;
+}
+
+.coupon-card__right {
+  flex: 1;
+  padding: 24rpx;
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+}
+
+.coupon-card__name {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.coupon-card__expire {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+}
+
+.coupon-card__desc {
+  font-size: 22rpx;
+  color: var(--color-text-secondary);
+  margin-top: 4rpx;
+}
+
+.coupon-card__stamp {
+  position: absolute;
+  right: 20rpx;
+  top: 20rpx;
+  font-size: 24rpx;
+  color: var(--color-primary);
+  border: 2rpx solid var(--color-primary);
+  border-radius: 8rpx;
+  padding: 4rpx 12rpx;
+  transform: rotate(15deg);
+  opacity: 0.6;
+}
+
+.coupon-card__stamp--expired {
+  color: var(--color-text-hint);
+  border-color: var(--color-text-hint);
+}
+
+/* ========================================================================
+ * 文件：miniprogram/pagesCoupon/my-coupons/my-coupons.ts
+ * 功能：客户端页面逻辑与交互实现
+ * ======================================================================== */
+// pagesCoupon/my-coupons/my-coupons.ts
+import Toast from '@vant/weapp/toast/toast';
+import { formatDate, formatDiscount } from '../../utils/format';
+import { callClientApi } from '../../utils/cloud';
+
+const TAB_STATUS = ['未使用', '已使用', '已过期'];
+
+Page({
+  data: {
+    activeTab: 0,
+    coupons: [] as any[],
+    isLoading: false,
+    loadError: false,
+  },
+
+  onLoad() {
+    this.loadCoupons();
+  },
+
+  onShow() {
+    // navigateBack 返回时刷新券状态（使用后状态可能变化）
+    if (this.data.coupons.length > 0) {
+      this.loadCoupons();
+    }
+  },
+
+  onPullDownRefresh() {
+    this.loadCoupons().finally(() => wx.stopPullDownRefresh());
+  },
+
+  onTabChange(e: WechatMiniprogram.CustomEvent) {
+    this.setData({ activeTab: e.detail.index, coupons: [] });
+    this.loadCoupons();
+  },
+
+  async loadCoupons() {
+    this.setData({ isLoading: true, loadError: false });
+    try {
+      const status = TAB_STATUS[this.data.activeTab];
+      const data = await callClientApi('coupon.list', { status });
+      const coupons = (data?.coupons || []).map((c: any) => {
+        const minSpendNum = Number(c.minSpend) || 0;
+        const hasCategory = Array.isArray(c.applicableCategoryNames) && c.applicableCategoryNames.length > 0;
+        // 品项券满减门槛仅对"符合品类行的小计"生效，文案须明确避免"全单满 X"的误解
+        const minSpendHint = minSpendNum > 0
+          ? (hasCategory
+              ? `仅限 ${c.applicableCategoryNames.join('/')} 品类小计满 ${minSpendNum} 元可用`
+              : `满 ${minSpendNum} 元可用`)
+          : '';
+        return {
+          ...c,
+          expireAtFmt: formatDate(c.expireAt),
+          // usedAt 是 timestamp 列，序列化为 UTC ISO；用 formatDate 按设备本地(北京)取日期，
+          // 避免 WXML 里 slice(0,10) 截 UTC 日期段跨午夜偏一天
+          usedAtFmt: c.usedAt ? formatDate(c.usedAt) : '',
+          discountLabel: formatDiscount(c),
+          minSpendNum,
+          minSpendHint,
+        };
+      });
+      this.setData({ coupons });
+    } catch (err: any) {
+      Toast.fail(err.message || '加载失败');
+      this.setData({ loadError: true });
+    } finally {
+      this.setData({ isLoading: false });
+    }
+  },
+
+});
+
+/* ========================================================================
+ * 文件：miniprogram/pagesCoupon/my-coupons/my-coupons.wxml
+ * 功能：客户端页面界面结构
+ * ======================================================================== */
+<!-- pagesCoupon/my-coupons/my-coupons.wxml -->
+<wxs module="fmt">
+module.exports.join = function(arr, sep) { return arr ? arr.join(sep) : '' }
+module.exports.slice = function(s, start, end) { return s ? s.slice(start, end) : '' }
+</wxs>
+<van-toast id="van-toast" />
+
+<van-tabs active="{{activeTab}}" bind:change="onTabChange" line-width="60rpx">
+  <van-tab title="未使用" />
+  <van-tab title="已使用" />
+  <van-tab title="已过期" />
+</van-tabs>
+
+<!-- 加载态 -->
+<view wx:if="{{isLoading}}" class="skeleton-wrap">
+  <van-skeleton title row="3" />
+  <van-skeleton title row="3" style="margin-top:24rpx" />
+</view>
+
+<!-- 错误态 -->
+<van-empty
+  wx:elif="{{loadError}}"
+  image="error"
+  description="加载失败，下拉刷新重试"
+/>
+
+<!-- 空态 -->
+<van-empty
+  wx:elif="{{coupons.length === 0}}"
+  description="暂无优惠券"
+/>
+
+<!-- 数据态 -->
+<view wx:else class="coupon-list">
+  <view
+    wx:for="{{coupons}}"
+    wx:key="couponId"
+    class="coupon-card {{item.status !== '未使用' ? 'coupon-card--disabled' : ''}}"
+  >
+    <view class="coupon-card__left">
+      <text class="coupon-card__amount">{{item.discountLabel}}</text>
+      <text class="coupon-card__type">{{item.couponType}}</text>
+    </view>
+    <view class="coupon-card__right">
+      <text class="coupon-card__name">{{item.name}}</text>
+      <text class="coupon-card__scope" wx:if="{{item.applicableStoreNames}}">
+        限：{{fmt.join(item.applicableStoreNames, '、')}}
+      </text>
+      <text class="coupon-card__scope" wx:else>全部门店可用</text>
+      <text class="coupon-card__expire">
+        <block wx:if="{{item.status === '已使用'}}">已于 {{item.usedAtFmt || '—'}} 使用</block>
+        <block wx:else>有效期至 {{item.expireAtFmt || '—'}}</block>
+      </text>
+      <text class="coupon-card__desc" wx:if="{{item.description}}">{{item.description}}</text>
+      <text class="coupon-card__hint" wx:if="{{item.minSpendHint}}">{{item.minSpendHint}}</text>
+      <van-tag wx:if="{{item.minSpendNum > 0}}" plain color="#C9986A" custom-class="coupon-card__tag">
+        满{{item.minSpendNum}}可用
+      </van-tag>
+    </view>
+    <view class="coupon-card__stamp" wx:if="{{item.status === '已使用'}}">已使用</view>
+    <view class="coupon-card__stamp coupon-card__stamp--expired" wx:elif="{{item.status === '已过期'}}">已过期</view>
+  </view>
+</view>
+
+/* ========================================================================
+ * 文件：miniprogram/pagesCoupon/my-coupons/my-coupons.wxss
+ * 功能：客户端页面视觉样式
+ * ======================================================================== */
+/* pagesCoupon/my-coupons/my-coupons.wxss */
+
+page {
+  background: var(--color-bg-page);
+}
+
+.coupon-list {
+  padding: 24rpx;
+}
+
+.coupon-card {
+  display: flex;
+  background: #fff;
+  border-radius: 16rpx;
+  margin-bottom: 24rpx;
+  overflow: hidden;
+  position: relative;
+  box-shadow: var(--shadow-card);
+}
+
+.coupon-card--disabled {
+  opacity: 0.6;
+}
+
+.coupon-card__left {
+  width: 200rpx;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, var(--color-primary) 0%, #D4A76A 100%);
+  color: #fff;
+  padding: 32rpx 16rpx;
+}
+
+.coupon-card--disabled .coupon-card__left {
+  background: linear-gradient(135deg, #999 0%, #bbb 100%);
+}
+
+.coupon-card__amount {
+  font-size: 48rpx;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.coupon-card__type {
+  font-size: 22rpx;
+  margin-top: 8rpx;
+  opacity: 0.85;
+}
+
+.coupon-card__right {
+  flex: 1;
+  padding: 24rpx;
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+}
+
+.coupon-card__name {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.coupon-card__scope {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+}
+
+.coupon-card__expire {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+}
+
+.coupon-card__desc {
+  font-size: 22rpx;
+  color: var(--color-text-secondary);
+  margin-top: 4rpx;
+}
+
+.coupon-card__hint {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+  margin-top: 4rpx;
+}
+
+.coupon-card__tag {
+  align-self: flex-start;
+  margin-top: 4rpx;
+}
+
+.coupon-card__stamp {
+  position: absolute;
+  right: 20rpx;
+  top: 20rpx;
+  font-size: 24rpx;
+  color: var(--color-primary);
+  border: 2rpx solid var(--color-primary);
+  border-radius: 8rpx;
+  padding: 4rpx 12rpx;
+  transform: rotate(15deg);
+  opacity: 0.6;
+}
+
+.coupon-card__stamp--expired {
+  color: var(--color-text-hint);
+  border-color: var(--color-text-hint);
+}
+

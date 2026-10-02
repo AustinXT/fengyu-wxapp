@@ -20,14 +20,15 @@
   </view>
   <view class="mgmt-scope-tag">
     <text>范围：</text>
-    <text class="mgmt-scope-tag-value">{{scopeName || (scopeType === 'all' ? '全部市场' : '')}}</text>
+    <text class="mgmt-scope-tag-value">{{scopeName || (scopeType === 'all' ? '全部市场' : '')}}{{scopeInactive ? '（已停用）' : ''}}</text>
   </view>
 </view>
 
 <view class="sd-page">
 
   <!-- 三态壳：loading / error 时由组件接管 -->
-  <mgmt-data-state state="{{ state }}" bind:retry="onRetry">
+  <!-- empty 仅在 scope 落到已停用门店时出现（#400）；在营门店无业绩照常渲染 0 -->
+  <mgmt-data-state state="{{ state }}" empty-text="{{ inactiveText }}" empty-hint="可返回上一页调整查看范围" bind:retry="onRetry">
     <!-- 业绩与实耗区 -->
     <view class="sd-section">
       <view class="sd-section-title">业绩与实耗</view>
@@ -75,15 +76,15 @@
           </view>
           <view class="sd-consume-row">
             <view class="sd-consume-cell">
-              <text class="sd-cell-label">小美客产品出库</text>
+              <text class="sd-cell-label">小美客家居产品销售</text>
               <text class="sd-cell-value">{{xiaomeiProductOut}}</text>
             </view>
             <view class="sd-consume-cell">
-              <text class="sd-cell-label">新增会员产品出库</text>
+              <text class="sd-cell-label">新增会员家居产品销售</text>
               <text class="sd-cell-value">{{newMemberProductOut}}</text>
             </view>
             <view class="sd-consume-cell">
-              <text class="sd-cell-label">老会员产品出库</text>
+              <text class="sd-cell-label">老会员家居产品销售</text>
               <text class="sd-cell-value">{{oldMemberProductOut}}</text>
             </view>
           </view>
@@ -116,9 +117,8 @@
         </view>
         <view class="sd-breakdown-list">
           <block wx:for="{{byProductKind}}" wx:key="label" wx:for-item="kind">
-            <!-- 一级行：左竖条 + 主色加粗 -->
+            <!-- 一级汇总行：浅灰底 + 加粗 -->
             <view class="sd-kind-row">
-              <view class="sd-kind-bar"></view>
               <text class="sd-kind-name">{{kind.label}}</text>
               <text class="sd-kind-value">{{kind.value}}</text>
               <text class="sd-kind-ratio">{{kind.ratio}}</text>

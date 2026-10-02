@@ -15,13 +15,25 @@
  *
  * 关键口径红线（与 mgmt-traffic.js 字面一致，consistency.customer.test.ts 守护）：
  *   - 新会员/会员数 = became_member_at（历史化）；保有会员 = 90 天到店窗口 + became_member_at 守卫
- *   - 消费分桶 = member_spend CTE 左闭右开 [1990,1w)/[1w,3w)/[3w,6w)/[6w,10w)/[10w,+∞)，
+ *   - 消费分桶 = member_spend CTE 左闭右开 [门槛,1w)/[1w,3w)/[3w,6w)/[6w,10w)/[10w,+∞)，
+ *     门槛 = system_configs.new_member_threshold（getMemberThreshold，与品项板同源；#292），
+ *     1w/3w/6w/10w 取 SPEND_BUCKET_FLOORS；
  *     不复用 spending_tier 列（lifetime 快照）；
  *     spend = SUM(sale_order_performance_events.amount) @ performance_date（#138 起，与业绩 KPI 同源；
  *     不按父订单 status 过滤、排除储值卡抵扣；与 mgmt-traffic.js 逐条一致，由 consistency.customer.test.ts 守护）
- *   - 成交率分母 = 区间内到店的「体验客 + 小美客」（D-conv-denom=B）
+ *   - 成交率分母 = 期初未达会员的到店活跃池 ∪ 本期全部新增会员（D-conv-denom=1c，#284 推翻原 D-2=B；
+ *     ② 分支与分子 newmem/queryNewMemberCount 同源，保证分子 ⊆ 分母、成交率恒 ≤ 100%）
+ *   - 新客客单价分子 = 款项流水分支 + WorkFine 历史单分支（#289，订单级实收，片段见 lib/data-center/workfine-legacy-spend.ts）；
+ *     分母 = 会员新增不动。同族「会员经营人数 / 6 档 / 会员客单价」仍只读款项流水（未修，metrics.md 已登记）
  *   - 项目数 = SUM(session_used) WHERE sales_category IN ('自销自耗','他销自耗')（D-5）
  *   - customer_status 枚举 '沉睡'/'冰冻'/'休眠'（非 '预警沉睡'）
+ *   - 一次/二次客活 = 区间内**到店天数** = 1 / >= 2（#298）：到店日由 visitDaysSql 按
+ *     (client_user_id, service_date) 去重，同日多张服务单只算 1 天；与 cron monthly_activity 同轴
+ *   - 一次/二次**达成率**分母 = registered（会员注册截面），**不是** retained（#414，用户 2026-09-25 拍板）。
+ *     用 retained 时分子分母是同一批人 ⇒ 两率之和恒等 100%、指标无信息量。
+ *     分子必须带与 reg 逐字相同的会员守卫 `became_member_at IS NOT NULL AND ::date <= end` ——
+ *     `customer_status` 是 cron 重算的**当前**截面、不随 range.end 回溯，缺守卫则
+ *     「入会晚于区间终点」的人进分子不进分母，比率可 > 100%
  *   - 客户维度 scope 用 bound_store_id，服务/订单维度用 store_id
  *   - 本月激活 3 档：anchor=startDate-1 实时反推 customer_status（D-react-source=C），
  *     用 last_dt 区间判定（沉睡 last_dt>=anchor-6m / 冰冻 [anchor-12m,anchor-6m) / 休眠 <anchor-12m OR NULL）
@@ -30,13 +42,19 @@
  * 不做同比环比。激活/客活依赖 cron 重算的 customer_status，前端加小字提示。
  */
 
+import { safeDiv } from '@/lib/data-center/format'
 import { db } from '@/db'
 import { sql, type SQL } from 'drizzle-orm'
 import { withPermission } from '@/lib/with-permission'
 import { prepareBoardContext } from '@/lib/data-center/context'
 import { scopeFilterSql, scopeStoreSkeletonSql } from '@/lib/data-center/scope-sql'
 import { excludeDepositRefundSql } from '@/lib/data-center/consume-filter'
+import { visitDaysSql } from '@/lib/data-center/visit-days'
+import { SPEND_BUCKET_FLOORS } from '@/lib/data-center/spend-buckets'
+import { workfineLegacyOrderSql, workfineLegacyReceivedSumSql } from '@/lib/data-center/workfine-legacy-spend'
+import { getMemberThreshold } from '@/lib/member-threshold'
 import { withComparison } from '@/lib/data-center/comparison'
+import { resolveDeltaDisplay } from '@/lib/delta-display'
 import type { AuthSession } from '@/lib/types'
 import type {
   BoardParams,
@@ -188,7 +206,15 @@ async function queryStatusCount(
   return num(first(rows).v)
 }
 
-/** 一次客活 / 二次客活（区间内到店次数 = 1 或 >= 2，且 customer_status 为保有会员） */
+/**
+ * 一次客活 / 二次客活（区间内到店天数 = 1 或 >= 2，且 customer_status 为保有会员）。
+ * 到店天数按 (顾客, service_date) 去重（#298），不是服务单行数。
+ *
+ * ★ 会员守卫 `became_member_at IS NOT NULL AND ::date <= range.end` 与 `registered`（达成率分母）
+ * 逐字同源（#414）。**没有它这里就不是「截至区间终点的会员」**：`customer_status` 是 cron 重算的
+ * **当前**截面、不随 `range.end` 回溯，于是「区间内到店过、现在是保有会员、但入会日期晚于区间终点」
+ * 的人会进分子却不在分母（2026-07-08~07-31 实测 36 人，把九江丽都店顶到 7/7 = 100.0%）。
+ */
 async function queryActive(
   session: AuthSession,
   scope: DataCenterScope,
@@ -197,23 +223,22 @@ async function queryActive(
 ): Promise<number> {
   const ssc = scopeFilterSql(session, scope, 'so.store_id')
   const csc = scopeFilterSql(session, scope, 'c.bound_store_id')
-  const nClause = mode === 'once' ? sql`vc.n = 1` : sql`vc.n >= 2`
+  const daysClause = mode === 'once' ? sql`vc.days = 1` : sql`vc.days >= 2`
   const rows = await db.execute(sql`
-    WITH visit_count AS (
-      SELECT so.client_user_id, COUNT(*) AS n
-      FROM service_orders so
-      WHERE ${ssc}
-        AND so.status = '已完成'
-        AND so.client_user_id IS NOT NULL
-        AND so.service_date BETWEEN ${range.start} AND ${range.end}
-      GROUP BY so.client_user_id
+    WITH visit_days AS (${visitDaysSql({ axis: 'service_date', scope: ssc, range })}),
+    visit_count AS (
+      SELECT vd.client_user_id, COUNT(DISTINCT vd.visit_date) AS days
+      FROM visit_days vd
+      GROUP BY vd.client_user_id
     )
     SELECT COUNT(*) AS v
     FROM visit_count vc
     JOIN client_wechat_users c ON c.user_id = vc.client_user_id
     WHERE ${csc}
       AND c.customer_status IN ('保有会员-稳定', '保有会员-有效')
-      AND ${nClause}
+      AND c.became_member_at IS NOT NULL
+      AND c.became_member_at::date <= ${range.end}
+      AND ${daysClause}
   `)
   return num(first(rows).v)
 }
@@ -287,21 +312,23 @@ async function queryReactivated(
 }
 
 /**
- * 会员经营人数（区间内**已入账款项净额合计** >= 1990 的会员客去重人数）。
- * ⚠ 不是「单笔订单 >= 1990」——SQL 先 GROUP BY client_user_id 汇总区间内全部款项流水，
- * 再按 1990 分档。#138 起金额口径为款项流水净额（含退款负数），日期按业绩归属日期。
+ * 会员经营人数（区间内**已入账款项净额合计** >= 会员门槛的会员客去重人数）。
+ * 门槛 = system_configs.new_member_threshold（#292 前写死 1990）。
+ * ⚠ 不是「单笔订单 >= 门槛」——SQL 先 GROUP BY client_user_id 汇总区间内全部款项流水，
+ * 再按门槛分档。#138 起金额口径为款项流水净额（含退款负数），日期按业绩归属日期。
  */
 async function queryOperatedMembers(
   session: AuthSession,
   scope: DataCenterScope,
   range: ResolvedRange,
+  threshold: number,
 ): Promise<number> {
   const sc = scopeFilterSql(session, scope, 'o.store_id')
   const rows = await db.execute(sql`
     WITH member_spend AS (
       SELECT o.client_user_id,
-             SUM(spe.amount::numeric) AS spend
-      FROM sale_order_performance_events spe
+             SUM(spe.performance_amount::numeric) AS spend
+      FROM sale_reportable_payment_events spe
       JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
       JOIN client_wechat_users c ON c.user_id = o.client_user_id
       WHERE ${sc}
@@ -313,7 +340,7 @@ async function queryOperatedMembers(
         AND c.customer_type = '会员客'
       GROUP BY o.client_user_id
     )
-    SELECT COUNT(*) FILTER (WHERE spend >= 1990) AS v
+    SELECT COUNT(*) FILTER (WHERE spend >= ${threshold}) AS v
     FROM member_spend
   `)
   return num(first(rows).v)
@@ -329,8 +356,8 @@ async function queryMemberAvgTicket(
   const rows = await db.execute(sql`
     WITH member_spend AS (
       SELECT o.client_user_id,
-             SUM(spe.amount::numeric) AS spend
-      FROM sale_order_performance_events spe
+             SUM(spe.performance_amount::numeric) AS spend
+      FROM sale_reportable_payment_events spe
       JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
       JOIN client_wechat_users c ON c.user_id = o.client_user_id
       WHERE ${sc}
@@ -367,16 +394,30 @@ async function queryNewMemberCount(
   return num(first(rows).v)
 }
 
-/** 新增会员对应消费（这群人区间内全部销售消费，D-newMemberSpend=A） */
+/**
+ * 新增会员对应消费（这群人区间内全部销售消费，D-newMemberSpend=A）。
+ *
+ * ★ 归店用 **`c.bound_store_id`（顾客绑定门店）**，与分母 `queryNewMemberCount` 逐字同源
+ * （#439，用户 2026-09-26 拍板方案 A）。语义 = 「这批新会员给本店带来多少钱」，钱跟着人走。
+ *
+ * 此前按 `o.store_id`（订单发生门店）过滤，与分母的 `c.bound_store_id` 是两套归店口径：
+ * 「顾客绑定 A 店、在 B 店消费」时人进 A 的分母、钱进 B 的分子。
+ * 生产实测 6 家门店受影响、最高 ±13.3%（九江大润发 2596 vs 2994）。
+ * 且分子此前**不要求**绑定门店存在/在营而分母要求，于是「绑定店为空或已停用的新会员在在营店消费」
+ * 会让钱进分子却无对应分母 ⇒ 集团虚高、门店维度出现「分母 0 而分子 > 0 ⇒ 页面 `--` 却有业绩」。
+ * 改同源后这条自然消失：`scopeFilterSql` 恒附加「在营门店」条件，`NULL IN (…)` 为 NULL 会被过滤。
+ *
+ * ⚠️ 只改**客单价这一个比率**的分子，业绩类指标的归店一律不动。
+ */
 async function queryNewMemberSpend(
   session: AuthSession,
   scope: DataCenterScope,
   range: ResolvedRange,
 ): Promise<number> {
-  const sc = scopeFilterSql(session, scope, 'o.store_id')
+  const sc = scopeFilterSql(session, scope, 'c.bound_store_id')
   const rows = await db.execute(sql`
-    SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
-    FROM sale_order_performance_events spe
+    SELECT COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
+    FROM sale_reportable_payment_events spe
     JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
     JOIN client_wechat_users c ON c.user_id = o.client_user_id
     WHERE ${sc}
@@ -391,21 +432,80 @@ async function queryNewMemberSpend(
   return num(first(rows).v)
 }
 
-/** 当月流量客人数（成交率分母）= 区间内到店的「体验客 + 小美客」DISTINCT（D-conv-denom=B） */
+/**
+ * 新增会员对应消费 · WorkFine 历史单分支（#289）。与上面的款项流水分支相加 = 新客客单价分子。
+ *
+ * WorkFine 单在款项流水里没有行，不补这条时「今年」这类跨割点区间低报约 4 成；
+ * #471 明确只接入归属日期不晚于 2026-07-03 的旧源；纯割点后区间本分支恒为 0。
+ * 人群条件与 scope 列（`c.bound_store_id`）同款项流水分支（#439 起归店跟着人走，与分母同源）；
+ * 口径与片段来源见 lib/data-center/workfine-legacy-spend.ts。
+ * staff 同口径副本：mgmt-traffic.js::queryNewMemberLegacySpend（consistency.customer.test.ts 逐字守护）。
+ * #471 割点后的 WorkFine 单不参与本 KPI；此前发现的线上单重叠样本均在割点后。
+ */
+async function queryNewMemberLegacySpend(
+  session: AuthSession,
+  scope: DataCenterScope,
+  range: ResolvedRange,
+): Promise<number> {
+  const sc = scopeFilterSql(session, scope, 'c.bound_store_id')
+  const rows = await db.execute(sql`
+    SELECT ${workfineLegacyReceivedSumSql()} AS v
+    FROM sale_orders o
+    JOIN client_wechat_users c ON c.user_id = o.client_user_id
+    WHERE ${sc}
+      AND c.became_member_at IS NOT NULL
+      AND c.became_member_at::date BETWEEN ${range.start} AND ${range.end}
+      AND ${workfineLegacyOrderSql(range)}
+  `)
+  return num(first(rows).v)
+}
+
+/**
+ * 成交率分母 = 期初未达会员的到店活跃池 ∪ 本期全部新增会员
+ * （D-conv-denom=1c，#284 于 2026-09-22 拍板；推翻原 D-2=B）
+ *
+ * 为什么不能只用 `customer_type IN ('体验客','小美客')`：该字段是**只升不降的当前快照**
+ * （升级链 流量客 → 体验客 → 小美客 → 会员客），本期成功转化的人当期已是「会员客」，
+ * 被从分母整体剔除 —— **而他们正是分子**。实测集团 2026-09 有 141 人被抹掉，
+ * 35 家有新会员的门店全部虚高，单店可出 800%，分母归零时前端显示 '--'。
+ *
+ * 分支 ② 不是锦上添花：151 名本期新增会员中有 10 人本期没有任何已完成服务单，
+ * 只有把他们 UNION 进分母，才能让**分子成为分母的真子集**，成交率上限 ≤ 100% 恒成立
+ * （纯活跃池方案 1a 做不到，故被否决）。
+ *
+ * 两分支 scope 列不同是有意的：① 按服务发生门店（`so.store_id`）、② 按顾客绑定门店
+ * （`c.bound_store_id`，与分子 `queryNewMemberCount` 逐字同源，子集关系靠这个对齐）。
+ */
 async function queryTrialFootfall(
   session: AuthSession,
   scope: DataCenterScope,
   range: ResolvedRange,
 ): Promise<number> {
-  const sc = scopeFilterSql(session, scope, 'so.store_id')
+  const scVisit = scopeFilterSql(session, scope, 'so.store_id')
+  const scMember = scopeFilterSql(session, scope, 'c.bound_store_id')
   const rows = await db.execute(sql`
-    SELECT COUNT(DISTINCT so.client_user_id) AS v
-    FROM service_orders so
-    JOIN client_wechat_users c ON c.user_id = so.client_user_id
-    WHERE ${sc}
-      AND so.status = '已完成'
-      AND so.service_date BETWEEN ${range.start} AND ${range.end}
-      AND c.customer_type IN ('体验客', '小美客')
+    SELECT COUNT(DISTINCT t.uid) AS v
+    FROM (
+      -- ① 本期到店 且 期初未达会员（之后才转会员者仍属历史到店池）
+      SELECT so.client_user_id AS uid
+      FROM service_orders so
+      JOIN client_wechat_users c ON c.user_id = so.client_user_id
+      WHERE ${scVisit}
+        AND so.status = '已完成'
+        AND so.client_user_id IS NOT NULL
+        AND so.service_date BETWEEN ${range.start} AND ${range.end}
+        AND (
+          (c.became_member_at IS NULL AND c.customer_type IN ('体验客', '小美客'))
+          OR c.became_member_at::date >= ${range.start}
+        )
+      UNION
+      -- ② 本期全部新增会员（兜住本期无已完成服务单者，保证分子 ⊆ 分母）
+      SELECT c.user_id AS uid
+      FROM client_wechat_users c
+      WHERE ${scMember}
+        AND c.became_member_at IS NOT NULL
+        AND c.became_member_at::date BETWEEN ${range.start} AND ${range.end}
+    ) t
   `)
   return num(first(rows).v)
 }
@@ -477,6 +577,10 @@ interface OpsAgg {
  * 客户维度（registered/retained/dormant/...）按 bound_store_id 归组；
  * 服务维度（visitOnce/visitTwice）按 service_orders 归组（用 c.bound_store_id 与客户一致，避免跨店漂移）。
  * 本月激活 3 档按 anchor 反推 + bound_store_id 归组。
+ *
+ * ★ #414 不变量：**visit_count 的人群谓词 ⊇ reg 的人群谓词**（同一归组列 `c.bound_store_id`
+ * + 同一 scope 生产者 `customerScope` + 逐字相同的会员守卫），因此 visit_once/visit_twice ⊆ registered，
+ * 达成率结构性 ≤ 100%。分子额外多一层 `serviceScope`（`so.store_id`）只会让分子更小，不破坏包含关系。
  */
 async function queryRegActiveBreakdown(
   session: AuthSession,
@@ -517,24 +621,26 @@ async function queryRegActiveBreakdown(
         AND c.became_member_at::date <= ${end}
       GROUP BY c.bound_store_id
     ),
-    -- 区间到店次数（按客户 + bound_store_id），区分一次/二次客活（仅保有会员）
+    -- 区间到店天数（按客户 + bound_store_id），区分一次/二次客活（仅保有会员）。
+    -- 到店日按 (顾客, service_date) 去重（#298），与 KPI queryActive 同一个 visitDaysSql。
+    -- 会员守卫与上面的 reg（达成率分母）逐字同源（#414），理由见 queryActive 的注释。
+    visit_days AS (${visitDaysSql({ axis: 'service_date', scope: serviceScope, range })}),
     visit_count AS (
-      SELECT so.client_user_id, c.bound_store_id AS store_id, COUNT(*) AS n,
+      SELECT vd.client_user_id, c.bound_store_id AS store_id,
+             COUNT(DISTINCT vd.visit_date) AS days,
              c.customer_status AS cstatus
-      FROM service_orders so
-      JOIN client_wechat_users c ON c.user_id = so.client_user_id
-      WHERE ${serviceScope}
-        AND ${customerScope}
+      FROM visit_days vd
+      JOIN client_wechat_users c ON c.user_id = vd.client_user_id
+      WHERE ${customerScope}
         AND c.bound_store_id IS NOT NULL
-        AND so.status = '已完成'
-        AND so.client_user_id IS NOT NULL
-        AND so.service_date BETWEEN ${start} AND ${end}
-      GROUP BY so.client_user_id, c.bound_store_id, c.customer_status
+        AND c.became_member_at IS NOT NULL
+        AND c.became_member_at::date <= ${end}
+      GROUP BY vd.client_user_id, c.bound_store_id, c.customer_status
     ),
     active AS (
       SELECT store_id,
-             COUNT(*) FILTER (WHERE n = 1) AS visit_once,
-             COUNT(*) FILTER (WHERE n >= 2) AS visit_twice
+             COUNT(*) FILTER (WHERE days = 1) AS visit_once,
+             COUNT(*) FILTER (WHERE days >= 2) AS visit_twice
       FROM visit_count
       WHERE cstatus IN ('保有会员-稳定', '保有会员-有效')
       GROUP BY store_id
@@ -654,7 +760,9 @@ async function queryOpsBreakdown(
   scope: DataCenterScope,
   range: ResolvedRange,
   group: 'market' | 'store',
+  threshold: number,
 ): Promise<Map<string, OpsAgg>> {
+  const floors = SPEND_BUCKET_FLOORS
   const skeleton = scopeStoreSkeletonSql(session, scope)
   const groupId = group === 'market' ? sql.raw('sk.market_id') : sql.raw('sk.store_id')
   const groupName = group === 'market' ? sql.raw('sk.market_name') : sql.raw('sk.store_name')
@@ -673,8 +781,8 @@ async function queryOpsBreakdown(
     -- 会员消费先按当前市场/门店 + 顾客合并：spend = SUM(已入账款项流水) @ 业绩归属日期（#138）
     member_spend AS (
       SELECT ${groupId} AS group_id, o.client_user_id,
-             SUM(spe.amount::numeric) AS spend
-      FROM sale_order_performance_events spe
+             SUM(spe.performance_amount::numeric) AS spend
+      FROM sale_reportable_payment_events spe
       JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
       JOIN skel sk ON sk.store_id = o.store_id
       JOIN client_wechat_users c ON c.user_id = o.client_user_id
@@ -688,13 +796,13 @@ async function queryOpsBreakdown(
     ),
     spend_agg AS (
       SELECT group_id,
-        COUNT(*) FILTER (WHERE spend < 1990) AS bucket_d,
-        COUNT(*) FILTER (WHERE spend >= 1990 AND spend < 10000) AS bucket_c,
-        COUNT(*) FILTER (WHERE spend >= 10000 AND spend < 30000) AS bucket_b,
-        COUNT(*) FILTER (WHERE spend >= 30000 AND spend < 60000) AS bucket_a,
-        COUNT(*) FILTER (WHERE spend >= 60000 AND spend < 100000) AS bucket_v,
-        COUNT(*) FILTER (WHERE spend >= 100000) AS bucket_vic,
-        COUNT(*) FILTER (WHERE spend >= 1990) AS operated_total,
+        COUNT(*) FILTER (WHERE spend < ${threshold}) AS bucket_d,
+        COUNT(*) FILTER (WHERE spend >= ${threshold} AND spend < ${floors.star}) AS bucket_c,
+        COUNT(*) FILTER (WHERE spend >= ${floors.star} AND spend < ${floors.pink}) AS bucket_b,
+        COUNT(*) FILTER (WHERE spend >= ${floors.pink} AND spend < ${floors.gold}) AS bucket_a,
+        COUNT(*) FILTER (WHERE spend >= ${floors.gold} AND spend < ${floors.black}) AS bucket_v,
+        COUNT(*) FILTER (WHERE spend >= ${floors.black}) AS bucket_vic,
+        COUNT(*) FILTER (WHERE spend >= ${threshold}) AS operated_total,
         COALESCE(SUM(spend), 0) AS member_spend_total,
         COUNT(*) AS member_spend_count
       FROM member_spend
@@ -710,14 +818,20 @@ async function queryOpsBreakdown(
         AND c.became_member_at::date BETWEEN ${start} AND ${end}
       GROUP BY ${groupId}
     ),
-    -- 新增会员对应消费按实际订单发生门店汇总
+    -- 新增会员对应消费按**顾客绑定门店**汇总 —— 归店 JOIN 与上面 newmem（分母）逐字一致
+    -- （#439 方案 A）。此前按 o.store_id（订单发生门店）归组，与分母两套口径：
+    -- 「绑定 A 店、在 B 店消费」时人进 A 的分母、钱进 B 的分子（实测 6 家门店、最高 ±13.3%）。
+    -- ⚠ 这里不重复写 bound_store_id IS NOT NULL：上面的内连接已排除 NULL，
+    -- 且 WHERE 段必须与 KPI 版 queryNewMemberSpend 逐字相同（既有守护「明细·新会员消费的 WHERE
+    -- 与 KPI 版一致」按此比对，差异只允许出现在 scope 段）。newmem 里那句是历史冗余，不跟。
+    -- ⚠ 本段注释在 SQL 模板字面量内部，禁止出现反引号（会直接截断模板）。
     newmem_spend AS (
       SELECT ${groupId} AS group_id,
-             COALESCE(SUM(spe.amount::numeric), 0) AS new_spend
-      FROM sale_order_performance_events spe
+             COALESCE(SUM(spe.performance_amount::numeric), 0) AS new_spend
+      FROM sale_reportable_payment_events spe
       JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
-      JOIN skel sk ON sk.store_id = o.store_id
       JOIN client_wechat_users c ON c.user_id = o.client_user_id
+      JOIN skel sk ON sk.store_id = c.bound_store_id
       WHERE c.became_member_at IS NOT NULL
         AND c.became_member_at::date BETWEEN ${start} AND ${end}
         AND spe.sale_order_type IN ('销售单', '转换单')
@@ -727,16 +841,45 @@ async function queryOpsBreakdown(
         AND spe.performance_date BETWEEN ${start} AND ${end}
       GROUP BY ${groupId}
     ),
-    -- 流量客人数（成交率分母，体验客+小美客，市场内 DISTINCT 客户）
-    traffic_cust AS (
-      SELECT ${groupId} AS group_id, COUNT(DISTINCT so.client_user_id) AS traffic_customers
-      FROM service_orders so
-      JOIN skel sk ON sk.store_id = so.store_id
-      JOIN client_wechat_users c ON c.user_id = so.client_user_id
-      WHERE so.status = '已完成'
-        AND so.service_date BETWEEN ${start} AND ${end}
-        AND c.customer_type IN ('体验客', '小美客')
+    -- 新增会员对应消费 · WorkFine 历史单分支（#289，与 KPI queryNewMemberLegacySpend 共用片段）
+    newmem_legacy_spend AS (
+      SELECT ${groupId} AS group_id,
+             ${workfineLegacyReceivedSumSql()} AS legacy_spend
+      FROM sale_orders o
+      JOIN client_wechat_users c ON c.user_id = o.client_user_id
+      JOIN skel sk ON sk.store_id = c.bound_store_id
+      WHERE c.became_member_at IS NOT NULL
+        AND c.became_member_at::date BETWEEN ${start} AND ${end}
+        AND ${workfineLegacyOrderSql(range)}
       GROUP BY ${groupId}
+    ),
+    -- 流量客人数（成交率分母，D-conv-denom=1c）：期初未达会员的到店活跃池 ∪ 本期全部新增会员。
+    -- 与 KPI 的 queryTrialFootfall 同口径；② 分支的 JOIN 与 newmem（分子）逐字一致，
+    -- 组内分子 ⊆ 分母由此成立 —— 明细行的成交率不会再 > 100%，也不会因分母 0 显示 '--'。
+    -- 市场内按 uid DISTINCT：同一顾客跨同市场门店到店只计一次。
+    traffic_cust AS (
+      SELECT group_id, COUNT(DISTINCT uid) AS traffic_customers
+      FROM (
+        SELECT ${groupId} AS group_id, so.client_user_id AS uid
+        FROM service_orders so
+        JOIN skel sk ON sk.store_id = so.store_id
+        JOIN client_wechat_users c ON c.user_id = so.client_user_id
+        WHERE so.status = '已完成'
+          AND so.client_user_id IS NOT NULL
+          AND so.service_date BETWEEN ${start} AND ${end}
+          AND (
+            (c.became_member_at IS NULL AND c.customer_type IN ('体验客', '小美客'))
+            OR c.became_member_at::date >= ${start}
+          )
+        UNION
+        SELECT ${groupId} AS group_id, c.user_id AS uid
+        FROM client_wechat_users c
+        JOIN skel sk ON sk.store_id = c.bound_store_id
+        WHERE c.bound_store_id IS NOT NULL
+          AND c.became_member_at IS NOT NULL
+          AND c.became_member_at::date BETWEEN ${start} AND ${end}
+      ) tc
+      GROUP BY group_id
     ),
     -- 流量人次 / 会员人次（service_orders 行数，按实际发生门店汇总）
     visits_agg AS (
@@ -796,7 +939,7 @@ async function queryOpsBreakdown(
       COALESCE(spend_agg.member_spend_total, 0) AS member_spend_total,
       COALESCE(spend_agg.member_spend_count, 0) AS member_spend_count,
       COALESCE(newmem.new_members, 0) AS new_members,
-      COALESCE(newmem_spend.new_spend, 0) AS new_spend,
+      COALESCE(newmem_spend.new_spend, 0) + COALESCE(newmem_legacy_spend.legacy_spend, 0) AS new_spend,
       COALESCE(traffic_cust.traffic_customers, 0) AS traffic_customers,
       COALESCE(visits_agg.traffic_visits, 0) AS traffic_visits,
       COALESCE(visits_agg.member_visits, 0) AS member_visits,
@@ -807,6 +950,7 @@ async function queryOpsBreakdown(
     LEFT JOIN spend_agg ON spend_agg.group_id = gs.group_id
     LEFT JOIN newmem ON newmem.group_id = gs.group_id
     LEFT JOIN newmem_spend ON newmem_spend.group_id = gs.group_id
+    LEFT JOIN newmem_legacy_spend ON newmem_legacy_spend.group_id = gs.group_id
     LEFT JOIN traffic_cust ON traffic_cust.group_id = gs.group_id
     LEFT JOIN visits_agg ON visits_agg.group_id = gs.group_id
     LEFT JOIN proj_agg ON proj_agg.group_id = gs.group_id
@@ -841,9 +985,6 @@ async function queryOpsBreakdown(
   }
   return map
 }
-
-/** 安全除法（分母 0 → null，前端 '--'） */
-const safeDiv = (a: number, b: number): number | null => (b > 0 ? a / b : null)
 
 /** 组装 byMarket / byStore 行：骨架去重出组列表，逐组填 metrics */
 function buildBreakdownRows(
@@ -881,9 +1022,14 @@ function buildBreakdownRows(
         registered: ra?.registered ?? 0,
         retained: ra?.retained ?? 0,
         visitOnce: ra?.visitOnce ?? 0,
-        visitOnceRate: ra ? safeDiv(ra.visitOnce, ra.retained) : null,
+        // #414：达成率分母 = registered（会员注册截面），**不是** retained。
+        // 用户 2026-09-25 拍板。此前用 retained（末 90 天到店的保有会员），而分子就是
+        // 「区间内到店过的保有会员」—— 两者是同一批人，实测 36 家门店 1次率+2次率 精确恒等
+        // 100.0%（分子池=分母池=1889、双向差集 0），这两列不携带任何「达成」信息。
+        // 分子 ⊆ 分母由 visit_count 的会员守卫与 reg 逐字同源保证，consistency.customer.test.ts 钉死。
+        visitOnceRate: ra ? safeDiv(ra.visitOnce, ra.registered) : null,
         visitTwice: ra?.visitTwice ?? 0,
-        visitTwiceRate: ra ? safeDiv(ra.visitTwice, ra.retained) : null,
+        visitTwiceRate: ra ? safeDiv(ra.visitTwice, ra.registered) : null,
         dormant: ra?.dormant ?? 0,
         reactivatedDormant: ra?.reactivatedDormant ?? 0,
         frozen: ra?.frozen ?? 0,
@@ -925,6 +1071,8 @@ export const getCustomerBoard = withPermission(
     const ctx = await prepareBoardContext(session, params)
     const { scope, comparison, enabled } = ctx
     const cur = comparison.current
+    // 会员门槛（分桶最低档下界 + 经营人数门槛）：与品项板同一个 getMemberThreshold（#292）
+    const threshold = await getMemberThreshold()
 
     // ── KPI（按语义分组并行查询）──────────────────────────────
     // 同比环比类（注册/到店/经营核心指标）走 withComparison；
@@ -971,22 +1119,24 @@ export const getCustomerBoard = withPermission(
       withComparison((r) => queryReactivated(session, scope, r, 'frozen'), comparison, 'count', false),
       withComparison(() => queryStatusCount(session, scope, '休眠'), comparison, 'count', false),
       withComparison((r) => queryReactivated(session, scope, r, 'deep'), comparison, 'count', false),
-      // 会员经营人数（区间内款项净额合计 ≥1990，非单笔）
-      withComparison((r) => queryOperatedMembers(session, scope, r), comparison, 'count', enabled),
+      // 会员经营人数（区间内款项净额合计 ≥ 会员门槛，非单笔）
+      withComparison((r) => queryOperatedMembers(session, scope, r, threshold), comparison, 'count', enabled),
       // 会员新增
       withComparison((r) => queryNewMemberCount(session, scope, r), comparison, 'count', enabled),
-      // 当月流量客人数（成交率分母）
-      withComparison((r) => queryTrialFootfall(session, scope, r), comparison, 'count', enabled),
+      // 成交率分母（#284 起为「期初未达会员活跃池 ∪ 本期全部新增会员」）
+      // ⚠ 第 4 参传 false = **不算同比/环比**，见下方 trafficCustomersCell 处的理由
+      withComparison((r) => queryTrialFootfall(session, scope, r), comparison, 'count', false),
       // 会员客单价
       withComparison((r) => queryMemberAvgTicket(session, scope, r), comparison, 'amount', enabled),
-      // 新客客单价
+      // 新客客单价 =（款项流水 + WorkFine 历史单）÷ 会员新增（#289：分母不动）
       withComparison(
         async (r) => {
-          const [spend, count] = await Promise.all([
+          const [spend, legacySpend, count] = await Promise.all([
             queryNewMemberSpend(session, scope, r),
+            queryNewMemberLegacySpend(session, scope, r),
             queryNewMemberCount(session, scope, r),
           ])
-          return count > 0 ? round2(spend / count) : null
+          return count > 0 ? round2((spend + legacySpend) / count) : null
         },
         comparison,
         'amount',
@@ -1011,11 +1161,41 @@ export const getCustomerBoard = withPermission(
       ),
     ])
 
-    // 成交率 = 会员新增 ÷ 当月流量客（派生自上面已算的两个 KPI 的 value）
+    /**
+     * 成交率分母禁用同比/环比（#284）。
+     *
+     * 分母的两个分支数据深度差 50 个月：① 取自 `service_orders`（最早 2026-07-08）、
+     * ② 取自 `became_member_at`（回溯 2022-08）。基期一旦落在 2026-07-08 之前，
+     * ① 恒空而 ② 仍有数百人 —— 算出来的 delta **100% 由 ② 构成**，是个看着合理的假数。
+     *
+     * 旧口径分母只读 `service_orders`，这类基期恒 0，`deltaPct` 会抑制成 null → UI '--'，
+     * 是诚实的「算不出」。不把这条禁掉，本次修复就会把一个诚实的空值换成静默的错数。
+     *
+     * 与同页 `convRate` 同样处理：显式给「算不出」占位（前端渲染 '--'），而不是省略字段——
+     * 省略会让前端的 `!== undefined` 判定整行不渲染徽章。
+     * 割点背景见 memory `project-data-timeline-cutoff-20260703`。
+     *
+     * ⚠️ 这里原本写的是 `{ mom: null, yoy: null }`（#284 落地时 `KpiCell.mom` 还是
+     * `DeltaPct | null`）。#310/#315 把类型收紧为 `DeltaDisplay`、用 `{ kind: 'na' }`
+     * 表达「算不出」后，`null` 不再合法——两个 PR 各自绿灯、合并进 dev 才撞上。
+     * 构造一律走 `resolveDeltaDisplay`（`types.ts` 的要求），别手写 `{ kind: 'na' }` 字面量。
+     */
+    const trafficCustomersCell: KpiCell = {
+      ...trafficCustomers,
+      ...(enabled
+        ? { mom: resolveDeltaDisplay(null, null), yoy: resolveDeltaDisplay(null, null) }
+        : {}),
+    }
+    // 成交率 = 会员新增 ÷ 成交率分母（派生自上面已算的两个 KPI 的 value）
     const convRate: KpiCell = {
       value: safeDiv(newMembers.value ?? 0, trafficCustomers.value ?? 0),
       unit: 'percent',
-      ...(enabled ? { mom: null, yoy: null } : {}),
+      // 派生指标不算同比环比，但 enabled 时仍要占位，否则前端 `!== undefined` 判定会整行不渲染徽章。
+      // 走构造函数而不是手写 `{ kind: 'na' }` 字面量——types.ts 要求「构造一律走 resolveDeltaDisplay」，
+      // 手写字面量会给后人开效仿的口子，而手写 `pct` 会绕过「value*100 恒有限」的构造保证。
+      ...(enabled
+        ? { mom: resolveDeltaDisplay(null, null), yoy: resolveDeltaDisplay(null, null) }
+        : {}),
     }
     // 当月一次/二次人数（与客活同值，单列展示）—— 复用 visitOnce/visitTwice 的 value
     const visitOnceCell: KpiCell = { value: visitOnce.value, unit: 'count' }
@@ -1034,7 +1214,7 @@ export const getCustomerBoard = withPermission(
       reactivatedDeep,
       operatedMembers,
       newMembers,
-      trafficCustomers,
+      trafficCustomers: trafficCustomersCell,
       convRate,
       memberAvgTicket,
       newCustomerAvgTicket,
@@ -1063,9 +1243,9 @@ export const getCustomerBoard = withPermission(
       opsByStore,
     ] = await Promise.all([
       queryRegActiveBreakdown(session, scope, cur, 'market'),
-      queryOpsBreakdown(session, scope, cur, 'market'),
+      queryOpsBreakdown(session, scope, cur, 'market', threshold),
       queryRegActiveBreakdown(session, scope, cur, 'store'),
-      queryOpsBreakdown(session, scope, cur, 'store'),
+      queryOpsBreakdown(session, scope, cur, 'store', threshold),
     ])
 
     const byMarket = buildBreakdownRows('market', skeleton, regActiveByMarket, opsByMarket)

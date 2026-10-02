@@ -35,9 +35,10 @@ INVT_PROBE=1 bunx playwright test --config=tests/e2e-inventory-ui/playwright.inv
   tests/e2e-inventory-ui/inv-90-probe-lot-loading.spec.ts
 ```
 
-**spec 清单**：`inv-00` ~ `inv-11` 共 12 个文件。`inv-00` ~ `inv-10` 各 1 个 test（单测试函数内跑完整条场景），
+**spec 清单**：`inv-00` ~ `inv-12` 共 13 个文件。`inv-00` ~ `inv-10` 与 `inv-12` 各 1 个 test（单测试函数内跑完整条场景），
 `inv-11`（#189 主体自动选中）是 `test.describe` 下的 6 个 test —— 它原先带 `test.skip(INVT_189 !== '1')` 开关，
 #189 部署到 dev 并实跑 6/6 通过后开关已删除，现随常规套件跑。
+`inv-12`（#340）用市场库存财务（单市场）发起市场间调货，**破坏性**（与 INV-05 第 4 段同样把货永久搬进自贡凤御），前置同 INV-05。
 `inv-90` 被 `testMatch` 收进来，但文件内 `test.skip(INVT_PROBE !== '1')` 使它默认跳过。
 
 > 本机若开着代理，Playwright 可能报 `ERR_PROXY_CONNECTION_FAILED`。
@@ -55,7 +56,7 @@ INVT_PROBE=1 bunx playwright test --config=tests/e2e-inventory-ui/playwright.inv
 
 | 项 | 说明 |
 |---|---|
-| 测试账号 | INV-00 自动 seed 4 个 `INVT-*` 账号（幂等），密码见 `_helpers/env.ts` |
+| 测试账号 | INV-00 自动 seed 5 个 `INVT-*` 账号（幂等；INVT-MK-02 为 #340 新增的自贡市场财务），密码见 `_helpers/env.ts` |
 | 期初门禁 | INV-02 会把 `inventory_cutover_states` 置「已初始化」并**保持开启**（已获用户确认） |
 | 基础档案 | INV-01 自建供应商与 SKU；dev 库库存域原本是空的 |
 | psql | 断言直连 `101.34.242.103:5433/fengyu_wxapp`，需本机有 `psql` 且能连通 |
@@ -89,11 +90,11 @@ fail-closed 分支（`src/lib/inventory/access.ts:87-117`），把价格档打�
 ```
 _helpers/
   env.ts            BASE / psql / 账号常量 / 组织拓扑 / login / tryLogin / 上下文读写
-  seed-accounts.ts  幂等建 4 个测试账号（pg 参数化，bcrypt hash 带 $ 不能走 psql -c）
+  seed-accounts.ts  幂等建 5 个测试账号（pg 参数化，bcrypt hash 带 $ 不能走 psql -c）
   cutover.ts        期初门禁开/关
   ui.ts             定位与操作原语（每个函数的注释都对应一个踩过的坑）
   ux-audit.ts       交互合理性启发式规则 + 报告渲染
-inv-00 ~ inv-11     场景 spec（12 个文件 / 17 个 test），见 BUSINESS-SCENARIOS.md
+inv-00 ~ inv-12     场景 spec（13 个文件 / 18 个 test），见 BUSINESS-SCENARIOS.md
 inv-90-probe-*      #129 取证探针（默认跳过，INVT_PROBE=1 启用）
 BUSINESS-SCENARIOS.md  业务场景设计与断言矩阵
 UX-FINDINGS.md         交互合理性报告（INV-10 自动生成）

@@ -42,18 +42,20 @@
 
 .mgmt-dash-grid-large {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--gap-grid);
 }
 
 .mgmt-dash-grid-small {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: var(--gap-grid-tight);
   margin-top: var(--gap-grid);
 }
 
 .dash-card {
+  min-width: 0;
+  box-sizing: border-box;
   background: var(--color-bg-card);
   border-radius: var(--radius-lg);
   padding: var(--spacing-card);
@@ -65,36 +67,40 @@
 
 .dash-card-title {
   font-size: 28rpx;
-  color: var(--color-primary);
+  color: var(--color-text-primary);
+  line-height: 1.4;
   margin-bottom: 12rpx;
   font-weight: 600;
 }
 
 .dash-card--small .dash-card-title {
-  font-size: 24rpx;
-  margin-bottom: 8rpx;
+  font-size: 26rpx;
+  margin-bottom: 12rpx;
 }
 
 .dash-card-row {
   display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
   justify-content: space-between;
+  gap: 4rpx 8rpx;
   font-size: 26rpx;
-  line-height: 1.8;
+  line-height: 1.5;
+  padding: 6rpx 0;
 }
 
 .dash-card--small .dash-card-row {
-  font-size: 22rpx;
-  flex-direction: column;
-  align-items: flex-start;
-  line-height: 1.6;
+  font-size: 26rpx;
+  align-items: baseline;
+  line-height: 1.5;
 }
 
-.dash-card-row .lbl { color: var(--color-text-hint); }
-.dash-card-row .val { color: var(--color-text-primary); font-weight: 600; }
+.dash-card-row .lbl { color: var(--color-text-secondary); font-size: 24rpx; }
+.dash-card-row .val { color: var(--color-text-primary); font-weight: 700; font-size: 28rpx; min-width: 0; max-width: 100%; word-break: break-all; font-variant-numeric: tabular-nums; }
 
-@media (max-width: 360px) {
+@media (max-width: 480px) {
   .mgmt-dash-grid-small {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -102,17 +108,17 @@
 .dash-section-title {
   font-size: 30rpx;
   font-weight: 600;
-  color: var(--color-primary);
-  text-align: center;
-  margin: 32rpx 0 var(--gap-grid);
-  padding-top: var(--spacing-tight);
-  border-top: 2rpx solid var(--color-divider-soft);
+  color: var(--color-text-primary);
+  text-align: left;
+  margin: var(--spacing-page) 0 var(--gap-grid);
+  padding-left: var(--spacing-tight);
+  border-left: 4rpx solid var(--color-primary);
 }
 
 /* 门店状况 - 第一行：会员数量 / 保有会员 / 占比 */
 .dash-status-row1 {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   background: var(--color-bg-card);
   border-radius: var(--radius-lg);
   padding: var(--spacing-card) var(--spacing-tight);
@@ -121,6 +127,8 @@
 }
 
 .status-cell {
+  min-width: 0;
+  word-break: break-all;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -129,7 +137,7 @@
 
 .status-cell .lbl {
   font-size: 24rpx;
-  color: var(--color-text-hint);
+  color: var(--color-text-secondary);
 }
 
 .status-cell .val {
@@ -141,11 +149,12 @@
 /* 门店状况 - 第二行：左右两个 block */
 .dash-status-row2 {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--gap-grid);
 }
 
 .status-block {
+  min-width: 0;
   background: var(--color-bg-card);
   border-radius: var(--radius-lg);
   padding: var(--spacing-card);
@@ -156,19 +165,21 @@
 
 .status-line {
   display: flex;
+  flex-wrap: wrap;
+  gap: 4rpx 8rpx;
   justify-content: space-between;
   font-size: 26rpx;
   line-height: 1.6;
 }
 
-.status-line .lbl { color: var(--color-text-hint); }
-.status-line .val { color: var(--color-text-primary); font-weight: 600; }
+.status-line .lbl { color: var(--color-text-secondary); }
+.status-line .val { color: var(--color-text-primary); font-weight: 600; max-width: 100%; word-break: break-all; font-variant-numeric: tabular-nums; }
 
 /* 入口区：4 列原生 CSS Grid（避开 van-grid relation 首帧塌缩） */
 .dash-entries {
   margin-top: 32rpx;
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 16rpx;
 }
 
@@ -182,6 +193,7 @@
   padding: 28rpx 8rpx;
   border-radius: var(--radius-lg);
   width: 100%;
+  box-sizing: border-box;
   background: var(--color-bg-card);
 }
 
@@ -282,23 +294,36 @@
 }
 
 .ranking-table-title {
-  text-align: center;
-  padding: 20rpx 0;
+  text-align: left;
+  padding: var(--spacing-card);
+  color: var(--color-text-primary);
+  font-weight: 600;
+  font-size: 30rpx;
+}
+
+/* #299 员工排行榜口径说明，紧贴标题下方 */
+.ranking-table-note {
+  text-align: left;
+  margin-top: -8rpx;
+  padding: 0 24rpx 16rpx;
   color: var(--color-text-hint);
-  font-size: 24rpx;
+  font-size: 22rpx;
 }
 
 .ranking-table-header,
 .ranking-row {
   display: grid;
-  grid-template-columns: 80rpx 1fr 1fr 200rpx;
+  grid-template-columns: 64rpx minmax(0, 1fr) minmax(0, 1fr) minmax(0, 240rpx);
+  gap: 8rpx;
   align-items: center;
   padding: var(--spacing-card) var(--spacing-tight);
   font-size: 28rpx;
 }
 
 .ranking-table-header {
-  color: var(--color-text-hint);
+  background: var(--color-primary-light);
+  font-weight: 600;
+  color: var(--color-text-secondary);
   font-size: 24rpx;
 }
 
@@ -328,7 +353,10 @@
 }
 
 .val-num {
-  font-weight: 600;
+  display: block;
+  word-break: break-all;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
 }
 
 .val-unit {
@@ -411,3 +439,21 @@
   color: var(--color-text-hint);
   padding: 32rpx 0;
 }
+
+/* 淡底只表达阅读节奏，展示卡不带选中边框。四列按棋盘、手机两列重新配色。 */
+.dash-section-title--first { margin-top: 0; }
+.mgmt-dash-grid-large > .dash-card:nth-child(4n + 1),
+.mgmt-dash-grid-large > .dash-card:nth-child(4n),
+.mgmt-dash-grid-small > .dash-card:nth-child(8n + 1),
+.mgmt-dash-grid-small > .dash-card:nth-child(8n + 3),
+.mgmt-dash-grid-small > .dash-card:nth-child(8n + 6),
+.mgmt-dash-grid-small > .dash-card:nth-child(8n + 8) { background: var(--color-primary-light); }
+@media (max-width: 480px) {
+  .mgmt-dash-grid-small > .dash-card:nth-child(n) { background: var(--color-bg-card); }
+  .mgmt-dash-grid-small > .dash-card:nth-child(4n + 1),
+  .mgmt-dash-grid-small > .dash-card:nth-child(4n) { background: var(--color-primary-light); }
+}
+.mgmt-dash-filters { flex-wrap: wrap; }
+.mgmt-dash-filters mgmt-scope-picker { min-width: 0; max-width: 100%; }
+.ranking-row:nth-child(even) { background: var(--color-bg-page); }
+.col { min-width: 0; }
