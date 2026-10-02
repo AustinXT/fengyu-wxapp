@@ -1,7 +1,9 @@
 'use server'
 import { db } from '@/db'
 import { dailyOperatingPeriods, dailyOperatingTargets, dailyPkClasses, dailyPkStores, dailyReports } from '@db/daily-report'
-import { stores } from '@db/org'
+import { stores, orgNodes } from '@db/org'
+import { staffWechatUsers } from '@db/user'
+import { operationLogs } from '@db/operation-log'
 import { and, eq, ne, lte, gte, or, desc, sql } from 'drizzle-orm'
 import { withPermission } from '@/lib/with-permission'
 import { requireAdmin } from '@/lib/permissions'
@@ -12,16 +14,31 @@ import { revalidatePath } from 'next/cache'
 export const getDailyConfiguration = withPermission('system:config', async (session) => {
   requireAdmin(session)
   // 例外：经营月份按日期倒序，门店按名称，便于经营配置选择。
-  const [periods, classes, assignments, storeRows] = await Promise.all([
+  const [periods, classes, assignments, storeRows, members, nodes, logs] = await Promise.all([
     db.select().from(dailyOperatingPeriods).orderBy(desc(dailyOperatingPeriods.startDate)),
     db.select().from(dailyPkClasses), db.select().from(dailyPkStores),
-    db.select({ id: stores.storeId, name: stores.storeName }).from(stores).orderBy(stores.storeName),
+    db.select({ id: stores.storeId, name: stores.storeName, orgNodeId: stores.orgNodeId }).from(stores).orderBy(stores.storeName),
+    db.select({ id: staffWechatUsers.employeeId, name: staffWechatUsers.name, storeId: staffWechatUsers.storeId, position: staffWechatUsers.positionName }).from(staffWechatUsers).where(eq(staffWechatUsers.isResigned, false)).orderBy(staffWechatUsers.name),
+    db.select({ id: orgNodes.id, name: orgNodes.name, type: orgNodes.type, parentId: orgNodes.parentId }).from(orgNodes),
+    db.select({ id: operationLogs.id, action: operationLogs.action, targetId: operationLogs.targetId, operator: operationLogs.operatorName, at: operationLogs.createdAt, detail: operationLogs.detail }).from(operationLogs)
+      .where(or(eq(operationLogs.action, 'daily.period.save'), eq(operationLogs.action, 'daily.pk.save'))).orderBy(desc(operationLogs.createdAt)).limit(30),
   ])
-  return { periods: periods.map((p) => ({ id: p.id, name: p.name, start: p.startDate, end: p.endDate,
+  const area = (orgNodeId: string | null) => {
+    const visited = new Set<string>()
+    let id = orgNodeId
+    while (id && !visited.has(id)) {
+      visited.add(id); const node = nodes.find((n) => n.id === id)
+      if (!node) break
+      if (node.type === '市场') return node.name
+      id = node.parentId
+    }
+    return ''
+  }
+  return { members, logs: logs.map((log) => ({ ...log, at: log.at.toISOString() })), periods: periods.map((p) => ({ id: p.id, name: p.name, start: p.startDate, end: p.endDate,
     version: p.version, weeks: p.weeks as DailyPeriodInput['weeks'] })),
     classes: classes.map((c) => ({ id: c.id, name: c.name, periodId: c.periodId })),
     assignments: assignments.map((s) => ({ periodId: s.periodId, storeId: s.storeId, classId: s.classId,
-      legion: s.legion, groupName: s.groupName, mentorName: s.mentorName })), stores: storeRows }
+      legion: s.legion, groupName: s.groupName, mentorName: s.mentorName })), stores: storeRows.map((s) => ({ ...s, area: area(s.orgNodeId) })) }
 })
 
 export const previewDailyPeriod = withPermission('system:config', async (session, input: DailyPeriodInput) => {
@@ -38,7 +55,11 @@ export const previewDailyPeriod = withPermission('system:config', async (session
     db.select({ count: sql<number>`count(*)::int` }).from(dailyOperatingTargets).where(eq(dailyOperatingTargets.periodId, p.id)),
     db.select({ count: sql<number>`count(*)::int` }).from(dailyPkClasses).where(eq(dailyPkClasses.periodId, p.id)),
   ])
-  return { reports: reports[0].count, targets: targets[0].count, classes: classes[0].count }
+  const previous = old?.weeks as DailyPeriodInput['weeks'] | undefined
+  return { reports: reports[0].count, targets: targets[0].count, classes: classes[0].count,
+    changes: p.weeks.map((week, index) => ({ name: week.name,
+      before: previous?.[index] ? `${previous[index].start} 至 ${previous[index].end}` : '尚未配置',
+      after: `${week.start} 至 ${week.end}` })).filter((change) => change.before !== change.after) }
 })
 
 export const saveDailyPeriod = withPermission('system:config', async (session, input: DailyPeriodInput) => {

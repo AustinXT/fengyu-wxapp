@@ -13,7 +13,9 @@ async function range(query, payload = {}) {
     label: kind === 'week' ? `${period.name} · ${week.name}` : period.name };
 }
 async function people(query, storeIds, range) {
-  return query(`SELECT u.employee_id,u.name,u.store_id,s.store_name,
+  return query(`SELECT u.employee_id,u.name,u.store_id,s.store_name,u.position_name,
+    EXISTS(SELECT 1 FROM permission_roles pr JOIN permission_role_definitions rd ON rd.role_key=pr.role
+      WHERE pr.employee_id=u.employee_id AND rd.is_store_manager) AS is_store_manager,
     GREATEST(0,LEAST($3::date,COALESCE(u.resigned_at-1,$3::date))-
       GREATEST($2::date,COALESCE(u.hired_at,u.created_at::date))+1)::int AS due,
     count(r.id)::int AS submitted, max(r.id) AS report_id

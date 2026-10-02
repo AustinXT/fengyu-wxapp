@@ -30,20 +30,24 @@ async function list(ctx) {
   };
 }
 async function detail(ctx) {
-  const id = ctx.event.payload?.id;
-  if (typeof id !== "string" || id.length > 100)
-    throw new Error("INVALID_PARAMS: 缺少日报编号");
+  const payload = ctx.event.payload || {};
+  const id = payload.id;
+  if (id && (typeof id !== 'string' || id.length > 100)) throw Error('INVALID_PARAMS: 无效日报编号');
+  const date = id ? null : v.date(payload.date);
   const [report] = await pg.query(
-    `SELECT * FROM daily_reports WHERE id=$1 AND status='submitted' AND store_id=ANY($2::text[])`,
-    [id, reportStores(ctx.auth).map((s) => s.store_id)],
+    `SELECT * FROM daily_reports WHERE status='submitted'
+      AND (($1::text IS NOT NULL AND id=$1) OR ($1::text IS NULL AND employee_id=$3 AND report_date=$4::date))
+      AND (employee_id=$3 OR store_id=ANY($2::text[]))`,
+    [id || null, reportStores(ctx.auth).map((s) => s.store_id), ctx.auth.employeeId, date],
   );
   if (!report) throw new Error("NOT_FOUND: 日报不存在或无权查看");
+  const own = report.employee_id === ctx.auth.employeeId;
   const entries = await pg.query(
     `SELECT snapshot,feedback,follow_up AS "followUp" FROM daily_report_entries WHERE report_id=$1 ORDER BY business_type,business_id`,
-    [id],
+    [report.id],
   );
   ctx.result = {
-    report,
+    report, own, canEdit: own && report.report_date === v.today(),
     entries: entries.map((e) => ({
       ...e.snapshot,
       feedback: e.feedback,

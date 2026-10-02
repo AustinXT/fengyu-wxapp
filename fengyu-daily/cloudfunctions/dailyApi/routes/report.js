@@ -26,7 +26,7 @@ async function read(ctx) {
   const current =
     report?.status === "submitted"
       ? stored.map((e) => e.snapshot)
-      : await candidates(pg.query, ctx.auth.employeeId, date);
+      : (await candidates(pg.query, ctx.auth.employeeId, date)).filter((b) => !report || stored.some((e) => e.businessType === b.businessType && e.businessId === b.businessId));
   if (report?.status !== 'submitted') {
     const manual = stored.filter((e) => e.snapshot.auto === false);
     const byDate = new Map();
@@ -49,6 +49,7 @@ async function read(ctx) {
       : await metrics.capture(pg.query, ctx.auth, { date, ...metricScope(ctx.auth, ctx.event.payload?.workspace) }),
     entries: current.map((b) => ({
       ...b,
+      auto: map.get(b.businessType + ':' + b.businessId)?.snapshot.auto === false ? false : b.auto,
       feedback: map.get(b.businessType + ":" + b.businessId)?.feedback || "",
       followUp: map.get(b.businessType + ":" + b.businessId)?.followUp || "",
     })),
@@ -77,13 +78,23 @@ async function write(ctx, submit) {
       throw new Error(
         "INVALID_STATE: 已提交的历史日报不能修改；今日日报可再次提交",
       );
+    const previous = new Map((old ? await entries(query, old.id) : []).map((e) => [e.businessType + ':' + e.businessId, e.snapshot]));
     let snapshots =
       old?.status === "submitted"
         ? (await entries(query, old.id)).map((e) => e.snapshot)
-        : await candidates(query, ctx.auth.employeeId, input.reportDate);
+        : (await candidates(query, ctx.auth.employeeId, input.reportDate)).filter((b) => !old || previous.has(b.businessType + ':' + b.businessId) || input.entries.some((e) => e.businessType === b.businessType && e.businessId === b.businessId));
     const supplied = new Map(
       input.entries.map((e) => [e.businessType + ":" + e.businessId, e]),
     );
+    for (const e of input.entries) {
+      const key = e.businessType + ':' + e.businessId;
+      if (e.businessDate !== input.reportDate && previous.get(key)?.businessDate !== e.businessDate)
+        throw Error('INVALID_PARAMS: 只能补充同一日报日期的业务');
+    }
+    snapshots = snapshots.map((b) => {
+      const key = b.businessType + ':' + b.businessId, prior = previous.get(key), inputEntry = supplied.get(key);
+      return { ...b, auto: prior ? prior.auto !== false : inputEntry?.auto !== false };
+    });
     // 自动条目保留，手动条目允许移除；新增条目逐个从可信业务查询生成快照。
     snapshots = snapshots.filter((b) => b.auto !== false || supplied.has(b.businessType + ':' + b.businessId));
     const known = new Set(snapshots.map((b) => b.businessType + ':' + b.businessId));

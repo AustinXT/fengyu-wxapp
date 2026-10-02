@@ -22,7 +22,7 @@ Page({
     selectedStoreId: "",
   },
   onLoad(options: Record<string, string | undefined>) {
-    this.setData({ selectedStoreId: options.storeId || "" });
+    this.setData({ selectedStoreId: options.storeId || "", period: ["today", "week", "month"].includes(options.period || "") ? options.period! : "today" });
   },
   onShow() {
     void this.load();

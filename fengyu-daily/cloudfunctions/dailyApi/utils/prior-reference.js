@@ -3,12 +3,17 @@ const { normalize } = require('../routes/period');
 // 配置不明确或没有对应周期时返回空，不用演示金额替代实际数据。
 async function reference(query, auth, scope, period, week) {
   if (!period) return null;
-  const year = Number(period.start.slice(0, 4)), priorName = period.name.replace(String(year), String(year - 1));
+  const year = Number(period.start.slice(0, 4));
+  const nameYears = period.name.match(/(?:19|20)\d{2}/g) || [];
+  const priorName = nameYears.length === 1
+    ? period.name.replace(nameYears[0], String(Number(nameYears[0]) - 1)) : null;
   const rows = await query(`SELECT * FROM daily_operating_periods WHERE EXTRACT(YEAR FROM start_date)=$1
     AND (name=$2 OR to_char(start_date,'MM-DD')=$3) ORDER BY start_date`,
-  [year - 1, priorName === period.name ? null : priorName, period.start.slice(5)]);
-  if (rows.length !== 1) return null;
-  const prior = normalize(rows[0]);
+  [year - 1, priorName, period.start.slice(5)]);
+  const named = priorName ? rows.filter((row) => row.name === priorName) : [];
+  const candidates = named.length ? named : rows;
+  if (candidates.length !== 1) return null;
+  const prior = normalize(candidates[0]);
   const metrics = require('../routes/metrics');
   const stores = await metrics.scopeStores(query, auth, scope);
   const month = await metrics.totals(query, scope, stores, prior.start, prior.end);

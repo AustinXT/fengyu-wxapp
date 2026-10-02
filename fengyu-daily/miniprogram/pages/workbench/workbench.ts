@@ -24,6 +24,10 @@ Page({
     overview: null as Management | null,
     storeIndex: 0,
     search: "",
+    peopleStores: [{ store_id: '', store_name: '全部门店' }], peopleStoreIndex: 0,
+    peopleMarkets: [{ id: '', name: '全部市场' }], peopleMarketIndex: 0,
+    positions: ['全部', '店长', '顾问', '养生师'], position: '全部',
+    storePeople: [] as Management['employees'],
     orgView: "tree",
     selectedNodeId: "",
     visibleNodes: [] as Management["nodes"],
@@ -64,6 +68,7 @@ Page({
           user.managerStores.length - 1,
         );
         const data = await callApi<{
+          employees: Management["employees"];
           reports: { id: string; employee_id: string; employee_name: string }[];
           unsubmitted: { employee_id: string; name: string }[];
           summary: Management["summary"]; range: Management["range"];
@@ -74,7 +79,7 @@ Page({
         });
         this.setData({
           storeIndex: index,
-          storeReports: data.reports,
+          storeReports: data.reports, storePeople: data.employees,
           unsubmitted: data.unsubmitted,
           summary: data.summary, range: data.range,
         });
@@ -83,7 +88,10 @@ Page({
           date: this.data.date,
           period: this.data.period,
         });
-        this.setData({ overview });
+        this.setData({ overview,
+          peopleStores: [{ store_id: '', store_name: '全部门店' }, ...overview.stores],
+          peopleMarkets: [{ id: '', name: '全部市场' }, ...overview.nodes.filter((n) => n.type === '市场')],
+        });
         this.filter();
       }
       this.setData({ ready: true });
@@ -117,6 +125,12 @@ Page({
         }
       }
     }
+    const marketId = this.data.peopleMarkets[this.data.peopleMarketIndex]?.id || '';
+    const peopleIds = new Set(marketId ? [marketId] : overview.nodes.map((n) => n.id));
+    let expand = true;
+    while (expand) { expand = false; for (const n of overview.nodes) if (peopleIds.has(n.parent_id || '') && !peopleIds.has(n.id)) { peopleIds.add(n.id); expand = true; } }
+    const storeIds = new Set(overview.stores.filter((s) => !marketId || peopleIds.has(s.org_node_id || '')).map((s) => s.store_id));
+    const storeId = this.data.peopleStores[this.data.peopleStoreIndex]?.store_id || '';
     this.setData({
       selectedNodeId,
       visibleStores: overview.stores.filter(
@@ -130,7 +144,9 @@ Page({
           : !n.parent_id || !ids.has(n.parent_id),
       ),
       visibleEmployees: overview.employees.filter(
-        (e) => !this.data.search || e.name.includes(this.data.search),
+        (e) => (!this.data.search || e.name.includes(this.data.search.trim())) && storeIds.has(e.store_id)
+          && (!storeId || e.store_id === storeId)
+          && (this.data.position === '全部' || (this.data.position === '店长' ? e.is_store_manager : e.position_name?.includes(this.data.position))),
       ),
     });
   },
@@ -153,7 +169,15 @@ Page({
     this.setData({ search: e.detail.value });
     this.filter();
   },
+  peopleFilter(e: WechatMiniprogram.CustomEvent<{ value: string }>) {
+    this.setData({ [e.currentTarget.dataset.kind === 'market' ? 'peopleMarketIndex' : 'peopleStoreIndex']: Number(e.detail.value) }); this.filter();
+  },
+  position(e: WechatMiniprogram.CustomEvent) { this.setData({ position: e.currentTarget.dataset.value }); this.filter(); },
   node(e: WechatMiniprogram.CustomEvent) {
+    const node = this.data.overview?.nodes.find((n) => n.id === e.currentTarget.dataset.id);
+    if (node?.type === '市场') {
+      wx.navigateTo({ url: '/pages/range/range?nodeId=' + encodeURIComponent(node.id) }); return;
+    }
     this.setData({ selectedNodeId: e.currentTarget.dataset.id });
     this.filter();
   },

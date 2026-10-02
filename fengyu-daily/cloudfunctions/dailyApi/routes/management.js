@@ -28,11 +28,21 @@ async function read(ctx) {
       ...submissions.summary(people),
     };
   });
+  const markets = nodes.filter((n) => n.type === '市场').map((market) => {
+    const ids = new Set([market.id]);
+    let growing = true;
+    while (growing) {
+      growing = false;
+      for (const n of nodes) if (ids.has(n.parent_id) && !ids.has(n.id)) { ids.add(n.id); growing = true; }
+    }
+    const storeIds = new Set(stores.filter((s) => ids.has(s.org_node_id)).map((s) => s.store_id));
+    return { id: market.id, name: market.name, ...submissions.summary(employees.filter((e) => storeIds.has(e.store_id))) };
+  }).filter((m) => m.due > 0);
   ctx.result = {
     date,
     range,
     selectedNodeId: nodeId || null,
-    nodes,
+    nodes, markets,
     stores,
     employees,
     summary: submissions.summary(employees),

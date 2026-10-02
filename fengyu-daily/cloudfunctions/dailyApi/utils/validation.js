@@ -44,6 +44,7 @@ function body(payload) {
     if (seen.has(key)) fail("业务条目重复");
     seen.add(key);
     return {
+      auto: e.auto !== false,
       businessType: e.businessType,
       businessId: e.businessId,
       feedback: text(e.feedback, 300),

@@ -15,9 +15,9 @@ async function identity(wxContext) {
 }
 async function load(id) {
   const [user] = await pg.query(
-    `SELECT u.employee_id, u.name, u.is_resigned, u.store_id, s.store_name
+    `SELECT u.employee_id, u.name, u.is_resigned, u.store_id, s.store_name, u.position_name, o.name AS org_name
     FROM daily_wechat_bindings b JOIN staff_wechat_users u ON u.employee_id=b.employee_id
-    LEFT JOIN stores s ON s.store_id=u.store_id WHERE b.appid=$1 AND b.openid=$2`,
+    LEFT JOIN stores s ON s.store_id=u.store_id LEFT JOIN org_nodes o ON o.id=COALESCE(u.org_node_id,s.org_node_id) WHERE b.appid=$1 AND b.openid=$2`,
     [id.appid, id.openid],
   );
   if (!user) return null;
@@ -76,6 +76,8 @@ async function load(id) {
     name: user.name || user.employee_id,
     storeId: user.store_id,
     storeName: user.store_name || "",
+    positionName: user.position_name || "",
+    orgName: user.org_name || "",
     managerStores,
     roleBindings,
     staffLevel,

@@ -13,7 +13,15 @@ const automator = require("miniprogram-automator");
       : [],
     timeout: 45000,
   });
+  const wait = async (predicate, label) => {
+    const deadline = Date.now() + 20000;
+    while (!(await predicate())) {
+      if (Date.now() > deadline) throw Error('UI 等待超时：' + label);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  };
   const exceptions = [];
+  const savedWorkspace = await mp.evaluate(() => wx.getStorageSync("dailyWorkspace"));
   mp.on("exception", (e) => exceptions.push(e.message || String(e)));
   try {
     // 仅模拟器内拦截，测试完恢复；不写入正式代码或业务库。
@@ -32,8 +40,8 @@ const automator = require("miniprogram-automator");
         storeName: "测试门店",
         managerStores: [{ store_id: "UI-STORE", store_name: "测试门店" }],
         scopedStores: [{ store_id: "UI-STORE", store_name: "测试门店" }],
-        availableWorkspaces: ["employee", "manager"],
-        staffLevel: "store_manager",
+        availableWorkspaces: ["employee", "manager", "management"],
+        staffLevel: "headquarters", positionName: "顾问", orgName: "测试总部",
         roleBindings: [{role:"manager",roleName:"店长",scopeType:"门店",scopeName:"测试门店"}],
       };
       const entry = {
@@ -49,6 +57,9 @@ const automator = require("miniprogram-automator");
       const period = { id: 'UI-PERIOD', name: '测试经营月', start: date.slice(0, 8) + '01', end: date.slice(0, 8) + '28', version: 1,
         weeks: [0, 1, 2, 3].map((i) => ({ id: 'w' + (i + 1), name: '第' + (i + 1) + '周', start: date.slice(0, 8) + String(i * 7 + 1).padStart(2, '0'), end: date.slice(0, 8) + String((i + 1) * 7).padStart(2, '0') })) };
       const summary = { due: 2, submitted: 1, missing: 1, rate: 50 }, range = { label: '今日', start: date, end: date, kind: 'today' };
+      const snapshot = { scope: 'personal', period, day: { sales: 5000, consumption: 6000 },
+        week: { name: '第1周', sales: { done: 5000, target: 10000 }, consumption: { done: 6000, target: 10000 } },
+        month: { sales: { done: 5000, target: 40000 }, consumption: { done: 6000, target: 40000 } }, savedAt: new Date().toISOString() };
       let data;
       switch (options.data.action) {
         case 'period.list': data = { periods: [period], period, week: period.weeks[0] }; break;
@@ -58,11 +69,15 @@ const automator = require("miniprogram-automator");
         case 'pk.classes': data = { period, classes: [{ id: 'UI-CLASS', name: '测试班级', members: 1, stores: 1 }], scopeLabel: '排名仅统计授权门店' }; break;
         case 'pk.read': data = { period, week: period.weeks[0], scopeLabel: '排名仅统计授权门店', rows: [{ employeeId: user.employeeId, name: user.name, area: '测试市场', legion: '测试军团', group: '测试小组', mentor: '测试指导员', rank: 1,
           sales: { weekTarget: 10000, weekDone: 5000, monthTarget: 10000, monthDone: 5000 }, consumption: { weekTarget: 10000, weekDone: 6000, monthTarget: 10000, monthDone: 6000 } }] }; break;
+        case 'management.read': data = { summary, range, markets: [{ id: 'UI-MARKET', name: '测试市场', ...summary }],
+          stores: [{ store_id: 'UI-STORE', store_name: '测试门店', org_node_id: 'UI-MARKET', ...summary }],
+          employees: [{ employee_id: user.employeeId, name: user.name, store_id: 'UI-STORE', store_name: '测试门店', position_name: '顾问', due: 2, submitted: 1 }],
+          nodes: [{ id: 'UI-MARKET', name: '测试市场', type: '市场', parent_id: null }] }; break;
         case "auth.login":
           data = { user };
           break;
         case "report.read":
-          data = { date, report: null, entries: [entry], readOnly: false };
+          data = { date, report: globalThis.__dailyUiSubmitted ? { id: 'UI-REPORT', report_date: date, status: 'submitted', version: 1, action: '主动回访', growth: '总结经验', plan: '继续跟进' } : null, entries: [entry], metrics: snapshot, readOnly: false };
           break;
         case "report.save":
         case "report.submit":
@@ -96,13 +111,13 @@ const automator = require("miniprogram-automator");
           };
           break;
         case "manager.detail":
-          data = {
+          data = { own: true, canEdit: true,
             report: {
               id: "UI-REPORT",
               report_date: date,
               status: "submitted",
               employee_name: user.name,
-              store_name: user.storeName,
+              store_name: user.storeName, metric_snapshot: snapshot, period_snapshot: period, submitted_at: snapshot.savedAt,
               action: "主动回访",
               growth: "总结经验",
               plan: "继续跟进",
@@ -117,12 +132,13 @@ const automator = require("miniprogram-automator");
     });
     const output = path.resolve(__dirname, "../../_tmp/daily-ui");
     fs.mkdirSync(output, { recursive: true });
+    await mp.evaluate(() => wx.setStorageSync("dailyWorkspace", "employee"));
     const home = await mp.reLaunch("/pages/home/home");
-    await home.waitFor(() => home.data("user"));
+    await wait(() => home.data("user"), "home");
     assert.equal((await home.data("user")).employeeId, "UI-EMP");
     await mp.screenshot({ path: path.join(output, "home.png") });
     const editor = await mp.navigateTo("/pages/report/report");
-    await editor.waitFor(() => editor.data("ready"));
+    await wait(() => editor.data("ready"), "editor");
     assert.equal((await editor.$$("textarea")).length, 5);
     await editor.callMethod("input", {
       detail: { value: "学习沟通技巧" },
@@ -134,35 +150,76 @@ const automator = require("miniprogram-automator");
     assert.equal(await editor.data("dirty"), false);
     await mp.screenshot({ path: path.join(output, "report.png") });
     const manager = await mp.navigateTo("/pages/manager/manager");
-    await manager.waitFor(() => manager.data("ready"));
+    await wait(() => manager.data("ready"), "manager");
     assert.equal((await manager.data("reports")).length, 1);
     await mp.screenshot({ path: path.join(output, "manager.png") });
     const detail = await mp.navigateTo("/pages/detail/detail?id=UI-REPORT");
-    await detail.waitFor(() => detail.data("report"));
+    await wait(() => detail.data("report"), "detail");
     assert.equal((await detail.data("entries"))[0].feedback, "顾客体验良好");
     assert.equal((await detail.$$("textarea")).length, 0);
     await mp.screenshot({ path: path.join(output, "detail.png") });
     const goal = await mp.navigateTo('/pages/goal/goal');
-    await goal.waitFor(() => goal.data('ready'));
+    await wait(() => goal.data('ready'), "goal");
     assert.equal(await goal.data('title'), '我的经营目标');
     await mp.screenshot({ path: path.join(output, 'goal.png') });
     const pk = await mp.navigateTo('/pages/pk/pk');
-    await pk.waitFor(() => pk.data('ready'));
+    await wait(() => pk.data('ready'), "pk");
     assert.equal((await pk.data('classes')).length, 1);
     await mp.screenshot({ path: path.join(output, 'pk-classes.png') });
     await pk.callMethod('openClass', { currentTarget: { dataset: { index: 0 } } });
-    await pk.waitFor(() => pk.data('ready'));
+    await wait(() => pk.data('ready'), "pk");
     assert.equal((await pk.data('rows'))[0].weekRate, '50.0%');
     await mp.screenshot({ path: path.join(output, 'pk-sales.png') });
     await pk.callMethod('metricChange', { currentTarget: { dataset: { metric: 'consumption' } } });
-    await pk.waitFor(() => pk.data('ready'));
+    await wait(() => pk.data('ready'), "pk");
     assert.equal((await pk.data('rows'))[0].weekRate, '60.0%');
     await mp.screenshot({ path: path.join(output, 'pk-consumption.png') });
+    await mp.evaluate(() => wx.setStorageSync('dailyWorkspace', 'manager'));
+    const storeWorkbench = await mp.reLaunch('/pages/workbench/workbench');
+    await wait(() => storeWorkbench.data('ready'), "storeWorkbench");
+    assert.equal(await storeWorkbench.data('workspace'), 'manager');
+    await mp.screenshot({ path: path.join(output, 'store-workbench.png') });
+    await mp.evaluate(() => wx.setStorageSync('dailyWorkspace', 'management'));
+    const overview = await mp.reLaunch('/pages/home/home');
+    await wait(() => overview.data('overview'), "overview");
+    assert.equal((await overview.data('overview')).markets[0].missing, 1);
+    await mp.screenshot({ path: path.join(output, 'management.png') });
+    const org = await mp.reLaunch('/pages/workbench/workbench');
+    await wait(() => org.data('ready'), "org");
+    await org.callMethod('orgChange', { currentTarget: { dataset: { view: 'people' } } });
+    await org.callMethod('position', { currentTarget: { dataset: { value: '养生师' } } });
+    assert.equal((await org.data('visibleEmployees')).length, 0);
+    await org.callMethod('position', { currentTarget: { dataset: { value: '顾问' } } });
+    assert.equal((await org.data('visibleEmployees')).length, 1);
+    await mp.screenshot({ path: path.join(output, 'organization.png') });
+    const rangePage = await mp.navigateTo('/pages/range/range?nodeId=UI-MARKET&period=week');
+    await wait(() => rangePage.data('overview'), "rangePage");
+    assert.equal(await rangePage.data('period'), 'week');
+    await mp.screenshot({ path: path.join(output, 'market-detail.png') });
+    const mine = await mp.reLaunch('/pages/mine/mine');
+    await wait(() => mine.data('user'), "mine");
+    await mp.screenshot({ path: path.join(output, 'mine.png') });
+    await mp.evaluate(() => { globalThis.__dailyUiSubmitted = true; wx.setStorageSync('dailyWorkspace', 'employee'); });
+    await mp.navigateTo('/pages/report/report');
+    await wait(async () => (await mp.currentPage()).path === 'pages/detail/detail', '本人提交后只读详情');
+    const ownDetail = await mp.currentPage();
+    await wait(() => ownDetail.data('report'), '本人详情数据');
+    assert.equal(await ownDetail.data('canEdit'), true);
+    await ownDetail.callMethod('edit');
+    await wait(async () => (await mp.currentPage()).path === 'pages/report/report', '当天修改');
+    const editToday = await mp.currentPage();
+    await wait(() => editToday.data('ready'), '当天修改数据');
+    assert.equal(await editToday.data('status'), 'submitted');
+    await mp.screenshot({ path: path.join(output, 'edit-today.png') });
+    await editToday.callMethod('cancelEdit');
+    await wait(async () => (await mp.currentPage()).path === 'pages/detail/detail', '取消修改返回只读');
     assert.deepEqual(exceptions, []);
     console.log(
-      "UI 验证通过：首页、填写保存、店长只读、经营目标、PK班级和双榜（模拟接口）",
+      "UI 验证通过：三套工作台、填写保存、只读详情、目标、PK双榜、组织筛选和市场详情（模拟接口）",
     );
   } finally {
+    await mp.evaluate(() => { delete globalThis.__dailyUiSubmitted; });
+    await mp.evaluate((workspace) => wx.setStorageSync("dailyWorkspace", workspace), savedWorkspace);
     await mp.restoreWxMethod("cloud.callFunction");
     await mp.restoreWxMethod("showModal");
     await mp.reLaunch("/pages/home/home");

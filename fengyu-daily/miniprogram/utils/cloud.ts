@@ -4,6 +4,8 @@ export interface Employee {
   name: string;
   storeId: string | null;
   storeName: string;
+  positionName?: string;
+  orgName?: string;
   managerStores: { store_id: string; store_name: string }[];
   scopedStores: { store_id: string; store_name: string }[];
   availableWorkspaces: Workspace[];
@@ -16,6 +18,7 @@ export interface Employee {
   }[];
 }
 export interface Management {
+  markets: { id: string; name: string; due: number; submitted: number; missing: number; rate: number }[];
   range: { label: string; start: string; end: string; kind: string };
   summary: { due: number; submitted: number; missing: number; rate: number };
   stores: {
@@ -30,6 +33,8 @@ export interface Management {
   employees: {
     employee_id: string;
     name: string;
+    position_name?: string | null;
+    is_store_manager?: boolean;
     store_id: string;
     store_name: string;
     report_id: string | null;
@@ -62,6 +67,7 @@ export interface Report {
   employee_name: string;
   store_name: string;
   submitted_at: string | null;
+  updated_at?: string;
   metric_snapshot?: MetricSnapshot | null;
   period_snapshot?: MetricSnapshot['period'];
   mentor_employee_id?: string | null;
@@ -116,7 +122,8 @@ export async function callApi<T>(
     error.errorType = result?.errorType;
     throw error;
   }
-  return result.data;
+  // 云函数数据是 JSON；复制为当前逻辑层的普通对象，避免跨上下文代理进入 setData。
+  return JSON.parse(JSON.stringify(result.data)) as T;
 }
 export function showError(error: unknown): void {
   const e = error as Error & { errorType?: string };

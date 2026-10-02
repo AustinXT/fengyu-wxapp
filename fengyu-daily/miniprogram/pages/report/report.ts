@@ -1,6 +1,7 @@
 import { callApi, showError, today, Editor, Business, MetricSnapshot } from "../../utils/cloud";
 Page({
   data: {
+    editing: false,
     date: today(),
     maxDate: today(),
     entries: [] as Business[],
@@ -27,9 +28,12 @@ Page({
     sourceDate: today(),
     selectingBusiness: false,
     candidateLoading: false,
+    candidateSearch: "",
+    visibleCandidates: [] as (Business & { sourceIndex: number })[],
   },
   onLoad(options: Record<string, string | undefined>) {
-    this.setData({ date: options.date || today() });
+    this.setData({ date: options.date || today(), editing: options.edit === "1" });
+    wx.setNavigationBarTitle({ title: options.edit === "1" ? "修改今日日报" : "填写经营日报" });
     void this.load();
   },
   async load() {
@@ -41,6 +45,9 @@ Page({
         workspace: wx.getStorageSync('dailyWorkspace'),
       });
       const r = data.report;
+      if (r?.status === 'submitted' && (!this.data.editing || data.readOnly)) {
+        wx.redirectTo({ url: '/pages/detail/detail?id=' + encodeURIComponent(r.id) }); return;
+      }
       const choices = data.readOnly ? [] : (await callApi<{ contacts: { employee_id: string; name: string }[] }>('contacts.list')).contacts;
       const contacts = [{ employee_id: '', name: '不选择' }, ...choices];
       const mentorId = r?.mentor_employee_id || '', peerId = r?.peer_employee_id || '';
@@ -92,12 +99,14 @@ Page({
     this.setData({ candidateLoading: true });
     try {
       const { entries } = await callApi<{ entries: Business[] }>('business.list', { date: this.data.date, sourceDate: this.data.sourceDate });
-      this.setData({ candidates: entries.filter((b) => !this.data.entries.some((e) => e.businessId === b.businessId && e.businessType === b.businessType)) });
+      this.setData({ candidates: entries.filter((b) => !this.data.entries.some((e) => e.businessId === b.businessId && e.businessType === b.businessType)) }); this.filterCandidates();
     } catch (e) { showError(e); } finally { this.setData({ candidateLoading: false }); }
   },
-  sourceDateChange(e: WechatMiniprogram.CustomEvent<{ value: string }>) {
-    if (this.data.candidateLoading) return;
-    this.setData({ sourceDate: e.detail.value }); void this.loadCandidates();
+  candidateSearch(e: WechatMiniprogram.CustomEvent<{ value: string }>) { this.setData({ candidateSearch: e.detail.value }); this.filterCandidates(); },
+  filterCandidates() {
+    const term = this.data.candidateSearch.trim();
+    this.setData({ visibleCandidates: this.data.candidates.map((b, sourceIndex) => ({ ...b, sourceIndex }))
+      .filter((b) => !term || [b.title, b.customer, b.businessId].some((text) => text?.includes(term))) });
   },
   closeCandidates() { this.setData({ selectingBusiness: false }); },
   addBusiness(e: WechatMiniprogram.CustomEvent) {
@@ -114,7 +123,7 @@ Page({
   },
   async copyLast() {
     if (!this.data.ready || this.data.readOnly || this.data.loading ||
-        this.data.submitting || this.data.copying) return;
+        this.data.submitting || this.data.copying || this.data.selectingBusiness || this.data.candidateLoading) return;
     this.setData({ copying: true });
     try {
       const { report } = await callApi<{
@@ -185,6 +194,7 @@ Page({
         workspace: wx.getStorageSync('dailyWorkspace'),
         version: this.data.version,
         entries: this.data.entries.map((e) => ({
+          auto: e.auto,
           businessType: e.businessType,
           businessId: e.businessId,
           businessDate: e.businessDate || this.data.date,
@@ -208,12 +218,17 @@ Page({
         icon: "success",
       });
       if (submit)
-        wx.redirectTo({ url: "/pages/report/report?date=" + this.data.date });
+        wx.redirectTo({ url: "/pages/detail/detail?date=" + this.data.date });
     } catch (e) {
       showError(e);
     } finally {
       this.setData({ submitting: false });
     }
+  },
+  cancelEdit() {
+    const leave = () => { wx.disableAlertBeforeUnload(); wx.redirectTo({ url: '/pages/detail/detail?date=' + this.data.date }); };
+    if (this.data.dirty) wx.showModal({ title: '取消修改', content: '放弃本次未提交的修改？', success: (r) => { if (r.confirm) leave(); } });
+    else leave();
   },
   save() {
     void this.write(false);

@@ -36,7 +36,7 @@ async function candidates(query, employeeId, date) {
 async function list(ctx) {
   const v = require('../utils/validation');
   const reportDate = v.date(ctx.event.payload?.date), sourceDate = v.date(ctx.event.payload?.sourceDate || reportDate);
-  if (sourceDate > reportDate) throw Error('INVALID_PARAMS: 不能补充日报日期之后的业务');
+  if (sourceDate !== reportDate) throw Error('INVALID_PARAMS: 只能补充同一日报日期的业务');
   ctx.result = { entries: (await candidates(require('../db/pg').query, ctx.auth.employeeId, sourceDate))
     .map((entry) => ({ ...entry, auto: false, feedback: '', followUp: '' })) };
 }

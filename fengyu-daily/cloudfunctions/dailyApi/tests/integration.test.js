@@ -237,13 +237,15 @@ test("真实 PG 最小闭环、归属、并发和门店权限", { skip: !url }, 
     });
     const olderService = prefix + 'manual-svc';
     await pg.query(`INSERT INTO service_orders(service_order_id,status,market_name,store_id,service_date,assigned_employee_id)
-      VALUES($1,'已完成','测试市场',$2,$3,$4)`, [olderService, s1, old, a]);
+      VALUES($1,'已完成','测试市场',$2,$3,$4)`, [olderService, s1, day, a]);
     await pg.query(`INSERT INTO service_items(service_item_id,sale_item_id,service_order_id,session_used,employee_id,unit_real_price)
       VALUES($1,$2,$3,1,$4,50)`, [prefix + 'manual-item', item1, olderService, a]);
-    payload.entries.push({ businessType: 'service', businessId: olderService, businessDate: old, feedback: '补录反馈', followUp: '补录跟进' });
+    payload.entries.push({ businessType: 'service', businessId: olderService, businessDate: day, auto: false, feedback: '补录反馈', followUp: '补录跟进' });
     payload.mentorEmployeeId = b;
     let saved = await run(report.save, payload);
     await t.test('手动补充回读、移除及指导关系校验', async () => {
+      await assert.rejects(run(require('../routes/business').list, { date: day, sourceDate: old }), /INVALID_PARAMS/);
+      await assert.rejects(run(report.save, { ...payload, version: saved.report.version, entries: [...payload.entries, { businessType: 'sale', businessId: 'old', businessDate: old }] }), /INVALID_PARAMS/);
       const stored = await run(report.read, { date: day });
       assert.equal(stored.entries.find((e) => e.businessId === olderService).auto, false);
       assert.equal(stored.entries.find((e) => e.businessId === olderService).feedback, '补录反馈');
@@ -256,7 +258,7 @@ test("真实 PG 最小闭环、归属、并发和门店权限", { skip: !url }, 
     const boss = { ...user, managerStores: [{ store_id: s1, store_name: s1 }] };
     await t.test("草稿回读；店长看不到草稿详情", async () => {
       editor = await run(report.read, { date: day });
-      assert.equal(editor.entries[0].feedback, "顾客满意");
+      assert.equal(editor.entries.find((e) => e.businessId === service).feedback, "顾客满意");
       assert.equal(editor.report.plan, "继续跟进");
       const list = await run(manager.list, { date: day, storeId: s1 }, boss);
       assert.equal(list.reports.length, 0);
@@ -282,18 +284,22 @@ test("真实 PG 最小闭环、归属、并发和门店权限", { skip: !url }, 
         /CONFLICT/,
       );
     });
-    await t.test("店长可查看已提交日报；跨店和普通员工不可查看", async () => {
+    await t.test("本人和店长可查看已提交日报；其他员工和跨店不可查看", async () => {
       const list = await run(manager.list, { date: day, storeId: s1 }, boss);
       assert.equal(list.reports.length, 1);
       const detail = await run(manager.detail, { id: saved.report.id }, boss);
       assert.equal(detail.entries[0].feedback, "顾客满意");
+      const own = await run(manager.detail, { date: day }, user);
+      assert.equal(own.own, true); assert.equal(own.canEdit, day === require('../utils/validation').today());
+      assert.equal(own.report.id, saved.report.id);
+      await assert.rejects(run(manager.detail, { date: day }, { ...user, employeeId: b }), /NOT_FOUND/);
       assert.equal(detail.report.metric_snapshot.day.consumption, 3000);
       await assert.rejects(
         () => run(manager.list, { date: day, storeId: s2 }, boss),
         /PERMISSION_DENIED/,
       );
       await assert.rejects(
-        () => run(manager.detail, { id: saved.report.id }, user),
+        () => run(manager.detail, { id: saved.report.id }, { ...user, employeeId: b }),
         /NOT_FOUND/,
       );
     });

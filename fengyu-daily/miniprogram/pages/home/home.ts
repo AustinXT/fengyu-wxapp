@@ -177,6 +177,9 @@ Page({
       url: "/pages/report/report?date=" + e.currentTarget.dataset.date,
     });
   },
+  openMarket(e: WechatMiniprogram.CustomEvent) {
+    wx.navigateTo({ url: '/pages/range/range?nodeId=' + encodeURIComponent(e.currentTarget.dataset.id) + '&period=' + this.data.period });
+  },
   openStore(e: WechatMiniprogram.CustomEvent) {
     wx.navigateTo({
       url:
