@@ -11,6 +11,7 @@ import {
   createMarketReplenishment as createMarketReplenishmentImpl,
   deleteMarketReplenishmentDraft as deleteMarketReplenishmentDraftImpl,
   saveMarketReplenishmentDraft as saveMarketReplenishmentDraftImpl,
+  voidMarketReportSummary as voidMarketReportSummaryImpl,
   createMarketReportSummary as createMarketReportSummaryImpl,
   resolveInventorySkuSupplierStatus as resolveInventorySkuSupplierStatusImpl,
   createMarketStaffPurchase as createMarketStaffPurchaseImpl,
@@ -147,6 +148,12 @@ export const createMarketReportSummary = withPermission(
   'inventory:supply_chain_operate',
   async (session, input: CreateMarketReportSummaryInput) =>
     createMarketReportSummaryImpl(session, input),
+)
+
+export const voidMarketReportSummary = withPermission(
+  'inventory:supply_chain_operate',
+  async (session, input: { summaryId: string; reason: string }) =>
+    voidMarketReportSummaryImpl(session, input),
 )
 
 export const resolveInventorySkuSupplierStatus = withPermission(
