@@ -2,7 +2,7 @@
 
 目标：`101.34.242.103:5433/fengyu_wxapp`。同一套 Drizzle 迁移，独立执行记录；详见 [集成规则](README.md)。
 
-历史迁移执行状态：**2026-10-02 只读核对，发现 0034 的 when 不一致；停止发布**。未迁移该库。实际 pending 为 0058/0059/0060；详见末尾核验记录。
+历史迁移执行状态：**2026-10-02 只读核对，发现 0034 多余旧时间戳记录；停止发布**。未迁移该库。实际 pending 为 0058/0059/0060；详见末尾核验记录。
 
 | 请求 | 正式迁移 tag / hash | 前置检查 → 执行 → 后置校验 | 依赖代码 | 状态 | 执行证据 |
 |---|---|---|---|---|---|
@@ -18,7 +18,7 @@
 ## 2026-10-02 dev 只读发布前核验（Codex）
 
 - 目标已断言 `101.34.242.103:5433/fengyu_wxapp`；使用 `BEGIN READ ONLY` 查询 journal，未执行任何业务库写操作。
-- 核验发布候选基线 `2f43739e3` + 本交付0060，目标journal共59行：58条when/hash精确匹配。
-- 历史差异：`0034_lakala-onboarding-schema-repair` 的SQL SHA-256 `d4549ec0237b8f4441af860a02c0905e59e382e3c07503063f6310ec95b896bd` 与库完全一致；库created_at=`1787637056739`，本地when=`1787715148177`。git `c65260594`（2026-08-26）改了该when，SQL内容未变；不能据hash一致忽略journal时间差。
+- 核验发布候选基线 `2f43739e3` + 本交付0060：本地journal共61条；目标journal共59行=58条when/hash精确匹配+1条多余旧记录。正确计数是本地61=已应用58+pending3；库的第59行不属于本地不可变历史。
+- 历史差异：`0034_lakala-onboarding-schema-repair` 的SQL SHA-256 `d4549ec0237b8f4441af860a02c0905e59e382e3c07503063f6310ec95b896bd` 在库有两行：id34/created_at=`1787637056739`（多余旧记录）与id36/created_at=`1787715148177`（已匹配本地when）。git `c65260594`（2026-08-26）改了该when，SQL内容未变；本地时间戳已被正确记录，不能再把id34更新为同一when造成两个canonical记录，亦不得由常规发版自行删改journal。
 - pending：0058/0059/0060，确切hash见表；无额外脚本。历史差异未按专项流程处理前，常规db:migrate/admin/analyst/云函数发布全部停止。
-- 脱敏证据：起点仓库 `_tmp/db-integration/356-364/dev-journal-readonly.json`，核验时间 `2026-10-02T02:03:47.300Z`。本记录不更改prod状态，也不授权journal修复。
+- 脱敏证据：起点仓库 `_tmp/db-integration/356-364/dev-journal-readonly.json` 与 `dev-journal-0034-readonly.json`，核验时间 `2026-10-02T02:03:47.300Z`。本记录不更改prod状态，也不授权journal修复。

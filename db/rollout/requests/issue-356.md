@@ -9,4 +9,4 @@
 - 与 #364 权限同事务，SQL 首条 SET LOCAL lock_timeout=3s；镜像锁超时 3652ms 后函数/权限/journal 全回滚，解除阻塞后真实 Drizzle 重试成功。
 - 私有验证：自有 pg-integration-356-364:54406，旧60条→61条真实 Drizzle升级、空历史61条 bootstrap，全部 when/hash 匹配、db:migrate重复无pending；11条 PG正负例/授权边界/幂等通过，schema校验全过；admin tsc和419条相关单测通过。
 - 完整链路198通过、2条既有#336血缘标签断言失败；#356/#364验收通过。既有失败与原#356/#365验证记录一致，不冒称全链全绿。
-- 双谱系评审和PR链接在完成后追加；dev/prod执行事实独立，私有验证阶段均未连接；后续仅dev进行只读journal核对，发现0034 when差异，详见dev台账，不能由私有验证推断业务库成功。
+- 双谱系评审和PR链接在完成后追加；dev/prod执行事实独立，私有验证阶段均未连接；后续仅dev进行只读journal核对，确认0034同hash存在两行（canonical记录已存在，另多一条旧when记录），详见dev台账，不能由私有验证推断业务库成功。
