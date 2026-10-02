@@ -75,3 +75,5 @@ export * from './lakala-onboarding'
 
 // 管理后台异步导出任务
 export * from './export-job'
+
+export * from './daily-report'

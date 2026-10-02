@@ -1,0 +1,39 @@
+{
+  "pages": [
+    "pages/home/home",
+    "pages/report/report",
+    "pages/history/history",
+    "pages/manager/manager",
+    "pages/detail/detail",
+    "pages/workbench/workbench",
+    "pages/mine/mine"
+  ],
+  "window": {
+    "navigationBarTitleText": "凤御 · 日报",
+    "navigationBarTextStyle": "black",
+    "navigationBarBackgroundColor": "#FFFFFF",
+    "backgroundColor": "#F6F6F6"
+  },
+  "style": "v2",
+  "lazyCodeLoading": "requiredComponents",
+  "tabBar": {
+    "custom": true,
+    "color": "#92969e",
+    "selectedColor": "#C0322A",
+    "backgroundColor": "#ffffff",
+    "list": [
+      {
+        "pagePath": "pages/home/home",
+        "text": "首页"
+      },
+      {
+        "pagePath": "pages/workbench/workbench",
+        "text": "记录"
+      },
+      {
+        "pagePath": "pages/mine/mine",
+        "text": "我的"
+      }
+    ]
+  }
+}

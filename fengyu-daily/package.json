@@ -1,0 +1,20 @@
+{
+  "name": "fengyu-daily",
+  "version": "1.0.0",
+  "description": "凤御员工日报小程序",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "npm --prefix cloudfunctions/dailyApi test",
+    "test:ui": "node tests/e2e-ui.cjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "",
+  "devDependencies": {
+    "miniprogram-api-typings": "^2.8.3-1",
+    "miniprogram-automator": "^0.12.1",
+    "prettier": "^3.9.9",
+    "typescript": "^5.7.0"
+  },
+  "private": true
+}
