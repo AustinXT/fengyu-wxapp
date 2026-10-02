@@ -57,6 +57,7 @@ export const inventorySkus = pgTable(
     purchaseCategory: text('purchase_category'),
     sourceType: text('source_type').notNull().default('供应链'),
     ownerMarketId: text('owner_market_id').references(() => orgNodes.id),
+    standardPrice: numeric('standard_price', { precision: 12, scale: 2 }),
     retailPrice: numeric('retail_price', { precision: 12, scale: 2 }),
     accountingPrice: numeric('accounting_price', { precision: 12, scale: 2 }),
     supplyChainPurchasePrice: numeric('supply_chain_purchase_price', {
@@ -117,7 +118,9 @@ export const inventorySkus = pgTable(
     ),
     check(
       'chk_inventory_skus_prices_nonnegative',
-      sql`COALESCE(${table.retailPrice}, 0) >= 0
+      sql`COALESCE(${table.standardPrice}, 0) >= 0
+       AND ${table.standardPrice} IS DISTINCT FROM 'NaN'::numeric
+       AND COALESCE(${table.retailPrice}, 0) >= 0
        AND COALESCE(${table.accountingPrice}, 0) >= 0
        AND COALESCE(${table.supplyChainPurchasePrice}, 0) >= 0
        AND COALESCE(${table.marketPurchasePrice}, 0) >= 0
@@ -517,7 +520,7 @@ export const inventoryDocs = pgTable(
         '院入库','分院调货出库','分院调货入库','市场间调货出库','市场间调货入库',
         '员工购出库','供应链员工购出库','内部领用','非凤御市场出库','市场退货','市场退货入库',
         '供应链退货入库','院退货','院顾客产品出库','院顾客退货','市场产品报损',
-        '院产品报损','市场产品盘溢','市场库存盘点','分院库存盘点','库存转换出库',
+        '院产品报损','市场产品盘溢','院产品盘溢','市场库存盘点','分院库存盘点','库存转换出库',
         '库存转换入库','期初库存'
       )`,
     ),
@@ -704,7 +707,7 @@ export const inventoryDocLinks = pgTable(
       sql`${table.relationType} IN (
         '门店报货汇总','市场报货汇总','市场报货采购订单','报货汇总采购订单','品项公司报货采购订单',
         '采购订单发货','采购订单赠送发货','市场报货发货','市场报货赠送发货','发货收货','采购订单供应链采购入库',
-        '门店报货配货','门店报货赠送配货','退货回库','库存转换','历史关联'
+        '门店报货配货','门店报货赠送配货','退货回库','库存转换','盘点盘溢','历史关联'
       )`,
     ),
   ],

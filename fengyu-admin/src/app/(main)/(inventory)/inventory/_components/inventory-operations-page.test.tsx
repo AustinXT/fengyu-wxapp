@@ -55,6 +55,7 @@ vi.mock('@/actions/inventory/business', () =>
       'createItemCompanyShipment',
       'createMarketReplenishment',
       'createMarketReportSummary',
+      'voidMarketReportSummary',
       'createMarketStaffPurchase',
       'createPurchaseOrder',
       'createReturnForRestock',
@@ -101,6 +102,7 @@ import {
   approveItemCompanyShipmentCancellation,
   approveReturnForRestock,
   cancelSupplyChainPurchaseOrder,
+  voidMarketReportSummary,
   createItemCompanyShipment,
   createInventoryConversion,
   createMarketReplenishment,
@@ -196,7 +198,7 @@ describe('办理台表单一致性（#135）', () => {
     // 23 → 24（#336b：新发货表单每行一个数量框，正常 / 赠送共用一个 Input，标签按行属性切换）
     // 24 → 25（#346：供应链采购入库行新增「单价优惠」）
     // 25 → 24（#358：收货表单「本次实收」改只读文本框，整单按待收收货）
-    expect(numberInputs.length).toBe(24)
+    expect(numberInputs.length).toBe(23)
     for (const attrs of numberInputs) {
       expect(attrs).toMatch(/min="0(\.01)?"/)
       expect(attrs).toMatch(/step="0\.01"/)
@@ -220,7 +222,7 @@ describe('办理台表单一致性（#135）', () => {
     // 13 → 14（#344：转换目标「单价」允许 0（赠送转换 / 自填 0 价），走 nonnegativeNumber → min="0"）
     // 14 → 15（#346：入库「单价优惠」允许 0 / 留空，走 nonnegativeNumber → min="0"）
     // 15 → 14（#358：收货「本次实收」只读，不再是可填的数值框）
-    expect(loose.length).toBe(14)
+    expect(loose.length).toBe(13)
 
     // 抽样两个方向，防止整体计数对了但分配错了
     const store = block('function StoreRequestForm(', 'function ItemCompanyReplenishmentForm(')
@@ -230,9 +232,9 @@ describe('办理台表单一致性（#135）', () => {
     const purchase = block('function PurchaseOrderForm(', 'function CompanyShipmentForm(')
     expect(purchase).toMatch(/<FormField label="采购数量">/)
     expect(purchase).toMatch(/min="0"/)
-    // 市场报货汇总（#193）同属「至少填一条」语义，也走 min="0"
+    // #356：汇总数量只读，不再保留数值输入
     const summary = block('function MarketReportSummaryForm(', 'interface PurchaseSourceLine {')
-    expect(summary).toMatch(/min="0"/)
+    expect(summary).not.toMatch(/type="number"/)
   })
 
   it('「请完整填写」语义的字段标必填', () => {
@@ -732,7 +734,6 @@ describe('行内控件的可访问名（#194）', () => {
       '实际采购 ${rowName}',   // 市场报货：数量
       '福利方案 ${rowName}',   // 市场报货：福利方案下拉（原来是「${line.skuName}福利方案」，同样会重名）
       '汇总 ${rowName}',      // 市场报货汇总：勾选
-      '本次汇总 ${rowName}',   // 市场报货汇总：数量
       '本次实收 ${rowName}',   // 收货进度：数量
       '明细备注 ${rowName}',   // 收货进度：备注
     ]) {
@@ -1417,7 +1418,7 @@ describe('待办行内动作的失败与防重（#192）', () => {
     renderTab({ operation: 'store-return-approval' })
     await screen.findByText('待我处理')
 
-    fireEvent.click(screen.getByRole('button', { name: '通过 D-15' }))
+    fireEvent.click(await screen.findByRole('button', { name: '通过 D-15' }))
     fireEvent.click(screen.getByRole('button', { name: '确认通过' }))
     await waitFor(() => expect(screen.getByRole('button', { name: '处理中…' })).toBeDisabled())
 
@@ -3242,5 +3243,32 @@ describe('汇总表单的价格列（#349）', () => {
     expect(source).toContain('quantity * line.marketActualUnitPrice')
     // 反向：不得写成固定用 outstandingQuantity 算（#356 合并前那与可编辑的数量对不上）
     expect(source).not.toContain('line.outstandingQuantity * line.marketActualUnitPrice')
+  })
+})
+
+describe('#356 汇总作废入口', () => {
+  it('原因必填；仅已完成待办有入口，已取消产出只读', async () => {
+    mockDocs({ inbox: segment([docRow({ id: 'MHZ-356', docType: '市场报货汇总', status: '已完成' })]), produced: segment([docRow({ id: 'MHZ-old', docType: '市场报货汇总', status: '已取消' })]) })
+    renderTab({ operation: 'market-report-summary' })
+    await screen.findByText('待我处理')
+    expect(screen.queryByRole('button', { name: '作废汇总 MHZ-old' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '作废汇总 MHZ-356' }))
+    fireEvent.click(screen.getByRole('button', { name: '确认作废' }))
+    await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalledWith('请填写作废原因'))
+    expect(vi.mocked(voidMarketReportSummary)).not.toHaveBeenCalled()
+    fireEvent.change(screen.getByLabelText(/作废原因/), { target: { value: '汇总范围有误' } })
+    fireEvent.click(screen.getByRole('button', { name: '确认作废' }))
+    await waitFor(() => expect(vi.mocked(voidMarketReportSummary)).toHaveBeenCalledWith({ summaryId: 'MHZ-356', reason: '汇总范围有误' }))
+  })
+
+  it('汇总数量固定、无供应商列；采购缺供应商只提示且不禁提交', () => {
+    const source = readFileSync(resolve(__dirname, 'inventory-operations-page.tsx'), 'utf8')
+    const summary = source.slice(source.indexOf('function MarketReportSummaryForm('), source.indexOf('interface MergedPurchase'))
+    expect(summary).not.toContain('aria-label={`本次汇总')
+    expect(summary).toContain('const quantity = line.outstandingQuantity')
+    expect(summary).not.toContain('font-medium">供应商</th>')
+    expect(source).not.toContain('补全后才能下单')
+    expect(source).not.toContain('disabled={loading || lines.length === 0 || missingSupplierNames.length > 0}')
+    expect(source).not.toContain('供应商：{group.supplier')
   })
 })

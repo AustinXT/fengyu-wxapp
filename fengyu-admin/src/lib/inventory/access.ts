@@ -196,3 +196,10 @@ export function assertInventoryPromotionMaintainer(session: AuthSession): void {
     throw new ApiError('PERMISSION_DENIED', '报货福利方案只能由总部供应链维护')
   }
 }
+
+/** #364：只读结算授权必须与门店 scope 落在同一绑定；不改变一般库存价格档。 */
+export function inventoryStoreSettlementOrgNodeIds(session: AuthSession): ReadonlySet<string> {
+  return new Set(session.roles.filter((role) => role.scopeType === '门店'
+    && role.actions?.includes('inventory:store_settlement_view'))
+    .map((role) => role.scopeId))
+}

@@ -7,6 +7,7 @@ import { withPermission } from '@/lib/with-permission'
 import { sql, type SQL } from 'drizzle-orm'
 import type { InventorySettlementReport, InventorySettlementRow } from './types'
 import {
+  inventoryStoreSettlementOrgNodeIds,
   inventoryPriceScopeByTier,
   inventoryPriceVisibility,
   inventoryScopedOrgNodeIds,
@@ -88,6 +89,14 @@ export interface SettlementProjectionParams {
   scopedOrgNodeIds: string[] | null
   /** 市场筛选：用 `inventory_docs.market_id`（由 DB 触发器统一派生，四类单据都正确）。 */
   market?: string
+  /**
+   * 只按**接收方**收窄（#364）：门店持独立结算授权、而会话没有市场价格档时用。
+   *
+   * ⚠️ 判定必须作用在**投影后的 party_node** 上，而不是原始 `target_org_node_id` ——
+   * `院退货` 的原始端点是反的（source=门店、target=市场），按原始 target 收窄会让店长
+   * 看不到自己门店的退货冲减。这正是 #364 与本单合并时要一并修掉的组合漏洞。
+   */
+  targetOnly?: boolean
 }
 
 function kindValuesSql(segment: SettlementSegment): SQL {
@@ -114,7 +123,10 @@ export function settlementProjectionSql(params: SettlementProjectionParams): SQL
       // scope 作用在**原始列**上（两端 OR）。档位收窄也走同一条路 —— 退货单的原始端点是反的，
       // 但"任一端在范围内即可见"对正反两类都成立。
       const ids = sql.join(params.scopedOrgNodeIds.map((id) => sql`${id}`), sql`, `)
-      conditions.push(sql`(d.source_org_node_id IN (${ids}) OR d.target_org_node_id IN (${ids}))`)
+      conditions.push(params.targetOnly
+        // party_node = swapped ? source : target —— 与投影列同式，保证收窄与分组同源
+        ? sql`(CASE WHEN kind.swapped THEN d.source_org_node_id ELSE d.target_org_node_id END) IN (${ids})`
+        : sql`(d.source_org_node_id IN (${ids}) OR d.target_org_node_id IN (${ids}))`)
     }
   }
   if (params.market) conditions.push(sql`d.market_id = ${params.market}`)
@@ -264,7 +276,7 @@ async function summarizeSettlementDocs(params: SettlementProjectionParams): Prom
  * 「0 件」既可能是一配一退、也可能是本来没单，净掉就说不清了。
  */
 export const listInventorySettlements = withPermission(
-  'inventory:list',
+  'inventory:store_settlement_view',
   async (
     session,
     filters: { startDate?: string; endDate?: string; market?: string } = {},
@@ -277,10 +289,14 @@ export const listInventorySettlements = withPermission(
     const { startDate, endDate } = normalizeSettlementPeriod(filters)
     const market = typeof filters.market === 'string' ? filters.market.trim() || undefined : undefined
     const priceVisibility = inventoryPriceVisibility(session)
-    const canViewMarketSettlement = priceVisibility !== 'none'
-    const canViewStoreSettlement = priceVisibility === 'all' || priceVisibility === 'market'
+    const priceTiers = inventoryPriceScopeByTier(session)
+    const canViewMarketSettlement = priceTiers.supplyChain === null || priceTiers.market === null
+      || priceTiers.supplyChain.size > 0 || priceTiers.market.size > 0
+    const storeSettlementIds = inventoryStoreSettlementOrgNodeIds(session)
+    const hasMarketPrice = priceTiers.market === null || priceTiers.market.size > 0
+    const canViewStoreSettlement = hasMarketPrice || storeSettlementIds.size > 0
     if (!canViewMarketSettlement && !canViewStoreSettlement) {
-      // 门店价格档：金额一律不出服务端，直接返回空报表。
+      // 没有价格或本店结算授权：直接返回空报表。
       return {
         startDate,
         endDate,
@@ -296,14 +312,13 @@ export const listInventorySettlements = withPermission(
     // 行级档位（§9.3/§9.5）：结算行整行即金额，按「scope ∩ 对应档位绑定的 org 集合」
     // 收紧查询范围——混合绑定会话（门店 A + 市场 B 财务）不得借市场 B 的价格权
     // 汇总门店 A 所在市场的货款。单绑定会话两集合一致，行为与现状相同。
-    const priceTiers = inventoryPriceScopeByTier(session)
     const marketScopedOrgNodeIds = inventoryTierRestrictedOrgNodeIds(
       scopedOrgNodeIds,
       [priceTiers.supplyChain, priceTiers.market],
     )
     const storeScopedOrgNodeIds = inventoryTierRestrictedOrgNodeIds(
       scopedOrgNodeIds,
-      [priceTiers.market],
+      [priceTiers.market, storeSettlementIds],
     )
     // 选项按**两段收窄后的并集**生成，与会话能看到的行保持一致 ——
     // 用未收窄的 scoped 会列出「选了却是空表」的市场（混合绑定会话尤其明显）。
@@ -316,7 +331,14 @@ export const listInventorySettlements = withPermission(
         ? summarizeSettlementDocs({ segment: 'market', startDate, endDate, scopedOrgNodeIds: marketScopedOrgNodeIds, market })
         : Promise.resolve([]),
       canViewStoreSettlement
-        ? summarizeSettlementDocs({ segment: 'store', startDate, endDate, scopedOrgNodeIds: storeScopedOrgNodeIds, market })
+        ? summarizeSettlementDocs({
+            segment: 'store',
+            startDate,
+            endDate,
+            scopedOrgNodeIds: storeScopedOrgNodeIds,
+            market,
+            targetOnly: !hasMarketPrice,
+          })
         : Promise.resolve([]),
     ])
     return {

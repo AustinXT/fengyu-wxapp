@@ -47,14 +47,14 @@ const SUPPLY_CHAIN_SESSION = session({
   role: 'inventory_supply_chain_operator',
   scopeId: 'HQ',
   scopeType: '总部',
-  actions: ['inventory:list', 'inventory:supply_chain_price_view'],
+  actions: ['inventory:store_settlement_view', 'inventory:supply_chain_price_view'],
 })
 
 const MARKET_SESSION = session({
   role: 'inventory_market_finance',
   scopeId: 'M1',
   scopeType: '市场',
-  actions: ['inventory:list', 'inventory:market_price_view'],
+  actions: ['inventory:store_settlement_view', 'inventory:market_price_view'],
   scopeOrgNodeIds: ['M1', 'S1', 'S2'],
 })
 
@@ -87,13 +87,84 @@ describe('货款结算只读报表', () => {
   it('门店价格档（none）不返回任何金额字段且不触发查询', async () => {
     mockGetSession.mockResolvedValue(STORE_SESSION)
 
-    const report = await listInventorySettlements({ startDate: '2026-09-01', endDate: '2026-09-02' })
+    await expect(listInventorySettlements()).rejects.toThrow('PERMISSION_DENIED')
+    expect(execute).not.toHaveBeenCalled()
+  })
 
+  it('店长只持新权限即可看本店应付，且收窄按接收方（party_node）', async () => {
+    mockGetSession.mockResolvedValue(session({
+      role: 'manager', scopeType: '门店', scopeId: 'S1', actions: ['inventory:store_settlement_view'],
+    }))
+    execute
+      .mockResolvedValueOnce([])  // 0 = 市场选项
+      .mockResolvedValueOnce([summaryRow({
+        market_node: 'M1', market_name: '南昌市场', party_node: 'S1', party_name: '门店一',
+        doc_count: 1, payable_amount: '80.00',
+      })])
+    const report = await listInventorySettlements()
+    expect(report.priceVisibility).toBe('none')
     expect(report.canViewMarketSettlement).toBe(false)
-    expect(report.canViewStoreSettlement).toBe(false)
+    expect(report.canViewStoreSettlement).toBe(true)
     expect(report.marketRows).toEqual([])
+    expect(report.storeRows[0].payableAmount).toBe(80)
+    /*
+     * 收窄条件必须是**投影后的 party_node**（= swapped ? source : target），而不是原始
+     * target_org_node_id。私有库实测（2026-10-02，pg-verify-364）：同一份数据下按原始 target
+     * 收窄时店长只看得到「分院配货 5500」、院退货 −2400 落空（净额 5500）；按 party_node
+     * 收窄才能拿到 5500 − 2400 = 3100。改成原始列就等于让「本店结算授权」永远看不到退货冲减。
+     */
+    const query = callOf(1)
+    expect(query.sql).toContain(
+      'CASE WHEN kind.swapped THEN d.source_org_node_id ELSE d.target_org_node_id END',
+    )
+    expect(query.params).toContain('S1')
+    expect(query.params).not.toContain('S2')
+    // 选项 + 门店段各一次，市场段不可见不查
+    expect(execute).toHaveBeenCalledTimes(2)
+  })
+
+  it.each(['市场', '总部'] as const)('新动作误绑%s不下钻门店结算', async (scopeType) => {
+    mockGetSession.mockResolvedValue(session({
+      role: 'manager', scopeType, scopeId: 'M1', scopeOrgNodeIds: ['M1', 'S1'],
+      actions: ['inventory:store_settlement_view'],
+    }))
+    const report = await listInventorySettlements()
+    expect(report.canViewStoreSettlement).toBe(false)
     expect(report.storeRows).toEqual([])
     expect(execute).not.toHaveBeenCalled()
+  })
+
+  it('门店绑定缺新动作不能借另一市场绑定的新动作拼接本店权限', async () => {
+    const granted = session({ role: 'manager', scopeType: '市场', scopeId: 'M1', actions: ['inventory:store_settlement_view'] }) as never
+    const store = session({ role: 'manager', scopeType: '门店', scopeId: 'S2', actions: ['inventory:list'] }) as never
+    mockGetSession.mockResolvedValue({
+      ...(granted as Record<string, unknown>), roles: [...(granted as any).roles, ...(store as any).roles],
+    } as never)
+    const report = await listInventorySettlements()
+    expect(report.storeRows).toEqual([])
+    expect(report.canViewStoreSettlement).toBe(false)
+    expect(execute).not.toHaveBeenCalled()
+  })
+
+  it('本店结算授权不能借无新页闸的另一市场角色显示市场结算', async () => {
+    const store = session({ role: 'manager', scopeType: '门店', scopeId: 'S1', actions: ['inventory:store_settlement_view'] }) as never
+    const market = session({ role: 'inventory_market_finance', scopeType: '市场', scopeId: 'M2', actions: ['inventory:list', 'inventory:market_price_view'] }) as never
+    mockGetSession.mockResolvedValue({
+      ...(store as Record<string, unknown>),
+      roles: [...(store as any).roles, ...(market as any).roles],
+      permissions: {
+        ...(store as any).permissions,
+        actions: ['inventory:store_settlement_view', 'inventory:list', 'inventory:market_price_view'],
+      },
+    } as never)
+    execute.mockResolvedValue([])
+    const report = await listInventorySettlements()
+    expect(report.canViewMarketSettlement).toBe(false)
+    expect(report.canViewStoreSettlement).toBe(true)
+    const query = callOf(1)  // 0 = 选项
+    expect(query.params).toContain('S1')
+    expect(query.params).not.toContain('M2')
+    expect(query.sql).toContain('CASE WHEN kind.swapped')
   })
 
   it('供应链价格档只见市场结算，不见门店结算', async () => {
@@ -188,7 +259,7 @@ describe('货款结算只读报表', () => {
       phone: '13800000001',
       roles: [{
         role: 'inventory_market_finance', scopeId: 'MKT-B', scopeType: '市场',
-        actions: ['inventory:list', 'inventory:market_price_view'],
+        actions: ['inventory:store_settlement_view', 'inventory:market_price_view'],
         scopeStoreIds: ['STORE-B1'],
         scopeOrgNodeIds: ['MKT-B', 'NODE-B1'],
       }, {
@@ -198,7 +269,7 @@ describe('货款结算只读报表', () => {
         scopeOrgNodeIds: ['NODE-A1'],
       }],
       permissions: {
-        actions: ['inventory:list', 'inventory:market_price_view', 'inventory:store_operate'],
+        actions: ['inventory:store_settlement_view', 'inventory:market_price_view', 'inventory:store_operate'],
         scopeStoreIds: ['STORE-B1', 'STORE-A1'],
         scopeOrgNodeIds: ['MKT-B', 'NODE-B1', 'NODE-A1'],
       },
@@ -226,7 +297,7 @@ describe('货款结算只读报表', () => {
       phone: '13800000002',
       roles: [],
       permissions: {
-        actions: ['inventory:list', 'inventory:market_price_view'],
+        actions: ['inventory:store_settlement_view', 'inventory:market_price_view'],
         scopeStoreIds: [],
         scopeOrgNodeIds: [],
       },

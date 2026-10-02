@@ -44,6 +44,7 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
   admin: [...ALL_ACTIONS],
   // 店长：门店业务的非物理删除操作。物理删除和收款配置仅系统管理员可授予。
   manager: [
+    'inventory:store_settlement_view',
     'allocation:list', 'allocation:save',
     'appointment:checkin', 'appointment:confirm', 'appointment:list',
     'card_transaction:list',
@@ -135,12 +136,14 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
   // staff（普通员工）专供小程序端，禁止登录 admin（canAccessAdmin 拦截）；矩阵留空。
   staff: [],
   inventory_supply_chain_operator: [
+    'inventory:store_settlement_view',
     'inventory:export', 'inventory:list', 'inventory:shipment_cancel_approve',
     'inventory:stock_list', 'inventory:supply_chain_approve',
     'inventory:supply_chain_master_data_manage', 'inventory:supply_chain_operate',
     'inventory:supply_chain_price_view',
   ],
   inventory_market_finance: [
+    'inventory:store_settlement_view',
     'inventory:export', 'inventory:list', 'inventory:market_approve',
     'inventory:market_operate', 'inventory:market_price_view',
     'inventory:market_sku_manage', 'inventory:self_purchase_receive',

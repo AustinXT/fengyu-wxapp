@@ -10,6 +10,7 @@ on:
     paths:
       - 'db/schema/**'
       - 'db/migrations/**'
+      - 'db/scripts/__tests__/store-surplus-migration.pg.test.js'
       - 'db/drizzle.config.ts'
       - 'db/package.json'
       - 'db/package-lock.json'
@@ -118,3 +119,9 @@ jobs:
             exit 1
           fi
           echo "OK: from-zero migrate built $TBL_COUNT tables"
+
+      - name: Store surplus migration semantic regression (#353)
+        working-directory: db
+        env:
+          STORE_SURPLUS_PG_TEST_URL: postgresql://postgres:test@localhost:5432/test
+        run: node --test scripts/__tests__/store-surplus-migration.pg.test.js

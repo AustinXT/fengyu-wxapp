@@ -261,6 +261,7 @@ describe('待我处理段（#192）', () => {
     'company-shipment',
     'market-receipt',
     'market-report',
+    'market-report-summary',
     'market-return-approval',
     'shipment-cancel-approval',
     'store-receipt',
@@ -302,6 +303,7 @@ describe('待我处理段（#192）', () => {
           expect(inbox.pendingItemScope, '待发货段缺未发量收窄 = 已发完的报货单全部涌进待办').toBe('company-shipment')
           continue
         }
+        if (operation === 'market-report-summary' && status === '已完成') continue
         // 报货草稿（#348）：草稿本身就是可操作态（继续编辑 / 删除），只允许出现在报货类业务上
         if ((operation === 'market-report' || operation === 'store-request') && status === '草稿') continue
         expect(ACTIONABLE_STATUSES, `${operation} → ${status}`).toContain(status)
@@ -330,7 +332,7 @@ describe('待我处理段（#192）', () => {
     }
     // 命中集合本身也钉死：多出一条就该重新想清楚「同一张单出现在两个区块」是不是本意。
     // market-report（#348）：produced 已完成 vs inbox 草稿，删掉的草稿（已取消）两段都不出现
-    expect(overlapping.sort()).toEqual(['market-report', 'shipment-cancel-approval', 'store-request', 'supply-chain-purchase-cancel'])
+    expect(overlapping.sort()).toEqual(['market-report', 'market-report-summary', 'shipment-cancel-approval', 'store-request', 'supply-chain-purchase-cancel'])
   })
 
   it('10 条 inbox 逐条钉死精确值', () => {
@@ -363,6 +365,7 @@ describe('待我处理段（#192）', () => {
       // 关闭作用于整单，刻意**不**加 pendingItemScope —— 排掉反而让操作员找不到那张单；
       // scopeRole 照加（cancelSupplyChainPurchaseOrder 断的是 order.targetOrgNodeId）
       'supply-chain-purchase-cancel': { docTypes: ['采购订单'], statuses: ['待收货'], scopeRole: 'target' },
+      'market-report-summary': { docTypes: ['市场报货汇总'], statuses: ['已完成'], scopeRole: 'target' },
       // 待发货（#336）：已完成且仍有正常未发量的市场报货单；发货断的是报货单 target 端的总部
       'company-shipment': {
         docTypes: ['市场报货'],
@@ -422,6 +425,7 @@ describe('待我处理段（#192）', () => {
       'store-receipt': 'target',
       'supply-chain-receipt': 'target',
       'supply-chain-purchase-cancel': 'target',
+      'market-report-summary': 'target',
       'company-shipment': 'target',
       'market-report': 'source',
       'store-request': 'source',
@@ -761,5 +765,16 @@ describe('通用建单业务 id（#191）', () => {
       expect(resolveOperationDocQuery(genericOperationId(docType))?.inbox, docType).toBeUndefined()
     }
     expect(Object.keys(INVENTORY_GENERIC_OPERATION_INBOX).sort()).toEqual([...withInbox].sort())
+  })
+})
+
+describe('#356 汇总作废', () => {
+  it('已完成进待办可作废，已取消只读且不可恢复', () => {
+    expect(INVENTORY_OPERATION_DOC_QUERY['market-report-summary']).toEqual({
+      produced: { docTypes: ['市场报货汇总'], statuses: ['已取消'] },
+      inbox: { docTypes: ['市场报货汇总'], statuses: ['已完成'], scopeRole: 'target' },
+    })
+    expect(resolveOperationInboxActions('market-report-summary')).toEqual(['summary-void'])
+    expect(INVENTORY_INBOX_ACTION_STATUS['summary-void']).toBe('已完成')
   })
 })

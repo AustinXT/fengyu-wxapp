@@ -31,6 +31,7 @@ import {
   saveStoreReplenishmentDraft,
   allocateRetainedQuantity,
   createPurchaseOrder,
+  voidMarketReportSummary,
   createReturnForRestock,
   createSelfPurchasedReceipt,
   createStoreAllocation,
@@ -50,6 +51,7 @@ import {
   summarizeStoreReplenishmentRequests,
 } from './business'
 import { db } from '@/db'
+import { logOperation } from '@/lib/operation-log'
 import ts from 'typescript'
 import { INVENTORY_GENERIC_DOC_TYPES, type InventoryDocType } from './types'
 
@@ -4865,5 +4867,52 @@ describe('#365 自采供应商选填与归属', () => {
     expect(renderSql(query)).toContain('FOR SHARE')
     expect(sqlParams(query)).toEqual(['SUP-M2', 'M1'])
     expect(execute).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('#356 作废市场报货汇总', () => {
+  beforeEach(() => vi.clearAllMocks())
+  function setup({ status = '已完成', docType = '市场报货汇总', fulfilled = '0.00', referenced = false } = {}) {
+    const execute = vi.fn()
+      .mockResolvedValueOnce([{ target_org_node_id: 'HQ' }])
+      .mockResolvedValueOnce([{ location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '总部', parent_location_id: null }])
+      .mockResolvedValueOnce([{ fulfilled_quantity: fulfilled }])
+      .mockResolvedValueOnce([{ id: 'MHZ-356', doc_type: docType, status, target_org_node_id: 'HQ', source_org_node_id: null, market_id: null }])
+      .mockResolvedValueOnce(referenced ? [{ id: 'CGD-356' }] : [])
+      .mockResolvedValue([])
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({ execute: initializedCutoverExecutor(execute) } as never))
+    return execute
+  }
+  it('无有效引用且零履约可作废，写原因/操作人/时间，不删除血缘或归零履约', async () => {
+    const execute = setup()
+    expect(await voidMarketReportSummary(SESSION, { summaryId: 'MHZ-356', reason: '  范围有误  ' })).toEqual({ id: 'MHZ-356' })
+    const rendered = execute.mock.calls.map(([query]) => renderSql(query))
+    expect(rendered.join('\n')).toContain("purchase.status <> '已取消'")
+    const update = rendered.find((query) => query.includes('UPDATE inventory_docs'))!
+    expect(update).toContain('cancellation_reason')
+    expect(update).toContain('cancelled_by')
+    expect(update).toContain('cancelled_at = NOW()')
+    expect(rendered.join('\n')).not.toMatch(/DELETE|SET fulfilled_quantity/)
+    expect(vi.mocked(logOperation)).toHaveBeenCalledWith(SESSION, 'inventory.market_report_summary.void', 'inventory_docs', 'MHZ-356', { reason: '范围有误' }, expect.anything())
+    const params = execute.mock.calls.flatMap(([query]) => sqlParams(query))
+    expect(params).toContain('范围有误')
+    expect(params).toContain('E001')
+  })
+  it('未取消采购引用拒绝', async () => {
+    const execute = setup({ referenced: true })
+    await expect(voidMarketReportSummary(SESSION, { summaryId: 'MHZ-356', reason: '有误' })).rejects.toThrow('未取消的采购订单引用')
+    expect(execute.mock.calls.some(([query]) => renderSql(query).includes('UPDATE inventory_docs'))).toBe(false)
+  })
+  it('采购全取消但任一行已有履约仍拒绝，包括最小小数', async () => {
+    setup({ fulfilled: '0.01' })
+    await expect(voidMarketReportSummary(SESSION, { summaryId: 'MHZ-356', reason: '有误' })).rejects.toThrow('已有履约数量')
+  })
+  it.each([{ status: '已取消' }, { docType: '市场报货' }])('错误状态/类型拒绝 %j', async (input) => {
+    setup(input)
+    await expect(voidMarketReportSummary(SESSION, { summaryId: 'MHZ-356', reason: '有误' })).rejects.toThrow('只能作废已完成')
+  })
+  it('空白原因在写库前拒绝', async () => {
+    await expect(voidMarketReportSummary(SESSION, { summaryId: 'MHZ-356', reason: ' ' })).rejects.toThrow('作废原因')
   })
 })
