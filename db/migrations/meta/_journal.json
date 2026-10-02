@@ -428,6 +428,13 @@
       "when": 1790906092154,
       "tag": "0060_summary_void_store_settlement",
       "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1790921441006,
+      "tag": "0061_daily_report_loop",
+      "breakpoints": true
     }
   ]
 }

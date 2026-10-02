@@ -1,0 +1,21 @@
+{
+  "envId": "cloud1-d5gz7zr8x6c38bd49",
+  "version": "2.0",
+  "functionRoot": "cloudfunctions",
+  "functions": [
+    {
+      "name": "dailyApiDev",
+      "dir": "cloudfunctions/dailyApi",
+      "runtime": "Nodejs18.15",
+      "handler": "index.main",
+      "timeout": 30,
+      "memorySize": 256,
+      "installDependency": true,
+      "envVariables": {
+        "PG_CONNECTION_STRING": "${DEV_PG_CONNECTION_STRING}",
+        "DEPLOY_CHANNEL": "shadow",
+        "TZ": "Asia/Shanghai"
+      }
+    }
+  ]
+}

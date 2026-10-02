@@ -17,7 +17,7 @@
 #    代码更新后，本脚本再通过 SCF API 对指定变量执行“读取→合并→回读验证”，
 #    避免 `tcb config update` 3.0.1 的键名损坏问题，也不会覆盖未纳入模板的变量。
 #
-# Usage: scripts/deploy-cloudfunctions.sh [dev|prod|both] [client|staff|all] [--yes] [--plan]
+# Usage: scripts/deploy-cloudfunctions.sh [dev|prod|both] [client|staff|daily|all] [--yes] [--plan]
 #
 # 两个正交维度，顺序无关：
 #
@@ -64,14 +64,18 @@ for arg in "$@"; do
     dev|prod|both)
       [[ "$CHANNEL_SET" == "1" ]] && { echo "ERROR: 通道参数重复（已是 '$CHANNEL'，又给了 '$arg'）。请只指定一个。" >&2; exit 1; }
       CHANNEL="$arg"; CHANNEL_SET=1 ;;
-    client|staff|all)
+    client|staff|daily|all)
       [[ "$TARGET_SET" == "1" ]] && { echo "ERROR: 端参数重复（已是 '$TARGET'，又给了 '$arg'）。请只指定一个。" >&2; exit 1; }
       TARGET="$arg"; TARGET_SET=1 ;;
     --yes|-y)         ASSUME_YES=1 ;;
     --plan|-n)        PLAN_ONLY=1 ;;
-    *) echo "ERROR: unknown arg '$arg'. Usage: $0 [dev|prod|both] [client|staff|all] [--yes] [--plan]" >&2; exit 1 ;;
+    *) echo "ERROR: unknown arg '$arg'. Usage: $0 [dev|prod|both] [client|staff|daily|all] [--yes] [--plan]" >&2; exit 1 ;;
   esac
 done
+# 日报独立环境、独立账号；all 保持原有 client + staff 语义。
+if [[ "$TARGET" == "daily" ]]; then
+  exec node "$ROOT/scripts/deploy-daily-dev.mjs" "$CHANNEL" "$PLAN_ONLY"
+fi
 DO_STAFF=0; DO_CLIENT=0
 [[ "$TARGET" == "staff"  || "$TARGET" == "all" ]] && DO_STAFF=1
 [[ "$TARGET" == "client" || "$TARGET" == "all" ]] && DO_CLIENT=1

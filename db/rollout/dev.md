@@ -57,3 +57,10 @@
 - 空staff冒烟code=-1（缺少action）；staff/client auth.login、client store.list无身份请求均code=-401，鉴权烟测通过，不代表已登录业务实效验证。
 - 证据 `_tmp/release-dev-v1.17.8/`：`cloud-deploy.log`、`cloud-verify.json`/`.log`、各smoke JSON、两站部署日志和remote终检，以及专项修复与迁移前后证据。运行依赖在发布工作树按锁文件npm ci安装；初次依赖预检中止时未上传函数。
 - 主仓版本文件已由另一个提交保存；本次不commit/push。主仓未提交文件为本台账；发布工作树仍有两端version.ts生成改动，保留用于复现指纹。小程序需手工上传client/staff开发版，新APP_VERSION仅上传后生效。prod没有迁移、修复或部署。
+
+
+## 2026-10-02 daily 分支合并
+
+- `0061_daily_report_loop`：SHA-256 `8643243a716f7b6e249af83bd7360b4ee0c8fdc306f0a5d08f8df0602f43ac05`。日报迁移在本轮 Git 合并前已执行于开发库；本轮未连接数据库执行迁移。
+- 原日报分支 `0057_daily_report_loop` 与 dev 既有编号冲突，顺延至 `0061`；SQL 字节和原 `when=1790921441006` 不变，已执行记录可继续按 when/hash 匹配。`0057` 至 `0060` 的 dev 迁移完整保留。
+- 合并快照包含最新 dev schema 和三张日报表；`db:generate` 返回无 schema 变化。
