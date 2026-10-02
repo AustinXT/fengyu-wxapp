@@ -16,4 +16,4 @@
 - 授权范围：is_super_admin、manager，以及同角色同时持 inventory:list 与 supply_chain_price_view/market_price_view 的定义；其它角色不变，不扩展价格/一般库存权，不改 allowed_scope_types。
 - 角色更新后取 permission_matrix:mirror 事务锁，独立下一语句刷新兼容镜像；lock_timeout=3s。
 - 私有存量升级/空库、角色正负例、动作去重排序、范围/其它属性无损、镜像一致、SQL重放幂等通过；镜像锁超时全事务回滚后真实Drizzle重试成功。
-- 无额外脚本。后置核验正式lifecycle有效trigger、permission_role_definitions与permission_matrix逐角色一致、journal when/hash；完成后才发布admin。两环境未连接/未执行。
+- 无额外脚本。后置核验正式lifecycle有效trigger、permission_role_definitions与permission_matrix逐角色一致、journal when/hash；完成后才发布admin。两环境均未执行；dev后续只读核对发现0034 when差异，详见dev台账。
