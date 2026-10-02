@@ -8,6 +8,8 @@ name: DB migrations integrity check
 on:
   pull_request:
     paths:
+      - 'db/scripts/__tests__/inventory-supplier-owner.pg.test.js'
+      - 'db/scripts/workfine-inventory-common.js'
       - 'db/schema/**'
       - 'db/migrations/**'
       - 'db/scripts/__tests__/store-surplus-migration.pg.test.js'
@@ -125,3 +127,9 @@ jobs:
         env:
           STORE_SURPLUS_PG_TEST_URL: postgresql://postgres:test@localhost:5432/test
         run: node --test scripts/__tests__/store-surplus-migration.pg.test.js
+
+      - name: Market supplier ownership semantic regression (#365)
+        working-directory: db
+        env:
+          SUPPLIER_OWNER_TEST_DATABASE_URL: postgresql://postgres:test@localhost:5432/test
+        run: node --test scripts/__tests__/inventory-supplier-owner.pg.test.js

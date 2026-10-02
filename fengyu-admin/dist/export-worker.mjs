@@ -85306,6 +85306,7 @@ var init_permission_presentation = __esm(() => {
       "inventory:shipment_cancel_request": "申请品项发货撤回",
       "inventory:stock_list": "查看库存与产品资料",
       "inventory:store_operate": "办理门店进销存业务",
+      "inventory:store_settlement_view": "查看本店货款结算",
       "inventory:supply_chain_approve": "审批供应链库存业务",
       "inventory:supply_chain_master_data_manage": "维护供应链库存资料",
       "inventory:supply_chain_operate": "办理供应链进销存业务",
@@ -85440,6 +85441,7 @@ var init_permission_presentation = __esm(() => {
       "inventory:shipment_cancel_request": ["inventory:market_operate"],
       "inventory:shipment_cancel_approve": ["inventory:supply_chain_approve"],
       "inventory:store_operate": ["inventory:list", "inventory:stock_list"],
+      "inventory:store_settlement_view": [],
       "inventory:supply_chain_approve": ["inventory:list", "inventory:stock_list"],
       "inventory:supply_chain_master_data_manage": ["inventory:list", "inventory:stock_list"],
       "inventory:supply_chain_operate": ["inventory:list", "inventory:stock_list"],
@@ -85659,6 +85661,7 @@ var init_permissions = __esm(() => {
   DEFAULT_PERMISSION_MATRIX = {
     admin: [...ALL_ACTIONS],
     manager: [
+      "inventory:store_settlement_view",
       "allocation:list",
       "allocation:save",
       "appointment:checkin",
@@ -85806,6 +85809,7 @@ var init_permissions = __esm(() => {
     ],
     staff: [],
     inventory_supply_chain_operator: [
+      "inventory:store_settlement_view",
       "inventory:export",
       "inventory:list",
       "inventory:shipment_cancel_approve",
@@ -85816,6 +85820,7 @@ var init_permissions = __esm(() => {
       "inventory:supply_chain_price_view"
     ],
     inventory_market_finance: [
+      "inventory:store_settlement_view",
       "inventory:export",
       "inventory:list",
       "inventory:market_approve",
@@ -91262,6 +91267,7 @@ var init_inventory = __esm(() => {
     purchaseCategory: text3("purchase_category"),
     sourceType: text3("source_type").notNull().default("供应链"),
     ownerMarketId: text3("owner_market_id").references(() => orgNodes.id),
+    standardPrice: numeric3("standard_price", { precision: 12, scale: 2 }),
     retailPrice: numeric3("retail_price", { precision: 12, scale: 2 }),
     accountingPrice: numeric3("accounting_price", { precision: 12, scale: 2 }),
     supplyChainPurchasePrice: numeric3("supply_chain_purchase_price", {
@@ -91311,7 +91317,9 @@ var init_inventory = __esm(() => {
     index2("idx_inventory_skus_owner_market").on(table4.ownerMarketId),
     index2("idx_inventory_skus_supplier").on(table4.supplierId),
     check2("chk_inventory_skus_source_type", sql3`${table4.sourceType} IN ('供应链','市场自采','转让店')`),
-    check2("chk_inventory_skus_prices_nonnegative", sql3`COALESCE(${table4.retailPrice}, 0) >= 0
+    check2("chk_inventory_skus_prices_nonnegative", sql3`COALESCE(${table4.standardPrice}, 0) >= 0
+       AND ${table4.standardPrice} IS DISTINCT FROM 'NaN'::numeric
+       AND COALESCE(${table4.retailPrice}, 0) >= 0
        AND COALESCE(${table4.accountingPrice}, 0) >= 0
        AND COALESCE(${table4.supplyChainPurchasePrice}, 0) >= 0
        AND COALESCE(${table4.marketPurchasePrice}, 0) >= 0
@@ -91552,7 +91560,7 @@ var init_inventory = __esm(() => {
         '院入库','分院调货出库','分院调货入库','市场间调货出库','市场间调货入库',
         '员工购出库','供应链员工购出库','内部领用','非凤御市场出库','市场退货','市场退货入库',
         '供应链退货入库','院退货','院顾客产品出库','院顾客退货','市场产品报损',
-        '院产品报损','市场产品盘溢','市场库存盘点','分院库存盘点','库存转换出库',
+        '院产品报损','市场产品盘溢','院产品盘溢','市场库存盘点','分院库存盘点','库存转换出库',
         '库存转换入库','期初库存'
       )`),
     check2("chk_inventory_docs_org_endpoint", sql3`${table4.sourceOrgNodeId} IS NOT NULL OR ${table4.targetOrgNodeId} IS NOT NULL`)
@@ -91661,7 +91669,7 @@ var init_inventory = __esm(() => {
     check2("chk_inventory_doc_links_relation_type", sql3`${table4.relationType} IN (
         '门店报货汇总','市场报货汇总','市场报货采购订单','报货汇总采购订单','品项公司报货采购订单',
         '采购订单发货','采购订单赠送发货','市场报货发货','市场报货赠送发货','发货收货','采购订单供应链采购入库',
-        '门店报货配货','门店报货赠送配货','退货回库','库存转换','历史关联'
+        '门店报货配货','门店报货赠送配货','退货回库','库存转换','盘点盘溢','历史关联'
       )`)
   ]);
   inventoryStockReservations = pgTable2("inventory_stock_reservations", {
@@ -176198,7 +176206,10 @@ var INVENTORY_OPERATION_IDS = [
 ];
 var INVENTORY_OPERATION_DOC_QUERY = {
   "item-company-request": { produced: { docTypes: ["品项公司报货需求"] } },
-  "market-report-summary": { produced: { docTypes: ["市场报货汇总"] } },
+  "market-report-summary": {
+    produced: { docTypes: ["市场报货汇总"], statuses: ["已取消"] },
+    inbox: { docTypes: ["市场报货汇总"], statuses: ["已完成"], scopeRole: "target" }
+  },
   "purchase-order": { produced: { docTypes: ["采购订单"] } },
   "company-shipment": {
     produced: { docTypes: ["品项公司发货"] },
@@ -176558,6 +176569,9 @@ function assertInventoryPromotionMaintainer(session4) {
   if (!isInventoryPromotionMaintainer(session4)) {
     throw new ApiError("PERMISSION_DENIED", "报货福利方案只能由总部供应链维护");
   }
+}
+function inventoryStoreSettlementOrgNodeIds(session4) {
+  return new Set(session4.roles.filter((role) => role.scopeType === "门店" && role.actions?.includes("inventory:store_settlement_view")).map((role) => role.scopeId));
 }
 
 // src/lib/inventory/engine.ts
@@ -180080,7 +180094,7 @@ function settlementProjectionSql(params) {
       conditions3.push(import_drizzle_orm59.sql`FALSE`);
     } else {
       const ids = import_drizzle_orm59.sql.join(params.scopedOrgNodeIds.map((id) => import_drizzle_orm59.sql`${id}`), import_drizzle_orm59.sql`, `);
-      conditions3.push(import_drizzle_orm59.sql`(d.source_org_node_id IN (${ids}) OR d.target_org_node_id IN (${ids}))`);
+      conditions3.push(params.targetOnly ? import_drizzle_orm59.sql`(CASE WHEN kind.swapped THEN d.source_org_node_id ELSE d.target_org_node_id END) IN (${ids})` : import_drizzle_orm59.sql`(d.source_org_node_id IN (${ids}) OR d.target_org_node_id IN (${ids}))`);
     }
   }
   if (params.market)
@@ -180192,15 +180206,18 @@ async function summarizeSettlementDocs(params) {
     payableAmount: Number(row.payable_amount ?? 0)
   }));
 }
-var listInventorySettlements = withPermission("inventory:list", async (session4, filters = {}) => {
+var listInventorySettlements = withPermission("inventory:store_settlement_view", async (session4, filters = {}) => {
   if (typeof filters !== "object" || filters === null || Array.isArray(filters)) {
     throw new ApiError("INVALID_PARAMS", "查询条件格式不正确");
   }
   const { startDate, endDate } = normalizeSettlementPeriod(filters);
   const market = typeof filters.market === "string" ? filters.market.trim() || undefined : undefined;
   const priceVisibility = inventoryPriceVisibility(session4);
-  const canViewMarketSettlement = priceVisibility !== "none";
-  const canViewStoreSettlement = priceVisibility === "all" || priceVisibility === "market";
+  const priceTiers = inventoryPriceScopeByTier(session4);
+  const canViewMarketSettlement = priceTiers.supplyChain === null || priceTiers.market === null || priceTiers.supplyChain.size > 0 || priceTiers.market.size > 0;
+  const storeSettlementIds = inventoryStoreSettlementOrgNodeIds(session4);
+  const hasMarketPrice = priceTiers.market === null || priceTiers.market.size > 0;
+  const canViewStoreSettlement = hasMarketPrice || storeSettlementIds.size > 0;
   if (!canViewMarketSettlement && !canViewStoreSettlement) {
     return {
       startDate,
@@ -180214,14 +180231,20 @@ var listInventorySettlements = withPermission("inventory:list", async (session4,
     };
   }
   const scopedOrgNodeIds = inventoryScopedOrgNodeIds(session4);
-  const priceTiers = inventoryPriceScopeByTier(session4);
   const marketScopedOrgNodeIds = inventoryTierRestrictedOrgNodeIds(scopedOrgNodeIds, [priceTiers.supplyChain, priceTiers.market]);
-  const storeScopedOrgNodeIds = inventoryTierRestrictedOrgNodeIds(scopedOrgNodeIds, [priceTiers.market]);
+  const storeScopedOrgNodeIds = inventoryTierRestrictedOrgNodeIds(scopedOrgNodeIds, [priceTiers.market, storeSettlementIds]);
   const optionScopedOrgNodeIds = marketScopedOrgNodeIds === null || storeScopedOrgNodeIds === null ? null : [...new Set([...marketScopedOrgNodeIds, ...storeScopedOrgNodeIds])];
   const [marketOptions, marketRows, storeRows] = await Promise.all([
     listSettlementMarketOptions(optionScopedOrgNodeIds),
     canViewMarketSettlement ? summarizeSettlementDocs({ segment: "market", startDate, endDate, scopedOrgNodeIds: marketScopedOrgNodeIds, market }) : Promise.resolve([]),
-    canViewStoreSettlement ? summarizeSettlementDocs({ segment: "store", startDate, endDate, scopedOrgNodeIds: storeScopedOrgNodeIds, market }) : Promise.resolve([])
+    canViewStoreSettlement ? summarizeSettlementDocs({
+      segment: "store",
+      startDate,
+      endDate,
+      scopedOrgNodeIds: storeScopedOrgNodeIds,
+      market,
+      targetOnly: !hasMarketPrice
+    }) : Promise.resolve([])
   ]);
   return {
     startDate,
@@ -181019,7 +181042,7 @@ async function exportSettlementSegmentDetailsForSession(session4, input, options
 // src/actions/inventory/settlements.ts
 init_with_permission();
 "use server";
-var listInventorySettlements2 = withPermission("inventory:list", async (_session, filters = {}) => listInventorySettlements(filters));
+var listInventorySettlements2 = withPermission("inventory:store_settlement_view", async (_session, filters = {}) => listInventorySettlements(filters));
 var listSettlementDetails = withPermission("inventory:list", async (session4, filters) => listSettlementDetailsForSession(session4, filters));
 var exportSettlementSegmentDetails = withPermission("inventory:export", async (session4, filters = {}, options) => exportSettlementSegmentDetailsForSession(session4, filters, options));
 
