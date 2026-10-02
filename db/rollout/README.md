@@ -37,4 +37,6 @@
 
 `/tmp/fengyu-migration-token` 废弃为发车门禁，不再给新 issue 分配；不要直接删除现有会话目录。既有已生成迁移先核对是否已执行/已合并、基线及 hash，作为队列首项交接，不覆盖或重编号。未生成的「待迁移令牌」状态改为「待迁移集成」。
 
-当前已知：#353 的既有候选 `0058_store_surplus_standard_price` 已接入隔离集成分支，私有空库/旧库验证完成，待 [DB PR #510](https://github.com/AustinXT/fengyu-wxapp/pull/510) 评审及合并；业务库执行事实仍未核对，详见 [交接请求](requests/issue-353.md) 和两环境台账。#510 合入 dev 前不生成下一条正式迁移。#364 已完成代码检查点，迁移未生成。其他会话自行登记其请求，不推断其就绪状态。
+当前已知（2026-10-02）：#353 的 `0058_store_surplus_standard_price` 已随 [DB PR #510](https://github.com/AustinXT/fengyu-wxapp/pull/510) 合入 dev，原编号/when/内容 hash 不变，业务库执行事实仍未核对。#365 基于最新 dev `618efaec9` 在隔离集中集成工作树生成 `0059_market_supplier_owner`，空库/存量库验证通过，独立 DB 提交带入 [业务 PR #507](https://github.com/AustinXT/fengyu-wxapp/pull/507) 一并评审；本项未合入 dev 前不生成下一条正式迁移。确切 hash、执行顺序和独立环境状态见 [#365 请求](requests/issue-365.md) 与两环境台账。#364 权限迁移仍待集成。
+
+本次私有全链重放另确认：已合入 dev 的 #356 汇总作废代码仍缺正式 lifecycle 迁移，纯正式历史下旧触发器会拒绝该操作。#356 的私有候选对照可通过作废正负例，但不代表正式迁移已集成；发布前须由后续集中集成处理。该请求不并入本单的 0059，不因此改写已生成历史。

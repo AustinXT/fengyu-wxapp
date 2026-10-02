@@ -414,6 +414,13 @@
       "when": 1790834272000,
       "tag": "0058_store_surplus_standard_price",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1790904222525,
+      "tag": "0059_market_supplier_owner",
+      "breakpoints": true
     }
   ]
 }

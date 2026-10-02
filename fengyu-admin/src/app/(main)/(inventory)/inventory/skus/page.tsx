@@ -3,6 +3,7 @@ import { listInventorySkus } from '@/actions/inventory/skus'
 import { listInventoryLocations } from '@/actions/inventory/locations'
 import { listInventorySupplierOptions } from '@/actions/inventory/suppliers'
 import { getSession } from '@/lib/auth'
+import { canCreateSupplier as supplierCreationAllowed } from '@/lib/inventory/supplier-access'
 import { inventoryPriceVisibility } from '@/lib/inventory/access'
 import { hasUiCapability } from '@/lib/permission-contract'
 import { requireAllUiPageCapabilities } from '@/lib/page-capability'
@@ -42,9 +43,7 @@ export default async function Page({
   const canViewPrice = priceVisibility !== 'none'
   const canManageMarketSkus = hasUiCapability(actions, 'inventory:market_sku_manage')
   const canManageSupplySkus = hasUiCapability(actions, 'inventory:supply_chain_master_data_manage')
-  // 建供应商档案要 supply_chain_master_data_manage，而建 SKU 只要 market_sku_manage 也行 ——
-  // 市场角色能建 SKU 但不能建档案，快捷入口必须按这个权限单独判，不能跟着 canCreate 走。
-  const canCreateSupplier = canManageSupplySkus
+  const canCreateSupplier = supplierCreationAllowed(session)
 
   return (
     <div className="p-6">

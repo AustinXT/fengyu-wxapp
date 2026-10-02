@@ -464,14 +464,14 @@ function SkuFormDialog({
     }
     setSavingSupplier(true)
     try {
-      const { supplierId } = await createInventorySupplier({
+      const { supplierId, name: displayName } = await createInventorySupplier({
         name,
         contactName: supplierDraft.contactName.trim() || null,
         phone: supplierDraft.phone.trim() || null,
       })
       // 只更新本地选项、不 router.refresh()：refresh 会让 server 重新下发 row，
       // SkuFormDialog 的 useEffect([open, row]) 随即把用户填到一半的表单重置掉。
-      onSupplierCreated({ supplierId, name })
+      onSupplierCreated({ supplierId, name: displayName ?? name })
       setSupplierTouched(true)
       setField('supplierId', supplierId)
       setSupplierDraft({ name: '', contactName: '', phone: '' })
@@ -612,14 +612,9 @@ function SkuFormDialog({
                   + 新建供应商
                 </button>
               )}
-              {/*
-                建供应商档案要 supply_chain_master_data_manage，而建 SKU 只要 market_sku_manage
-                也行 —— 市场角色能建自采 SKU 却建不了档案。改造前他们至少能手打一个名字，
-                现在下拉里没有就真的没有了；不给出路的话这是一次能力回退。
-              */}
               {!canCreateSupplier && supplierChoices.length === 0 && (
                 <p className="text-xs text-[#888888]">
-                  暂无可选供应商。供应商档案由供应链管理员在「资料配置 → 供应商」维护，请联系其先建档。
+                  暂无可选供应商。请联系本市场产品资料维护人员或供应链管理员建档。
                 </p>
               )}
               {unlinkedLegacyText && !form.supplierId && (

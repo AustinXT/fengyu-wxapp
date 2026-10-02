@@ -4816,6 +4816,60 @@ describe('退货预留消费加固（#260）', () => {
   })
 })
 
+describe('#365 自采供应商选填与归属', () => {
+  const market = { location_id: 'M1', org_node_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ' }
+  beforeEach(() => vi.clearAllMocks())
+  it.each([undefined, null, '', '  '])('供应商为 %s 时完成入库，档案/名称快照均为 NULL', async (supplierId) => {
+    const execute = vi.fn(initializedCutoverExecutor(async (query) => {
+      const sqlText = renderSql(query)
+      if (sqlText.includes('FROM inventory_locations')) return [market]
+      if (sqlText.includes('FROM inventory_skus')) return [{
+        ...supplierBoundSkuRow(), source_type: '市场自采', owner_market_id: 'M1',
+        // SKU 的默认供货商不代填入库供应商，选填留空应是 NULL。
+        supplier_id: 'SKU-DEFAULT-SUP', supplier: '默认供货商',
+        market_purchase_price: '10', store_purchase_price: '12',
+      }]
+      if (sqlText.includes('INSERT INTO inventory_stock_lots')) return [{ id: '101' }]
+      if (sqlText.includes('FROM inventory_stock_lots')) return [{
+        ...shipmentSourceLotRow(), id: '101', location_id: 'M1', sku_id: 'SKU-1',
+        supplier_id: null, supplier: null, source_doc_id: null,
+        market_actual_unit_price: '10', store_actual_unit_price: '12', quantity_on_hand: '0',
+      }]
+      if (sqlText.includes('INSERT INTO inventory_doc_items')) return [{ id: '1' }]
+      return []
+    }))
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({ execute } as never))
+    await expect(createSelfPurchasedReceipt(SELF_PURCHASE_SESSION, {
+      marketId: 'M1', supplierId, items: [{ skuId: 'SKU-1', quantity: 1, marketActualUnitPrice: 10 }],
+    })).resolves.toEqual({ id: expect.stringMatching(/^ZRK-/) })
+    const queries = execute.mock.calls.map(([query]) => query)
+    expect(queries.some((q) => renderSql(q).includes('FROM inventory_suppliers'))).toBe(false)
+    const header = queries.find((q) => renderSql(q).includes('INSERT INTO inventory_docs'))!
+    expect(sqlParams(header)[6]).toBeNull() // supplier_id
+    expect(sqlParams(header)[9]).toBeNull() // supplier_name
+    const lot = queries.find((q) => renderSql(q).includes('INSERT INTO inventory_stock_lots'))!
+    expect(sqlParams(lot)[5]).toBeNull()
+    expect(sqlParams(lot)[6]).toBeNull()
+    const item = queries.find((q) => renderSql(q).includes('INSERT INTO inventory_doc_items'))!
+    expect(sqlParams(item)[5]).toBeNull()
+    expect(sqlParams(item)[6]).toBeNull()
+  })
+  it('非空 supplierId 的 SQL 限定共有或当前市场，并用 FOR SHARE 冻结名字', async () => {
+    const execute = vi.fn().mockResolvedValueOnce([market]).mockResolvedValueOnce([])
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({ execute: initializedCutoverExecutor(execute) } as never))
+    await expect(createSelfPurchasedReceipt(SELF_PURCHASE_SESSION, {
+      marketId: 'M1', supplierId: 'SUP-M2', items: [{ skuId: 'SKU-1', quantity: 1 }],
+    })).rejects.toThrow('供应商不存在或已停用')
+    const query = execute.mock.calls[1][0]
+    expect(renderSql(query)).toContain('owner_market_id IS NULL OR owner_market_id =')
+    expect(renderSql(query)).toContain('FOR SHARE')
+    expect(sqlParams(query)).toEqual(['SUP-M2', 'M1'])
+    expect(execute).toHaveBeenCalledTimes(2)
+  })
+})
+
 describe('#356 作废市场报货汇总', () => {
   beforeEach(() => vi.clearAllMocks())
   function setup({ status = '已完成', docType = '市场报货汇总', fulfilled = '0.00', referenced = false } = {}) {

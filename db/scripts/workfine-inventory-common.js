@@ -1322,7 +1322,13 @@ async function upsertSku(client, row) {
       WHERE s.sku_id = $1
         AND s.supplier_id IS NULL
         AND btrim(COALESCE(s.supplier, '')) <> ''
-        AND btrim(s.supplier) = v.name`,
+        AND btrim(s.supplier) = v.name
+        AND (v.owner_market_id IS NULL OR v.owner_market_id = s.owner_market_id)
+        AND NOT EXISTS (
+          SELECT 1 FROM inventory_suppliers own
+           WHERE own.name = v.name AND own.owner_market_id = s.owner_market_id
+             AND v.owner_market_id IS NULL
+        )`,
     [insertedSkuId],
   )
   return insertedSkuId

@@ -16,6 +16,8 @@ on:
       - 'db/scripts/**'
       # payment-migrations-regression.test.js 对迁移 SQL 与 journal 做字面量断言
       - 'db/migrations/**'
+      # #365 候选迁移与私有库验证源，集中集成前也要触发脚本回归。
+      - 'db/rollout/requests/issue-365*'
       - 'db/package.json'
       - 'db/package-lock.json'
       # ↓ 两个跨子项目入口：它们无法 require db/scripts/_lib/assert-db-target.js，

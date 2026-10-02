@@ -82,13 +82,13 @@ test('INV-01：基础档案建档 + 六价体系 + 公式价校验', async ({ br
     await expect(page.getByText(/供应商已创建/)).toBeVisible({ timeout: 15_000 })
 
     const supplierId = psql(
-      `SELECT supplier_id FROM inventory_suppliers WHERE name = ${sqlStr(SUPPLIER_NAME)}`,
+      `SELECT supplier_id FROM inventory_suppliers WHERE name = ${sqlStr(SUPPLIER_NAME)} AND owner_market_id IS NULL`,
     )
     recordVerdict(verdicts, 'supplier: 落库成功', Boolean(supplierId), supplierId)
     recordVerdict(
       verdicts,
       'supplier: 默认启用',
-      psql(`SELECT is_active FROM inventory_suppliers WHERE name = ${sqlStr(SUPPLIER_NAME)}`) === 't',
+      psql(`SELECT is_active FROM inventory_suppliers WHERE name = ${sqlStr(SUPPLIER_NAME)} AND owner_market_id IS NULL`) === 't',
       'is_active',
     )
 

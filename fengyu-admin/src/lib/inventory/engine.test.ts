@@ -33,6 +33,8 @@ import {
   createInventoryPromotionPlan,
   createInventorySku,
   createInventorySupplier,
+  countInventorySkusBySupplier,
+  listInventorySupplierOptions,
   disableInventoryPromotionPlan,
   getInventoryCoreDocById,
   listInventoryCoreDocs,
@@ -904,7 +906,7 @@ describe('库存 SKU 来源与价格保护', () => {
 
   it('改名撞唯一约束时抛可读的 CONFLICT（update 路径）', async () => {
     const duplicate = Object.assign(new Error('Failed query'), {
-      cause: { code: '23505', constraint: 'uq_inventory_suppliers_name' },
+      cause: { code: '23505', constraint: 'uq_inventory_suppliers_shared_name' },
     })
     mockDb.select.mockReturnValueOnce(selectWithLimit([{ supplierId: 'SUP-1', name: '甲公司' }]))
     mockDb.transaction.mockImplementationOnce(async () => { throw duplicate })
@@ -938,7 +940,7 @@ describe('库存 SKU 来源与价格保护', () => {
     // 就判不可读」的兜底 —— 不翻译的话用户只会看到 fallback「创建供应商失败」，
     // 而重名的那条若已停用，列表和下拉里都看不到，用户没有任何自诊断入口
     const duplicate = Object.assign(new Error('Failed query'), {
-      cause: { code: '23505', constraint: 'uq_inventory_suppliers_name' },
+      cause: { code: '23505', constraint: 'uq_inventory_suppliers_shared_name' },
     })
     mockDb.insert.mockReturnValueOnce({ values: vi.fn().mockRejectedValue(duplicate) })
 
@@ -1213,12 +1215,13 @@ describe('库存 SKU 来源与价格保护', () => {
       .mockReturnValueOnce({
         from: () => ({
           leftJoin: () => ({
+            leftJoin: () => ({
             where: () => ({
               groupBy: () => ({
                 orderBy: async () => [
                   {
                     supplier: {
-                      supplierId: 'SUP-1', name: '甲公司', contactName: null, phone: null,
+                      supplierId: 'SUP-1', name: '甲公司', ownerMarketId: null, contactName: null, phone: null,
                       address: null, isActive: true, remark: null,
                       createdAt: new Date('2026-08-01T00:00:00Z'),
                       updatedAt: new Date('2026-08-01T00:00:00Z'),
@@ -1228,6 +1231,7 @@ describe('库存 SKU 来源与价格保护', () => {
                 ],
               }),
             }),
+          }),
           }),
         }),
       } as never)
@@ -1246,11 +1250,13 @@ describe('库存 SKU 来源与价格保护', () => {
       .mockReturnValueOnce({
         from: () => ({
           leftJoin: () => ({
+            leftJoin: () => ({
             where: () => ({
               groupBy: () => ({
                 orderBy: () => Object.assign(Promise.resolve([]), { limit }),
               }),
             }),
+          }),
           }),
         }),
       } as never)
@@ -5290,5 +5296,90 @@ describe('#270 同步撞值在短路之前拒绝', () => {
     mockDb.execute.mockResolvedValue([{ drifted, collided_id: 'MARKET-COLLISION' }])
     await expect(syncInventoryLocations()).rejects.toThrow('LOCATION_ID_AMBIGUOUS: 库存主体标识 MARKET-COLLISION')
     expect(mockDb.execute).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('#365 供应商归属服务端闸', () => {
+  const STOCK = 'inventory:stock_list'
+  const MARKET = 'inventory:market_sku_manage'
+  function scopedSession(scopeType = '市场', scopeId = 'M1', actions = [STOCK, MARKET]) {
+    return {
+      employeeId: 'E', name: '测试', phone: '',
+      roles: [{ role: 'finance', scopeType, scopeId, actions, scopeStoreIds: [], scopeOrgNodeIds: [scopeId] }],
+      permissions: { actions, scopeStoreIds: [] },
+    } as never
+  }
+  function query(result: unknown[], conditions: unknown[] = []) {
+    const chain = {
+      from: () => chain, leftJoin: () => chain, groupBy: () => chain,
+      where: (condition: unknown) => { conditions.push(condition); return chain },
+      limit: () => chain, orderBy: () => chain, for: () => chain,
+      then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve(result).then(resolve),
+    }
+    return chain
+  }
+  const dialect = new PgDialect()
+  const sqlQuery = (condition: unknown) => dialect.sqlToQuery(condition as never)
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockDb.select.mockReset()
+    mockDb.execute.mockResolvedValue([{ drifted: false }])
+    mockDb.transaction.mockImplementation(async (callback: (tx: unknown) => unknown) => callback(mockDb))
+    mockGetSession.mockResolvedValue(scopedSession())
+    vi.mocked(isAdminScope).mockReturnValue(false)
+    vi.mocked(hasPermission).mockImplementation((s, action) => s.permissions.actions.includes(action))
+  })
+  it('市场列表总数和行查询都限定共有或本市场', async () => {
+    const conditions: unknown[] = []
+    mockDb.select.mockReturnValueOnce(query([{ locationId: 'M1', locationType: '市场' }]))
+      .mockReturnValueOnce(query([{ total: 0 }], conditions)).mockReturnValueOnce(query([], conditions))
+    await expect(listInventorySuppliers()).resolves.toEqual({ data: [], total: 0 })
+    expect(conditions).toHaveLength(2)
+    for (const condition of conditions) {
+      expect(sqlQuery(condition).sql).toContain('"owner_market_id" is null')
+      expect(sqlQuery(condition).params).toContain('M1')
+      expect(sqlQuery(condition).params).not.toContain('M2')
+    }
+  })
+  it('总部下拉只查共有；名称附共有标识', async () => {
+    mockGetSession.mockResolvedValue(scopedSession('总部', 'HQ', [STOCK]))
+    const conditions: unknown[] = []
+    mockDb.select.mockReturnValueOnce(query([{ locationId: 'HQ', locationType: '总部', parentLocationId: 'M2' }]))
+      .mockReturnValueOnce(query([{ supplierId: 'SUP', name: '恒美', ownerMarketName: null }], conditions))
+    await expect(listInventorySupplierOptions()).resolves.toEqual([{ supplierId: 'SUP', name: '恒美（供应链共有）' }])
+    expect(sqlQuery(conditions[0]).sql).toContain('"owner_market_id" is null')
+    expect(sqlQuery(conditions[0]).params).not.toContain('M2')
+  })
+  it('直接查跨市场供应商关联数拒绝，不查询 SKU 数', async () => {
+    mockDb.select.mockReturnValueOnce(query([{ locationId: 'M1', locationType: '市场' }]))
+      .mockReturnValueOnce(query([]))
+    await expect(countInventorySkusBySupplier('SUP-M2')).rejects.toThrow('无权查看')
+    expect(mockDb.select).toHaveBeenCalledTimes(2)
+  })
+  it('市场建档写入本市场，并返回带市场名的选项；拒绝指定其它归属', async () => {
+    mockDb.select.mockReturnValueOnce(query([{ name: '广州市场' }]))
+    const values = vi.fn().mockResolvedValue(undefined)
+    mockDb.insert.mockReturnValueOnce({ values })
+    await expect(createInventorySupplier({ name: '恒美' })).resolves.toMatchObject({ name: '恒美（广州市场）' })
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ ownerMarketId: 'M1', name: '恒美' }))
+    await expect(createInventorySupplier({ name: '恒美', ownerMarketId: 'M2' })).rejects.toThrow('不能指定其它市场')
+    expect(values).toHaveBeenCalledTimes(1)
+  })
+  it.each([null, 'M2'])('市场拒绝编辑归属 %s，尚未进入事务', async (ownerMarketId) => {
+    mockDb.select.mockReturnValueOnce(query([{ supplierId: 'SUP', name: '恒美', ownerMarketId }]))
+    await expect(updateInventorySupplier('SUP', { name: '新名' })).rejects.toThrow('无权维护')
+    expect(mockDb.transaction).not.toHaveBeenCalled()
+  })
+  it('本市场供应商的归属不可修改', async () => {
+    mockDb.select.mockReturnValueOnce(query([{ supplierId: 'SUP', name: '恒美', ownerMarketId: 'M1' }]))
+    await expect(updateInventorySupplier('SUP', { ownerMarketId: 'M2' })).rejects.toThrow('归属市场不可修改')
+    expect(mockDb.transaction).not.toHaveBeenCalled()
+  })
+  it('直接传跨市场 supplierId 建 SKU 被拒绝，未写商品', async () => {
+    mockDb.select.mockReturnValueOnce(query([{ id: 'M1' }]))
+      .mockReturnValueOnce(query([{ name: '恒美', isActive: true, ownerMarketId: 'M2' }]))
+    await expect(createInventorySku({ productName: '耗材', sourceType: '市场自采', ownerMarketId: 'M1', supplierId: 'SUP-M2' }))
+      .rejects.toThrow('不属于当前商品市场')
+    expect(mockDb.insert).not.toHaveBeenCalled()
   })
 })
