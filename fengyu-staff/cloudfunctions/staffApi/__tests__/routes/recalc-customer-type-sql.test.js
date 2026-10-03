@@ -711,7 +711,7 @@ describe('#257 顾客分类方向守护', () => {
   }
   test('C 红检：cron重算入口必须能降级且会员客不能早退（A+B本轮不实现C）', () => {
     const src = fs.readFileSync(ADMIN_RECOMPUTE_TS, 'utf8')
-    expect(src).not.toMatch(/if \(cur\.rows\[0\]\?\.customer_type === '会员客'\) return/)
+    expect(src).not.toMatch(/if \(oldType === '会员客'\) return null/)
     expect(src).toMatch(/customer_type (?:<>|IS DISTINCT FROM)/)
   })
 })

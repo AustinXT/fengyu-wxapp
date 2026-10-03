@@ -16,7 +16,7 @@ function summarize(rows) {
   const transitions = new Map()
   let changed = 0, down = 0, recentDown = 0
   for (const r of rows) {
-    if (!(r.old_type in rank) || !(r.new_type in rank)) throw new Error('未知顾客档位，拒绝输出不完整审计')
+    if (!Object.hasOwn(rank, r.old_type) || !Object.hasOwn(rank, r.new_type)) throw new Error('未知顾客档位，拒绝输出不完整审计')
     if (r.old_type === r.new_type) continue
     changed++
     const key = `${r.old_type} → ${r.new_type}`
