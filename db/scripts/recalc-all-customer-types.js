@@ -301,13 +301,18 @@ SELECT
 `
 
 /** Caller owns BEGIN/COMMIT/ROLLBACK; reuse the authoritative batch SQL (#256). */
-async function recalcCustomerTypesInTransaction(client) {
+async function recalcCustomerTypesInTransaction(client, userIds) {
   const { rows } = await client.query(FETCH_THRESHOLD_SQL)
   const threshold = rows[0] ? Number(rows[0].v) : NaN
   if (!Number.isFinite(threshold) || threshold <= 0) {
     throw new Error('system_configs.new_member_threshold 缺失或非法，拒绝补算顾客分类')
   }
   await client.query(BUILD_TARGET_TABLE_SQL, [threshold])
+  // 默认CLI仍全库；同步传入已锁定的身份范围，不写无关顾客。
+  if (userIds !== undefined) {
+    if (!Array.isArray(userIds) || userIds.some(id => typeof id !== 'string' || !id)) throw new Error('非法顾客补算范围')
+    await client.query('DELETE FROM _recalc_target WHERE NOT (user_id = ANY($1::text[]))', [userIds])
+  }
   const type = await client.query(UPDATE_TYPE_SQL)
   const level = await client.query(UPDATE_LEVEL_SQL)
   const became = await client.query(UPDATE_BECAME_SQL)
@@ -411,4 +416,3 @@ if (require.main === module) {
 }
 
 module.exports = { recalcCustomerTypesInTransaction }
-
