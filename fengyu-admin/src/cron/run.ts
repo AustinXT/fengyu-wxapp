@@ -1,5 +1,5 @@
 /**
- * runDailyJobs — 串行执行 15 个 STEP，每个 STEP 独立 try/catch
+ * runDailyJobs — 串行执行 17 个 STEP，每个 STEP 独立 try/catch
  *
  * 与原 cronTask 入口的关键差异：
  *   - 原入口的整体 try 单点：任一 STEP 抛异常 → 后续 STEP 全部跳过
@@ -10,7 +10,8 @@
  *
  * STEP 顺序（2026-04-26 sale-order-domain-refactor 后）：
  *   1. closeExpiredAppointments — 业务清扫，先关掉超期预约（与后续重算无依赖）
- *   2. customerStatus           — 重算 client_wechat_users.customer_status
+ *   分类重算 customerTypes 先于状态、等级与权益，确保这些步骤读到新分类。
+   2. customerStatus           — 重算 client_wechat_users.customer_status
  *   3. monthlyActivity          — 重算 monthly_activity 月度客活（依赖 customer_type，不依赖等级）
  *   4. memberLevels             — 重算会员等级 + 升降级权益（依赖最新 sale_orders）
  *   5. spendingTier             — 重算 spending_tier 终身消费档位（依赖 sale_orders）
@@ -30,6 +31,7 @@
 
 import { db } from '@/db'
 import type { CronContext } from './lib/cron-context'
+import { refreshCustomerTypes } from './steps/refresh-customer-types'
 import { refreshCustomerStatus } from './steps/refresh-customer-status'
 import { refreshMonthlyActivity } from './steps/refresh-monthly-activity'
 import { refreshMemberLevels } from './steps/refresh-member-levels'
@@ -68,6 +70,7 @@ const STEPS: ReadonlyArray<readonly [string, StepFn]> = [
   // —— 业务清扫（写入）——
   ['closeExpiredAppointments', closeExpiredAppointments],
   // —— 状态/等级重算 ——
+  ['customerTypes', refreshCustomerTypes],
   ['customerStatus', refreshCustomerStatus],
   ['monthlyActivity', refreshMonthlyActivity],
   ['memberLevels', refreshMemberLevels],

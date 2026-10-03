@@ -683,7 +683,7 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
 })
 
 
-// #257：金额/归因镜像保持原有守护，方向按实时与离线分开；C 的红检保留到后续落地。
+// #257：金额/归因镜像保持原有守护，方向按实时与离线分开；C 已补实际每日调度与helper双向。
 describe('#257 顾客分类方向守护', () => {
   for (const [label, file] of RUNTIME_FILES.filter(([, file]) => file !== ADMIN_RECOMPUTE_TS)) {
     test(`${label} 实时写路径只能升级`, () => {
@@ -710,7 +710,7 @@ describe('#257 顾客分类方向守护', () => {
       else expect(build).toContain("u.customer_type = '会员客'")
     })
   }
-  test('C 红检：admin重算helper必须能降级且会员客不能早退（cron调度也待C落实）', () => {
+  test('C：admin重算helper能降级且会员客不能早退', () => {
     const src = fs.readFileSync(ADMIN_RECOMPUTE_TS, 'utf8')
     expect(src).not.toMatch(/if \(oldType === '会员客'\) return null/)
     expect(src).toMatch(/customer_type (?:<>|IS DISTINCT FROM)/)
