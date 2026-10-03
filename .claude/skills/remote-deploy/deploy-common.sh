@@ -323,9 +323,21 @@ BACKUP_GUARD
     if sudo -n flock -w "${backup_guard_wait:-0}" -E 75 "$control/runtime.lock" sh -c "$guard" sh "$control" "$guard_stamp" "$@"; then rm -f "$guard_stamp"; return; else guard_rc=$?; fi
   fi
   # 未进入compose时，锁/权限/守卫故障都按安全拒绝返回，不误触发自动回滚。
-  if [ ! -s "$guard_stamp" ]; then guard_rc=75; fi
+  if [ ! -s "$guard_stamp" ]; then
+    guard_rc=75
+    # 活备份持锁时guard体不会执行，必须在flock外只读输出当前状态。
+    if [ -r "$control" ]; then
+      grep -E '"state"[[:space:]]*:[[:space:]]*"running"' "$control"/states/*.json >&2 2>/dev/null || true
+    else
+      sudo -n sh -c 'grep -E "\"state\"[[:space:]]*:[[:space:]]*\"running\"" "$1"/states/*.json' sh "$control" >&2 2>/dev/null || true
+    fi
+    echo "ERROR: backup runtime is busy or unavailable (exit=75); check settings/diagnostics, then retry." >&2
+  else
+    # compose自定义75也不冒充锁冲突，应该进入正常自动回滚。
+    [ "$guard_rc" != 75 ] || guard_rc=1
+    echo "ERROR: compose failed after the backup guard passed (exit=$guard_rc)" >&2
+  fi
   rm -f "$guard_stamp"
-  echo "ERROR: backup guard refused admin switch (exit=$guard_rc); check settings/diagnostics. Retry after the backup completes." >&2
   return "$guard_rc"
 }
 
@@ -708,9 +720,21 @@ BACKUP_GUARD
     if sudo -n flock -w "${backup_guard_wait:-0}" -E 75 "$control/runtime.lock" sh -c "$guard" sh "$control" "$guard_stamp" "$@"; then rm -f "$guard_stamp"; return; else guard_rc=$?; fi
   fi
   # 未进入compose时，锁/权限/守卫故障都按安全拒绝返回，不误触发自动回滚。
-  if [ ! -s "$guard_stamp" ]; then guard_rc=75; fi
+  if [ ! -s "$guard_stamp" ]; then
+    guard_rc=75
+    # 活备份持锁时guard体不会执行，必须在flock外只读输出当前状态。
+    if [ -r "$control" ]; then
+      grep -E '"state"[[:space:]]*:[[:space:]]*"running"' "$control"/states/*.json >&2 2>/dev/null || true
+    else
+      sudo -n sh -c 'grep -E "\"state\"[[:space:]]*:[[:space:]]*\"running\"" "$1"/states/*.json' sh "$control" >&2 2>/dev/null || true
+    fi
+    echo "ERROR: backup runtime is busy or unavailable (exit=75); check settings/diagnostics, then retry." >&2
+  else
+    # compose自定义75也不冒充锁冲突，应该进入正常自动回滚。
+    [ "$guard_rc" != 75 ] || guard_rc=1
+    echo "ERROR: compose failed after the backup guard passed (exit=$guard_rc)" >&2
+  fi
   rm -f "$guard_stamp"
-  echo "ERROR: backup guard refused admin switch (exit=$guard_rc); check settings/diagnostics. Retry after the backup completes." >&2
   return "$guard_rc"
 }
 
