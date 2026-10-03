@@ -1,8 +1,8 @@
-# 凤御日报：首期最小闭环
+# 凤御日报 V2
 
 在 `daily` 分支开发，参考 `daily-report/daily-summary-miniapp-v2.html`。
 
-## 本期功能
+## 已实现功能
 
 - 微信手机号授权绑定：日报 AppID + OPENID 独立绑定既有员工编号，不覆盖员工端 OPENID，不创建员工档案。
 - 自动查询本人当天已开始/待确认/已完成的实际服务，以及当日有效销售业绩分配。
@@ -12,7 +12,7 @@
 - 每员工每天一份日报，版本冲突拒绝覆盖；当天提交可修改后再次提交，历史已提交只读。
 - 提交时冻结业务快照，订单/项目改名不修改已提交内容。
 
-阶段目标不包括目标配置、周期统计、PK、导师点评或后台 Web 页面。
+V2 增加配置经营月及四周、个人／本店／市场目标、真实销售与消耗统计、PK 双榜、指导关系和后台配置。完整验收清单见 `docs/handoff/daily-v2-implementation.md`。导师文字点评不在当前原型范围。
 
 ## 角色工作台与底部导航
 
@@ -20,10 +20,10 @@
 
 - 员工：首页 / 记录 / 我的，显示本人日报和最近记录。
 - 店长：首页 / 本店 / 我的，显示店长角色所授权门店的提交和未提交员工。
-- 管理层：总览 / 组织 / 我的，需要已有看板权限及非空门店范围；总览、组织逐层浏览、人员查找和门店日报查询使用服务端授权范围。
+- 管理层：总览 / 组织 / 我的，需要已有看板权限及授权市场或门店范围；总览、组织逐层浏览、人员查找和门店日报查询使用服务端授权范围。
 - 多身份用户可在“我的”切换工作台；每次登录重新校验可用身份，权限撤销后本地旧选择自动失效。
 
-当前总览统计单日、按当前在职员工计算。经营月 / 周、目标和 PK 仍属于后续阶段，不能将当前统计解释为历史出勤或完整原型已经交付。
+总览支持今日、经营周及经营月范围；组织按授权市场、门店、人员逐级查看。历史应提交人数按在职边界计算，不代表考勤。正式迁移、云端部署及真实身份联调仍待完成，当前代码和本机验证不能视为完整交付。
 
 ## 开发配置
 
@@ -54,9 +54,8 @@ npm --prefix fengyu-daily/cloudfunctions/dailyApi ci
 npm --prefix fengyu-daily run typecheck
 npm --prefix fengyu-daily test
 
-# 先确认待执行清单，再迁开发库（仅允许日报迁移）
+# 只读核查既有首期迁移；V2 需先按 db/rollout/README.md 集中集成
 node scripts/migrate-daily-dev.mjs
-node scripts/migrate-daily-dev.mjs --apply
 
 # 登录开通日报环境的账号
 npx --yes --package=@cloudbase/cli tcb login
@@ -116,8 +115,14 @@ npm --prefix fengyu-daily run test:ui
 
 UI 自动化通过开发者工具，临时模拟接口返回；不替代真实微信绑定和云端联调。测试结束恢复微信方法，截图保存在 `_tmp/daily-ui/`。
 
-## 本期接口
+## 接口
 
-`auth.login`、`auth.bindPhone`、`auth.bindTestCode`（仅开发测试）、`report.read`、`report.save`、`report.submit`、`report.history`、`manager.list`、`manager.detail`、`management.read`。
+`auth.login`、`auth.bindPhone`、`auth.bindTestCode`（仅开发测试）、`report.read`、`report.save`、`report.submit`、`report.history`、`manager.list`、`manager.detail`、`management.read`、`period.list`、`target.read/confirmMonth/saveWeek`、`metrics.read`、`contacts.list`、`business.list`、`report.previous`、`pk.classes/read`。
 
 统一 `{ action, payload }` 输入，`{ code, message, data, errorType? }` 响应。`PHONE_REQUIRED` 与 `PERMISSION_DENIED` 均为 -403，前端按 `errorType` 区分。
+
+## V2 验收状态
+
+本机私有 PG 的日报47项测试、后台配置及菜单26项测试通过。开发者工具模拟接口验证了三套工作台、填写保存、只读详情、当日修改、目标、PK双榜、组织筛选和市场详情；后台用私有 PG 验证了真实登录、周期预览保存、PK 配置保存与成员回读。截图保存在 `_tmp/daily-ui/`（不提交）。
+
+候选 SQL 在 `db/rollout/requests/daily-v2.sql`，没有正式迁移编号，不应直接在共享库执行。正式集成须核验全部未合并 PR 的迁移并完成项目要求的双谱系评审，然后按发布流程迁移、部署到上述正确环境并做真实身份联调。
