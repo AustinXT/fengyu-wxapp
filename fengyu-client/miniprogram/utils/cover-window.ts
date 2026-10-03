@@ -30,15 +30,17 @@ const DEFAULT_MARGIN = 600
 const FLUSH_DELAY_MS = 50
 
 /**
- * fail-open 守护时长。observe 之后这么久一次回调都没收到，就退回改造前的行为
- * （整列显示封面）——「商品图全白」比「多解码几张图」严重得多。
+ * 观察器静默守护时长。observe 后未收到合法回调，则用原生节点测量继续追踪窗口。
  *
- * ⚠️ 这种「静默」是**可恢复**的，只在本轮放开，下一次 refresh 仍会重新尝试建观察器。
+ * ⚠️ 这种「静默」是**可恢复**的，只在本轮切换测量，下一次 refresh 仍会重新尝试建观察器。
  * 零回调不等于 observer 不可用：目标滚动容器被 `wx:if` 切走、或页面处于隐藏态时
- * 同样一个回调都收不到，若就此永久停用，解码硬上限会被整场会话关掉且毫无痕迹。
+ * 同样一个回调都收不到，若就此永久停用，后续整场会话都会持续轮询测量。
  * 只有 `wx.createIntersectionObserver` **本身抛错**才是确定性的能力缺失。
  */
 const FALLBACK_DELAY_MS = 800
+const MEASURE_INTERVAL_MS = 200
+// 极端布局或平台重复相交回调也不能无限挂图。
+const MAX_VISIBLE_COVERS = 24
 
 /**
  * 新列表首屏直接标可见的条数。
@@ -81,7 +83,7 @@ export interface CoverWindow {
    * 这份列表在不在场（页面可见 + 该列表没被 `wx:if` 切走）。
    *
    * 不在场时断开观察器 —— 不渲染的节点收不到相交回调，硬撑只会在 800ms 后误触发
-   * fail-open 把整列放开。重新在场时**自动重建**：让调用方自己记得补 `refresh()`
+   * 守护误切换到视图测量。重新在场时**自动重建**：让调用方自己记得补 `refresh()`
    * 是守不住的，「先 refresh 再 setVisible(true)」这种很自然的写法会被静默吞掉。
    */
   setVisible(visible: boolean): void;
@@ -108,6 +110,8 @@ export function withInitialCoverVisible<T extends Record<string, any>>(
 export function createCoverWindow(page: PageLike, options: CoverWindowOptions): CoverWindow {
   const margin = options.margin ?? DEFAULT_MARGIN;
 
+  let measureTimer: ReturnType<typeof setTimeout> | null = null;
+  let measuring = false;
   let observer: WechatMiniprogram.IntersectionObserver | null = null;
   let pending: Record<number, boolean> = {};
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -144,17 +148,7 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
     pending = {};
     if (!list) return;
 
-    const patch: Record<string, boolean> = {};
-    Object.keys(buffered).forEach((key) => {
-      const idx = Number(key);
-      // 列表可能在回调到达前已被换掉（切分类），越界的下标直接丢弃
-      if (idx < 0 || idx >= list.length) return;
-      const want = buffered[idx];
-      if (Boolean(list[idx]?.[FLAG]) === want) return;
-      patch[`${options.listKey}[${idx}].${FLAG}`] = want;
-    });
-
-    if (Object.keys(patch).length > 0) page.setData(patch);
+    applyWindow(buffered);
   }
 
   function scheduleFlush(gen: number) {
@@ -162,18 +156,64 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
     flushTimer = setTimeout(() => flush(gen), FLUSH_DELAY_MS);
   }
 
-  /** fail-open：整列显示封面，等价于改造前的行为 */
-  function showAll() {
+  function applyWindow(values: Record<number, boolean>) {
     const list = getList();
-    if (!list || list.length === 0) return;
+    if (!list) return;
+    let count = 0;
     const patch: Record<string, boolean> = {};
     list.forEach((item, idx) => {
-      if (!item?.[FLAG]) patch[`${options.listKey}[${idx}].${FLAG}`] = true;
+      const wants = values[idx] ?? Boolean(item?.[FLAG]);
+      const want = wants && count++ < MAX_VISIBLE_COVERS;
+      if (Boolean(item?.[FLAG]) !== want) patch[`${options.listKey}[${idx}].${FLAG}`] = want;
     });
-    if (Object.keys(patch).length > 0) page.setData(patch);
+    if (Object.keys(patch).length) page.setData(patch);
+  }
+
+  /** observer失效后用原生视图测量持续追踪窗口，不放开整列。 */
+  function startMeasuredFallback() {
+    const gen = generation;
+    // 保持首屏兜底，但无论何种能力故障都不突破数量上限。
+    applyWindow({});
+    function measure() {
+      if (disposed || !visible || gen !== generation) return;
+      measureTimer = setTimeout(measure, MEASURE_INTERVAL_MS);
+      if (measuring) return;
+      measuring = true;
+      try {
+        const query = wx.createSelectorQuery().in(page as any);
+        query.selectAll(options.slotSelector).fields({ rect: true, dataset: true });
+        if (options.scrollSelector) query.select(options.scrollSelector).boundingClientRect();
+        else query.selectViewport().fields({ size: true });
+        query.exec((results) => {
+          if (disposed || !visible || gen !== generation) return;
+          measuring = false;
+          const slots = results?.[0], view = results?.[1];
+          if (!Array.isArray(slots) || !view) return;
+          const top = Number(view.top ?? 0), bottom = Number(view.bottom ?? view.height);
+          if (!Number.isFinite(top) || !Number.isFinite(bottom) || bottom <= top) return;
+          const values: Record<number, boolean> = {};
+          const list = getList() ?? [];
+          list.forEach((_, idx) => { values[idx] = false; });
+          slots.forEach((slot: any) => {
+            const idx = Number(slot.dataset?.idx);
+            if (slot.dataset?.idx === undefined || slot.dataset?.idx === '' || !Number.isInteger(idx) || idx < 0 || idx >= list.length) return;
+            values[idx] = Number.isFinite(slot.top) && Number.isFinite(slot.bottom)
+              && slot.bottom > top - margin && slot.top < bottom + margin;
+          });
+          applyWindow(values);
+        });
+      } catch (_) {
+        measuring = false;
+        // 两种原生能力都不可用时保留有界占位，下一次测量继续重试。
+      }
+    }
+    if (measureTimer !== null) clearTimeout(measureTimer);
+    measure();
   }
 
   function clearTimers() {
+    if (measureTimer !== null) { clearTimeout(measureTimer); measureTimer = null; }
+    measuring = false;
     if (flushTimer !== null) {
       clearTimeout(flushTimer);
       flushTimer = null;
@@ -199,15 +239,11 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
   }
 
   function refresh() {
-    if (disposed) return;
+    if (disposed || !visible) return;
     if (unsupported) {
-      showAll();
+      startMeasuredFallback();
       return;
     }
-    // 隐藏的页面不渲染，observer 注定零回调。此时建观察器只会在 800ms 后误触发
-    // fail-open 把整列放开；等 setVisible(true) 时页面会重新接线。
-    if (!visible) return;
-
     // observeAll 不会自动跟踪后续新增的节点，列表一变就得整个重建
     teardown();
     const gen = generation;
@@ -220,9 +256,9 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
       created = wx.createIntersectionObserver(page as any, { observeAll: true });
     } catch (err) {
       // 工厂抛错 = 环境不支持，确定性的，永久停用
-      console.warn('[cover-window] observer 创建失败，退回整列显示', err);
+      console.warn('[cover-window] observer 创建失败，退回视图测量', err);
       unsupported = true;
-      showAll();
+      startMeasuredFallback();
       return;
     }
 
@@ -232,17 +268,12 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
       created.observe(options.slotSelector, (res) => {
         // 旧世代的在队回调整段丢弃：既不写 pending，也不碰新世代的守护定时器
         if (gen !== generation) return;
-        // 收到第一个回调就撤掉 fail-open 守护：本轮观察器已被证明在工作
-        if (fallbackTimer !== null) {
-          clearTimeout(fallbackTimer);
-          fallbackTimer = null;
-        }
         // wxml 漏写 / 写错 `data-idx` 会让整列永久停在占位图，而回调一直在到、
         // fail-open 不会触发 —— 零日志的半瘫最难查，留一条线索。
         // 注意 `Number('')` 是 0、`Number(null)` 也是 0，光判 isInteger 漏得掉；
         // 负数与越界整数会一路走到 flush 才被静默丢弃，同样要在这里报出来。
         const rawIdx = (res as any).dataset?.idx;
-        const idx = typeof rawIdx === 'string' && rawIdx !== '' ? Number(rawIdx) : NaN;
+        const idx = (typeof rawIdx === 'number' || (typeof rawIdx === 'string' && rawIdx !== '')) ? Number(rawIdx) : NaN;
         const listLength = getList()?.length ?? 0;
         if (!Number.isInteger(idx) || idx < 0 || idx >= listLength) {
           if (!warnedBadIndex) {
@@ -253,6 +284,11 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
           }
           return;
         }
+        // 收到第一个回调就撤掉 fail-open 守护：本轮观察器已被证明在工作
+        if (fallbackTimer !== null) {
+          clearTimeout(fallbackTimer);
+          fallbackTimer = null;
+        }
         pending[idx] = res.intersectionRatio > 0;
         scheduleFlush(gen);
       });
@@ -260,15 +296,15 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
     } catch (err) {
       // relativeTo / observe 抛错多是节点未上树之类的瞬态原因，不代表环境不支持。
       // 但 created 已经是个真实的原生 observer，不收掉就泄漏了。
-      console.warn('[cover-window] observer 接线失败，本轮退回整列显示', err);
+      console.warn('[cover-window] observer 接线失败，本轮退回视图测量', err);
       try {
         created.disconnect();
       } catch (_) {
         /* 已经坏掉的 observer 收不掉也没别的办法 */
       }
-      // 换代：`created` 可能已经 observe 成功、回调已入队，不作废掉会把刚 showAll 的行写回 false
+      // 换代：`created` 可能已经 observe 成功、回调已入队，不作废掉会把刚 startMeasuredFallback 的行写回 false
       generation++;
-      showAll();
+      startMeasuredFallback();
       return;
     }
 
@@ -276,11 +312,11 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
       if (gen !== generation) return;
       fallbackTimer = null;
       // 只放开本轮，不置 unsupported —— 下次 refresh 仍会重新尝试
-      console.warn('[cover-window] 本轮未收到相交回调，暂退回整列显示');
-      // 换代必须在 showAll 之前：放弃本轮 observer 之后，它已入队的回调不能再把
+      console.warn('[cover-window] 本轮未收到相交回调，暂退回视图测量');
+      // 换代必须在 startMeasuredFallback 之前：放弃本轮 observer 之后，它已入队的回调不能再把
       // 刚放开的行写回 false —— 那时既没有 observer 也没有守护定时器，会永久停在占位图
       teardown();
-      showAll();
+      startMeasuredFallback();
     }, FALLBACK_DELAY_MS);
   }
 

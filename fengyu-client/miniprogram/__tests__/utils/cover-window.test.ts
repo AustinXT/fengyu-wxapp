@@ -2,7 +2,7 @@
  * utils/cover-window 测试（issue #248）
  *
  * 核心不变量：页面同时挂载的 <image> 数量由视口窗口决定，与列表长度无关；
- * 且 observer 一旦不可用必须 fail-open 回「整列显示」，绝不能让商品图全白。
+ * 且 observer 一旦不可用必须 测量兜底 回「测量窗口内显示」，绝不能让商品图全白。
  */
 
 import {
@@ -57,6 +57,14 @@ function emitOn(ob: any, idx: number, intersecting: boolean) {
 
 beforeEach(() => {
   ;(wx as any).__resetObservers()
+  ;(wx as any).createSelectorQuery = () => {
+    let page: any;
+    const query: any = { in(p: any) { page = p; return query }, selectAll() { return query }, select() { return query }, selectViewport() { return query }, fields() { return query }, boundingClientRect() { return query }, exec(cb: any) {
+      const list = page.data.spuList ?? [];
+      cb([list.map((_: any, idx: number) => ({ dataset: { idx }, top: 0, bottom: 100 })), { top: 0, bottom: 600, height: 600 }]);
+    } };
+    return query;
+  }
   vi.useFakeTimers()
 })
 
@@ -191,8 +199,8 @@ describe('createCoverWindow · 窗口内外切换', () => {
   })
 })
 
-describe('createCoverWindow · fail-open', () => {
-  test('守护期内没有任何回调 → 整列显示封面（退回改造前的行为）', () => {
+describe('createCoverWindow · 测量兜底', () => {
+  test('守护期内没有任何回调 → 测量窗口内显示封面（退回改造前的行为）', () => {
     const page = makePage('spuList', 8)
     createCoverWindow(page as any, OPTS).refresh()
 
@@ -202,7 +210,7 @@ describe('createCoverWindow · fail-open', () => {
     expect((wx as any).__lastObserver().disconnected).toBe(true)
   })
 
-  test('收到过回调就不触发 fail-open', () => {
+  test('收到过回调就不触发 测量兜底', () => {
     const page = makePage('spuList', 8)
     createCoverWindow(page as any, OPTS).refresh()
 
@@ -214,7 +222,7 @@ describe('createCoverWindow · fail-open', () => {
     expect((wx as any).__lastObserver().disconnected).toBe(false)
   })
 
-  test('createIntersectionObserver 抛错 → 立即整列显示，不留半白页面', () => {
+  test('createIntersectionObserver 抛错 → 立即测量窗口内显示，不留半白页面', () => {
     const page = makePage('spuList', 8)
     ;(wx as any).__setObserverFactoryThrows(true)
 
@@ -255,7 +263,7 @@ describe('createCoverWindow · fail-open', () => {
     expect((page.data.spuList as any[]).filter(r => r.coverVisible)).toHaveLength(1)
   })
 
-  test('第一轮收到过回调，不妨碍后续某一轮零回调时再次 fail-open', () => {
+  test('第一轮收到过回调，不妨碍后续某一轮零回调时再次 测量兜底', () => {
     const page = makePage('spuList', 8)
     const w = createCoverWindow(page as any, OPTS)
     w.refresh()
@@ -304,7 +312,7 @@ describe('createCoverWindow · 世代校验', () => {
     expect((page.data.spuList as any[])[12].coverVisible).toBe(false)
   })
 
-  test('旧世代回调不得清掉新世代的 fail-open 守护定时器', () => {
+  test('旧世代回调不得清掉新世代的 测量兜底 守护定时器', () => {
     const page = makePage('spuList', 8)
     const w = createCoverWindow(page as any, OPTS)
     w.refresh()
@@ -316,12 +324,12 @@ describe('createCoverWindow · 世代校验', () => {
 
     vi.advanceTimersByTime(FALLBACK_DELAY_MS)
 
-    // 守护没被旧回调误杀 → 整列放开，而不是永久停在占位图
+    // 守护没被旧回调误杀 → 切换到测量窗口，而不是永久停在占位图
     expect((page.data.spuList as any[]).every(r => r.coverVisible)).toBe(true)
   })
 
-  // fail-open 之后既没有 observer 也没有守护定时器，旧回调再把行写回 false 就永久停在占位图
-  test('fail-open 放开整列后，旧观察器的在队回调不得把行写回 false', () => {
+  // 测量兜底 之后既没有 observer 也没有守护定时器，旧回调再把行写回 false 就永久停在占位图
+  test('测量兜底 放开整列后，旧观察器的在队回调不得把行写回 false', () => {
     const page = makePage('spuList', 8)
     const w = createCoverWindow(page as any, OPTS)
     w.refresh()
@@ -382,7 +390,7 @@ describe('createCoverWindow · 世代校验', () => {
 })
 
 describe('createCoverWindow · 页面显隐', () => {
-  test('隐藏期间的 refresh 不建观察器（不渲染的页面注定零回调，会误触 fail-open）', () => {
+  test('隐藏期间的 refresh 不建观察器（不渲染的页面注定零回调，会误触 测量兜底）', () => {
     const page = makePage('spuList', 8)
     const w = createCoverWindow(page as any, OPTS)
     w.setVisible(false)
@@ -448,7 +456,7 @@ describe('createCoverWindow · dispose 终局', () => {
 })
 
 describe('createCoverWindow · 诊断', () => {
-  test('槽位缺 data-idx 时警告一次（整列永久占位且 fail-open 不触发，零日志最难查）', () => {
+  test('槽位缺 data-idx 时警告一次（整列永久占位且 测量兜底 不触发，零日志最难查）', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const page = makePage('spuList', 8)
     createCoverWindow(page as any, OPTS).refresh()
@@ -483,3 +491,25 @@ describe('createCoverWindow · 诊断', () => {
     warn.mockRestore()
   })
 })
+
+test('观察器不可用：200图按真实槽位测量滚尾/回滚，永不全图展示，隐藏停止轮询', () => {
+  const page = makePage('spuList', 200); let scroll = 0;
+  ;(wx as any).createSelectorQuery = () => {
+    const q: any = { in() { return q }, selectAll() { return q }, select() { return q }, fields() { return q }, boundingClientRect() { return q }, exec(cb: any) {
+      cb([page.data.spuList.map((_: any, idx: number) => ({ dataset: { idx }, top: idx * 200 - scroll, bottom: (idx+1)*200-scroll })), { top: 0, bottom: 600 }]);
+    } }; return q;
+  };
+  ;(wx as any).__setObserverFactoryThrows(true);
+  const w = createCoverWindow(page as any, OPTS); w.refresh();
+  expect(page.data.spuList.filter((r: any) => r.coverVisible).length).toBeLessThanOrEqual(24);
+  scroll = 39400; vi.advanceTimersByTime(200);
+  expect(page.data.spuList[199].coverVisible).toBe(true); expect(page.data.spuList[0].coverVisible).toBe(false);
+  expect(page.data.spuList.filter((r: any) => r.coverVisible).length).toBeLessThanOrEqual(24);
+  scroll = 0; vi.advanceTimersByTime(200); expect(page.data.spuList[0].coverVisible).toBe(true);
+  w.setVisible(false); expect(vi.getTimerCount()).toBe(0); w.dispose();
+});
+test('重叠布局200个相交回调也最多24图；数字dataset下标可用', () => {
+  const page = makePage('spuList', 200); const w = createCoverWindow(page as any, OPTS); w.refresh();
+  for (let idx=0; idx<200; idx++) (wx as any).__lastObserver().callback({ dataset: { idx }, intersectionRatio: 1 });
+  vi.advanceTimersByTime(50); expect(page.data.spuList.filter((r: any) => r.coverVisible)).toHaveLength(24); w.dispose();
+});
