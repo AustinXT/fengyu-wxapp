@@ -18,6 +18,7 @@ export function pendingRoleMigrationsSql(employeeId?: string) {
     JOIN permission_roles pr ON pr.employee_id = e.employee_id AND (pr.scope_id = COALESCE(NULLIF(l.detail->>'oldScopeId', ''), old_store.org_node_id)
         OR COALESCE(NULLIF(l.detail->>'oldScopeId', ''), old_store.org_node_id) IS NULL)
       AND l.detail->'roles' ? pr.role
+    JOIN org_nodes binding_scope ON binding_scope.id = pr.scope_id AND binding_scope.type = '门店'
     LEFT JOIN stores current_store ON current_store.store_id = e.store_id
     WHERE pr.scope_id IS DISTINCT FROM current_store.org_node_id
       AND ${employeeId ? sql`e.employee_id = ${employeeId}` : sql`true`}

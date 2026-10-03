@@ -17,11 +17,13 @@ it.skipIf(!url)('真实PG：明确调店才生成待办，多次调店/保留兼
     await db.query(`
       CREATE TEMP TABLE operation_logs(id bigint, target_id text, action text, detail jsonb, created_at timestamptz, target_type text, source text);
       CREATE TEMP TABLE staff_wechat_users(employee_id text, name text, store_id text, is_resigned boolean);
+      CREATE TEMP TABLE org_nodes(id text, type text);
       CREATE TEMP TABLE stores(store_id text, org_node_id text);
       CREATE TEMP TABLE permission_roles(id bigint, employee_id text, role text, scope_id text);
+      INSERT INTO org_nodes VALUES('nodeA','门店'),('nodeB','门店'),('nodeC','门店'),('market','市场'),('headquarters','总部');
       INSERT INTO stores VALUES('A','nodeA'),('B','nodeB'),('C','nodeC');
       INSERT INTO staff_wechat_users VALUES('E','合成员工','C',false),('LEGAL','合法兼任','C',false);
-      INSERT INTO permission_roles VALUES(1,'E','manager','nodeA'),(2,'E','staff','nodeB'),(3,'LEGAL','manager','nodeA');
+      INSERT INTO permission_roles VALUES(1,'E','manager','nodeA'),(2,'E','staff','nodeB'),(3,'LEGAL','manager','nodeA'),(4,'E','staff','market'),(5,'E','staff','headquarters');
       INSERT INTO operation_logs VALUES
         (10,'E','permission.scopeSync.skipped','{"reason":"manual_review_required","oldStoreId":"A","oldScopeId":"nodeA","newStoreId":"B","roles":["manager"]}',now()-interval '5 days'),
         (11,'E','permission.scopeSync.skipped','{"reason":"manual_review_required","oldStoreId":"B","newStoreId":"C","roles":["staff"]}',now()-interval '4 days');

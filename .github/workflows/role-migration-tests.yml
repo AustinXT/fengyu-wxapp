@@ -3,6 +3,9 @@ on:
   pull_request:
     paths:
       - 'fengyu-admin/src/actions/role-migrations*'
+      - 'fengyu-admin/src/app/**/permissions/**'
+      - 'fengyu-admin/src/cron/run.ts'
+      - 'fengyu-admin/src/cron/lib/notify.ts'
       - 'fengyu-admin/src/actions/employees.ts'
       - 'fengyu-admin/src/lib/session-role-guards.ts'
       - 'fengyu-admin/src/lib/role-migration-pending*'
