@@ -105,3 +105,13 @@ DAILY_TEST_DATABASE_URL=postgresql://postgres:test@127.0.0.1:54399/test npx vite
 | 云端部署与全链验收 | 正确环境/部署入口常量及原首期代码 | 新版函数/后台发布、真实微信绑定与数据链路全项验收 |
 
 以上证据未证明完整目标已经达成。特别是模拟截图和私有库测试不能替代目标环境发布验收。
+
+### 2026-10-03 日报 V2 dev 实际执行结果
+
+- 北京时间17:51:51，`0062_daily_v2_operating_pk` 经显式目标校验后的 `npm --prefix db run db:migrate` 执行成功。目标101.34.242.103:5433/fengyu_wxapp；SQL hash `dc0ebb9de66e09ce48580fd43e1dff002ba8d439b8e1a560981474fc45e4e7ca`、when `1791020803394`，库记录id64。四张新增表、四个新增字段及迁移记录回读通过；日报行数执行前后均0。
+- 发布提交 `f998dc19cbc2`，admin release `dev-f998dc19cbc2-b4377b31991a-20261003T095253Z-24341`，镜像 `fengyu-admin:dev-f998dc19cbc2-64bb1bcb771b`，部署脚本RELEASE_OK。
+- 使用统一入口 `DAILY_DEPLOY_BACKEND=wechat WX_DEVTOOLS_PORT=41652 scripts/deploy-cloudfunctions.sh dev daily` 上传dailyApiDev到cloud1-d5gz7zr8x6c38bd49。26个JS文件完整下载回读一致。微信CLI最终返回待核验提示（退出1），随后通过云控制台只读核验：Node.js18.15、256MB、30秒、PG公网dev目标且无连接覆盖参数、DEPLOY_CHANNEL=shadow、TZ=Asia/Shanghai。
+- 小程序已重新编译；当前微信真实身份auth.login及11个读取接口均code0：period.list/target.read/pk.classes/report.history/metrics.read/contacts.list/report.read/business.list/report.previous/manager.list/management.read。未模拟接口。首页和目标页实际显示尚未配置经营周期。
+- 验收限制：当前绑定管理员无主门店，不能替代普通员工填报验收；真实经营月/四周日期与PK分班未收到用户决定，保持空配置；共享库未写入虚构日报。后续需有门店的员工身份完成保存/提交/店长回读，以及业务配置后的目标和PK验证。三角色截图自动化在首个首页后超时，不将其计为全角色UI验收。
+- 交付PR https://github.com/AustinXT/fengyu-wxapp/pull/523 ，仍待合并。已同步本机daily分支；在PR合入dev前，其他会话不得从旧dev再次生成0062。外部双谱系按用户明确指示跳过。
+- 脱敏执行证据在起点仓库 `_tmp/daily-v2-release/`。prod未迁移、未部署。
