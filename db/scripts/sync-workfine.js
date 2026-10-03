@@ -557,7 +557,6 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
       RTRIM(UDF_S_6444) AS bound_employee_id,
       RTRIM(UDF_S_1477) AS member_level,
       RTRIM(UDF_S_6446) AS customer_source,
-      RTRIM(UDF_S_1712) AS category,
       UDF_S_1479        AS birthday,
       RTRIM(UDF_S_1481) AS occupation,
       RTRIM(UDF_S_1482) AS is_married_raw,
@@ -596,7 +595,6 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
         bound_employee_id text,
         member_level text,
         customer_source text,
-        category text,
         birthday date,
         occupation text,
         is_married boolean,
@@ -628,7 +626,7 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
         trim(row.name),
         storeName ? (storeMap[storeName] || null) : null,
         trim(row.bound_employee_id), trim(row.member_level),
-        normalizeCustomerSource(row.customer_source), trim(row.category),
+        normalizeCustomerSource(row.customer_source),
         toDateStr(row.birthday), trim(row.occupation),
         toBool(row.is_married_raw), trim(row.wechat_name),
         trim(row.skin_type),
@@ -655,7 +653,7 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
 
       await client.query(`
         INSERT INTO _cust_staging (user_id, customer_id, phone, name, bound_store_id,
-          bound_employee_id, member_level, customer_source, category,
+          bound_employee_id, member_level, customer_source,
           birthday, occupation, is_married, wechat_name,
           skin_type, improvement_focus, skin_issue, wellness_preference)
         VALUES ${placeholders.join(',')}
@@ -677,8 +675,7 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
           ELSE c.phone
         END,
         name = s.name, bound_store_id = s.bound_store_id, bound_employee_id = s.bound_employee_id,
-        customer_source = CASE WHEN 'customer_source' = ANY(c.workfine_override_fields) THEN c.customer_source ELSE s.customer_source END,
-        category = s.category,
+        customer_source = CASE WHEN 'customer_source' = ANY(c.workfine_override_fields) THEN c.customer_source ELSE s.customer_source::customer_source END,
         birthday = CASE WHEN 'birthday' = ANY(c.workfine_override_fields) THEN c.birthday ELSE s.birthday END,
         occupation = CASE WHEN 'occupation' = ANY(c.workfine_override_fields) THEN c.occupation ELSE s.occupation END,
         is_married = CASE WHEN 'is_married' = ANY(c.workfine_override_fields) THEN c.is_married ELSE s.is_married END,
@@ -708,11 +705,11 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
     const upsertByPhone = await client.query(`
       INSERT INTO client_wechat_users AS c (
         user_id, phone, customer_id, name, bound_store_id, bound_employee_id,
-        member_level, customer_source, category, birthday, occupation, is_married,
+        member_level, customer_source, birthday, occupation, is_married,
         wechat_name, skin_type, improvement_focus, skin_issue, wellness_preference
       )
       SELECT user_id, phone, customer_id, name, bound_store_id, bound_employee_id,
-        member_level, customer_source, category, birthday, occupation, is_married,
+        member_level::member_level, customer_source::customer_source, birthday, occupation, is_married,
         wechat_name, skin_type, improvement_focus, skin_issue, wellness_preference
       FROM (
         SELECT DISTINCT ON (phone) *
@@ -727,7 +724,6 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
         bound_store_id = EXCLUDED.bound_store_id,
         bound_employee_id = EXCLUDED.bound_employee_id,
         customer_source = CASE WHEN 'customer_source' = ANY(c.workfine_override_fields) THEN c.customer_source ELSE EXCLUDED.customer_source END,
-        category = EXCLUDED.category,
         birthday = CASE WHEN 'birthday' = ANY(c.workfine_override_fields) THEN c.birthday ELSE EXCLUDED.birthday END,
         occupation = CASE WHEN 'occupation' = ANY(c.workfine_override_fields) THEN c.occupation ELSE EXCLUDED.occupation END,
         is_married = CASE WHEN 'is_married' = ANY(c.workfine_override_fields) THEN c.is_married ELSE EXCLUDED.is_married END,
@@ -744,8 +740,7 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
     const updateByCustId = await client.query(`
       UPDATE client_wechat_users c SET
         name = s.name, bound_store_id = s.bound_store_id, bound_employee_id = s.bound_employee_id,
-        customer_source = CASE WHEN 'customer_source' = ANY(c.workfine_override_fields) THEN c.customer_source ELSE s.customer_source END,
-        category = s.category,
+        customer_source = CASE WHEN 'customer_source' = ANY(c.workfine_override_fields) THEN c.customer_source ELSE s.customer_source::customer_source END,
         birthday = CASE WHEN 'birthday' = ANY(c.workfine_override_fields) THEN c.birthday ELSE s.birthday END,
         occupation = CASE WHEN 'occupation' = ANY(c.workfine_override_fields) THEN c.occupation ELSE s.occupation END,
         is_married = CASE WHEN 'is_married' = ANY(c.workfine_override_fields) THEN c.is_married ELSE s.is_married END,
@@ -768,11 +763,11 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
     const insertNew = await client.query(`
       INSERT INTO client_wechat_users (
         user_id, customer_id, name, bound_store_id, bound_employee_id,
-        member_level, customer_source, category, birthday, occupation, is_married,
+        member_level, customer_source, birthday, occupation, is_married,
         wechat_name, skin_type, improvement_focus, skin_issue, wellness_preference
       )
       SELECT s.user_id, s.customer_id, s.name, s.bound_store_id, s.bound_employee_id,
-        s.member_level, s.customer_source, s.category, s.birthday, s.occupation, s.is_married,
+        s.member_level::member_level, s.customer_source::customer_source, s.birthday, s.occupation, s.is_married,
         s.wechat_name, s.skin_type, s.improvement_focus, s.skin_issue, s.wellness_preference
       FROM (
         SELECT DISTINCT ON (customer_id) *

@@ -60,3 +60,11 @@ test('补算失败时顾客同步回滚，不能显示成功提交', async () =>
 test('dry-run 不连接PG、不补算', async () => {
   await syncCustomers(mssql, { connect: () => { throw new Error('不应连接') } }, true)
 })
+
+const source = require('node:fs').readFileSync(require.resolve('../sync-workfine'), 'utf8')
+test('顾客staging写入当前schema：显式枚举转换，不再写已移除category列', () => {
+  const customer = source.slice(source.indexOf('async function syncCustomers'), source.indexOf('// ─── 5.'))
+  assert.ok(!/\bcategory\b/.test(customer))
+  assert.ok(customer.includes('member_level::member_level'))
+  assert.ok(customer.includes('customer_source::customer_source'))
+})

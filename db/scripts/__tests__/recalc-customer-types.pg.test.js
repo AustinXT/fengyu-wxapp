@@ -40,15 +40,16 @@ test('历史分类：真实SQL、只升不降、幂等、补等级/时间且不�
       CREATE TEMP TABLE sale_order_payments (sale_order_id text, note text, change_type text, status text);
       INSERT INTO client_wechat_users(user_id, customer_type, member_level, became_member_at) VALUES
         ('member','流量客',NULL,NULL), ('small','流量客',NULL,NULL), ('trial','流量客',NULL,NULL),
-        ('empty','流量客',NULL,NULL), ('keep','会员客','金钻','2020-01-01');
+        ('nullpaid','流量客',NULL,NULL), ('empty','流量客',NULL,NULL), ('keep','会员客','金钻','2020-01-01');
       INSERT INTO sale_orders VALUES
         ('m','member', now()-interval '2 months', now()-interval '2 months','已完成','销售单',4000,0),
         ('s','small',now(),now(),'已支付','销售单',100,0),
         ('t','trial',now(),now(),'已支付','销售单',100,0),
+        ('np','nullpaid',NULL,now(),'已完成','销售单',4000,0),
         ('ignored','empty',now(),now(),'待支付','销售单',9000,0);
       INSERT INTO sale_items VALUES ('t','ti',100,100,true,'购买');
     `)
-    assert.deepEqual(await recalcCustomerTypesInTransaction(db), { typeCount: 3, levelCount: 1, becameCount: 1 })
+    assert.deepEqual(await recalcCustomerTypesInTransaction(db), { typeCount: 4, levelCount: 1, becameCount: 2 })
     const first = (await db.query('SELECT * FROM client_wechat_users ORDER BY user_id')).rows
     const member = first.find(r => r.user_id === 'member')
     assert.equal(member.customer_type, '会员客')
@@ -56,6 +57,10 @@ test('历史分类：真实SQL、只升不降、幂等、补等级/时间且不�
     assert.ok(member.became_member_at < new Date(Date.now() - 36*3600000))
     assert.equal(member.member_level_upgraded_at, null)
     assert.equal(member.old_member_level, null)
+    const nullpaid = first.find(r => r.user_id === 'nullpaid')
+    assert.equal(nullpaid.customer_type, '会员客')
+    assert.equal(nullpaid.member_level, null) // paid_at为空，同cron一样不算滚动消费，无法凭导入时间升级
+    assert.equal(nullpaid.member_level_upgraded_at, null)
     assert.equal(first.find(r => r.user_id === 'small').customer_type, '小美客')
     assert.equal(first.find(r => r.user_id === 'trial').customer_type, '体验客')
     assert.equal(first.find(r => r.user_id === 'empty').updated_at.toISOString(), '2020-01-01T00:00:00.000Z')
