@@ -21,6 +21,7 @@
 const mssql = require('mssql')
 const { Pool } = require('pg')
 const crypto = require('crypto')
+const { recalcCustomerTypesInTransaction } = require('./recalc-all-customer-types')
 
 // ─── 配置 ────────────────────────────────────────────────
 
@@ -784,6 +785,9 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
     log('CUSTOMERS', `INSERT 新顾客 (无手机号): ${insertNew.rowCount} 条`)
 
     await client.query('DROP TABLE _cust_staging')
+    // 分类/等级/历史入会时间与顾客同步同事务；异常回滚，不发权益。
+    const recalc = await recalcCustomerTypesInTransaction(client)
+    log('CUSTOMERS', `自动补算：分类 ${recalc.typeCount}、等级 ${recalc.levelCount}、入会时间 ${recalc.becameCount} 条`)
     await client.query('COMMIT')
     log('CUSTOMERS', `完成：共处理 ${upsertByPhone.rowCount + updateByCustId.rowCount + insertNew.rowCount} 条，跳过 ${skipped} 条`)
   } catch (err) {
@@ -1268,4 +1272,4 @@ async function main() {
 // 仅在直接执行时运行：被 require 时不得有副作用（顶层校验同理，见文件头部）
 if (require.main === module) main()
 
-module.exports = { STORE_UPSERT_SQL }
+module.exports = { STORE_UPSERT_SQL, syncCustomers }

@@ -300,6 +300,20 @@ SELECT
   (SELECT COUNT(*) FROM client_wechat_users WHERE customer_type != '会员客' AND member_level IS NOT NULL)::int AS nonmember_with_level
 `
 
+/** Caller owns BEGIN/COMMIT/ROLLBACK; reuse the authoritative batch SQL (#256). */
+async function recalcCustomerTypesInTransaction(client) {
+  const { rows } = await client.query(FETCH_THRESHOLD_SQL)
+  const threshold = rows[0] ? Number(rows[0].v) : NaN
+  if (!Number.isFinite(threshold) || threshold <= 0) {
+    throw new Error('system_configs.new_member_threshold 缺失或非法，拒绝补算顾客分类')
+  }
+  await client.query(BUILD_TARGET_TABLE_SQL, [threshold])
+  const type = await client.query(UPDATE_TYPE_SQL)
+  const level = await client.query(UPDATE_LEVEL_SQL)
+  const became = await client.query(UPDATE_BECAME_SQL)
+  return { typeCount: type.rowCount, levelCount: level.rowCount, becameCount: became.rowCount }
+}
+
 async function main() {
   if (!PG_CONFIG.connectionString) {
     console.error('FATAL: DATABASE_URL 或 PG_CONNECTION_STRING 必须设置')
@@ -387,7 +401,12 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error('未捕获异常:', err)
-  process.exit(1)
-})
+if (require.main === module) {
+  main().catch((err) => {
+    console.error('未捕获异常:', err)
+    process.exit(1)
+  })
+}
+
+module.exports = { recalcCustomerTypesInTransaction }
+

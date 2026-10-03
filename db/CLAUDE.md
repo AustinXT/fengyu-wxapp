@@ -390,3 +390,14 @@ bash db/scripts/dump-prod.sh -F plain              # 纯 SQL 文本
 ## 与云函数的关系
 
 Drizzle 仅用于此目录的 schema 管理和迁移生成。两者共享同一个 PostgreSQL 数据库，此处的 schema 定义是权威来源。
+
+## WorkFine 顾客分类自动补算（#256）
+
+`sync-workfine.js` 的顾客同步（含 `--sync-only`）在同一事务中调用
+`recalc-all-customer-types.js` 的权威批量补算函数。历史订单必须已导入并审核，
+才有有效消费可供分类；只有商品导入的 `--import-only` 与 `--dry-run` 不补算。
+阈值 `system_configs.new_member_threshold` 缺失/非法或补算失败时，顾客同步整笔回滚。
+分类只升不降，仅补齐空等级与空入会时间，重复补算不更新无关行。
+补激活不发消息/积分/优惠券，不设置近期升级标记；后续等级和权益仍由 cron 接手。
+若订单在顾客同步之后才导入审核，再跑顾客同步或显式重算脚本以回放这些订单。
+生产同步的硬拒绝继续有效。
