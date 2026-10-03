@@ -2,7 +2,8 @@
 'use strict'
 // #301 阶段1：只读调查与候选比较；任何候选都不自动成为绑定关系。
 const { Pool } = require('pg')
-const { writeFileSync } = require('node:fs')
+const { writeFileSync, realpathSync, existsSync } = require('node:fs')
+const { resolve, dirname, basename, join } = require('node:path')
 const COVERAGE_SQL = `SELECT to_char(became_member_at AT TIME ZONE 'Asia/Shanghai','YYYY-MM') AS cohort,
  count(*)::int total, count(nullif(btrim(bound_employee_id),''))::int bound,
  round(100.0*count(nullif(btrim(bound_employee_id),''))/count(*),1) pct
@@ -13,6 +14,13 @@ const CLEARS_SQL = `WITH x AS (SELECT target_id,created_at,source,detail->'chang
  SELECT to_char(created_at AT TIME ZONE 'Asia/Shanghai','YYYY-MM') AS cohort,source,
  count(*)::int changes, count(*) FILTER(WHERE ch->>'from' IS NOT NULL AND nullif(ch->>'to','') IS NULL)::int clears
  FROM x WHERE ch IS NOT NULL GROUP BY 1,2 ORDER BY 1,2`
+const TRANSFERS_SQL = `SELECT to_char(r.reviewed_at AT TIME ZONE 'Asia/Shanghai','YYYY-MM') AS cohort,
+ count(*)::int approved,
+ count(*) FILTER(WHERE u.customer_type='会员客' AND u.bound_employee_id IS NULL
+   AND u.became_member_at >= '2026-08-01T00:00:00+08:00'::timestamptz
+   AND u.became_member_at < '2026-10-01T00:00:00+08:00'::timestamptz)::int missing_aug_sep
+ FROM store_unbind_requests r JOIN client_wechat_users u ON u.user_id=r.user_id
+ WHERE r.status='已通过' AND r.reviewed_at >= $1::timestamptz GROUP BY 1 ORDER BY 1`
 const SHAPE_SQL = `SELECT count(*)::int total,
  count(*) FILTER(WHERE bound_employee_id IS NULL)::int null_count,
  count(*) FILTER(WHERE bound_employee_id='')::int empty,
@@ -29,7 +37,7 @@ const CANDIDATE_SQL = `WITH f AS (
  SELECT DISTINCT ON(client_user_id) client_user_id,service_order_id FROM service_orders WHERE status='已完成'
  ORDER BY client_user_id,service_date,created_at,service_order_id
 ), s AS (
- SELECT so.client_user_id,array_agg(DISTINCT si.employee_id) AS employees
+ SELECT so.client_user_id,array_agg(DISTINCT si.employee_id) FILTER(WHERE si.employee_id IS NOT NULL) AS employees
  FROM first_service so JOIN service_items si USING(service_order_id) GROUP BY 1
 )
 SELECT u.user_id,u.phone,u.customer_id,u.customer_type,u.bound_store_id,
@@ -77,8 +85,8 @@ function compareCandidates(users, staff, source) {
   }
   const groups = {}, details = []
   for (const u of users) {
-    const candidates = { order: u.opened_by ? [u.opened_by] : [], service: [...new Set(u.employees || [])],
-      workfine: source ? [...(u.customer_id ? customers.get(u.customer_id) : phones.get(u.phone)) || []] : null }
+    const candidates = { order: u.opened_by ? [u.opened_by] : [], service: [...new Set((u.employees || []).filter(id => typeof id === 'string' && id.trim()).map(id => id.trim()))],
+      workfine: source ? [...(u.customer_id?.trim() ? customers.get(u.customer_id.trim()) : phones.get(u.phone?.trim())) || []] : null }
     details.push({ ...u, candidates })
     const keys = ['all']
     if (u.customer_type === '会员客') keys.push('members', `member-${u.cohort || 'unknown'}`)
@@ -100,6 +108,16 @@ function compareCandidates(users, staff, source) {
   }
   return { summary: { workfineAvailable: source !== null, sourceShape, groups }, details }
 }
+// 真实父目录检查可挡住把备份路径软链进仓库；wx+0600保护旧证据和文件权限。
+function writePrivateReport(outPath, report) {
+  const target = resolve(outPath)
+  const parent = realpathSync(dirname(target))
+  for (let dir = parent; ; dir = dirname(dir)) {
+    if (existsSync(join(dir, '.git'))) throw new Error('禁止把个人信息审计名单写入Git仓库')
+    if (dir === dirname(dir)) break
+  }
+  writeFileSync(join(parent, basename(target)), JSON.stringify(report, null, 2), { flag: 'wx', mode: 0o600 })
+}
 async function main() {
   const args = process.argv.slice(2)
   if (args.length && !(args.length === 2 && args[0] === '--out' && args[1])) throw new Error('用法：node db/scripts/audit-customer-binding.js [--out 私有JSON路径]')
@@ -120,11 +138,12 @@ async function main() {
     await c.query("SET LOCAL statement_timeout = '60s'")
     const coverage = (await c.query(COVERAGE_SQL, ['2026-01-01T00:00:00+08:00'])).rows
     const clears = (await c.query(CLEARS_SQL, ['2026-07-01T00:00:00+08:00'])).rows
+    const transfers = (await c.query(TRANSFERS_SQL, ['2026-07-01T00:00:00+08:00'])).rows
     const shape = (await c.query(SHAPE_SQL)).rows[0]
     const users = (await c.query(CANDIDATE_SQL)).rows, staff = (await c.query(STAFF_SQL)).rows
     const report = compareCandidates(users, staff, source)
-    const summary = { sampledAt: new Date().toISOString(), sourceAt, coverage, clears, shape, ...report.summary }
-    if (args[1]) writeFileSync(args[1], JSON.stringify({ summary, candidates: report.details }, null, 2), { flag: 'wx', mode: 0o600 })
+    const summary = { sampledAt: new Date().toISOString(), sourceAt, coverage, clears, transfers, shape, ...report.summary }
+    if (args[1]) writePrivateReport(args[1], { summary, candidates: report.details })
     await c.query('ROLLBACK')
     console.log(JSON.stringify(summary, null, 2))
   } finally {
@@ -133,4 +152,4 @@ async function main() {
   }
 }
 if (require.main === module) main().catch(e => { console.error('绑定调查失败:', e.code || e.message); process.exitCode = 1 })
-module.exports = { COVERAGE_SQL, CLEARS_SQL, SHAPE_SQL, CANDIDATE_SQL, STAFF_SQL, WORKFINE_SQL, compareCandidates }
+module.exports = { COVERAGE_SQL, CLEARS_SQL, SHAPE_SQL, CANDIDATE_SQL, STAFF_SQL, WORKFINE_SQL, TRANSFERS_SQL, compareCandidates, writePrivateReport }

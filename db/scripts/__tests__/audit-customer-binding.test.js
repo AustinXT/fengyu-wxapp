@@ -38,3 +38,31 @@ test('CLI拒绝apply，不能把调查误运行成回填', () => {
  const r = spawnSync(process.execPath, [require.resolve('../audit-customer-binding'), '--apply'], { encoding: 'utf8' })
  assert.equal(r.status, 1); assert.match(r.stderr, /用法/); assert.equal(r.stdout, '')
 })
+
+
+test('私有输出不覆旧档、权限0600；仓库路径及指向仓库的软链拒绝', () => {
+ const fs = require('node:fs'), path = require('node:path'), os = require('node:os')
+ const { writePrivateReport } = require('../audit-customer-binding')
+ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fy-audit-output-'))
+ try {
+  const out = path.join(root, 'report.json')
+  writePrivateReport(out, { fixture: true })
+  assert.equal(fs.statSync(out).mode & 0o777, 0o600)
+  assert.throws(() => writePrivateReport(out, { overwritten: true }), { code: 'EEXIST' })
+  assert.deepEqual(JSON.parse(fs.readFileSync(out, 'utf8')), { fixture: true })
+  const repo = path.join(root, 'repo'); fs.mkdirSync(repo); fs.mkdirSync(path.join(repo, '.git'))
+  assert.throws(() => writePrivateReport(path.join(repo, 'pii.json'), {}), /Git仓库/)
+  const link = path.join(root, 'backup-link'); fs.symlinkSync(repo, link)
+  assert.throws(() => writePrivateReport(path.join(link, 'pii.json'), {}), /Git仓库/)
+  assert.equal(fs.existsSync(path.join(repo, 'pii.json')), false)
+ } finally { fs.rmSync(root, { recursive: true, force: true }) }
+})
+
+test('空主操不构成候选或冲突，空白PG匹配键归一后可映射', () => {
+ const r = compareCandidates([{ ...user, phone: ' 13900000001 ', employees: [null, '', ' '] }], staff,
+   [{ phone: '13900000001', employee_id: '甲', store_name: '门店A' }])
+ assert.equal(r.summary.groups.all.service.any, 0)
+ assert.equal(r.summary.groups.all.service.unique, 0)
+ assert.equal(r.summary.groups.all.conflict, 0)
+ assert.deepEqual(r.details[0].candidates.workfine, ['E1'])
+})
