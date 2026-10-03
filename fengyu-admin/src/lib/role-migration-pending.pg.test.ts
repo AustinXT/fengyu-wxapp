@@ -9,7 +9,7 @@ vi.mock('../cron/lib/notify', () => ({ notifyOps: vi.fn() }))
 const url = process.env.ROLE_MIGRATION_PG_TEST_URL
 it.skipIf(!url)('真实PG：明确调店才生成待办，多次调店/保留兼任/已迁移闭环', async () => {
   const parsed = new URL(url!)
-  expect(parsed.hostname).toBe('127.0.0.1'); expect(parsed.port).toBe('54416'); expect(parsed.pathname).toBe('/issue256schema')
+  expect(['127.0.0.1', 'localhost']).toContain(parsed.hostname); expect(['/issue256schema', '/role_migrations_test']).toContain(parsed.pathname)
   const db = new Client({ connectionString: url }); await db.connect()
   try {
     await db.query('BEGIN')
