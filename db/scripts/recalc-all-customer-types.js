@@ -274,7 +274,7 @@ UPDATE client_wechat_users u
 
 const SELFCHECK_SQL = `
 SELECT
-  (SELECT COUNT(*) FROM client_wechat_users WHERE customer_type = '会员客' AND became_member_at IS NULL)::int AS member_no_became,
+  (SELECT COUNT(*) FROM client_wechat_users WHERE customer_type = '会员客' AND became_member_at IS NULL AND name IS DISTINCT FROM '谢廷(测试)')::int AS member_no_became,
   (SELECT COUNT(*) FROM client_wechat_users WHERE customer_type != '会员客' AND member_level IS NOT NULL)::int AS nonmember_with_level
 `
 

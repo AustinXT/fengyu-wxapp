@@ -176,7 +176,7 @@ SELECT
 const SELFCHECK_SQL = `
 SELECT COUNT(*)::int AS member_qualifying_still_null
   FROM client_wechat_users u
- WHERE u.customer_type='会员客' AND u.became_member_at IS NULL
+ WHERE u.became_member_at IS NULL
    AND EXISTS (SELECT 1 FROM _target t WHERE t.user_id = u.user_id)
 `
 
