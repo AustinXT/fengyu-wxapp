@@ -312,10 +312,8 @@ async function recalcCustomerTypesInTransaction(client) {
   const level = await client.query(UPDATE_LEVEL_SQL)
   const became = await client.query(UPDATE_BECAME_SQL)
   const check = await client.query(SELFCHECK_SQL)
-  if (Number(check.rows[0].member_no_became) > 0) {
-    throw new Error('会员客缺失入会时间，拒绝提交顾客分类补算')
-  }
-  return { typeCount: type.rowCount, levelCount: level.rowCount, becameCount: became.rowCount }
+  // 人工会员可能没有历史达标消费；不可因不可补齐的既有行阻断档案同步。
+  return { typeCount: type.rowCount, levelCount: level.rowCount, becameCount: became.rowCount, selfCheck: check.rows[0] }
 }
 
 async function main() {

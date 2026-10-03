@@ -49,7 +49,7 @@ test('历史分类：真实SQL、只升不降、幂等、补等级/时间且不�
         ('ignored','empty',now(),now(),'待支付','销售单',9000,0);
       INSERT INTO sale_items VALUES ('t','ti',100,100,true,'购买');
     `)
-    assert.deepEqual(await recalcCustomerTypesInTransaction(db), { typeCount: 4, levelCount: 1, becameCount: 2 })
+    assert.deepEqual(await recalcCustomerTypesInTransaction(db), { typeCount: 4, levelCount: 1, becameCount: 2, selfCheck: { member_no_became: 0, nonmember_with_level: 0 } })
     const first = (await db.query('SELECT * FROM client_wechat_users ORDER BY user_id')).rows
     const member = first.find(r => r.user_id === 'member')
     assert.equal(member.customer_type, '会员客')
@@ -66,7 +66,7 @@ test('历史分类：真实SQL、只升不降、幂等、补等级/时间且不�
     assert.equal(first.find(r => r.user_id === 'empty').updated_at.toISOString(), '2020-01-01T00:00:00.000Z')
     assert.equal(first.find(r => r.user_id === 'keep').member_level, '金钻')
     await db.query('DROP TABLE _recalc_target')
-    assert.deepEqual(await recalcCustomerTypesInTransaction(db), { typeCount: 0, levelCount: 0, becameCount: 0 })
+    assert.deepEqual(await recalcCustomerTypesInTransaction(db), { typeCount: 0, levelCount: 0, becameCount: 0, selfCheck: { member_no_became: 0, nonmember_with_level: 0 } })
     assert.deepEqual((await db.query('SELECT * FROM client_wechat_users ORDER BY user_id')).rows, first)
     await db.query('ROLLBACK')
   } finally {

@@ -26,7 +26,7 @@ const mssql = { request: () => ({ query: async () => ({ recordset: [] }) }) }
 
 test('require 重算脚本不连接数据库；入口使用同一套参数化SQL且不自行提交', async () => {
   const client = fakeClient()
-  assert.deepEqual(await recalcCustomerTypesInTransaction(client), { typeCount: 1, levelCount: 1, becameCount: 1 })
+  assert.deepEqual(await recalcCustomerTypesInTransaction(client), { typeCount: 1, levelCount: 1, becameCount: 1, selfCheck: { member_no_became: 0, nonmember_with_level: 0 } })
   assert.deepEqual(client.calls[1].params, [3000])
   assert.equal(client.calls.filter(c => c.sql.trimStart().startsWith('UPDATE client_wechat_users u')).length, 3)
   assert.ok(!client.calls.some(c => ['BEGIN', 'COMMIT'].includes(c.sql)))
@@ -70,13 +70,13 @@ test('顾客staging写入当前schema：显式枚举转换，不再写已移除c
   assert.ok(customer.includes('customer_source::customer_source'))
 })
 
-test('自动入口与CLI同样拒绝缺失历史入会时间的会员', async () => {
+test('自动入口报告既有人工会员缺失入会时间，不阻断档案同步', async () => {
   const client = fakeClient()
   const query = client.query.bind(client)
   client.query = async (sql, params) => sql.includes('AS member_no_became')
     ? { rows: [{ member_no_became: 1 }] } : query(sql, params)
-  await assert.rejects(syncCustomers(mssql, { connect: async () => client }, false), /缺失入会时间/)
-  assert.equal(client.calls.at(-1).sql, 'ROLLBACK')
+  await syncCustomers(mssql, { connect: async () => client }, false)
+  assert.equal(client.calls.at(-1).sql, 'COMMIT')
 })
 test('批量等级阈值与cron等级纯函数逐档一致', () => {
   const fs = require('node:fs'), path = require('node:path')

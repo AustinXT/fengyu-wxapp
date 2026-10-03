@@ -783,6 +783,7 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
     // 分类/等级/历史入会时间与顾客同步同事务；异常回滚，不发权益。
     const recalc = await recalcCustomerTypesInTransaction(client)
     log('CUSTOMERS', `自动补算：分类 ${recalc.typeCount}、等级 ${recalc.levelCount}、入会时间 ${recalc.becameCount} 条`)
+    log('CUSTOMERS', `补算诊断：会员缺入会时间 ${recalc.selfCheck.member_no_became}、非会员有等级 ${recalc.selfCheck.nonmember_with_level} 条（保留既有人工覆盖，请核查）`)
     await client.query('COMMIT')
     log('CUSTOMERS', `完成：共处理 ${upsertByPhone.rowCount + updateByCustId.rowCount + insertNew.rowCount} 条，跳过 ${skipped} 条`)
   } catch (err) {
