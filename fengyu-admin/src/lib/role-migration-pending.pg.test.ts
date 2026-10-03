@@ -23,11 +23,17 @@ it.skipIf(!url)('真实PG：明确调店才生成待办，多次调店/保留兼
       INSERT INTO staff_wechat_users VALUES('E','合成员工','C',false),('LEGAL','合法兼任','C',false);
       INSERT INTO permission_roles VALUES(1,'E','manager','nodeA'),(2,'E','staff','nodeB'),(3,'LEGAL','manager','nodeA');
       INSERT INTO operation_logs VALUES
-        (10,'E','permission.scopeSync.skipped','{"reason":"manual_review_required","oldStoreId":"A","newStoreId":"B","roles":["manager"]}',now()-interval '5 days'),
+        (10,'E','permission.scopeSync.skipped','{"reason":"manual_review_required","oldStoreId":"A","oldScopeId":"nodeA","newStoreId":"B","roles":["manager"]}',now()-interval '5 days'),
         (11,'E','permission.scopeSync.skipped','{"reason":"manual_review_required","oldStoreId":"B","newStoreId":"C","roles":["staff"]}',now()-interval '4 days');
     `)
     const read = () => { const q = new PgDialect().sqlToQuery(pendingRoleMigrationsSql()); return db.query(q.sql, q.params) }
     expect((await read()).rows.map(r => +r.binding_id)).toEqual([1, 2])
+    // 新快照不依赖门店映射；旧事件映射丢失也保留明确待复核记录，不能静默消警。
+    await db.query("UPDATE stores SET org_node_id='remapped' WHERE store_id='A'; DELETE FROM stores WHERE store_id='B'")
+    expect((await read()).rows.map(r => +r.binding_id)).toEqual([1, 2])
+    await db.query("DELETE FROM stores WHERE store_id='A'")
+    expect((await read()).rows.map(r => +r.binding_id)).toEqual([1, 2])
+
     const executorPg = { execute: async (query: any) => {
       const q = new PgDialect().sqlToQuery(query); return (await db.query(q.sql, q.params)).rows
     } }
@@ -58,6 +64,7 @@ it('真实调店writer与待办reader的JSON字段契约不漂移', () => {
   const payload=writer.match(/logOperation\(session, 'permission\.scopeSync\.skipped', 'permission_role', employeeId, \{\s*reason: 'manual_review_required', ([\s\S]*?)\}, tx\)/)?.[1]
   expect(payload).toBeDefined()
   expect(payload).toMatch(/oldStoreId/)
+  expect(payload).toMatch(/oldScopeId: oldStore.orgNodeId/)
   expect(payload).toMatch(/newStoreId: nextStoreId/)
   expect(payload).toMatch(/roles/)
 })
