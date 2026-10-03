@@ -3324,7 +3324,7 @@ describe('order.homeProducts', () => {
       pickedQuantity: 2, refundedQuantity: 1, convertedQuantity: 3, remainingQuantity: 2,
       paidQuantity: 4, pendingPickupQuantity: 2,
     })
-    expect(pg.query.mock.calls[0][1]).toEqual([ctx.auth.userId])
+    expect(pg.query.mock.calls[0][1]).toEqual([ctx.auth.userId, 1001])
   })
 
   test('SQL 仅查有效购买行，提货/退款/转换三语义各自直读独立列（#154）', async () => {

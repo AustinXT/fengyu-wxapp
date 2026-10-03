@@ -170,7 +170,20 @@ async function caseMessageReadThenUnreadConsistency() {
   }
 }
 
+async function casePagingRejectsBeforeSQL() {
+  await createTestClient()
+  for (const action of ['message.list', 'card.history', 'service.list', 'order.list', 'appointment.list']) {
+    for (const bad of [{ pageSize: null }, { pageSize: 2.5 }, { pageSize: 'abc' }, { page: Number.MAX_SAFE_INTEGER }]) {
+      const response = await invokeAs(TEST_CLIENT_OPENID, action, { cardId: 'missing-card', ...bad })
+      if (response.code !== -400 || response.errorType !== 'INVALID_PARAMS') {
+        throw new Error(`${action}: expected INVALID_PARAMS/-400, got ${response.code}/${response.errorType}`)
+      }
+    }
+  }
+}
+
 const CASES = [
+  ['5列表非法分页 → INVALID_PARAMS/-400', casePagingRejectsBeforeSQL],
   ['list 3 msgs → desc order', caseListDesc],
   ['list pagination → page=1 pageSize=2 returns 2', caseListPagination],
   ['read happy → PG is_read=true', caseReadHappy],
