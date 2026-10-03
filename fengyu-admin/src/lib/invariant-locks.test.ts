@@ -127,6 +127,8 @@ describe('invariant-locks — 逐 action 的取锁期望（源码守护）', () 
   }
 
   const EXPECTATIONS: readonly Expectation[] = [
+    { file: 'role-migrations.ts', action: 'reviewEmployeeRoleMigration', locks: ['org', 'admin'], rowLock: true,
+      why: '调店角色人工迁移：按树/角色定义核验，锁内重读员工与绑定' },
     {
       file: 'employees.ts', action: 'createEmployee', locks: ['org'],
       why: '归属自洽按组织树形态判；与 updateOrgNode 改挂/改类型互斥',
@@ -225,7 +227,7 @@ describe('invariant-locks — 逐 action 的取锁期望（源码守护）', () 
       .toEqual(locks)
 
     // 行锁必须排在所有 advisory 锁之后；期望有却找不到 → 报错，不静默跳过
-    const rowLockAt = body.search(/\.for\(\s*['"]update['"]\s*\)/)
+    const rowLockAt = body.search(/\.for\(\s*['"]update['"]\s*\)|\bFOR UPDATE\b/)
     if (rowLock) {
       expect(rowLockAt, `${action} 期望有 FOR UPDATE 行锁却找不到（被重构进 helper 了？）`)
         .toBeGreaterThan(-1)

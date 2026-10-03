@@ -28,6 +28,7 @@
  *  客活/消费档位（STEP 3/5）2026-05-26 从 db/scripts/ 游离脚本纳入 cron-worker，根治筛选空。
  */
 
+import { auditRoleMigrations } from './steps/audit-role-migrations'
 import { db } from '@/db'
 import type { CronContext } from './lib/cron-context'
 import { refreshCustomerStatus } from './steps/refresh-customer-status'
@@ -87,6 +88,7 @@ const STEPS: ReadonlyArray<readonly [string, StepFn]> = [
   ['paymentInvariants', auditPaymentInvariants as StepFn],
   ['refundCascadeCoverage', auditRefundCascadeCoverage as StepFn],
   ['storeUnbindOrphans', auditStoreUnbindOrphans as StepFn],
+  ['roleMigrations', auditRoleMigrations as StepFn],
   ['activeAdminCount', auditActiveAdminCount as StepFn],
 ] as const
 
