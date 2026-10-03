@@ -5,7 +5,7 @@ vi.mock('@/actions/role-migrations', () => ({ getEmployeeRoleMigration: mocks.re
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 import EmployeeRoleMigration from './employee-role-migration'
 it('逐条显示旧→新及已有绑定，人工确认后传完整旧绑定CAS', async () => {
-  mocks.read.mockResolvedValue({ resigned: false, roles: [{ id: 1, role: 'manager', role_name: '店长', scope_id: 'old', scope_name: '旧店', scope_type: '门店', target_scope_id: 'new', target_store_name: '新店', target_exists: true, canReview: true }], pending: [{ event_id: '10', binding_id: 1 }] })
+  mocks.read.mockResolvedValue({ resigned: false, roles: [{ id: 1, role: 'manager', role_name: '店长', scope_id: 'old', scope_name: '旧店', scope_type: '门店', target_scope_id: 'new', target_store_name: '新店', target_exists: true, canReview: true, canMigrate: true }], pending: [{ event_id: '10', binding_id: 1 }] })
   mocks.write.mockResolvedValue({ success: true })
   window.confirm = vi.fn(() => true)
   render(<EmployeeRoleMigration initialEmployeeId="E" canAssign canRevoke />)

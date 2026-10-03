@@ -11,16 +11,18 @@ vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }))
 import { reviewEmployeeRoleMigration, getEmployeeRoleMigration } from './role-migrations'
 const dialect = new PgDialect()
 const input = { employeeId: 'E', targetScopeId: 'new', decision: 'migrate' as const, bindings: [{ id: 1, role: 'manager', scopeId: 'old' }] }
-let casRows: any[], existing: any[], current: any[], resigned: boolean
+let casRows: any[], existing: any[], current: any[], resigned: boolean, targets: any[], pending: any[], preview: any[]
 const statements: string[] = []
 beforeEach(() => {
-  vi.clearAllMocks(); mocks.global = true; mocks.revoke = true; casRows = [{ id: 1 }]; existing = []; current = [{ id: 1 }]; resigned = false; statements.length = 0
+  vi.clearAllMocks(); mocks.global = true; mocks.revoke = true; casRows = [{ id: 1 }]; existing = []; current = [{ id: 1 }]; resigned = false; targets = [{ org_node_id: 'new' }]; pending = []; preview = []; statements.length = 0
   mocks.scope.mockResolvedValue(true); mocks.employee.mockResolvedValue(true)
   mocks.transaction.mockImplementation((fn: any) => fn({ execute: mocks.execute }))
   mocks.execute.mockImplementation(async query => {
     const text = dialect.sqlToQuery(query).sql; statements.push(text)
     if (text.includes('SELECT store_id AS')) return [{ storeId: 'S', orgNodeId: 'new', is_resigned: resigned }]
-    if (text.includes('SELECT s.org_node_id')) return [{ org_node_id: 'new' }]
+    if (text.includes('SELECT s.org_node_id')) return targets
+    if (text.includes('WITH latest')) return pending
+    if (text.includes('pr.id::float8 AS id')) return preview
     if (text.includes('FOR UPDATE OF pr')) return current
     if (text.includes('SELECT id FROM permission_roles')) return existing
     if (text.includes('RETURNING id')) return casRows
@@ -45,6 +47,16 @@ describe('人工角色迁移', () => {
   it('迁移必须兼具撤销权限，拒绝前无写入', async () => {
     mocks.revoke = false; await expect(reviewEmployeeRoleMigration(input)).rejects.toThrow('PERMISSION_DENIED:')
     expect(mocks.transaction).not.toHaveBeenCalled()
+  })
+  it('无目标门店仍能确认保留，所有匹配历史事件闭环', async () => {
+    targets = []; pending = [{ event_id: '10', binding_id: 1 }, { event_id: '11', binding_id: 1 }];
+    await reviewEmployeeRoleMigration({ ...input, targetScopeId: null, decision: 'retain', eventId: '10' })
+    expect(statements.some(s => s.includes('RETURNING id'))).toBe(false)
+    expect(mocks.log.mock.calls.map(c => c[4].eventId)).toEqual(['10', '11'])
+  })
+  it('预览不向员工可见但旧scope不可见者泄露绑定', async () => {
+    mocks.global = false; mocks.scope.mockResolvedValue(false); preview = [{ id: 1, scope_id: 'secret', target_scope_id: 'new' }]; pending = [{ binding_id: 1, event_id: '10' }];
+    expect(await getEmployeeRoleMigration('E')).toMatchObject({ roles: [], pending: [] })
   })
   it('CAS0行必须拒绝且不记成功审计', async () => {
     casRows = []; await expect(reviewEmployeeRoleMigration(input)).rejects.toThrow('CONFLICT:')
