@@ -14,7 +14,7 @@
 - `updateCustomer`：未传/undefined/同值不更新绑定（#250已有守护）；显式null可解绑并清冗余姓名，主表单带updatedAt并发守卫。
 - `createCustomer`：可无绑定建档；不要求“新会员一定有员工”，管理员不能被脚本自动替代分配。
 - `assignCustomer`：显式合法员工，校验第二主体scope并同步ID/姓名。staff.assign同样显式操作。
-- `mergeClientProfile`：仅源字段空才搬孤儿值；修复事务外读空、并发分配后被孤儿旧值覆盖的竞态：在原客户行写入位置 FOR UPDATE 复核 ID/姓名，两者任一变化就保留当前绑定并从 fieldsMigrated 移除。未改变既有孤儿员工 scope 处理政策。
+- `mergeClientProfile`：仅源字段空才搬孤儿值；修复事务外读空、并发分配后被孤儿旧值覆盖的竞态：在原客户行写入位置 FOR NO KEY UPDATE 复核 ID/姓名，两者任一变化就保留当前绑定并从 fieldsMigrated 移除。未改变既有孤儿员工 scope 处理政策。
 
 扩展扫描：clientApi登录INSERT只写微信身份；bindStore不写员工；会员跃迁recalc只写标签/归因；审批换店清空员工为既有业务。WorkFine三个同步UPDATE无条件覆盖，但脚本自9/23无条件拒prod，当前PG customer_id均空，不能以源码直接推定生产8月运行过同步覆盖。
 
@@ -45,4 +45,4 @@
 
 新增调查复核：service_items.employee_id schema NOT NULL；同时工具仍显式过滤null/空白主操防候选统计失真。个人名单导出检查真实父目录及所有祖先的.git，拒绝仓库/软链入仓库，0600且wx不覆盖；工具7条边界测试通过。
 
-止血检查点：110个admin顾客用例通过（含源非空、读空后新分配已提交、锁内仍空继续原迁移）。临时PG使用真实Drizzle同款查询确认读到新绑定、FOR UPDATE使后续分配等待提交；未执行真实Server Action对业务库写入。该确定性竞态已修，但未证明生产8月覆盖率下降由它导致，原60%效果验收仍待。
+止血检查点：110个admin顾客用例通过（含源非空、读空后新分配已提交、锁内仍空继续原迁移）。临时PG使用真实Drizzle同款查询确认读到新绑定、FOR NO KEY UPDATE使后续分配等待提交；未执行真实Server Action对业务库写入。该确定性竞态已修，但未证明生产8月覆盖率下降由它导致，原60%效果验收仍待。

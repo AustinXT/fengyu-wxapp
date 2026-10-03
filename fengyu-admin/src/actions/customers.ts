@@ -1857,14 +1857,14 @@ export const mergeClientProfile = withPermission(
       const { pickupRecords } = await import('@db/pickup')
 
       // #301：事务外读到「缺绑定」后可能已有合法分配。保持原客户行→引用表
-      // 锁顺序，在原来即将写客户行的位置锁定复核，不能把新绑定回滚成孤儿旧值。
+      // 锁顺序，以原 UPDATE 同等强度在写客户行位置锁定复核，不能把新绑定回滚成孤儿旧值。
       if (Object.hasOwn(patch, 'boundEmployeeId') || Object.hasOwn(patch, 'boundEmployeeName')) {
         const [bindingNow] = await tx.select({
           boundEmployeeId: clientWechatUsers.boundEmployeeId,
           boundEmployeeName: clientWechatUsers.boundEmployeeName,
         }).from(clientWechatUsers)
           .where(eq(clientWechatUsers.userId, sourceUserId))
-          .for('update')
+          .for('no key update')
         if (!bindingNow) throw new Error('NOT_FOUND: 活跃顾客已不存在')
         if (bindingNow.boundEmployeeId !== sourceRow.boundEmployeeId
           || bindingNow.boundEmployeeName !== sourceRow.boundEmployeeName) {

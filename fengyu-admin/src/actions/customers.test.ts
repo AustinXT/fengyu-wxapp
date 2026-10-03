@@ -1895,7 +1895,7 @@ describe('mergeClientProfile — 积分批次余额重算', () => {
     ;(db.transaction as any).mockImplementation(async (fn: (arg: typeof tx) => Promise<void>) => fn(tx))
     const result = await mergeClientProfile('active-user', 'orphan-user')
     expect(result.success).toBe(true)
-    expect(forUpdate).toHaveBeenCalledWith('update')
+    expect(forUpdate).toHaveBeenCalledWith('no key update')
     for (const values of updates) {
       expect(values).not.toHaveProperty('boundEmployeeId')
       expect(values).not.toHaveProperty('boundEmployeeName')
