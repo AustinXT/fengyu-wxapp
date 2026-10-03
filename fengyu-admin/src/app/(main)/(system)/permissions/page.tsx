@@ -48,7 +48,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ e
           <a href={`/permissions?employeeId=${encodeURIComponent(row.employee_id)}`} className="text-[#C0322A]">{row.employee_name ?? row.employee_id}：复核旧店绑定</a>
         </p>)}
       </section>
-      <EmployeeRoleMigration initialEmployeeId={employeeId} canAssign={canAssign} />
+      <EmployeeRoleMigration initialEmployeeId={employeeId} canAssign={canAssign} canRevoke={canDelete} />
       <PermissionsPage
         initialRoles={initialRoles}
         initialScopeId={defaultScopeId}

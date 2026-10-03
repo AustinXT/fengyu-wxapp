@@ -6,7 +6,7 @@ import { actionErrorMessage } from '@/lib/action-error'
 import { toast } from 'sonner'
 
 type Preview = Awaited<ReturnType<typeof getEmployeeRoleMigration>>
-export default function EmployeeRoleMigration({ initialEmployeeId, canAssign }: { initialEmployeeId: string; canAssign: boolean }) {
+export default function EmployeeRoleMigration({ initialEmployeeId, canAssign, canRevoke }: { initialEmployeeId: string; canAssign: boolean; canRevoke: boolean }) {
   const [employeeId, setEmployeeId] = useState(initialEmployeeId)
   const [query, setQuery] = useState(initialEmployeeId)
   const [data, setData] = useState<Preview | null>(null)
@@ -49,13 +49,13 @@ export default function EmployeeRoleMigration({ initialEmployeeId, canAssign }: 
       <table className="w-full text-sm"><thead><tr><th>选择</th><th>角色</th><th>旧范围</th><th>当前门店 / 迁移预览</th><th>复核状态</th></tr></thead><tbody>
         {data.roles.map(role => {
           const candidate = role.scope_type === '门店' && role.target_scope_id && role.scope_id !== role.target_scope_id
-          return <tr key={role.id}><td><input type="checkbox" aria-label={`选择${role.role_name} ${role.scope_name}`} disabled={!candidate || !canAssign || busy || data.resigned}
+          return <tr key={role.id}><td><input type="checkbox" aria-label={`选择${role.role_name} ${role.scope_name}`} disabled={!candidate || !role.canReview || !canAssign || busy || data.resigned}
             checked={selected.includes(role.id)} onChange={event => setSelected(old => event.target.checked ? [...old, role.id] : old.filter(id => id !== role.id))} /></td>
             <td>{role.role_name}</td><td>{role.scope_name}</td><td>{role.target_store_name ?? '无当前门店'}{candidate && role.target_exists ? '（已有同角色：保留现有绑定，不新增）' : ''}</td>
             <td>{data.pending.some(p => p.binding_id === role.id) ? '调店遗留：待复核' : candidate ? '跨店绑定：可能兼任' : '当前绑定'}</td></tr>
         })}
       </tbody></table>
-      {canAssign && <div className="flex gap-2"><Button disabled={busy || !chosen.length} onClick={() => submit('migrate')}>预览并确认迁移</Button>
+      {canAssign && <div className="flex gap-2"><Button disabled={busy || !chosen.length || !canRevoke} onClick={() => submit('migrate')}>预览并确认迁移</Button>
         <Button disabled={busy || !chosen.length} onClick={() => submit('retain')}>确认保留兼任</Button></div>}
     </>}
   </section>

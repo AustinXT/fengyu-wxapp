@@ -2,7 +2,7 @@
 import { sql } from 'drizzle-orm'
 import { db } from '@/db'
 import { withPermission } from '@/lib/with-permission'
-import { isAdminScope } from '@/lib/permissions'
+import { isAdminScope, hasPermission } from '@/lib/permissions'
 import { isEmployeeWithinScopeRoots, isNodeWithinScopeRoots } from '@/lib/org-ancestry'
 import { lockOrgTree, lockActiveAdminCount } from '@/lib/invariant-locks'
 import { logOperation } from '@/lib/operation-log'
@@ -25,10 +25,15 @@ export const getEmployeeRoleMigration = withPermission('permission:list', async 
         AND target.role = pr.role AND target.scope_id = s.org_node_id) AS target_exists
     FROM permission_roles pr JOIN permission_role_definitions rd ON rd.role_key = pr.role
     JOIN org_nodes n ON n.id = pr.scope_id LEFT JOIN stores s ON s.store_id = ${employee.storeId}
+      AND s.is_closed = false AND EXISTS (SELECT 1 FROM org_nodes target_node WHERE target_node.id = s.org_node_id AND target_node.type = '门店')
     WHERE pr.employee_id = ${employeeId} ORDER BY pr.id
   `) as unknown as Array<{ id: number; role: string; role_name: string; scope_id: string; scope_name: string; scope_type: string; target_scope_id: string | null; target_store_name: string | null; target_exists: boolean }>
   const pending = await db.execute(pendingRoleMigrationsSql(employeeId)) as unknown as Array<{ event_id: string; binding_id: number; created_at: string }>
-  return { roles, pending, resigned: employee.is_resigned }
+  const roots = session.roles.map(r => r.scopeId)
+  const scopedRoles = await Promise.all(roles.map(async role => ({ ...role, canReview: isAdminScope(session)
+    || Boolean(role.target_scope_id && await isNodeWithinScopeRoots(role.scope_id, roots)
+      && await isNodeWithinScopeRoots(role.target_scope_id, roots)) })))
+  return { roles: scopedRoles, pending, resigned: employee.is_resigned }
 })
 
 export const reviewEmployeeRoleMigration = withPermission('permission:assign', async (session, input: {
@@ -38,8 +43,9 @@ export const reviewEmployeeRoleMigration = withPermission('permission:assign', a
   if (!input || !['migrate', 'retain'].includes(input.decision) || !Array.isArray(input.bindings)
     || (input.decision === 'retain' && !input.eventId)
     || input.bindings.length === 0 || input.bindings.length > 100
-    || new Set(input.bindings.map(b => b.id)).size !== input.bindings.length
-    || input.bindings.some(b => !b || !Number.isSafeInteger(b.id) || b.id <= 0 || !b.role || !b.scopeId)) throw new Error('INVALID_PARAMS: 请选择有效的角色绑定')
+    || input.bindings.some(b => !b || !Number.isSafeInteger(b.id) || b.id <= 0 || typeof b.role !== 'string' || !b.role || typeof b.scopeId !== 'string' || !b.scopeId)
+    || new Set(input.bindings.map(b => b.id)).size !== input.bindings.length) throw new Error('INVALID_PARAMS: 请选择有效的角色绑定')
+  if (input.decision === 'migrate' && !hasPermission(session, 'permission:revoke')) throw new Error('PERMISSION_DENIED: 迁移需要角色撤销权限')
   await db.transaction(async tx => {
     await lockOrgTree(tx)
     await lockActiveAdminCount(tx)

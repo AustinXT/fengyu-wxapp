@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { PgDialect } from 'drizzle-orm/pg-core'
-const mocks = vi.hoisted(() => ({ execute: vi.fn(), transaction: vi.fn(), log: vi.fn(), org: vi.fn(), admin: vi.fn(), scope: vi.fn(), employee: vi.fn(), global: true }))
+const mocks = vi.hoisted(() => ({ execute: vi.fn(), transaction: vi.fn(), log: vi.fn(), org: vi.fn(), admin: vi.fn(), scope: vi.fn(), employee: vi.fn(), global: true, revoke: true }))
 vi.mock('@/db', () => ({ db: { execute: mocks.execute, transaction: mocks.transaction } }))
 vi.mock('@/lib/with-permission', () => ({ withPermission: (_: string, fn: any) => (...args: any[]) => fn({ employeeId: 'operator', roles: [{ scopeId: 'root' }] }, ...args) }))
-vi.mock('@/lib/permissions', () => ({ isAdminScope: () => mocks.global }))
+vi.mock('@/lib/permissions', () => ({ isAdminScope: () => mocks.global, hasPermission: () => mocks.revoke }))
 vi.mock('@/lib/org-ancestry', () => ({ isEmployeeWithinScopeRoots: mocks.employee, isNodeWithinScopeRoots: mocks.scope }))
 vi.mock('@/lib/invariant-locks', () => ({ lockOrgTree: mocks.org, lockActiveAdminCount: mocks.admin }))
 vi.mock('@/lib/operation-log', () => ({ logOperation: mocks.log }))
@@ -14,7 +14,7 @@ const input = { employeeId: 'E', targetScopeId: 'new', decision: 'migrate' as co
 let casRows: any[], existing: any[], current: any[], resigned: boolean
 const statements: string[] = []
 beforeEach(() => {
-  vi.clearAllMocks(); mocks.global = true; casRows = [{ id: 1 }]; existing = []; current = [{ id: 1 }]; resigned = false; statements.length = 0
+  vi.clearAllMocks(); mocks.global = true; mocks.revoke = true; casRows = [{ id: 1 }]; existing = []; current = [{ id: 1 }]; resigned = false; statements.length = 0
   mocks.scope.mockResolvedValue(true); mocks.employee.mockResolvedValue(true)
   mocks.transaction.mockImplementation((fn: any) => fn({ execute: mocks.execute }))
   mocks.execute.mockImplementation(async query => {
@@ -42,6 +42,10 @@ describe('人工角色迁移', () => {
     expect(statements.some(s => s.includes('UPDATE permission_roles'))).toBe(false)
     expect(mocks.log.mock.calls[0][4].keptExisting).toBe(true)
   })
+  it('迁移必须兼具撤销权限，拒绝前无写入', async () => {
+    mocks.revoke = false; await expect(reviewEmployeeRoleMigration(input)).rejects.toThrow('PERMISSION_DENIED:')
+    expect(mocks.transaction).not.toHaveBeenCalled()
+  })
   it('CAS0行必须拒绝且不记成功审计', async () => {
     casRows = []; await expect(reviewEmployeeRoleMigration(input)).rejects.toThrow('CONFLICT:')
     expect(mocks.log).not.toHaveBeenCalled()
@@ -59,6 +63,9 @@ describe('人工角色迁移', () => {
   it('非法/重复ID与无真实事件的保留兼任请求拒绝', async () => {
     await expect(reviewEmployeeRoleMigration({ ...input, bindings: [input.bindings[0], input.bindings[0]] })).rejects.toThrow('INVALID_PARAMS:')
     await expect(reviewEmployeeRoleMigration({ ...input, decision: 'retain' })).rejects.toThrow('INVALID_PARAMS:')
+  })
+  it('空绑定元素用参数错误拒绝', async () => {
+    await expect(reviewEmployeeRoleMigration({ ...input, bindings: [null] as any })).rejects.toThrow('INVALID_PARAMS:')
   })
   it('按员工查询也验证真实树可见性，不可见不泄露绑定', async () => {
     mocks.global = false; mocks.employee.mockResolvedValue(false)

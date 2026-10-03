@@ -1,6 +1,8 @@
 import { it, expect } from 'vitest'
 import { Client } from 'pg'
 import { PgDialect } from 'drizzle-orm/pg-core'
+import { logOperation } from './operation-log'
+import type { AuthSession } from './types'
 import { pendingRoleMigrationsSql } from './role-migration-pending'
 const url = process.env.ROLE_MIGRATION_PG_TEST_URL
 it.skipIf(!url)('真实PG：明确调店才生成待办，多次调店/保留兼任/已迁移闭环', async () => {
@@ -23,7 +25,12 @@ it.skipIf(!url)('真实PG：明确调店才生成待办，多次调店/保留兼
     `)
     const read = () => { const q = new PgDialect().sqlToQuery(pendingRoleMigrationsSql()); return db.query(q.sql, q.params) }
     expect((await read()).rows.map(r => +r.binding_id)).toEqual([1, 2])
-    await db.query(`INSERT INTO operation_logs VALUES(12,'E','permission.scopeReview.completed','{"eventId":"10","bindingIds":[1],"decision":"retain"}',now())`)
+    // 用真实 logOperation/sanitizeDetail 产物入库，再验证 JSONB 闭环，不手造完成日志。
+    const executor = { insert: () => ({ values: async (values: any) => {
+      await db.query('INSERT INTO operation_logs VALUES($1,$2,$3,$4,now())', [12, values.targetId, values.action, JSON.stringify(values.detail)])
+    } }) }
+    await logOperation({ employeeId: 'operator', name: '合成测试', roles: [] } as unknown as AuthSession,
+      'permission.scopeReview.completed', 'permission_role', 'E', { eventId: '10', bindingIds: [1], decision: 'retain' }, executor as any)
     expect((await read()).rows.map(r => +r.binding_id)).toEqual([2])
     const cas = await db.query("UPDATE permission_roles SET scope_id=$1 WHERE id=$2 AND employee_id=$3 AND role=$4 AND scope_id=$5 RETURNING id", ['nodeC', 2, 'E', 'staff', 'nodeB'])
     expect(cas.rowCount).toBe(1)
