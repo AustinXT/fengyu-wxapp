@@ -4,6 +4,8 @@ on:
     paths:
       - 'fengyu-admin/src/actions/role-migrations*'
       - 'fengyu-admin/src/lib/role-migration-pending*'
+      - 'fengyu-admin/src/lib/org-ancestry.ts'
+      - 'fengyu-admin/src/lib/permissions.ts'
       - 'fengyu-admin/src/lib/with-permission.ts'
       - 'fengyu-admin/src/lib/action-scope.ts'
       - 'fengyu-admin/src/lib/invariant-locks*'

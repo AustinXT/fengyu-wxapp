@@ -113,16 +113,23 @@ export const reviewEmployeeRoleMigration = withPermission('permission:assign', a
 })
 
 export const getRoleMigrationQueue = withPermission('permission:list', async session => {
-  const pending = await db.execute(pendingRoleMigrationsSql()) as unknown as Array<{ employee_id: string; employee_name: string | null; event_id: string; created_at: string; scope_id: string }>
-  const rows: typeof pending = []
-  for (const row of pending) {
-    if (rows.some(r => r.employee_id === row.employee_id)) continue
-    try {
-      if (!isAdminScope(session) && !await isNodeWithinScopeRoots(row.scope_id, session.roles.map(r => r.scopeId))) continue
-      await visibleEmployee(session, row.employee_id); rows.push(row)
-    }
-    catch (error) { if (!(error instanceof Error && error.message.startsWith('NOT_FOUND:'))) throw error }
-    if (rows.length >= 100) break
-  }
-  return rows
+  const roots = session.roles.map(role => role.scopeId)
+  // 树范围、员工可见性、员工去重与上限都在一条查询内完成，避免全局积压触发N+1。
+  return await db.execute(sql`
+    WITH RECURSIVE allowed AS (
+      SELECT id, ARRAY[id] AS path FROM org_nodes WHERE id = ANY(${sql`ARRAY[${sql.join(roots.map(root => sql`${root}`), sql`, `)}]::text[]`})
+      UNION ALL
+      SELECT child.id, parent.path || child.id FROM org_nodes child JOIN allowed parent ON child.parent_id = parent.id
+      WHERE NOT child.id = ANY(parent.path)
+    ), pending AS (${pendingRoleMigrationsSql()}), visible AS (
+      SELECT DISTINCT ON (p.employee_id) p.* FROM pending p
+      JOIN staff_wechat_users e ON e.employee_id = p.employee_id
+      LEFT JOIN stores current_store ON current_store.store_id = e.store_id
+      WHERE ${isAdminScope(session) ? sql`true` : sql`
+        EXISTS (SELECT 1 FROM allowed WHERE id = p.scope_id)
+        AND (EXISTS (SELECT 1 FROM allowed WHERE id = e.org_node_id)
+          OR EXISTS (SELECT 1 FROM allowed WHERE id = current_store.org_node_id))`}
+      ORDER BY p.employee_id, p.created_at, p.binding_id, p.event_id
+    ) SELECT * FROM visible ORDER BY created_at, binding_id, event_id LIMIT 100
+  `) as unknown as Array<{ employee_id: string; employee_name: string | null; event_id: string; created_at: string; scope_id: string }>
 })
