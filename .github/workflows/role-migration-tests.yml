@@ -1,0 +1,49 @@
+name: Role migration PostgreSQL regression
+on:
+  pull_request:
+    paths:
+      - 'fengyu-admin/src/actions/role-migrations*'
+      - 'fengyu-admin/src/app/**/permissions/**'
+      - 'fengyu-admin/src/cron/run.ts'
+      - 'fengyu-admin/src/cron/lib/notify.ts'
+      - 'fengyu-admin/src/actions/employees.ts'
+      - 'fengyu-admin/src/lib/session-role-guards.ts'
+      - 'fengyu-admin/src/lib/role-migration-pending*'
+      - 'fengyu-admin/src/lib/org-ancestry.ts'
+      - 'fengyu-admin/src/lib/permissions.ts'
+      - 'fengyu-admin/src/lib/with-permission.ts'
+      - 'fengyu-admin/src/lib/action-scope.ts'
+      - 'fengyu-admin/src/lib/invariant-locks*'
+      - 'fengyu-admin/src/lib/operation-log.ts'
+      - 'fengyu-admin/src/lib/pii.ts'
+      - 'fengyu-admin/src/cron/steps/audit-role-migrations.ts'
+      - 'db/schema/**'
+      - '.github/workflows/role-migration-tests.yml'
+jobs:
+  postgres-regression:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: role_migrations_test
+        ports:
+          - 54416:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: oven-sh/setup-bun@v2
+      - run: npm ci
+        working-directory: db
+      - run: bun install --frozen-lockfile
+        working-directory: fengyu-admin
+      - name: Run real actions, concurrent transactions, pending closure and overdue boundaries
+        working-directory: fengyu-admin
+        env:
+          ROLE_MIGRATION_PG_TEST_URL: postgresql://postgres:test@127.0.0.1:54416/role_migrations_test
+        run: bunx vitest run src/actions/role-migrations.pg.test.ts src/lib/role-migration-pending.pg.test.ts

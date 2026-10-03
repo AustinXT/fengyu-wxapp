@@ -1754,7 +1754,7 @@ export const updateEmployee = withPermission(
           const roles = await findRolesBoundWithinSubtree(employeeId, oldStore.orgNodeId, tx)
           if (roles.length > 0) {
             await logOperation(session, 'permission.scopeSync.skipped', 'permission_role', employeeId, {
-              reason: 'manual_review_required', oldStoreId, newStoreId: nextStoreId, roles,
+              reason: 'manual_review_required', oldStoreId, oldScopeId: oldStore.orgNodeId, newStoreId: nextStoreId, roles,
             }, tx)
             unsyncedRoles.push(...roles)
           } else {

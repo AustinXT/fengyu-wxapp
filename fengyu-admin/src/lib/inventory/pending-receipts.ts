@@ -5,6 +5,7 @@ import { ApiError } from '@/lib/api-error'
 import { shanghaiToday } from '@/lib/datetime'
 import type { AuthSession } from '@/lib/types'
 import { resolveExportBatchLimit, resolveExportKeysetPage, type ExportBatchOptions, type ExportBatchResult } from '@/lib/export-pagination'
+import { resolvePaging } from '@/lib/paging'
 import { inventoryScopedOrgNodeIds } from './access'
 import { assertRealCalendarDate } from './settlements'
 import type { PendingReceiptFilters, PendingReceiptKind, PendingReceiptOptions, PendingReceiptPage, PendingReceiptRow } from './pending-receipt-types'
@@ -97,14 +98,13 @@ async function queryRows(query: SQL): Promise<PendingReceiptRow[]> {
 
 export async function listPendingReceiptsForSession(session: AuthSession, input: PendingReceiptFilters & { page?: unknown; size?: unknown }): Promise<PendingReceiptPage> {
   const filters = normalizePendingReceiptFilters(input)
-  const pageSize = [20, 50, 100].includes(Number(input.size)) ? Number(input.size) : 20
-  const requestedPage = Number(input.page ?? 1)
-  const safePage = Number.isSafeInteger(requestedPage) && requestedPage > 0 ? requestedPage : 1
+  const { page: safePage, pageSize } = resolvePaging({ page: input.page, pageSize: input.size, defaultPageSize: 20, allowedPageSizes: [20, 50, 100] })
   const where = pendingReceiptWhereSql(filters, inventoryScopedOrgNodeIds(session))
   const count = await db.execute(sql`SELECT count(*)::int AS total FROM inventory_doc_items i JOIN inventory_docs d ON d.id = i.doc_id WHERE ${where}`)
   const total = Number((count as unknown as Array<{ total: number }>)[0]?.total ?? 0)
   const page = Math.min(safePage, Math.max(1, Math.ceil(total / pageSize)))
-  const rows = await queryRows(pendingReceiptSelectSql(where, shanghaiToday(), pageSize, (page - 1) * pageSize))
+  const { offset } = resolvePaging({ page, pageSize, defaultPageSize: 20, allowedPageSizes: [20, 50, 100] })
+  const rows = await queryRows(pendingReceiptSelectSql(where, shanghaiToday(), pageSize, offset))
   return { rows, total, page, pageSize }
 }
 

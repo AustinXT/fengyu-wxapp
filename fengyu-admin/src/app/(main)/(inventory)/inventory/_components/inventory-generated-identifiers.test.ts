@@ -31,7 +31,10 @@ describe('进销存编号与实体引用表单守卫', () => {
     expect(operations).not.toContain('员工编号')
     expect(operations).not.toContain('setSupplierName')
     expect(operations).toContain('请选择员工')
-    expect(operations).toContain('请选择供应商')
+    // 自采供应商已改为选填；仍只能用供应商档案的select引用，允许未指定。
+    expect(operations).toContain('label="供应商（选填）"')
+    expect(operations).toContain('<option value="">未指定</option>')
+    expect(operations).toContain('value={supplier.supplierId}')
   })
 
   it('员工小程序库存业务继续使用产品、批次和门店选择器', () => {
