@@ -17,7 +17,7 @@ function fakeClient(threshold = '3000', failBuild = false) {
         return { rows: threshold === undefined ? [] : [{ v: threshold }], rowCount: 1 }
       }
       if (failBuild && sql.includes('CREATE TEMP TABLE _recalc_target')) throw new Error('补算故障')
-      return { rows: [], rowCount: sql.startsWith('UPDATE client_wechat_users u') ? 1 : 0 }
+      return { rows: [], rowCount: sql.trimStart().startsWith('UPDATE client_wechat_users u') ? 1 : 0 }
     },
   }
 }
@@ -27,7 +27,7 @@ test('require 重算脚本不连接数据库；入口使用同一套参数化SQL
   const client = fakeClient()
   assert.deepEqual(await recalcCustomerTypesInTransaction(client), { typeCount: 1, levelCount: 1, becameCount: 1 })
   assert.deepEqual(client.calls[1].params, [3000])
-  assert.equal(client.calls.filter(c => c.sql.startsWith('UPDATE client_wechat_users u')).length, 3)
+  assert.equal(client.calls.filter(c => c.sql.trimStart().startsWith('UPDATE client_wechat_users u')).length, 3)
   assert.ok(!client.calls.some(c => ['BEGIN', 'COMMIT'].includes(c.sql)))
 })
 
