@@ -61,10 +61,14 @@ describe('member-pricing 跨端一致性', () => {
     expect(a).toBe(b)
   })
 
-  test('isMember 三端同口径（会员客 或 有钻石等级）', () => {
+  test('isMember 三端同口径（仅当前会员客）', () => {
     const matrix: Array<[string | null, string | null, boolean]> = [
       ['会员客', null, true],
-      ['流量客', '星钻', true],
+      ['流量客', '星钻', false],
+      ['小美客', '金钻', false],
+      ['体验客', '初钻', false],
+      [null, '初钻', false],
+      ['会员客', '星钻', true],
       ['流量客', '', false],
       ['流量客', null, false],
       [null, null, false],
@@ -73,6 +77,15 @@ describe('member-pricing 跨端一致性', () => {
       expect(adminIsMember(ct, lvl)).toBe(expected)
       expect(clientMod.isMember(ct, lvl)).toBe(expected)
       expect(staffMod.isMember(ct, lvl)).toBe(expected)
+    }
+  })
+
+  test('降档保留历史等级按标价，再达标按会员价（三端真实 helper）', () => {
+    for (const [ct, expected] of [['小美客', 1000], ['会员客', 600]] as const) {
+      expect(adminResolve({ price: 1000, specialPrice: 600 }, adminIsMember(ct, '金钻')).realUnit).toBe(expected)
+      for (const mod of [clientMod, staffMod]) {
+        expect(mod.resolveUnitPrice({ price: 1000, special_price: 600 }, mod.isMember(ct, '金钻')).realUnit).toBe(expected)
+      }
     }
   })
 

@@ -31,6 +31,11 @@ try {
   const {db} = await import('../../src/db')
   const {sql} = await import('drizzle-orm')
   const {refreshCustomerTypes} = await import('../../src/cron/steps/refresh-customer-types')
+  const {isMember,resolveUnitPrice} = await import('../../src/lib/member-pricing')
+  const assertMemberPrice = (expected: number) => {
+    const [type,level] = psql("SELECT customer_type || '|' || member_level FROM client_wechat_users WHERE user_id='U_legacy'").split('|')
+    assert.equal(resolveUnitPrice({price:1000,specialPrice:600},isMember(type,level)).realUnit,expected)
+  }
   const {recomputeCustomerTagsInTx} = await import('../../src/lib/recompute-customer-tags')
   const testBefore = psql("SELECT row_to_json(u) FROM client_wechat_users u WHERE user_id='U_pure'")
   await refreshCustomerTypes(db)
@@ -45,6 +50,7 @@ try {
   const beforeHistory = psql("SELECT json_build_array(member_level,became_member_at,(SELECT is_membership_upgrade FROM sale_orders WHERE sale_order_id='O_legacy')) FROM client_wechat_users WHERE user_id='U_legacy'")
   const changed = await db.transaction(tx=>recomputeCustomerTagsInTx(tx,'U_legacy'))
   assert.deepEqual(changed.customerTypeChanged,{from:'会员客',to:'小美客'})
+  assertMemberPrice(1000)
   assert.equal(psql("SELECT json_build_array(member_level,became_member_at,(SELECT is_membership_upgrade FROM sale_orders WHERE sale_order_id='O_legacy')) FROM client_wechat_users WHERE user_id='U_legacy'"),beforeHistory)
   assert.equal((await db.transaction(tx=>recomputeCustomerTagsInTx(tx,'U_legacy'))).customerTypeChanged,null)
   const {grantBirthdayBenefits} = await import('../../src/cron/steps/grant-birthday-benefits')
@@ -55,6 +61,7 @@ try {
   assert.equal((await grantThanksgivingBenefits(db,ctx)).total,0)
   psql("UPDATE sale_orders SET received=3000 WHERE sale_order_id='O_legacy'")
   assert.deepEqual((await db.transaction(tx=>recomputeCustomerTagsInTx(tx,'U_legacy'))).customerTypeChanged,{from:'小美客',to:'会员客'})
+  assertMemberPrice(600)
   assert.equal((await grantBirthdayBenefits(db,ctx)).total,1)
   assert.equal((await grantThanksgivingBenefits(db,ctx)).total,1)
   // 真实并发：快照之后另一连接写入合法分类，旧批量重算必须40001整体回滚。
@@ -76,7 +83,7 @@ try {
   psql("UPDATE system_configs SET value='0'  WHERE key='new_member_threshold'")
   await assert.rejects(()=>refreshCustomerTypes(db),/会员门槛/)
   assert.equal((await db.transaction(tx=>recomputeCustomerTagsInTx(tx,'U_legacy'))).customerTypeChanged,null)
-  console.log('PASS: 真实cron+helper双向、退款毛实收、无单、customerTypes步骤测试整行保护、同日幂等、历史字段保留、降级无生日/感恩资格、再达标恢复资格、并发40001整体回滚、阈值拒绝/审核跳过分类')
+  console.log('PASS: 真实cron+helper双向、退款毛实收、无单、customerTypes步骤测试整行保护、同日幂等、历史字段保留、降级无会员价/生日/感恩资格、再达标恢复资格、并发40001整体回滚、阈值拒绝/审核跳过分类')
 } finally {
   const g = globalThis as typeof globalThis & {pgClient?: {end:()=>Promise<void>}}
   if(g.pgClient) await g.pgClient.end()
