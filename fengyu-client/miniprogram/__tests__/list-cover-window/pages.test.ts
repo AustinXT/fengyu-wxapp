@@ -21,7 +21,8 @@ function instance(options: any) {
     }
     cb?.();
   } };
-  page.onLoad({});
+  // 初始化窗口；onLoad 的首屏请求单独由测试控制。
+  const original = page.loadList; page.loadList = vi.fn(); page.onLoad({}); page.loadList = original;
   return page;
 }
 beforeEach(() => { api.mockReset(); (wx as any).__resetObservers(); vi.useFakeTimers(); });
@@ -102,4 +103,19 @@ test('订单切Tab/刷新废弃旧翻页回包及其loading状态', async () => 
   api.mockResolvedValueOnce({ skuList: [{ sku_id: 'next' }], hasMore: false }); await page.loadList(true);
   expect(api.mock.calls.at(-1)[1].cursor).toBe('c1');
   expect(page.data.skuList.map((r: any) => r.sku_id)).toEqual(['old', 'next']); page.onUnload();
+});
+
+test('返回体验列表保留分页和游标，恢复观察器', async () => {
+  const page = instance(experience);
+  api.mockResolvedValueOnce({ skuList: [{ sku_id: 'first' }], hasMore: true, nextCursor: 'c1' }); await page.loadList();
+  api.mockResolvedValueOnce({ skuList: [{ sku_id: 'next' }], hasMore: true, nextCursor: 'c2' }); await page.loadList(true);
+  page.onHide(); page.onShow();
+  expect(api).toHaveBeenCalledTimes(2); expect(page._cursor).toBe('c2'); expect(page.data.skuList).toHaveLength(2);
+  expect((wx as any).__lastObserver().disconnected).toBe(false); page.onUnload();
+});
+test('首屏失败后追加恢复清错误态并启用图片窗口', async () => {
+  const page = instance(experience);
+  api.mockRejectedValueOnce(new Error('offline')); await page.loadList(); expect(page.data.loadError).toBe(true);
+  api.mockResolvedValueOnce({ skuList: Array.from({ length: 20 }, (_, i) => ({ sku_id: String(i) })), hasMore: false }); await page.loadList(true);
+  expect(page.data.loadError).toBe(false); expect((wx as any).__lastObserver()).toBeTruthy(); page.onUnload();
 });

@@ -38,8 +38,9 @@ Page({
 
   onLoad() {
     this._coverWindow = createCoverWindow(this, { scrollSelector: '', slotSelector: '.experience-cover-slot', listKey: 'skuList' });
+    this.loadList();
   },
-  onShow() { this._visible = true; this._coverWindow?.setVisible(true); this.loadList(); },
+  onShow() { this._visible = true; this._refreshCovers(); },
   onHide() { this._visible = false; this._coverWindow?.setVisible(false); },
   onUnload() { this._epoch++; this._coverWindow?.dispose(); },
   onReachBottom() { if (this.data.hasMore && !this.data.isLoading && !this.data.loadingMore) this.loadList(true); },
@@ -98,7 +99,7 @@ Page({
       this.setData({
         ...(append ? buildAppendPatch('skuList', from, [...this.data.skuList, ...next]) : { skuList: next }),
         hasMore: Boolean(data.hasMore && this._cursor),
-        isLoading: false, loadingMore: false,
+        isLoading: false, loadingMore: false, loadError: false,
       }, () => { if (epoch === this._epoch) this._refreshCovers(); });
     } catch (err: any) {
       if (epoch !== this._epoch) return;
