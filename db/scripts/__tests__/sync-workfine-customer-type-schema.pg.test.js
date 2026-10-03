@@ -12,7 +12,7 @@ test('完整迁移schema上的真实顾客同步路径（手机号/无手机号�
   const ids = ['WF256-schema-phone', 'WF256-schema-no-phone', 'WF256-schema-bad', 'WF256-schema-unrelated']
   try {
     await db.query("INSERT INTO system_configs(key,value) VALUES('new_member_threshold','3000') ON CONFLICT(key) DO UPDATE SET value='3000'")
-    const pool = { connect: async () => ({ query: db.query.bind(db), release() {} }) }
+    const pool = { options: { connectionString: url }, connect: async () => ({ query: db.query.bind(db), release() {} }) }
     const source = rows => ({ request: () => ({ query: async () => ({ recordset: rows }) }) })
     await syncCustomers(source([{ customer_id: ids[0], phone: '19990002656', member_level: '初钻' }, { customer_id: ids[1] }]), pool, false)
     const rows = (await db.query('SELECT customer_id, customer_type, updated_at FROM client_wechat_users WHERE customer_id = ANY($1)', [ids])).rows

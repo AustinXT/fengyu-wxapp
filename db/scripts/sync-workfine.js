@@ -38,7 +38,7 @@ const MSSQL_CONFIG = {
 // DATABASE_URL 必填且必须精确指向业务库（db/CLAUDE.md 硬规则：显式传值 + 断言 host/port/dbname）。
 // 实现见 _lib/assert-db-target.js —— 它同时挡住 `?host=` 与 `?%68ost=`（百分号编码）两层 query 覆盖绕过。
 // 仅在直接执行时校验——本目录部分脚本的导出函数被 __tests__ require，顶层 exit 会打断测试进程。
-const { assertDbTargetOrExit, isProdDbTarget } = require('./_lib/assert-db-target')
+const { assertDbTargetOrExit, isProdDbTarget, isAllowedDbTarget } = require('./_lib/assert-db-target')
 if (require.main === module) assertDbTargetOrExit(process.env.DATABASE_URL)
 
 /**
@@ -546,6 +546,19 @@ async function syncPermissionRoles(pgPool, dryRun) {
 // ─── 4. 同步顾客档案（批量优化版） ───────────────────────────────
 
 async function syncCustomers(mssqlPool, pgPool, dryRun) {
+  // 导出入口同样fail-closed；目标由实际注入的Pool配置取得，不能只检查进程环境变量。
+  if (!dryRun) {
+    const raw = pgPool?.options?.connectionString;
+    let privateTest = false;
+    try {
+      const url = new URL(raw);
+      privateTest = url.hostname === '127.0.0.1' && url.port === '54416'
+        && url.pathname === '/issue256schema' && !url.search && !url.hash;
+    } catch (_) { /* 下面统一拒绝无法确认的目标。 */ }
+    if (isProdDbTarget(raw) || (!isAllowedDbTarget(raw) && !privateTest)) {
+      throw new Error('拒绝顾客同步：生产库或无法确认的数据库目标');
+    }
+  }
   log('CUSTOMERS', '开始同步...')
 
   const { recordset: rows } = await mssqlPool.request().query(`

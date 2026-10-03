@@ -42,7 +42,7 @@ for (const threshold of [null, '', '0', '-1', 'NaN', 'Infinity']) {
 
 test('顾客同步在提交前补算，同事务成功并释放连接', async () => {
   const client = fakeClient()
-  await syncCustomers(mssql, { connect: async () => client }, false)
+  await syncCustomers(mssql, { options: { connectionString: 'postgres://test:test@127.0.0.1:54416/issue256schema' }, connect: async () => client }, false)
   const sqls = client.calls.map(c => c.sql)
   assert.equal(sqls[0], 'BEGIN')
   assert.equal(sqls.at(-1), 'COMMIT')
@@ -52,7 +52,7 @@ test('顾客同步在提交前补算，同事务成功并释放连接', async ()
 
 test('补算失败时顾客同步回滚，不能显示成功提交', async () => {
   const client = fakeClient('3000', true)
-  await assert.rejects(syncCustomers(mssql, { connect: async () => client }, false), /补算故障/)
+  await assert.rejects(syncCustomers(mssql, { options: { connectionString: 'postgres://test:test@127.0.0.1:54416/issue256schema' }, connect: async () => client }, false), /补算故障/)
   assert.equal(client.calls.at(-1).sql, 'ROLLBACK')
   assert.ok(!client.calls.some(c => c.sql === 'COMMIT'))
   assert.equal(client.released, true)
@@ -75,7 +75,7 @@ test('自动入口报告既有人工会员缺失入会时间，不阻断档案�
   const query = client.query.bind(client)
   client.query = async (sql, params) => sql.includes('AS member_no_became')
     ? { rows: [{ member_no_became: 1 }] } : query(sql, params)
-  await syncCustomers(mssql, { connect: async () => client }, false)
+  await syncCustomers(mssql, { options: { connectionString: 'postgres://test:test@127.0.0.1:54416/issue256schema' }, connect: async () => client }, false)
   assert.equal(client.calls.at(-1).sql, 'COMMIT')
 })
 test('批量等级阈值与cron等级纯函数逐档一致', () => {
@@ -86,4 +86,13 @@ test('批量等级阈值与cron等级纯函数逐档一致', () => {
   assert.equal(rules.length, 4)
   for (const [, amount, name] of rules) assert.ok(new RegExp(`>=\\s*${amount}\\s+THEN\\s+'${name}'`).test(batch))
   assert.ok(batch.includes("WHEN COALESCE(s.spend, 0) >= (SELECT v FROM threshold) THEN '初钻'"))
+})
+
+
+test('导出的顾客同步入口也拒绝生产、query覆盖及未声明目标', async () => {
+  for (const connectionString of [undefined, 'postgres://test:test@118.178.196.26:5433/fengyu_wxapp', 'postgres://test:test@101.34.242.103:5433/fengyu_wxapp?host=118.178.196.26']) {
+    let connected=false;
+    await assert.rejects(syncCustomers(mssql,{options:{connectionString},connect:async()=>{connected=true;return fakeClient()}},false), /拒绝顾客同步/)
+    assert.equal(connected,false)
+  }
 })
