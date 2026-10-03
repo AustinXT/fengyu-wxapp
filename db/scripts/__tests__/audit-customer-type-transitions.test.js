@@ -28,3 +28,22 @@ test('导入三个治理脚本无连接/打印/执行副作用；审计复用真
   assert.match(AUDIT_SQL, /u.name IS DISTINCT FROM '谢廷\(测试\)'/)
   assert.doesNotMatch(AUDIT_SQL, /CREATE TEMP/)
 })
+
+
+test('私有输出不覆旧档、权限0600；仓库路径及指向仓库的软链拒绝', () => {
+ const fs = require('node:fs'), path = require('node:path'), os = require('node:os')
+ const { writePrivateReport } = require('../audit-customer-type-transitions')
+ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fy-audit-output-'))
+ try {
+  const out = path.join(root, 'report.json')
+  writePrivateReport(out, { fixture: true })
+  assert.equal(fs.statSync(out).mode & 0o777, 0o600)
+  assert.throws(() => writePrivateReport(out, { overwritten: true }), { code: 'EEXIST' })
+  assert.deepEqual(JSON.parse(fs.readFileSync(out, 'utf8')), { fixture: true })
+  const repo = path.join(root, 'repo'); fs.mkdirSync(repo); fs.mkdirSync(path.join(repo, '.git'))
+  assert.throws(() => writePrivateReport(path.join(repo, 'pii.json'), {}), /Git仓库/)
+  const link = path.join(root, 'backup-link'); fs.symlinkSync(repo, link)
+  assert.throws(() => writePrivateReport(path.join(link, 'pii.json'), {}), /Git仓库/)
+  assert.equal(fs.existsSync(path.join(repo, 'pii.json')), false)
+ } finally { fs.rmSync(root, { recursive: true, force: true }) }
+})

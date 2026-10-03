@@ -24,7 +24,7 @@
  *   backfill-membership-upgrade-doc-type 的「选跃迁那一刻的单」语义），守卫会与
  *   旧 became_member_at 形成循环依赖。
  *
- * #257 A+B：按当前达标订单选候选，不以旧 customer_type 作为前提；排除甲方测试账号。
+ * #257 A+B：仅对当前会员客且有达标单者维护归因；先执行分类双向对齐，再执行本脚本；排除甲方测试账号。
  * 仅维护仍达标者的既有首次达标归因，不清空降级者的历史归因；再达标定义留待 E。
  *
  * 幂等：UPDATE WHERE became_member_at IS DISTINCT FROM new_became，二次运行命中 0 行。
@@ -124,7 +124,8 @@ SELECT DISTINCT ON (oa.client_user_id)
        u.became_member_at AS old_became
   FROM order_amounts oa
   JOIN client_wechat_users u ON u.user_id = oa.client_user_id
- WHERE u.name IS DISTINCT FROM '谢廷(测试)'
+ WHERE u.customer_type = '会员客'
+   AND u.name IS DISTINCT FROM '谢廷(测试)'
    AND oa.non_trial >= $1::numeric
  ORDER BY oa.client_user_id, oa.paid_at ASC NULLS LAST, oa.created_at ASC, oa.sale_order_id ASC
 `
@@ -158,7 +159,7 @@ UPDATE client_wechat_users u
 // 会员客但当前阈值无达标单（阈值历史上调过的存量会员）→ 保留原值不动。
 // 另报两个数据质量边角（非本脚本职责，仅诊断）。
 // #187：达标口径直接复用 _target（BUILD_TARGET_SQL 已按 non_trial >= 阈值筛过、
-// 且只收 customer_type='会员客'），避免这里再抄一遍判定 SQL 造成口径二次漂移。
+// 且只收当前 customer_type='会员客'），避免这里再抄一遍判定 SQL 造成口径二次漂移。
 const ANOMALY_SQL = `
 SELECT
   (SELECT COUNT(*)::int FROM client_wechat_users u
@@ -171,12 +172,12 @@ SELECT
     WHERE customer_type <> '会员客' AND became_member_at IS NOT NULL) AS nonmember_with_became
 `
 
-// UPDATE 后「有达标单的会员客」不应再缺 became_member_at（>0 则 ROLLBACK + exit 1）。
+// UPDATE 后「有达标单且非测试账号的会员客」不应再缺 became_member_at（>0 则 ROLLBACK + exit 1）。
 // 同样复用 _target：UPDATE_SQL 覆盖的正是 _target 全集，故此处 >0 即真异常。
 const SELFCHECK_SQL = `
 SELECT COUNT(*)::int AS member_qualifying_still_null
   FROM client_wechat_users u
- WHERE u.became_member_at IS NULL
+ WHERE u.customer_type = '会员客' AND u.became_member_at IS NULL
    AND EXISTS (SELECT 1 FROM _target t WHERE t.user_id = u.user_id)
 `
 

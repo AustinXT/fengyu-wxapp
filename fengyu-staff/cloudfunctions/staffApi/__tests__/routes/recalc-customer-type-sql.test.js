@@ -702,14 +702,15 @@ describe('#257 顾客分类方向守护', () => {
     ['all-types', SCRIPT_RECALC_ALL_TYPES], ['became', SCRIPT_RECALC_BECAME_MEMBER],
     ['doc-type', SCRIPT_BACKFILL_UPGRADE_DOC_TYPE],
   ]) {
-    test(`B ${label} 候选排除测试账号，按计算订单而非旧档位选单`, () => {
+    test(`B ${label} 候选排除测试账号，分类与历史归因通道分工明确`, () => {
       const src = fs.readFileSync(file, 'utf8')
       const build = src.match(/const BUILD_TARGET(?:_TABLE)?_SQL = `([\s\S]*?)`/)[1]
       expect(build).toContain("u.name IS DISTINCT FROM '谢廷(测试)'")
-      expect(build).not.toMatch(/u\.customer_type = '会员客'/)
+      if (label === 'all-types') expect(build).not.toMatch(/u\.customer_type = '会员客'/)
+      else expect(build).toContain("u.customer_type = '会员客'")
     })
   }
-  test('C 红检：cron重算入口必须能降级且会员客不能早退（A+B本轮不实现C）', () => {
+  test('C 红检：admin重算helper必须能降级且会员客不能早退（cron调度也待C落实）', () => {
     const src = fs.readFileSync(ADMIN_RECOMPUTE_TS, 'utf8')
     expect(src).not.toMatch(/if \(oldType === '会员客'\) return null/)
     expect(src).toMatch(/customer_type (?:<>|IS DISTINCT FROM)/)

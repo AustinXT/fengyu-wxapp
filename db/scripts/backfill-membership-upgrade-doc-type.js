@@ -23,7 +23,7 @@
  *   payNotify 原回款累计分支已退化为恒为空的死代码，故不存在「超集单」需在线打标的场景。
  *   本脚本只需覆盖单笔 non_trial >= threshold 的销售单（#187 起按非体验部分毛实收，见上方选单口径）。
  *
- * #257 A+B：按当前达标订单选候选，不以旧 customer_type 作为前提；排除甲方测试账号。
+ * #257 A+B：仅对当前会员客且有达标单者维护归因；先执行分类双向对齐，再执行本脚本；排除甲方测试账号。
  * 仅维护仍达标者的既有首次达标归因，不清空降级者的历史归因；再达标定义留待 E。
  *
  * 幂等：UPDATE WHERE 跳过 (is_membership_upgrade=true AND document_type='售前一次') 的行，
@@ -119,7 +119,8 @@ SELECT DISTINCT ON (o.client_user_id)
   FROM sale_orders o
   JOIN order_amounts oa ON oa.sale_order_id = o.sale_order_id
   JOIN client_wechat_users u ON u.user_id = o.client_user_id
- WHERE u.name IS DISTINCT FROM '谢廷(测试)'
+ WHERE u.customer_type = '会员客'
+   AND u.name IS DISTINCT FROM '谢廷(测试)'
    AND oa.non_trial >= $1::numeric
    AND (u.became_member_at IS NULL OR COALESCE(o.paid_at, o.created_at) <= u.became_member_at)
  ORDER BY o.client_user_id, o.paid_at ASC NULLS LAST, o.created_at ASC, o.sale_order_id ASC
