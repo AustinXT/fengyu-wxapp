@@ -18,6 +18,7 @@ async function visibleEmployee(session: Parameters<typeof isAdminScope>[0], empl
 }
 
 export const getEmployeeRoleMigration = withPermission('permission:list', async (session, employeeId: string) => {
+  if (typeof employeeId !== 'string' || !employeeId.trim()) throw new Error('INVALID_PARAMS: 员工编号不合法')
   const employee = await visibleEmployee(session, employeeId)
   const roles = await db.execute(sql`
     SELECT pr.id::float8 AS id, pr.role, rd.name AS role_name, pr.scope_id, n.name AS scope_name, n.type AS scope_type,
@@ -45,7 +46,10 @@ export const reviewEmployeeRoleMigration = withPermission('permission:assign', a
   employeeId: string; targetScopeId: string | null; eventId?: string; decision: 'migrate' | 'retain';
   bindings: Array<{ id: number; role: string; scopeId: string }>
 }) => {
-  if (!input || !['migrate', 'retain'].includes(input.decision) || !Array.isArray(input.bindings)
+  if (!input || typeof input.employeeId !== 'string' || !input.employeeId.trim()
+    || (input.targetScopeId !== null && typeof input.targetScopeId !== 'string')
+    || (input.eventId !== undefined && (typeof input.eventId !== 'string' || !input.eventId))
+    || !['migrate', 'retain'].includes(input.decision) || !Array.isArray(input.bindings)
     || (input.decision === 'retain' && !input.eventId)
     || input.bindings.length === 0 || input.bindings.length > 100
     || input.bindings.some(b => !b || !Number.isSafeInteger(b.id) || b.id <= 0 || typeof b.role !== 'string' || !b.role || typeof b.scopeId !== 'string' || !b.scopeId)
@@ -53,6 +57,7 @@ export const reviewEmployeeRoleMigration = withPermission('permission:assign', a
   if (input.decision === 'migrate') {
     if (!hasPermission(session, 'permission:revoke')) throw new Error('PERMISSION_DENIED: 迁移需要角色撤销权限')
     session = scopeSessionToAllActions(session, ['permission:assign', 'permission:revoke'])
+    if (!session.roles.length) throw new Error('PERMISSION_DENIED: 没有同时具备分配与撤销能力的授权范围')
   }
   await db.transaction(async tx => {
     await lockOrgTree(tx)

@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { PgDialect } from 'drizzle-orm/pg-core'
-const mocks = vi.hoisted(() => ({ execute: vi.fn(), transaction: vi.fn(), log: vi.fn(), org: vi.fn(), admin: vi.fn(), scope: vi.fn(), employee: vi.fn(), global: true, revoke: true }))
+const mocks = vi.hoisted(() => ({ execute: vi.fn(), transaction: vi.fn(), log: vi.fn(), org: vi.fn(), admin: vi.fn(), scope: vi.fn(), employee: vi.fn(), global: true, revoke: true, roles: [] as any[] }))
 vi.mock('@/db', () => ({ db: { execute: mocks.execute, transaction: mocks.transaction } }))
-vi.mock('@/lib/with-permission', () => ({ withPermission: (_: string, fn: any) => (...args: any[]) => fn({ employeeId: 'operator', roles: [{ scopeId: 'root' }] }, ...args) }))
+vi.mock('@/lib/with-permission', () => ({ withPermission: (_: string, fn: any) => (...args: any[]) => fn({ employeeId: 'operator', roles: mocks.roles }, ...args) }))
 vi.mock('@/lib/permissions', () => ({ isAdminScope: () => mocks.global, hasPermission: () => mocks.revoke }))
 vi.mock('@/lib/org-ancestry', () => ({ isEmployeeWithinScopeRoots: mocks.employee, isNodeWithinScopeRoots: mocks.scope }))
 vi.mock('@/lib/invariant-locks', () => ({ lockOrgTree: mocks.org, lockActiveAdminCount: mocks.admin }))
@@ -14,7 +14,7 @@ const input = { employeeId: 'E', targetScopeId: 'new', decision: 'migrate' as co
 let casRows: any[], existing: any[], current: any[], resigned: boolean, targets: any[], pending: any[], preview: any[]
 const statements: string[] = []
 beforeEach(() => {
-  vi.clearAllMocks(); mocks.global = true; mocks.revoke = true; casRows = [{ id: 1 }]; existing = []; current = [{ id: 1 }]; resigned = false; targets = [{ org_node_id: 'new' }]; pending = []; preview = []; statements.length = 0
+  vi.clearAllMocks(); mocks.roles = [{ scopeId: 'root', actions: ['permission:list', 'permission:assign', 'permission:revoke'], scopeStoreIds: [], scopeOrgNodeIds: ['root'] }]; mocks.global = true; mocks.revoke = true; casRows = [{ id: 1 }]; existing = []; current = [{ id: 1 }]; resigned = false; targets = [{ org_node_id: 'new' }]; pending = []; preview = []; statements.length = 0
   mocks.scope.mockResolvedValue(true); mocks.employee.mockResolvedValue(true)
   mocks.transaction.mockImplementation((fn: any) => fn({ execute: mocks.execute }))
   mocks.execute.mockImplementation(async query => {
@@ -63,6 +63,26 @@ describe('人工角色迁移', () => {
     expect((await getEmployeeRoleMigration('E')).roles[0].canMigrate).toBe(false)
     preview = [{ id: 1, scope_id: 'old', target_scope_id: 'new', is_super_admin: false, allowed_scope_types: ['总部'] }];
     expect((await getEmployeeRoleMigration('E')).roles[0].canMigrate).toBe(false)
+  })
+  it('新版角色元数据：assign与revoke分属不同角色不能拼接scope', async () => {
+    mocks.global = false;
+    mocks.roles = [
+      { scopeId: 'A', actions: ['permission:assign'], scopeStoreIds: [], scopeOrgNodeIds: ['A'] },
+      { scopeId: 'B', actions: ['permission:revoke'], scopeStoreIds: [], scopeOrgNodeIds: ['B'] },
+    ];
+    await expect(reviewEmployeeRoleMigration(input)).rejects.toThrow('PERMISSION_DENIED:')
+    expect(mocks.transaction).not.toHaveBeenCalled()
+  })
+  it('新版角色元数据：仅双动作角色scope进入迁移判断', async () => {
+    mocks.global = false;
+    mocks.roles = [
+      { scopeId: 'read', actions: ['permission:list'], scopeStoreIds: [], scopeOrgNodeIds: ['read'] },
+      { scopeId: 'both', actions: ['permission:assign', 'permission:revoke'], scopeStoreIds: [], scopeOrgNodeIds: ['both'] },
+    ];
+    mocks.scope.mockImplementation(async (_node, roots) => roots.length === 1 && roots[0] === 'both')
+    await reviewEmployeeRoleMigration(input)
+    expect(mocks.scope.mock.calls.every(c => c[1].length === 1 && c[1][0] === 'both')).toBe(true)
+    expect(statements.some(s => s.includes('UPDATE permission_roles'))).toBe(true)
   })
   it('CAS0行必须拒绝且不记成功审计', async () => {
     casRows = []; await expect(reviewEmployeeRoleMigration(input)).rejects.toThrow('CONFLICT:')
