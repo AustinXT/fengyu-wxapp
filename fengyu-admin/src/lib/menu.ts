@@ -50,6 +50,8 @@ import { scopeSessionToActions, scopeSessionToAllActions } from './action-scope'
 import {
   DATA_CENTER_DASHBOARD_ACTION,
   DATA_CENTER_REPORT_LIST,
+  DATA_CENTER_MENU_SECTIONS,
+  OPERATING_REPORTS,
   type DataCenterMenuSection,
   type DataCenterReportKey,
 } from './data-center/reports'
@@ -105,10 +107,10 @@ const DATA_CENTER_REPORT_ICONS: Record<DataCenterReportKey, LucideIcon> = {
  * `menu.enabled=false` 的页面骨架已就绪但内容未交付，入口隐藏、深链可用。
  */
 function dataCenterReportMenuItems(): MenuItem[] {
-  return DATA_CENTER_REPORT_LIST.flatMap((report) => report.menu
+  return [...DATA_CENTER_REPORT_LIST, ...OPERATING_REPORTS].sort((a,b)=>DATA_CENTER_MENU_SECTIONS.indexOf(a.menu?.section||'经营明细')-DATA_CENTER_MENU_SECTIONS.indexOf(b.menu?.section||'经营明细')).flatMap((report) => report.menu
     ? [{
         label: report.title,
-        icon: DATA_CENTER_REPORT_ICONS[report.key],
+        icon: 'key' in report ? DATA_CENTER_REPORT_ICONS[report.key as DataCenterReportKey] : ChartNoAxesCombined,
         href: report.path,
         requiredActions: [DATA_CENTER_DASHBOARD_ACTION],
         requiredAllActions: [...report.requiredActions],

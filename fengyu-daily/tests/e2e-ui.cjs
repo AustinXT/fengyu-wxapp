@@ -66,7 +66,7 @@ const automator = require("miniprogram-automator");
         case 'period.list': data = { periods: [period], period, week: period.weeks[0] }; break;
         case 'target.read': data = { period, week: period.weeks[0], target: globalThis.__dailyUiTarget || null, reference: null }; break;
         case 'target.confirmMonth':
-          globalThis.__dailyUiTarget = { sales: 10000, consumption: 20000, penalty: '认真复盘', month_confirmed: true, version: 1,
+          globalThis.__dailyUiTarget = { sales: 10000, consumption: 20000, penalty: '认真复盘', month_confirmed: true, counts_month_confirmed: true, visits: 10, newCustomers: 0, projects: 20, version: 1,
             weeks: { w1: { sales: null, consumption: null }, w2: { sales: null, consumption: null }, w3: { sales: null, consumption: null }, w4: { sales: null, consumption: null } } };
           data = {}; break;
         case 'contacts.list': data = { contacts: [] }; break;
@@ -81,6 +81,7 @@ const automator = require("miniprogram-automator");
         case "auth.login":
           data = { user };
           break;
+        case "report.status": data = { status: "draft" }; break;
         case "report.read":
           data = { date, report: globalThis.__dailyUiSubmitted ? { id: 'UI-REPORT', report_date: date, status: 'submitted', version: 1, action: '主动回访', growth: '总结经验', plan: '继续跟进' } : null, entries: [entry], metrics: snapshot, readOnly: false };
           break;
@@ -166,15 +167,15 @@ const automator = require("miniprogram-automator");
     const goal = await mp.navigateTo('/pages/goal/goal');
     await wait(() => goal.data('ready'), "goal");
     assert.equal(await goal.data('title'), '我的经营目标');
-    assert.match(await goal.data('monthError'), /大于0/);
-    for (const [field, value] of [['sales', '100'], ['consumption', '200'], ['penalty', '认真复盘']])
+    assert.match(await goal.data('monthError'), /月目标/);
+    for (const [field, value] of [['sales', '100'], ['consumption', '200'], ['visits', '10'], ['newCustomers', '0'], ['projects', '20'], ['penalty', '认真复盘']])
       await goal.callMethod('input', { currentTarget: { dataset: { field } }, detail: { value } });
     assert.equal(await goal.data('monthError'), '');
     await mp.mockWxMethod('showModal', () => ({ confirm: true, cancel: false }));
     await goal.callMethod('save', { currentTarget: { dataset: { kind: 'month' } } });
     assert.equal(await goal.data('confirmed'), true);
     assert.match(await goal.data('weekError'), /非负/);
-    for (const [field, value] of [['weekSales', '120'], ['weekConsumption', '40']])
+    for (const [field, value] of [['weekSales', '120'], ['weekConsumption', '40'], ['weekVisits', '2'], ['weekNewCustomers', '0'], ['weekProjects', '3']])
       await goal.callMethod('input', { currentTarget: { dataset: { field } }, detail: { value } });
     assert.match(await goal.data('weekError'), /不能超过/);
     await goal.callMethod('input', { currentTarget: { dataset: { field: 'weekSales' } }, detail: { value: '20.01' } });

@@ -16,6 +16,14 @@ async function entries(query, id) {
     [id],
   );
 }
+async function status(ctx) {
+  const date = v.date(ctx.event.payload?.date);
+  const [report] = await pg.query(
+    'SELECT status FROM daily_reports WHERE employee_id=$1 AND report_date=$2',
+    [ctx.auth.employeeId, date],
+  );
+  ctx.result = { status: report?.status || null };
+}
 async function read(ctx) {
   const date = v.date(ctx.event.payload?.date);
   const [report] = await pg.query(
@@ -207,6 +215,7 @@ async function previous(ctx) {
   ctx.result = { report: report || null };
 }
 module.exports = {
+  status,
   read,
   history,
   previous,

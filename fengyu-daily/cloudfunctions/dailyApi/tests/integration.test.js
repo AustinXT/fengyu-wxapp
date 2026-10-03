@@ -163,6 +163,36 @@ test("真实 PG 最小闭环、归属、并发和门店权限", { skip: !url }, 
       assert.equal((await run(metrics.read, { date: day })).day.consumption, 0);
       await pg.query('UPDATE service_orders SET remark=NULL WHERE service_order_id=$1', [service]);
     });
+    await t.test('五项实际数按参与员工去重，首次到店查完整历史，退款不计数', async () => {
+      const { series, marketNewCustomers } = require('../utils/operating-series');
+      const client = prefix+'counts-client', earlier = prefix+'counts-old', cross = prefix+'counts-cross';
+      const yesterday = new Date(Date.parse(day+'T12:00:00Z')-86400000).toISOString().slice(0,10);
+      try {
+        await pg.query('INSERT INTO client_wechat_users(user_id,name) VALUES($1,$2)',[client,client]);
+        await pg.query('UPDATE service_orders SET client_user_id=$2 WHERE service_order_id=$1',[service,client]);
+        await pg.query(`INSERT INTO service_commissions(service_item_id,employee_id,role_type,allocation_ratio,commission_rate,commission_amount) VALUES($1,$2,'养生师',0,0,0)`,[prefix+'si',a]);
+        await pg.query(`INSERT INTO service_orders(service_order_id,status,market_name,store_id,service_date,client_user_id,assigned_employee_id) VALUES($1,'已完成','测试市场',$2,$3,$4,$5)`,[earlier,s2,yesterday,client,a]);
+        await pg.query('UPDATE service_items SET session_used=2 WHERE service_item_id=$1',[prefix+'si']);
+        const input={storeIds:[s1,s2],employeeIds:[a,b],start:day,end:day};
+        let events=await series(pg.query,input);
+        const own=events.find(r=>r.scope==='personal'&&r.id===a);
+        assert.equal(own.visits,1);assert.equal(own.projects,2);assert.equal(own.newCustomers,0);
+        assert.equal(events.find(r=>r.scope==='store'&&r.id===s1).visits,1);
+        await pg.query('DELETE FROM service_orders WHERE service_order_id=$1',[earlier]);
+        await pg.query(`INSERT INTO service_orders(service_order_id,status,market_name,store_id,service_date,client_user_id,assigned_employee_id) VALUES($1,'已完成','测试市场',$2,$3,$4,$5)`,[cross,s2,day,client,a]);
+        events=await series(pg.query,input);assert.equal(events.find(r=>r.scope==='personal'&&r.id===a).newCustomers,1);
+        const first=await marketNewCustomers(pg.query,[s1,s2],day,day);assert.equal(new Set(first.map(r=>r.client_user_id)).size,1);
+        const { DEPOSIT_REFUND_REMARK }=require('../utils/consume-filter');
+        await pg.query('UPDATE service_orders SET remark=$2 WHERE service_order_id=$1',[service,DEPOSIT_REFUND_REMARK]);
+        events=await series(pg.query,input);assert.ok(!events.some(r=>r.scope==='personal'&&r.id===a&&r.visits));
+      } finally {
+        await pg.query('UPDATE service_items SET session_used=1 WHERE service_item_id=$1',[prefix+'si']);
+        await pg.query('UPDATE service_orders SET client_user_id=NULL,remark=NULL WHERE service_order_id=$1',[service]);
+        await pg.query('DELETE FROM service_commissions WHERE service_item_id=$1 AND employee_id=$2 AND role_type=$3',[prefix+'si',a,'养生师']);
+        await pg.query('DELETE FROM service_orders WHERE service_order_id=ANY($1::text[])',[[earlier,cross]]);
+        await pg.query('DELETE FROM client_wechat_users WHERE user_id=$1',[client]);
+      }
+    });
     await t.test("手机号验证后独立绑定，员工端 OPENID 保持不变", async () => {
       await auth.bindPhone(bindCtx(ident, phone + "1"));
       const [staff] = await pg.query(
@@ -195,6 +225,7 @@ test("真实 PG 最小闭环、归属、并发和门店权限", { skip: !url }, 
       );
       assert.equal(await auth.requireUser(ident).then((x) => x.employeeId), a);
     });
+    assert.equal((await run(report.status, { date: day })).status, null);
     let editor = await run(report.read, { date: day });
     await t.test(
       "自动列出实际服务和独立销售；排除服务来源销售、他人销售",
@@ -260,6 +291,8 @@ test("真实 PG 最小闭环、归属、并发和门店权限", { skip: !url }, 
       editor = await run(report.read, { date: day });
       assert.equal(editor.entries.find((e) => e.businessId === service).feedback, "顾客满意");
       assert.equal(editor.report.plan, "继续跟进");
+      assert.deepEqual(await run(report.status, { date: day }), { status: "draft" });
+      assert.equal((await run(report.status, { date: day }, { ...user, employeeId: b })).status, null);
       const list = await run(manager.list, { date: day, storeId: s1 }, boss);
       assert.equal(list.reports.length, 0);
       await assert.rejects(
@@ -304,6 +337,7 @@ test("真实 PG 最小闭环、归属、并发和门店权限", { skip: !url }, 
       );
     });
     await t.test("提交后业务快照不随业务名称变化；不能改回草稿", async () => {
+      assert.deepEqual(await run(report.status, { date: day }), { status: "submitted" });
       const frozen = (await run(report.read, { date: day })).metrics;
       await pg.query('UPDATE service_items SET unit_real_price=80 WHERE service_item_id=$1', [prefix + 'si']);
       assert.equal((await run(require('../routes/metrics').read, { date: day })).day.consumption, 4800);
@@ -358,7 +392,7 @@ test("真实 PG 最小闭环、归属、并发和门店权限", { skip: !url }, 
       assert.equal(second.employees.length, 1); assert.equal(second.summary.submitted, 0);
       await assert.rejects(run(management.read, { nodeId: 'outside' }, admin), /PERMISSION_DENIED/);
     });
-    await t.test('经营月个人记录、PK授权范围及累计目标使用真实PG', async () => {
+    await t.test('经营月个人记录、PK授权范围、门店及整月目标使用真实PG', async () => {
       const periodId = prefix + 'period', classId = prefix + 'class';
       const weeks = [0, 1, 2, 3].map((i) => ({ id: 'w' + (i + 1), name: '第' + (i + 1) + '周',
         start: '2025-01-' + String(i * 7 + 1).padStart(2, '0'), end: '2025-01-' + String((i + 1) * 7).padStart(2, '0') }));
@@ -378,8 +412,15 @@ test("真实 PG 最小闭环、归属、并发和门店权限", { skip: !url }, 
         assert.equal(klass.classes[0].members, 2);
         const board = await run(pk.read, { periodId, classId, date: '2025-01-15' });
         assert.deepEqual(new Set(board.rows.map((r) => r.employeeId)), new Set([a, b]));
-        assert.equal(board.rows.find((r) => r.employeeId === a).sales.monthTarget, 6000);
-        assert.equal(board.rows.find((r) => r.employeeId === a).consumption.weekTarget, 4000);
+        assert.equal(board.rows.find((r) => r.employeeId === a).scope, 'store');
+        assert.equal(board.rows.find((r) => r.employeeId === a).sales.monthTarget, null);
+        await pg.query(`INSERT INTO daily_operating_targets(period_id,scope,scope_id,sales,consumption,weeks,month_confirmed)
+          VALUES($1,'store',$2,10000,20000,$3::jsonb,true)`, [periodId,s1,JSON.stringify({w1:{sales:1000,consumption:2000},w2:{sales:2000,consumption:3000},w3:{sales:3000,consumption:4000}})]);
+        const scopedBoard = await run(pk.read,{periodId,classId,date:'2025-01-15'});
+        assert.equal(scopedBoard.rows.find(r=>r.employeeId===a).sales.monthTarget,10000);
+        assert.equal(scopedBoard.rows.find((r) => r.employeeId === a).consumption.weekTarget, 4000);
+        assert.equal(scopedBoard.rows.find((r) => r.employeeId === a).consumption.monthTarget, 20000);
+        assert.ok(board.rows.find((r) => r.employeeId === a).storeName);
         const last = await run(pk.read, { periodId, classId, date: '2025-01-25', metric: 'consumption' });
         assert.equal(last.rows.find((r) => r.employeeId === a).sales.weekTarget, 4000);
         assert.equal(last.rows.find((r) => r.employeeId === a).sales.monthTarget, 10000);

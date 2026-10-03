@@ -107,6 +107,10 @@ export const dailyOperatingTargets = pgTable('daily_operating_targets', {
   scopeId: text('scope_id').notNull(),
   sales: bigint('sales', { mode: 'number' }).notNull(),
   consumption: bigint('consumption', { mode: 'number' }).notNull(),
+  visits: integer('visits'),
+  newCustomers: integer('new_customers'),
+  projects: integer('projects'),
+  countsMonthConfirmed: boolean('counts_month_confirmed').notNull().default(false),
   penalty: text('penalty').notNull().default(''),
   monthConfirmed: boolean('month_confirmed').notNull().default(false),
   weeks: jsonb('weeks').notNull().default(sql`'{}'::jsonb`),
@@ -116,6 +120,7 @@ export const dailyOperatingTargets = pgTable('daily_operating_targets', {
   primaryKey({ columns: [t.periodId, t.scope, t.scopeId] }),
   check('chk_daily_target_scope', sql`${t.scope} IN ('personal','store','market')`),
   check('chk_daily_target_amount', sql`${t.sales} > 0 AND ${t.consumption} > 0 AND ${t.sales} <= 9007199254740991 AND ${t.consumption} <= 9007199254740991`),
+  check('chk_daily_target_counts', sql`(${t.visits} IS NULL OR ${t.visits} >= 0) AND (${t.newCustomers} IS NULL OR ${t.newCustomers} >= 0) AND (${t.projects} IS NULL OR ${t.projects} >= 0) AND (NOT ${t.countsMonthConfirmed} OR (${t.visits} IS NOT NULL AND ${t.newCustomers} IS NOT NULL AND ${t.projects} IS NOT NULL))`),
   check('chk_daily_target_version', sql`${t.version} > 0`),
 ]);
 

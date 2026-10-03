@@ -3,7 +3,6 @@ import {
   showError,
   today,
   Employee,
-  Editor,
   Report,
   Workspace,
   Management,
@@ -13,6 +12,13 @@ Page({
   data: {
     user: null as Employee | null,
     loading: false,
+    refreshing: false,
+    goalLoading: false,
+    historyLoading: false,
+    statusLoading: false,
+    goalError: false,
+    historyError: false,
+    statusError: false,
     binding: false,
     testBinding: false,
     testCode: "",
@@ -37,22 +43,13 @@ Page({
     void this.load();
   },
   async load() {
-    if (this.data.loading) return;
-    this.setData({ loading: true, error: false, date: today() });
+    if (this.data.refreshing) return;
+    this.setData({ loading: !this.data.user, refreshing: true, error: false, date: today() });
     try {
       const { user, workspace } = await login();
       this.setData({ user, workspace });
       syncTabs(this, workspace, 0);
       if (user) {
-        if (workspace !== 'management') {
-          const scope = workspace === 'manager' ? 'store' : 'personal';
-          const scopeId = scope === 'store' ? user.managerStores[0]?.store_id : user.employeeId;
-          const goal = await callApi<{ period: { name: string } | null; week: { id: string; name: string; start: string; end: string } | null;
-            target: { month_confirmed: boolean; weeks: Record<string, { sales: number | null; consumption: number | null }> } | null }>('target.read', { scope, scopeId });
-          this.setData({ goalTitle: scope === 'store' ? '本店经营目标' : '经营目标',
-            goalPeriod: goal.week ? `${goal.week.name}（${goal.week.start.slice(5)} 至 ${goal.week.end.slice(5)}）` : goal.period?.name || '尚未配置经营周期',
-            goalLabel: !goal.target?.month_confirmed ? '设置月目标' : goal.week && goal.target.weeks[goal.week.id]?.sales == null ? '设置本周目标' : '查看经营目标' });
-        }
         if (workspace === "management") {
           const overview = await callApi<Management>("management.read", {
             date: this.data.date,
@@ -63,33 +60,38 @@ Page({
           this.setData({ overview, scopes });
           return;
         }
-        const { report } = await callApi<Editor>("report.read", {
-          date: this.data.date,
-        });
-        this.setData({
-          status:
-            report?.status === "submitted"
-              ? "已提交"
-              : report
-                ? "草稿"
-                : "未填写",
-          button:
-            report?.status === "submitted"
-              ? "查看今日日总结"
-              : report
-                ? "继续填写"
-                : "填写今日日总结",
-        });
-        const { reports } = await callApi<{ reports: Report[] }>(
-          "report.history",
-        );
-        this.setData({ recent: reports.slice(0, 2) });
+        this.setData({ loading: false, goalLoading: true, historyLoading: true, statusLoading: true,
+          goalError: false, historyError: false, statusError: false });
+        const goalTask = (async () => {
+
+          const scope = workspace === 'manager' ? 'store' : 'personal';
+          const scopeId = scope === 'store' ? user.managerStores[0]?.store_id : user.employeeId;
+          const goal = await callApi<{ period: { name: string } | null; week: { id: string; name: string; start: string; end: string } | null;
+            target: { month_confirmed: boolean; counts_month_confirmed?: boolean; weeks: Record<string, { sales: number | null; consumption: number | null }> } | null }>('target.read', { scope, scopeId });
+          this.setData({ goalTitle: scope === 'store' ? '本店经营目标' : '经营目标',
+            goalPeriod: goal.week ? `${goal.week.name}（${goal.week.start.slice(5)} 至 ${goal.week.end.slice(5)}）` : goal.period?.name || '尚未配置经营周期',
+            goalLabel: !goal.target?.month_confirmed ? '设置月目标' : !goal.target.counts_month_confirmed ? '补充月目标' : goal.week && goal.target.weeks[goal.week.id]?.sales == null ? '设置本周目标' : '查看经营目标' });
+
+        })().catch(() => this.setData({ goalError: true }))
+          .finally(() => this.setData({ goalLoading: false }));
+        const statusTask = callApi<{ status: 'submitted' | 'draft' | null }>('report.status', { date: this.data.date })
+          .then(({ status }) => this.setData({
+            status: status === 'submitted' ? '已提交' : status ? '草稿' : '未填写',
+            button: status === 'submitted' ? '查看今日日总结' : status ? '继续填写' : '填写今日日总结',
+          }))
+          .catch(() => this.setData({ statusError: true }))
+          .finally(() => this.setData({ statusLoading: false }));
+        const historyTask = callApi<{ reports: Report[] }>('report.history')
+          .then(({ reports }) => this.setData({ recent: reports.slice(0, 2) }))
+          .catch(() => this.setData({ historyError: true }))
+          .finally(() => this.setData({ historyLoading: false }));
+        await Promise.all([goalTask, statusTask, historyTask]);
       }
     } catch (e) {
       this.setData({ error: true });
       showError(e);
     } finally {
-      this.setData({ loading: false });
+      this.setData({ loading: false, refreshing: false });
     }
   },
   async bindPhone(
@@ -157,15 +159,16 @@ Page({
     else wx.navigateTo({ url: "/pages/history/history" });
   },
   scopeChange(e: WechatMiniprogram.CustomEvent<{ value: string }>) {
-    if (this.data.loading) return;
+    if (this.data.refreshing) return;
     this.setData({ scopeIndex: Number(e.detail.value) }); void this.load();
   },
   periodChange(e: WechatMiniprogram.CustomEvent) {
-    if (this.data.loading) return;
+    if (this.data.refreshing) return;
     this.setData({ period: e.currentTarget.dataset.period }); void this.load();
   },
   pk() { wx.navigateTo({ url: '/pages/pk/pk' }); },
   goal() {
+    if (this.data.goalError) { void this.load(); return; }
     const scope = this.data.workspace === 'management' ? 'market' : this.data.workspace === 'manager' ? 'store' : 'personal';
     wx.navigateTo({ url: '/pages/goal/goal?scope=' + scope });
   },

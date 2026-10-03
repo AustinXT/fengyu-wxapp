@@ -89,3 +89,10 @@
 - 提交 `f199f9bbd702` 将经营月与 PK 班级 ID 改为 `crypto.getRandomValues` 生成，并改用惰性表单初始化。回归测试 2 项通过，admin `npx tsc --noEmit` 通过。
 - dev admin release `dev-f199f9bbd702-b4377b31991a-20261003T103707Z-28830`，脚本 exit 0 / RELEASE_OK；未执行数据库迁移。
 - 使用真实已登录浏览器刷新后，版本显示 `f199f9bbd702`，经营月和四周日期表单正常显示，新增经营月、PK 页签切换正常。未写入业务日期或分班配置；已有经营月的添加班级行为通过 HTTP 环境组件回归验证。
+
+## 日报五项目标（待集中集成，2026-10-04）
+
+请求：`requests/daily-five-metrics.md`；候选 `requests/daily-five-metrics.sql` 仅私有库验证，不是正式迁移。
+前置 #523 / 0062 尚未合入 dev；本项未生成 tag/when/hash，不分配编号，不执行共享 dev。
+应用依赖：dailyApiDev 五项目标及岗位 PK、admin 经营进度/填报/五项 PK、日报开发版目标表单；迁库之后才能部署。
+私有验证证据见 `daily-report/five-metrics-implementation.md`。正式历史集中集成、指定独立评审与真实 dev 联调待完成，生产另行安排。

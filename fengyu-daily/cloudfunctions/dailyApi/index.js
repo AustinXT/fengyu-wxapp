@@ -6,6 +6,7 @@ const routes = {
   "auth.login": ["auth", "login"],
   "auth.bindPhone": ["auth", "bindPhone"],
   "auth.bindTestCode": ["auth", "bindTestCode"],
+  "report.status": ["report", "status"],
   "report.read": ["report", "read"],
   "report.save": ["report", "save"],
   "report.submit": ["report", "submit"],

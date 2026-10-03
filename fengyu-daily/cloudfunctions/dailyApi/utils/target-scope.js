@@ -12,7 +12,7 @@ async function targetScope(auth, payload, query) {
     return { scope, scopeId };
   }
   if (scope === 'market' && auth.availableWorkspaces?.includes('management') &&
-      auth.scopeOrgNodeIds?.includes(payload.scopeId)) {
+      auth.roleBindings?.some(r=>r.scopeType==='市场'&&r.scopeId===payload.scopeId&&r.actions?.includes('data_center:dashboard'))) {
     const [node] = await query("SELECT id FROM org_nodes WHERE id=$1 AND type='市场'", [payload.scopeId]);
     if (node) return { scope, scopeId: node.id };
   }

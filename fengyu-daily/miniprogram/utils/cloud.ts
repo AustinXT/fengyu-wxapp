@@ -13,6 +13,7 @@ export interface Employee {
   roleBindings: {
     role: string;
     roleName: string;
+    scopeId?: string;
     scopeType: string;
     scopeName: string;
   }[];

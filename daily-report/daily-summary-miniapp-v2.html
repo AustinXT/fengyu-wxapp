@@ -1277,8 +1277,15 @@
     .pk-class-card small { display:block; margin-top:6px; color:var(--muted); font-size:11px; }
     .pk-class-card__view { flex:0 0 auto; color:var(--brand); font-size:11px; font-weight:800; }
     .pk-switch { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin:12px 0; }
-    .pk-switch button { padding:11px; border:1px solid var(--line); border-radius:8px; background:#fff; color:var(--muted); font-weight:700; }
+    .pk-switch button { padding:5px 10px; min-height:30px; font-size:12px; line-height:18px; border:1px solid var(--line); border-radius:8px; background:#fff; color:var(--muted); font-weight:700; }
     .pk-switch button.active { color:var(--brand); border-color:#edc5c3; background:var(--brand-soft); }
+    .pk-filters { display:flex; flex:0 0 auto; align-items:center; gap:10px; margin:0 0 10px; font-size:12px; }
+    .pk-filters label { display:flex; align-items:center; gap:4px; white-space:nowrap; }
+    .pk-filters select { min-width:64px; max-width:100px; height:28px; padding:0 5px; border:1px solid var(--line); border-radius:6px; background:#fff; color:var(--ink); font:inherit; }
+    .pk-sort { position:relative; width:34px; height:20px; padding:0; border:0; border-radius:20px; background:#d0d3d8; cursor:pointer; }
+    .pk-sort::after { content:""; position:absolute; left:2px; top:2px; width:16px; height:16px; border-radius:50%; background:white; transition:transform .15s; }
+    .pk-sort[aria-checked="true"] { background:var(--brand); }
+    .pk-sort[aria-checked="true"]::after { transform:translateX(14px); }
     .pk-table-wrap { overflow-x:auto; border:1px solid var(--line); border-radius:10px; background:#fff; }
     .pk-table { min-width:1120px; width:100%; border-collapse:separate; border-spacing:0; font-size:11px; white-space:nowrap; }
     .pk-table th,.pk-table td { height:38px; padding:0 9px; border-bottom:1px solid var(--line); text-align:right; }
@@ -1343,7 +1350,7 @@
           <span>店长：首页处理个人日报并设置本店目标；本店按今日 / 周 / 月查看人员。</span>
           <span>管理层：总览设置市场目标、关注门店与员工；组织页支持逐层下钻。</span>
           <span>后台：管理员可修改已使用的经营周，预览影响后保存；小程序重新打开即可读取配置。</span>
-          <span>PK：后台按月给门店分班；班级内的业绩榜、消耗榜分别排序，每位人员在表中占一行。</span>
+          <span>PK：先选择班级，再查看业绩榜和消耗榜；门店即小组，每位参赛人员占一行。</span>
         </div>
         <a class="prototype-link" href="./经营周期配置-后台原型.html" target="_blank">查看管理后台 · 经营周期配置 ↗</a>
         <a class="prototype-link" href="./PK班级配置-后台原型.html" target="_blank">查看管理后台 · PK 班级配置 ↗</a>
@@ -1436,7 +1443,7 @@
         selectedMonth:"2026-07", period:"week", storePeriod:"today", selectedMarket:"all",
         selectedStore:"westlake", selectedEmployee:"zhang", selectedRecordDate:data.today,
         orgView:"tree", employeeRole:"全部", employeeSearch:"", employeeStore:"all",
-        personalReportAnchor:"summary", contentScrollTop:0, editingSubmitted:false, form:initialForm(), candidateSearch:"", goalDraft:null, goalScope:null, pkMetric:"sales", pkClassId:null
+        personalReportAnchor:"summary", contentScrollTop:0, editingSubmitted:false, form:initialForm(), candidateSearch:"", goalDraft:null, goalScope:null, pkMetric:"sales", pkClassId:null, pkSort:true, pkLegion:"all", pkArea:"all"
       };
 
       const roleTabs = {
@@ -1713,14 +1720,14 @@
       function refreshGoalForm(){const draft=state.goalDraft,scope=state.goalScope||targetScopeFromRole();if(!draft)return;const current=goalWeek(),monthButton=document.querySelector('[data-action="save-month-goal"]'),weekButton=document.querySelector('[data-action="save-week-goal"]');if(monthButton)monthButton.disabled=Boolean(monthError(draft,scope));if(weekButton)weekButton.disabled=Boolean(weekError(draft,current));const monthMessage=document.querySelector('[data-goal-error="month"]'),weekMessage=document.querySelector('[data-goal-error="week"]');if(monthMessage&&monthButton)monthMessage.textContent=monthError(draft,scope);if(weekMessage&&weekButton)weekMessage.textContent=weekError(draft,current);if(current){["sales","consumption"].forEach(metric=>{const value=draft[metric].weeks[current.id],month=Number(draft[metric].month),view=document.querySelector(`[data-week-percent="${metric}"]`);if(view)view.textContent=month>0&&value!==""&&value!=null?`${(Number(value)/month*100).toFixed(1)}%`:'--';});}}
 
       const pkStoreLabels = {
-        westlake:{legion:"红军",group:"红一组",mentor:"赵店长"},binjiang:{legion:"红军",group:"红二组",mentor:"周指导"},
-        ningbo:{legion:"红军",group:"红三组",mentor:"吴敏"},shaoxing:{legion:"红军",group:"红四组",mentor:"何指导"},
-        suzhou:{legion:"蓝军",group:"蓝一组",mentor:"林指导"},shanghai:{legion:"蓝军",group:"蓝二组",mentor:"陈九"}
+        westlake:{legion:"红军",mentor:"赵店长"},binjiang:{legion:"红军",mentor:"周指导"},
+        ningbo:{legion:"红军",mentor:"吴敏"},shaoxing:{legion:"红军",mentor:"何指导"},
+        suzhou:{legion:"蓝军",mentor:"林指导"},shanghai:{legion:"蓝军",mentor:"陈九"}
       };
       function pkNumbers(person,metric){
         const order=data.employees.findIndex(x=>x.id===person.id)+1,base=metric==="sales"?18000:13000,fullMonth=base+order*4300;
-        let weekTarget=Math.round(fullMonth*.24),monthTarget=Math.round(fullMonth*.48);
-        try{const saved=JSON.parse(localStorage.getItem(TARGETS_KEY)||"{}")[`personal:${person.id}:${state.selectedMonth}`];if(saved){const target=normalizedTarget("personal",saved)[metric],amounts=weeklyAmounts(target),weekId=targetWeeks().find(w=>w.start<=data.today&&data.today<=w.end)?.id||"w2";weekTarget=amounts[weekId]||0;monthTarget=targetWeeks().filter(w=>w.start<=data.today).reduce((sum,w)=>sum+Number(amounts[w.id]||0),0);}}catch(_){}
+        let weekTarget=Math.round(fullMonth*.24),monthTarget=fullMonth;
+        try{const saved=JSON.parse(localStorage.getItem(TARGETS_KEY)||"{}")[`personal:${person.id}:${state.selectedMonth}`];if(saved){const target=normalizedTarget("personal",saved)[metric],amounts=weeklyAmounts(target),weekId=targetWeeks().find(w=>w.start<=data.today&&data.today<=w.end)?.id||"w2";weekTarget=amounts[weekId]||0;monthTarget=Number(target.month)||0;}}catch(_){}
         const weekDone=Math.round(weekTarget*(.68+(order*17%75)/100)),monthDone=Math.round(monthTarget*(.62+(order*11%75)/100));
         return {weekTarget,weekDone,monthTarget,monthDone};
       }
@@ -1733,9 +1740,13 @@
         const selected=pkClass(),metric=state.pkMetric;
         const people=selected?data.employees.filter(person=>selected.storeIds.includes(person.storeId)):[];
         const rank=values=>values.weekTarget>0?values.weekDone/values.weekTarget:-1;
-        const rows=people.map(person=>({person,values:pkNumbers(person,metric)})).sort((a,b)=>rank(b.values)-rank(a.values));
-        const table=rows.length?`<div class="pk-table-wrap"><table class="pk-table"><thead><tr><th>名次</th><th>姓名</th><th>区域</th><th>军团</th><th>小组</th><th>指导员</th><th>本周目标</th><th>本周完成</th><th>周完成率</th><th>本月累计目标</th><th>本月累计完成</th><th>月完成率</th></tr></thead><tbody>${rows.map(({person,values},index)=>{const labels=pkStoreLabels[person.storeId],area=market(store(person.storeId).marketId).name.replace("市场","");return `<tr><td>${index+1}</td><td>${escapeHtml(person.name)}</td><td>${escapeHtml(area)}</td><td>${escapeHtml(labels.legion)}</td><td>${escapeHtml(labels.group)}</td><td>${escapeHtml(labels.mentor)}</td><td>${money(values.weekTarget)}</td><td>${money(values.weekDone)}</td><td class="pk-rate">${pct(values.weekDone,values.weekTarget)}</td><td>${money(values.monthTarget)}</td><td>${money(values.monthDone)}</td><td class="pk-rate">${pct(values.monthDone,values.monthTarget)}</td></tr>`}).join("")}</tbody></table></div>`:'<div class="notice">这个班级暂无参与人员。</div>';
-        return `${chrome()}${nav(selected?escapeHtml(selected.name):"班级榜单")}<div class="content no-tabs"><div class="pk-switch"><button data-pk-metric="sales" class="${metric==="sales"?'active':''}">业绩榜</button><button data-pk-metric="consumption" class="${metric==="consumption"?'active':''}">消耗榜</button></div>${table}</div>${toast()}`;
+        const ranked=people.map((person,index)=>({person,index,values:pkNumbers(person,metric)})).sort((a,b)=>rank(b.values)-rank(a.values)).map((row,index)=>({...row,position:index+1}));
+        const rows=ranked.filter(({person})=>(state.pkLegion==="all"||pkStoreLabels[person.storeId].legion===state.pkLegion)&&(state.pkArea==="all"||store(person.storeId).marketId===state.pkArea));
+        if(!state.pkSort)rows.reverse();
+        const legions=[...new Set(people.map(person=>pkStoreLabels[person.storeId].legion))],areas=[...new Set(people.map(person=>store(person.storeId).marketId))];
+        const filters=`<div class="pk-filters"><label>排序<button class="pk-sort" role="switch" aria-label="名次顺序或逆序" aria-checked="${state.pkSort}" data-pk-sort></button></label><label>军团<select aria-label="军团" data-pk-filter="pkLegion"><option value="all">不限</option>${legions.map(value=>`<option value="${escapeHtml(value)}" ${state.pkLegion===value?'selected':''}>${escapeHtml(value)}</option>`).join('')}</select></label><label>区域<select aria-label="区域" data-pk-filter="pkArea"><option value="all">不限</option>${areas.map(value=>`<option value="${escapeHtml(value)}" ${state.pkArea===value?'selected':''}>${escapeHtml(market(value).name.replace('市场',''))}</option>`).join('')}</select></label></div>`;
+        const table=rows.length?`<div class="pk-table-wrap"><table class="pk-table"><thead><tr><th>名次</th><th>姓名</th><th>区域</th><th>军团</th><th>门店</th><th>指导员</th><th>本周目标</th><th>本周完成</th><th>周完成率</th><th>本月目标</th><th>本月已完成</th><th>本月已完成率</th></tr></thead><tbody>${rows.map(({person,values,position})=>{const labels=pkStoreLabels[person.storeId],area=market(store(person.storeId).marketId).name.replace("市场","");return `<tr><td>${position}</td><td>${escapeHtml(person.name)}</td><td>${escapeHtml(area)}</td><td>${escapeHtml(labels.legion)}</td><td>${escapeHtml(store(person.storeId).name)}</td><td>${escapeHtml(labels.mentor)}</td><td>${money(values.weekTarget)}</td><td>${money(values.weekDone)}</td><td class="pk-rate">${pct(values.weekDone,values.weekTarget)}</td><td>${money(values.monthTarget)}</td><td>${money(values.monthDone)}</td><td class="pk-rate">${pct(values.monthDone,values.monthTarget)}</td></tr>`}).join("")}</tbody></table></div>`:'<div class="notice">当前筛选条件下暂无参与人员。</div>';
+        return `${chrome()}${nav(selected?escapeHtml(selected.name)+" PK 榜":"班级榜单")}<div class="content no-tabs"><div class="pk-switch"><button data-pk-metric="sales" class="${metric==="sales"?'active':''}">业绩榜</button><button data-pk-metric="consumption" class="${metric==="consumption"?'active':''}">消耗榜</button></div>${filters}${table}</div>${toast()}`;
       }
 
       function monthModal(){ if(state.modal!=="month")return""; return `<div class="market-overlay"><div class="market-sheet"><div class="sheet-title">选择经营月</div>${data.months.map(x=>`<div class="market-option ${x.id===state.selectedMonth?'active':''}" data-month="${x.id}"><div>${x.label}<span>${x.range}</span></div>${x.id===state.selectedMonth?'<b>✓</b>':''}</div>`).join("")}<div class="period-note">选择后立即生效</div></div></div>`; }
@@ -1769,6 +1780,7 @@
         return true;
       }
 
+      document.addEventListener("change",e=>{const filter=e.target.closest("[data-pk-filter]");if(filter&&filter.closest("#app-screen")){state[filter.dataset.pkFilter]=filter.value;render();}});
       const renderers={home:homePage,records:()=>personalReportPage(true),personalReport:()=>personalReportPage(false),fill:fillPage,myStore:myStorePage,overview:overviewPage,organization:organizationPage,marketReport:marketReportPage,storeReport:storeReportPage,detail:detailPage,mine:minePage,goal:goalPage,pkClasses:pkClassesPage,pk:pkPage};
       function render(){
         const screen=document.getElementById("app-screen");
@@ -1801,8 +1813,9 @@
         const role=e.target.closest("[data-role]");
         if(role&&!e.target.closest("#app-screen")){state.role=role.dataset.role;state.adminScope=role.dataset.adminScope||state.adminScope;state.page=state.role==="admin"?"overview":"home";state.stack=[];state.selectedMarket=state.adminScope==="market"?"zhejiang":"all";state.selectedStore="westlake";state.selectedEmployee=state.role==="manager"?"zhao":"zhang";state.selectedMonth="2026-07";state.period="week";state.storePeriod="today";state.orgView="tree";state.employeeRole="全部";state.employeeSearch="";state.employeeStore="all";state.personalReportAnchor="summary";state.contentScrollTop=0;state.goalScope=null;state.goalDraft=null;state.toast="";render();return;}
         if(!e.target.closest("#app-screen"))return;
+        if(e.target.closest("[data-pk-sort]")){state.pkSort=!state.pkSort;render();return;}
         const pkMetric=e.target.closest("[data-pk-metric]");if(pkMetric){state.pkMetric=pkMetric.dataset.pkMetric;render();return;}
-        const pkClass=e.target.closest("[data-pk-class-open]");if(pkClass){state.pkClassId=pkClass.dataset.pkClassOpen;state.pkMetric="sales";openPage("pk");return;}
+        const pkClass=e.target.closest("[data-pk-class-open]");if(pkClass){state.pkClassId=pkClass.dataset.pkClassOpen;state.pkMetric="sales";state.pkSort=true;state.pkLegion="all";state.pkArea="all";openPage("pk");return;}
         const addBusiness=e.target.closest("[data-add-business]");if(addBusiness){const item=businessForReport(state.form.ownerId,state.form.date).find(x=>x.id===addBusiness.dataset.addBusiness&&(x.type!=="sale"||x.allocated===true));if(item&&!state.form.entries.some(x=>x.id===item.id)){state.form.entries.push({id:item.id,businessSnapshot:structuredClone(item),feedback:"",issue:""});state.form.dirty=true;}state.modal=null;render();return;}
         const removeBusiness=e.target.closest("[data-remove-business]");if(removeBusiness){state.form.entries=state.form.entries.filter(x=>x.id!==removeBusiness.dataset.removeBusiness);state.form.dirty=true;render();return;}
         const tab=e.target.closest("[data-tab]");if(tab){state.stack=[];state.page=tab.dataset.tab;state.modal=null;if(state.page==="myStore")state.storePeriod="today";if(state.page==="records"){state.selectedEmployee=currentUser().id;state.personalReportAnchor="summary";}render();return;}

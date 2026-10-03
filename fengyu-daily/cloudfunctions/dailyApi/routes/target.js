@@ -2,15 +2,16 @@ const pg = require('../db/pg');
 const v = require('../utils/validation');
 const { resolve } = require('./period');
 const { targetScope } = require('../utils/target-scope');
-const { cents, validateMonth, weeklyTargets } = require('../utils/operating-target');
+const { cents, validateMonth, weeklyTargets, validateCounts, countKeys } = require('../utils/operating-target');
 function expand(target, period) {
   if (!target) return null;
   const weeks = {};
-  for (const metric of ['sales', 'consumption']) {
-    const amounts = weeklyTargets(target[metric], period.weeks.slice(0, 3).map((w) => target.weeks[w.id]?.[metric] ?? null));
+  for (const metric of ['sales', 'consumption', ...countKeys]) {
+    const monthValue = metric === 'newCustomers' ? target.new_customers : target[metric];
+    const amounts = monthValue == null ? [null, null, null, null] : weeklyTargets(monthValue, period.weeks.slice(0, 3).map((w) => target.weeks[w.id]?.[metric] ?? null), countKeys.includes(metric));
     period.weeks.forEach((w, i) => { (weeks[w.id] ||= {})[metric] = amounts[i]; });
   }
-  return { ...target, weeks };
+  return { ...target, newCustomers: target.new_customers ?? null, weeks };
 }
 async function load(query, periodId, scope, scopeId, lock = false) {
   const [row] = await query(`SELECT * FROM daily_operating_targets WHERE period_id=$1 AND scope=$2 AND scope_id=$3${lock ? ' FOR UPDATE' : ''}`,
@@ -45,7 +46,15 @@ async function write(ctx, month) {
     if ((old?.version || 0) !== payload.version) throw Error('CONFLICT: 目标已更新，请重新加载');
     let row;
     if (month) {
-      if (old?.month_confirmed) throw Error('INVALID_STATE: 本月目标已确认，不可修改');
+      const counts = validateCounts(payload);
+      if (old?.month_confirmed) {
+        if (!counts || old.counts_month_confirmed) throw Error('INVALID_STATE: 本月目标已确认，不可修改');
+        [row] = await query(`UPDATE daily_operating_targets SET visits=$4,new_customers=$5,projects=$6,
+          counts_month_confirmed=true,version=version+1,updated_at=NOW()
+          WHERE period_id=$1 AND scope=$2 AND scope_id=$3 RETURNING *`,
+        [period.id, scope.scope, scope.scopeId, counts.visits, counts.newCustomers, counts.projects]);
+        return { ...resolved, ...scope, target: expand(row, period) };
+      }
       const amounts = validateMonth(payload, scope.scope);
       [row] = await query(`INSERT INTO daily_operating_targets(period_id,scope,scope_id,sales,consumption,penalty,month_confirmed)
         VALUES($1,$2,$3,$4,$5,$6,true)
@@ -53,11 +62,19 @@ async function write(ctx, month) {
           penalty=EXCLUDED.penalty,month_confirmed=true,version=daily_operating_targets.version+1,updated_at=NOW()
         WHERE NOT daily_operating_targets.month_confirmed RETURNING *`,
       [period.id, scope.scope, scope.scopeId, amounts.sales, amounts.consumption, amounts.penalty]);
+      if (counts) [row] = await query(`UPDATE daily_operating_targets SET visits=$4,new_customers=$5,projects=$6,
+        counts_month_confirmed=true WHERE period_id=$1 AND scope=$2 AND scope_id=$3 RETURNING *`,
+      [period.id, scope.scope, scope.scopeId, counts.visits, counts.newCustomers, counts.projects]);
     } else {
       if (!old?.month_confirmed) throw Error('INVALID_STATE: 请先确认本月目标');
       if (!week || week.id === period.weeks[3].id) throw Error('INVALID_STATE: 第4周自动取剩余金额，无需填写');
-      const weeks = { ...old.weeks, [week.id]: { sales: cents(payload.sales), consumption: cents(payload.consumption) } };
-      for (const metric of ['sales', 'consumption']) weeklyTargets(old[metric], period.weeks.slice(0, 3).map((w) => weeks[w.id]?.[metric] ?? null));
+      const counts = validateCounts(payload);
+      if (counts && !old.counts_month_confirmed) throw Error('INVALID_STATE: 请先补充确认三项月目标');
+      const weeks = { ...old.weeks, [week.id]: { ...old.weeks[week.id], sales: cents(payload.sales), consumption: cents(payload.consumption), ...(counts || {}) } };
+      for (const metric of ['sales', 'consumption', ...countKeys]) {
+        const value = metric === 'newCustomers' ? old.new_customers : old[metric];
+        if (value != null) weeklyTargets(value, period.weeks.slice(0, 3).map((w) => weeks[w.id]?.[metric] ?? null), countKeys.includes(metric));
+      }
       [row] = await query(`UPDATE daily_operating_targets SET weeks=$4::jsonb,version=version+1,updated_at=NOW()
         WHERE period_id=$1 AND scope=$2 AND scope_id=$3 RETURNING *`,
       [period.id, scope.scope, scope.scopeId, JSON.stringify(weeks)]);

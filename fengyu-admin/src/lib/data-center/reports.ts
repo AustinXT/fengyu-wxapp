@@ -92,3 +92,19 @@ export type DataCenterReportKey = keyof typeof DATA_CENTER_REPORTS
 
 export const DATA_CENTER_REPORT_LIST: ReadonlyArray<DataCenterReport & { key: DataCenterReportKey }> =
   (Object.keys(DATA_CENTER_REPORTS) as DataCenterReportKey[]).map((key) => ({ key, ...DATA_CENTER_REPORTS[key] }))
+
+/** 经营目标业务页面使用目标周期与填写权限，不使用通用经营明细日期筛选。 */
+export const OPERATING_REPORTS: DataCenterReport[] = [
+  {
+    path: '/data-center/operating-progress', title: '经营目标进度', periodKind: 'month',
+    requiredActions: [DATA_CENTER_DASHBOARD_ACTION], menu: { section: '经营明细', enabled: true },
+  },
+  {
+    path: '/data-center/operating-targets', title: '经营目标填报', periodKind: 'month',
+    requiredActions: [DATA_CENTER_DASHBOARD_ACTION], menu: { section: '经营明细', enabled: true },
+  },
+  {
+    path: '/data-center/operating-pk', title: '经营指标 PK 榜', periodKind: 'month',
+    requiredActions: [DATA_CENTER_DASHBOARD_ACTION], menu: { section: '经营明细', enabled: true },
+  },
+];

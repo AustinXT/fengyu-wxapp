@@ -71,6 +71,9 @@ const LIST_PAGE_GATES: Record<string, Clause[]> = {
   '/data-center/product': ['data_center:dashboard'],
   // 经营明细报表（#367）：SSR 闸门 = 各页 scope 数据源（兼任闸门）+ getDataStartDates（dashboard）。
   // 顾客明细 / 员工提成类的数据源是 withAllPermissions（dashboard + 专用权限点，同一角色授权）。
+  '/data-center/operating-progress': ['data_center:dashboard'],
+  '/data-center/operating-targets': ['data_center:dashboard'],
+  '/data-center/operating-pk': ['data_center:dashboard'],
   '/data-center/daily-overview': ['data_center:dashboard'],
   '/data-center/customer-frequency': ['data_center:dashboard', 'data_center:customer_detail'],
   '/data-center/remaining-cards': ['data_center:dashboard', 'data_center:customer_detail'],
@@ -96,6 +99,7 @@ const LIST_PAGE_GATES: Record<string, Clause[]> = {
   '/messages': ['message:list'],
   '/logs': ['operation_log:list'],
   '/settings': ['system:config'],
+  '/settings/daily': ['system:config'],
 }
 
 /**
