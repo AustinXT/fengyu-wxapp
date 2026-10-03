@@ -102,3 +102,19 @@ describe('App.syncLoginState OPENID 恢复登录', () => {
     consoleSpy.mockRestore()
   })
 })
+
+describe('App.setMemberFlag 分类降档', () => {
+  test('省略服务端标记时，历史等级不授予会员价；再达标恢复', () => {
+    appDefinition.setMemberFlag({ customerType: '小美客', memberLevel: '金钻' })
+    expect(wx.getStorageSync('isMember')).toBe(false)
+    expect(wx.getStorageSync('memberLevel')).toBe('金钻')
+    appDefinition.setMemberFlag({ customerType: '会员客', memberLevel: '金钻' })
+    expect(wx.getStorageSync('isMember')).toBe(true)
+  })
+  test('服务端明确降档时覆盖旧缓存并保留历史等级', () => {
+    wx.setStorageSync('isMember', true)
+    appDefinition.setMemberFlag({ isMember: false, customerType: '流量客', memberLevel: '金钻' })
+    expect(wx.getStorageSync('isMember')).toBe(false)
+    expect(wx.getStorageSync('memberLevel')).toBe('金钻')
+  })
+})
