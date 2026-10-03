@@ -5,7 +5,9 @@ import { type DailyPeriodInput } from '@/lib/daily-config'
 import { actionErrorMessage } from '@/lib/action-error'
 
 type Configuration = Awaited<ReturnType<typeof getDailyConfiguration>>
-const blank = (): DailyPeriodInput => ({ id: crypto.randomUUID().slice(0, 30), name: '', start: '', end: '', version: 0,
+// getRandomValues 在 HTTP 测试地址也可用；randomUUID 仅在安全上下文可用。
+const configurationId = () => Array.from(crypto.getRandomValues(new Uint8Array(15)), (n) => n.toString(16).padStart(2, '0')).join('')
+const blank = (): DailyPeriodInput => ({ id: configurationId(), name: '', start: '', end: '', version: 0,
   weeks: [1, 2, 3, 4].map((n) => ({ id: 'w' + n, name: '第' + n + '周', start: '', end: '' })) })
 const field = 'rounded border px-3 py-2 bg-white w-full'
 const auditText = (detail: unknown, key: 'before' | 'after', stores: { id: string; name: string }[]) => {
@@ -23,7 +25,7 @@ const button = 'rounded bg-[#C0322A] text-white px-4 py-2 disabled:opacity-50'
 export default function DailyConfiguration({ initial: initialConfiguration }: { initial: Configuration }) {
   const [initial, setInitial] = useState(initialConfiguration)
   const [tab, setTab] = useState('period'), [selected, setSelected] = useState(initial.periods[0]?.id || '')
-  const [period, setPeriod] = useState<DailyPeriodInput>(initial.periods[0] || blank())
+  const [period, setPeriod] = useState<DailyPeriodInput>(() => initial.periods[0] || blank())
   const [classes, setClasses] = useState(initial.classes.filter((c) => c.periodId === selected))
   const [assignments, setAssignments] = useState(initial.assignments.filter((s) => s.periodId === selected))
   const [busy, setBusy] = useState(false), [message, setMessage] = useState('')
@@ -68,7 +70,7 @@ export default function DailyConfiguration({ initial: initialConfiguration }: { 
       </section> : <section className="space-y-4 rounded-xl border bg-white p-5"><h2 className="text-lg font-semibold">班级与门店分配</h2>
         {!selected ? <p>请先创建并选择经营月。</p> : <><p className="text-sm text-gray-500">每家门店同月只能参加一个班级，员工与店长按员工档案的所属门店参与。</p>
           <div className="space-y-2">{classes.map((c, i) => <div key={c.id} className="flex items-end gap-3"><label className="flex-1">班级 {i + 1}<input className={field} value={c.name} maxLength={30} onChange={(e) => setClasses(classes.map((v, n) => n === i ? { ...v, name: e.target.value } : v))}/></label><button type="button" className="px-4 py-2 text-[#C0322A]" onClick={() => removeClass(c.id)}>移除班级</button></div>)}</div>
-          <button className={button} onClick={() => setClasses([...classes, { id: crypto.randomUUID(), name: '', periodId: selected }])}>添加班级</button>
+          <button className={button} onClick={() => setClasses([...classes, { id: configurationId(), name: '', periodId: selected }])}>添加班级</button>
           <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr>{['门店', '班级', '军团', '小组', '指导员'].map((s) => <th className="p-3 text-left" key={s}>{s}</th>)}</tr></thead><tbody>{initial.stores.map((store) => {
             const assignment = assignments.find((s) => s.storeId === store.id)
             return <tr key={store.id} className="border-t"><td className="p-3">{store.name}</td><td className="p-3"><select aria-label={store.name + '班级'} className={field} value={assignment?.classId || ''} onChange={(e) => {
