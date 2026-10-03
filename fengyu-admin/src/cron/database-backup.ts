@@ -3,7 +3,6 @@ import { randomUUID } from 'node:crypto'
 import {
   chmod,
   mkdir,
-  open,
   readFile,
   readdir,
   rename,
@@ -201,22 +200,51 @@ async function cleanupBackups(now = Date.now()): Promise<void> {
   }
 }
 
+class BackupBusyError extends Error {}
+
+// flock 的锁由内核随进程退出释放；锁文件永久保留，不能 unlink 后产生两套 inode 锁。
 async function acquireBackupLock(): Promise<() => Promise<void>> {
-  const lockPath = path.join(backupControlDir(), 'backup.lock')
-  let handle: Awaited<ReturnType<typeof open>>
-  try {
-    handle = await open(lockPath, 'wx', 0o600)
-  } catch (error) {
-    const info = await stat(lockPath).catch(() => null)
-    if (!info || Date.now() - info.mtimeMs < 6 * 60 * 60 * 1_000) throw error
-    console.warn('[database-backup] removing stale backup lock')
-    await rm(lockPath, { force: true })
-    handle = await open(lockPath, 'wx', 0o600)
+  const child = spawn('flock', ['-n', '-E', '75', path.join(backupControlDir(), 'runtime.lock'),
+    'sh', '-c', 'printf "locked\\n"; cat >/dev/null'], { stdio: ['pipe', 'pipe', 'pipe'] })
+  const closed = new Promise<void>((resolve) => child.once('close', () => resolve()))
+  await new Promise<void>((resolve, reject) => {
+    child.once('error', reject)
+    child.once('close', (code) => reject(code === 75 ? new BackupBusyError('backup runtime is busy')
+      : new Error(`backup flock exited with ${code}`)))
+    child.stdout.once('data', () => resolve())
+  })
+  return async () => { child.stdin.end(); await closed }
+}
+
+async function recoverInterruptedBackups(currentId?: string): Promise<void> {
+  // 调用方持 runtime.lock：其它备份/部署均不可能在清理期间启动。
+  for (const name of await readdir(statesDir())) {
+    if (!/^[0-9a-f-]+\.json$/.test(name) || name === `${currentId}.json`) continue
+    const status = JSON.parse(await readFile(path.join(statesDir(), name), 'utf8')) as BackupStatus
+    if (status.state !== 'running') continue
+    const completedAt = new Date().toISOString()
+    const failed: BackupStatus = { ...status, state: 'failed', completedAt, updatedAt: completedAt,
+      errorCode: 'BACKUP_FAILED', message: '备份进程中断，已恢复备份队列；定时备份将补跑' }
+    await writeStatus(failed)
+    await recordBackupOutcome(failed).catch((error) => console.error('[database-backup] recovery audit failed:', error))
+    if (status.kind === 'scheduled') {
+      const marker = await readFile(scheduledMarkerPath(), 'utf8').catch(() => '')
+      if (marker.trim() === beijingDay(new Date(status.createdAt))) await rm(scheduledMarkerPath(), { force: true })
+    }
   }
-  return async () => {
-    await handle.close().catch(() => undefined)
-    await rm(lockPath, { force: true })
+  for (const name of await readdir(backupDataDir())) {
+    if (BACKUP_FILE_PATTERN.test(name.replace(/\.partial$/, '')) && name.endsWith('.partial')) {
+      await rm(path.join(backupDataDir(), name), { force: true })
+    }
   }
+  for (const name of await readdir(requestsDir())) {
+    if (/^[0-9a-f-]+\.json\.running$/.test(name) && name !== `${currentId}.json.running`) {
+      await rm(path.join(requestsDir(), name), { force: true })
+      await rm(path.join(backupControlDir(), 'manual-active.lock'), { force: true })
+    }
+  }
+  // 旧版本 wx 文件锁不再参与互斥；只在持内核锁时移除历史残留。
+  await rm(path.join(backupControlDir(), 'backup.lock'), { force: true })
 }
 
 export async function performDatabaseBackup(
@@ -226,12 +254,12 @@ export async function performDatabaseBackup(
 ): Promise<BackupStatus> {
   await ensureDirectories()
   const createdAt = new Date().toISOString()
-  let release: (() => Promise<void>) | null = null
+  const release = await acquireBackupLock()
   let partialPath: string | null = null
   const running: BackupStatus = { id, kind, state: 'running', createdAt, updatedAt: createdAt }
-  await writeStatus(running)
   try {
-    release = await acquireBackupLock()
+    await recoverInterruptedBackups(id)
+    await writeStatus(running)
     const capacity = await publishBackupCapacity()
     if (!capacity.sufficient) {
       const status: BackupStatus = {
@@ -305,7 +333,7 @@ export async function performDatabaseBackup(
     return status
   } finally {
     if (partialPath) await rm(partialPath, { force: true }).catch(() => undefined)
-    if (release) await release()
+    await release()
   }
 }
 
@@ -325,9 +353,15 @@ export async function processManualBackupRequests(): Promise<void> {
     const request = JSON.parse(await readFile(claimedPath, 'utf8')) as BackupRequest
     if (request.kind !== 'manual' || request.id !== name.replace(/\.json$/, '')) throw new Error('invalid backup request')
     await performDatabaseBackup('manual', request.id, request.requestedBy)
+  } catch (error) {
+    if (!(error instanceof BackupBusyError)) throw error
+    await rename(claimedPath, requestPath)
+    return
   } finally {
-    await rm(claimedPath, { force: true })
-    await rm(path.join(backupControlDir(), 'manual-active.lock'), { force: true })
+    // 互斥失败时请求已重新排队，保留 manual-active.lock。
+    const pending = await stat(requestPath).catch(() => null)
+    if (!pending) await rm(claimedPath, { force: true })
+    if (!pending) await rm(path.join(backupControlDir(), 'manual-active.lock'), { force: true })
   }
 }
 
@@ -343,13 +377,26 @@ export async function runScheduledBackupIfDue(now = new Date()): Promise<BackupS
   const day = beijingDay(now)
   const previous = await readFile(scheduledMarkerPath(), 'utf8').catch(() => '')
   if (previous.trim() === day) return null
-  const status = await performDatabaseBackup('scheduled')
+  let status: BackupStatus
+  try { status = await performDatabaseBackup('scheduled') } catch (error) {
+    if (error instanceof BackupBusyError) return null
+    throw error
+  }
   // 每天至多尝试一次，失败原因保留在状态中，避免故障时每 5 秒重试打满数据库/磁盘。
   await writeFile(scheduledMarkerPath(), `${day}\n`, { mode: 0o600 })
   return status
 }
 
 export async function maintainBackupRuntime(): Promise<void> {
-  await publishBackupCapacity()
-  await cleanupBackups()
+  await ensureDirectories()
+  let release: () => Promise<void>
+  try { release = await acquireBackupLock() } catch (error) {
+    if (error instanceof BackupBusyError) return
+    throw error
+  }
+  try {
+    await recoverInterruptedBackups()
+    await publishBackupCapacity()
+    await cleanupBackups()
+  } finally { await release() }
 }

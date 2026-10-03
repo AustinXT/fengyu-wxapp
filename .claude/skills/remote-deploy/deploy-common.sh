@@ -289,6 +289,30 @@ chmod 700 "$deploy_root" "$state_dir" "$release_root"
 exec 9>"$deploy_root/deploy.lock"
 flock -n 9 || { echo "ERROR: another remote deployment is active" >&2; exit 1; }
 
+# #255：与 cron 的内核锁互斥，锁覆盖 compose up，避免检查后新备份启动的竞态。
+backup_safe_compose() {
+  if [ "$component" != "admin" ]; then docker compose "$@"; return; fi
+  control="$remote_dir/data/backup-control"
+  # 首次部署尚无 worker/控制目录；无备份需要保护。
+  if [ ! -d "$control" ]; then docker compose "$@"; return; fi
+  guard=$(cat <<'BACKUP_GUARD'
+control=$1; shift
+if [ -e "$control/backup.lock" ] || grep -Eq '"state"[[:space:]]*:[[:space:]]*"running"' "$control"/states/*.json 2>/dev/null; then
+  echo "ERROR: database backup is running or interrupted; deployment refused. Check settings/diagnostics and backup-control states." >&2
+  exit 75
+fi
+exec docker compose "$@"
+BACKUP_GUARD
+)
+  if [ -w "$control" ]; then
+    if flock -n -E 75 "$control/runtime.lock" sh -c "$guard" sh "$control" "$@"; then return; else guard_rc=$?; fi
+  else
+    if sudo -n flock -n -E 75 "$control/runtime.lock" sh -c "$guard" sh "$control" "$@"; then return; else guard_rc=$?; fi
+  fi
+  echo "ERROR: backup guard refused admin switch (exit=$guard_rc); check settings/diagnostics. Retry after the backup completes." >&2
+  return "$guard_rc"
+}
+
 # 历史秘密文件不再参与新版发布，只收紧权限并保留兼容回滚能力。
 # test 服务器 .env 属主 www-data 而 SSH 用户是 ubuntu，chmod 可能 EPERM，需 sudo -n 兜底。
 secure_legacy_env_file() {
@@ -313,6 +337,11 @@ secure_legacy_env_file "$remote_dir/.analyst-runtime.env"
 compose_release() {
   target_release="$1"
   shift
+  if [ "${1:-}" = "up" ]; then
+    backup_safe_compose --project-directory "$remote_dir" --env-file "$target_release/compose.env" \
+      -f "$target_release/docker-compose.yml" -f "$target_release/docker-compose.remote.yml" "$@"
+    return
+  fi
   docker compose \
     --project-directory "$remote_dir" \
     --env-file "$target_release/compose.env" \
@@ -512,7 +541,7 @@ run_release_state() {
         export "$legacy_key=legacy-not-used"
       fi
     done
-    docker compose \
+    backup_safe_compose \
       --project-directory "$remote_dir" \
       --env-file "$remote_dir/.env" \
       --env-file "$legacy_runtime" \
@@ -542,7 +571,14 @@ else
 fi
 
 ensure_admin_runtime_dirs
-if ! compose_release "$release_dir" up -d --no-build $(services_for_component) || ! full_health; then
+if compose_release "$release_dir" up -d --no-build $(services_for_component); then
+  switch_rc=0
+else
+  switch_rc=$?
+fi
+# 互斥拒绝发生在切换前，不自动回滚或改发布状态。
+[ "$switch_rc" != 75 ] || exit 75
+if [ "$switch_rc" != 0 ] || ! full_health; then
   echo "ERROR: $component release $release_id failed; starting automatic rollback" >&2
   docker logs --tail 80 "$current_container" 2>&1 || true
   if run_release_state "$rollback_state" && rollback_health; then
@@ -615,6 +651,30 @@ test -f "$current_state" && test -f "$previous_state" || {
 exec 9>"$deploy_root/deploy.lock"
 flock -n 9 || { echo "ERROR: another remote deployment is active" >&2; exit 1; }
 
+# #255：与 cron 的内核锁互斥，锁覆盖 compose up，避免检查后新备份启动的竞态。
+backup_safe_compose() {
+  if [ "$component" != "admin" ]; then docker compose "$@"; return; fi
+  control="$remote_dir/data/backup-control"
+  # 首次部署尚无 worker/控制目录；无备份需要保护。
+  if [ ! -d "$control" ]; then docker compose "$@"; return; fi
+  guard=$(cat <<'BACKUP_GUARD'
+control=$1; shift
+if [ -e "$control/backup.lock" ] || grep -Eq '"state"[[:space:]]*:[[:space:]]*"running"' "$control"/states/*.json 2>/dev/null; then
+  echo "ERROR: database backup is running or interrupted; deployment refused. Check settings/diagnostics and backup-control states." >&2
+  exit 75
+fi
+exec docker compose "$@"
+BACKUP_GUARD
+)
+  if [ -w "$control" ]; then
+    if flock -n -E 75 "$control/runtime.lock" sh -c "$guard" sh "$control" "$@"; then return; else guard_rc=$?; fi
+  else
+    if sudo -n flock -n -E 75 "$control/runtime.lock" sh -c "$guard" sh "$control" "$@"; then return; else guard_rc=$?; fi
+  fi
+  echo "ERROR: backup guard refused admin switch (exit=$guard_rc); check settings/diagnostics. Retry after the backup completes." >&2
+  return "$guard_rc"
+}
+
 state_get() {
   awk -F= -v key="$2" '$1==key {sub(/^[^=]*=/, ""); print; exit}' "$1"
 }
@@ -662,7 +722,7 @@ else
 fi
 
 if [ "$mode" = "release" ]; then
-  docker compose --project-directory "$remote_dir" --env-file "$release_dir/compose.env" \
+  backup_safe_compose --project-directory "$remote_dir" --env-file "$release_dir/compose.env" \
     -f "$release_dir/docker-compose.yml" -f "$release_dir/docker-compose.remote.yml" \
     up -d --no-build $services
 elif [ "$mode" = "legacy" ]; then
@@ -683,7 +743,7 @@ elif [ "$mode" = "legacy" ]; then
       export "$legacy_key=legacy-not-used"
     fi
   done
-  docker compose --project-directory "$remote_dir" --env-file "$remote_dir/.env" --env-file "$runtime" \
+  backup_safe_compose --project-directory "$remote_dir" --env-file "$remote_dir/.env" --env-file "$runtime" \
     -f "$remote_dir/docker-compose.yml" -f "$remote_dir/docker-compose.remote.yml" \
     up -d --no-build $services
 else

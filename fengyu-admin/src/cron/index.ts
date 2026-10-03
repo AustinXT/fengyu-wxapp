@@ -76,7 +76,7 @@ async function start(): Promise<void> {
     // 这里不再单独写一次空闲心跳：runBackupTick 立刻就会写 busy、收尾写 idle，
     // 两者并发会撞同一个 heartbeat temp 文件（2026-09-12 的 crash-loop 根因）。
     // 每个 void 调用都必须自带 catch —— 未处理的 rejection 在 Node 22 下直接终止进程。
-    void maintainBackupRuntime().catch((err) => console.error('[cron-worker] backup runtime init failed:', err))
+    await maintainBackupRuntime()
     void runBackupTick()
     const backupPoll = setInterval(() => { void runBackupTick() }, BACKUP_POLL_MS)
     const capacityRefresh = setInterval(() => {
