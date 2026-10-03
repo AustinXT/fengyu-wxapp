@@ -5,7 +5,7 @@ import { notifyOps } from '../lib/notify'
 
 export async function auditRoleMigrations(db: Db) {
   const rows = await db.execute(sql`SELECT * FROM (${pendingRoleMigrationsSql()}) pending
-    WHERE created_at::timestamptz < now() - interval '3 days'`) as unknown as Array<{ employee_id: string; event_id: string; binding_id: number }>
+    WHERE created_at < now() - interval '3 days'`) as unknown as Array<{ employee_id: string; event_id: string; binding_id: number }>
   if (rows.length) {
     const employees = [...new Set(rows.map(row => row.employee_id))]
     await db.execute(sql`INSERT INTO operation_logs(action,target_type,target_id,detail,source)

@@ -22,18 +22,22 @@ export const getEmployeeRoleMigration = withPermission('permission:list', async 
   const roles = await db.execute(sql`
     SELECT pr.id::float8 AS id, pr.role, rd.name AS role_name, pr.scope_id, n.name AS scope_name, n.type AS scope_type,
       s.org_node_id AS target_scope_id, s.store_name AS target_store_name,
+      rd.is_super_admin, rd.allowed_scope_types,
       EXISTS (SELECT 1 FROM permission_roles target WHERE target.employee_id = pr.employee_id
         AND target.role = pr.role AND target.scope_id = s.org_node_id) AS target_exists
     FROM permission_roles pr JOIN permission_role_definitions rd ON rd.role_key = pr.role
     JOIN org_nodes n ON n.id = pr.scope_id LEFT JOIN stores s ON s.store_id = ${employee.storeId}
       AND s.is_closed = false AND EXISTS (SELECT 1 FROM org_nodes target_node WHERE target_node.id = s.org_node_id AND target_node.type = '门店')
     WHERE pr.employee_id = ${employeeId} ORDER BY pr.id
-  `) as unknown as Array<{ id: number; role: string; role_name: string; scope_id: string; scope_name: string; scope_type: string; target_scope_id: string | null; target_store_name: string | null; target_exists: boolean }>
+  `) as unknown as Array<{ id: number; role: string; role_name: string; scope_id: string; scope_name: string; scope_type: string; target_scope_id: string | null; target_store_name: string | null; target_exists: boolean; is_super_admin: boolean; allowed_scope_types: string[] }>
   const pending = await db.execute(pendingRoleMigrationsSql(employeeId)) as unknown as Array<{ event_id: string; binding_id: number; created_at: string }>
   const roots = session.roles.map(r => r.scopeId)
+  const migrationSession = scopeSessionToAllActions(session, ['permission:assign', 'permission:revoke'])
+  const migrationRoots = migrationSession.roles.map(r => r.scopeId)
   const scopedRoles = (await Promise.all(roles.map(async role => ({ ...role, canReview: isAdminScope(session)
-    || await isNodeWithinScopeRoots(role.scope_id, roots), canMigrate: Boolean(role.target_scope_id && (isAdminScope(session)
-      || await isNodeWithinScopeRoots(role.target_scope_id, roots))) })))).filter(role => role.canReview)
+    || await isNodeWithinScopeRoots(role.scope_id, roots), canMigrate: Boolean(!role.is_super_admin && role.allowed_scope_types?.includes('门店') && role.target_scope_id
+      && (isAdminScope(migrationSession) || (await isNodeWithinScopeRoots(role.scope_id, migrationRoots)
+        && await isNodeWithinScopeRoots(role.target_scope_id, migrationRoots)))) })))).filter(role => role.canReview)
   return { roles: scopedRoles, pending: pending.filter(p => scopedRoles.some(r => r.id === p.binding_id)), resigned: employee.is_resigned }
 })
 

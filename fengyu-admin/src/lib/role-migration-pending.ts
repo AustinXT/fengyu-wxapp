@@ -7,7 +7,7 @@ export function pendingRoleMigrationsSql(employeeId?: string) {
       SELECT id, target_id, detail, created_at FROM operation_logs
       WHERE action = 'permission.scopeSync.skipped' AND detail->>'reason' = 'manual_review_required'
     )
-    SELECT l.id::text AS event_id, l.target_id AS employee_id, l.created_at::text,
+    SELECT l.id::text AS event_id, l.target_id AS employee_id, l.created_at,
       e.name AS employee_name, pr.id::float8 AS binding_id, pr.role, pr.scope_id
     FROM latest l
     JOIN staff_wechat_users e ON e.employee_id = l.target_id AND e.is_resigned = false

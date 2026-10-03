@@ -58,6 +58,12 @@ describe('人工角色迁移', () => {
     mocks.global = false; mocks.scope.mockResolvedValue(false); preview = [{ id: 1, scope_id: 'secret', target_scope_id: 'new' }]; pending = [{ binding_id: 1, event_id: '10' }];
     expect(await getEmployeeRoleMigration('E')).toMatchObject({ roles: [], pending: [] })
   })
+  it('超管或定义不允许门店的旧绑定在预览不可迁移', async () => {
+    preview = [{ id: 1, scope_id: 'old', target_scope_id: 'new', is_super_admin: true, allowed_scope_types: ['门店'] }];
+    expect((await getEmployeeRoleMigration('E')).roles[0].canMigrate).toBe(false)
+    preview = [{ id: 1, scope_id: 'old', target_scope_id: 'new', is_super_admin: false, allowed_scope_types: ['总部'] }];
+    expect((await getEmployeeRoleMigration('E')).roles[0].canMigrate).toBe(false)
+  })
   it('CAS0行必须拒绝且不记成功审计', async () => {
     casRows = []; await expect(reviewEmployeeRoleMigration(input)).rejects.toThrow('CONFLICT:')
     expect(mocks.log).not.toHaveBeenCalled()
