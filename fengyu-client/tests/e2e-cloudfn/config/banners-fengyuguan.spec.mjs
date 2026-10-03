@@ -188,9 +188,11 @@ async function caseFengyuguanWithData() {
 
   const res = await invokePublic('config.fengyuguan', {})
   if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
-  if (res.data.url !== url) {
-    throw new Error(`url mismatch: expected ${url}, got ${res.data.url}`)
+  if (!res.data.url.includes('/images/fengyuguan.jpg?imageMogr2/thumbnail/750x750&v=')) {
+    throw new Error(`expect safe fixed-source thumbnail, got ${res.data.url}`)
   }
+  if (!Array.isArray(res.data.strips) || res.data.strips.length > 12) throw new Error('invalid bounded strips')
+  if (res.data.strips.some(s => !/\/thumbnail\/\d+x\d+&v=\d+$/.test(s.url))) throw new Error('unsafe strip URL')
   if (typeof res.data.v !== 'number' || res.data.v <= 0) {
     throw new Error(`expect v>0 number (cache version), got ${JSON.stringify(res.data.v)}`)
   }
