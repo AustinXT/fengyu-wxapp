@@ -96,3 +96,10 @@ test('导出的顾客同步入口也拒绝生产、query覆盖及未声明目标
     assert.equal(connected,false)
   }
 })
+
+test('规范dev目标放行且调用真实顾客同步与补算（连接替身，不访问共享库）', async () => {
+  const client = fakeClient()
+  await syncCustomers(mssql, { options: { connectionString: 'postgres://test:test@101.34.242.103:5433/fengyu_wxapp' }, connect: async () => client }, false)
+  assert.ok(client.calls.some(call => call.sql.includes('CREATE TEMP TABLE _recalc_target')))
+  assert.equal(client.calls.at(-1).sql, 'COMMIT')
+})
