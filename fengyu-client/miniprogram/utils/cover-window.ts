@@ -56,7 +56,7 @@ interface PageLike {
 }
 
 export interface CoverWindowOptions {
-  /** 滚动容器选择器，作为相交判定的参照系（如 '.product-scroll'） */
+  // 滚动容器选择器；空字符串使用页面视口（自然页面滚动）。
   scrollSelector: string;
   /** 封面槽位选择器，每张卡片一个，必须带 `data-idx="{{index}}"` */
   slotSelector: string;
@@ -227,7 +227,8 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
     }
 
     try {
-      created.relativeTo(options.scrollSelector, { top: margin, bottom: margin });
+      if (options.scrollSelector) created.relativeTo(options.scrollSelector, { top: margin, bottom: margin });
+      else created.relativeToViewport({ top: margin, bottom: margin });
       created.observe(options.slotSelector, (res) => {
         // 旧世代的在队回调整段丢弃：既不写 pending，也不碰新世代的守护定时器
         if (gen !== generation) return;

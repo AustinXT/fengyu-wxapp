@@ -806,6 +806,27 @@ describe('product.shopInit', () => {
 })
 
 describe('product.experienceCardList', () => {
+  test('分页硬上限、多取一行与复合SKU游标', async () => {
+    pg.query.mockResolvedValueOnce(Array.from({ length: 51 }, (_, i) => ({ sku_id: `s${i}`, sort_order: 1 })))
+    const ctx = createBoundCtx({ limit: 999 })
+    await routes.experienceCardList(ctx)
+    expect(ctx.result.skuList).toHaveLength(50)
+    expect(ctx.result.hasMore).toBe(true)
+    expect(JSON.parse(Buffer.from(ctx.result.nextCursor, 'base64').toString())).toEqual([1, 's49'])
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).toContain('LEFT JOIN LATERAL')
+    expect(sql).toMatch(/LIMIT \$\d+/)
+    expect(params.at(-1)).toBe(51)
+    pg.query.mockResolvedValueOnce([])
+    await routes.experienceCardList(createBoundCtx({ cursor: ctx.result.nextCursor, limit: 10 }))
+    expect(pg.query.mock.calls[1][0]).toContain('(sk.sort_order, sk.sku_id) >')
+    expect(pg.query.mock.calls[1][1].slice(-3)).toEqual([1, 's49', 11])
+  })
+  test.each([{ limit: 0 }, { limit: 1.5 }, { cursor: 'bad' }])('非法分页拒绝且不查询PG：%j', async payload => {
+    await expect(routes.experienceCardList(createBoundCtx(payload))).rejects.toThrow('INVALID_PARAMS:')
+    expect(pg.query).not.toHaveBeenCalled()
+  })
+
   test('按 sortOrder ASC 返回 is_experience = true 的 SKU 列表', async () => {
     pg.query.mockResolvedValueOnce([
       { sku_id: 'sku-exp-1', product_type: '疗程卡', spec_name: '体验装', price: 99, special_price: 1, session_count: 1, service_fee: 0, sort_order: 1, product_id: 'p-trial-A', product_name: '焕活面部体验', cover_image: 'https://img/a.jpg', description: '新人专享' },
@@ -841,7 +862,7 @@ describe('product.experienceCardList', () => {
     expect(calledSql).toContain('sk.market_scope')
     expect(calledSql).toContain('JOIN org_nodes pm')
     expect(calledSql).toContain('pm.id = ANY')
-    expect(params).toEqual([['store-jiujiang']])
+    expect(params).toEqual([['store-jiujiang'], 21])
   })
 
   test('未绑定门店时只返回全局可见体验卡', async () => {
@@ -854,7 +875,7 @@ describe('product.experienceCardList', () => {
     expect(calledSql).toContain('sk.market_scope IS NULL')
     expect(calledSql).not.toContain('btrim(sk.market_scope) =')
     expect(calledSql).not.toContain('FROM stores s')
-    expect(params).toEqual([])
+    expect(params).toEqual([21])
   })
 
   test('SQL 不能用 SKU_VALID_FILTER（会反向过滤掉所有体验卡）', async () => {

@@ -25,7 +25,7 @@ module.exports.fmt = function(n) {
 
   <!-- 错误态 -->
   <van-empty
-    wx:elif="{{loadError}}"
+    wx:elif="{{loadError && skuList.length === 0}}"
     image="error"
     description="加载失败，下拉刷新重试"
   />
@@ -45,16 +45,10 @@ module.exports.fmt = function(n) {
       bindtap="onCardTap"
       data-sku-id="{{item.sku_id}}"
     >
-      <view class="card-cover cover-placeholder" wx:if="{{!item.cover_image}}">
-        <van-icon name="gift-o" size="80rpx" color="#FFFFFF" />
+      <view class="card-cover experience-cover-slot" data-idx="{{index}}">
+        <image wx:if="{{item.cover_image && item.coverVisible}}" class="card-cover" src="{{item.cover_image}}" mode="aspectFill" lazy-load />
+        <view wx:else class="card-cover cover-placeholder"><van-icon name="gift-o" size="80rpx" color="#FFFFFF" /></view>
       </view>
-      <image
-        wx:else
-        class="card-cover"
-        src="{{item.cover_image}}"
-        mode="aspectFill"
-        lazy-load
-      />
 
       <view class="card-body">
         <view class="card-title-row">
@@ -82,6 +76,10 @@ module.exports.fmt = function(n) {
     </view>
   </view>
 
+  <view class="footer-note" wx:if="{{skuList.length > 0}}">
+    <text wx:if="{{loadingMore}}">加载中...</text>
+    <text wx:elif="{{!hasMore}}">没有更多体验卡了</text>
+  </view>
   <!-- 底部说明 -->
   <view wx:if="{{skuList.length > 0}}" class="footer-note">
     <view class="footer-note-line">· 体验卡仅限本人使用，不可转让</view>

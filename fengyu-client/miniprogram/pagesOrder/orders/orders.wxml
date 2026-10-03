@@ -75,15 +75,9 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
         <!-- 普通订单：保留原 items loop -->
         <block wx:else>
           <view wx:for="{{item.items}}" wx:key="sale_item_id" wx:for-item="oi" class="order-item-row">
-            <image
-              wx:if="{{oi.cover_image}}"
-              class="oi-cover"
-              src="{{oi.cover_image}}"
-              mode="aspectFill"
-              lazy-load
-            />
-            <view wx:else class="oi-cover oi-cover--empty">
-              <van-icon name="photo-o" size="32rpx" color="#CCC" />
+            <view class="oi-cover order-cover-slot" data-idx="{{oi.coverIndex}}">
+              <image wx:if="{{oi.cover_image && coverRows[oi.coverIndex].coverVisible}}" class="oi-cover" src="{{oi.cover_image}}" mode="aspectFill" lazy-load />
+              <view wx:else class="oi-cover oi-cover--empty"><van-icon name="photo-o" size="32rpx" color="#CCC" /></view>
             </view>
             <view class="oi-info">
               <view class="oi-top">

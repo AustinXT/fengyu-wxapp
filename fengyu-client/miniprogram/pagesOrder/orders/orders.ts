@@ -1,4 +1,6 @@
 // pages/orders/orders.ts
+import { createCoverWindow, withInitialCoverVisible, type CoverWindow } from '../../utils/cover-window';
+import { buildAppendPatch } from '../../utils/spu-list';
 import Toast from '@vant/weapp/toast/toast';
 import { getStatusClass, formatOrderDate } from '../../utils/format';
 import { callClientApi } from '../../utils/cloud';
@@ -10,6 +12,7 @@ Page({
   data: {
     activeTab: 'all',
     list: [] as any[],
+    coverRows: [] as any[],
     isLoading: false,
     loadingMore: false,
     loadError: false,
@@ -17,6 +20,9 @@ Page({
   },
 
   _page: 1,
+  _epoch: 0,
+  _visible: true,
+  _coverWindow: null as CoverWindow | null,
 
   onLoad(options) {
     // 临时关闭：订单列表入口兜底拦截（业务平稳后恢复）。见 utils/feature-flags.ts
@@ -26,6 +32,7 @@ Page({
       wx.switchTab({ url: '/pages/home/home' });
       return;
     }
+    this._coverWindow = createCoverWindow(this, { scrollSelector: '', slotSelector: '.order-cover-slot', listKey: 'coverRows' });
     const { status } = options as { status?: string };
     if (status) {
       this.setData({ activeTab: status });
@@ -36,7 +43,15 @@ Page({
   onShow() {
     // 临时关闭期间不发起列表请求（见 utils/feature-flags.ts）
     if (!ORDERS_ENTRY_ENABLED) return;
+    this._visible = true;
+    this._coverWindow?.setVisible(true);
     this.loadOrders();
+  },
+  onHide() { this._visible = false; this._coverWindow?.setVisible(false); },
+  onUnload() { this._epoch++; this._coverWindow?.dispose(); },
+  _refreshCovers() {
+    this._coverWindow?.setVisible(this._visible && !this.data.isLoading && !this.data.loadError && this.data.list.length > 0);
+    this._coverWindow?.refresh();
   },
 
   onPullDownRefresh() {
@@ -67,7 +82,8 @@ Page({
     return payload;
   },
 
-  _mapOrders(orders: any[]) {
+  _mapOrders(orders: any[], startCoverIndex = 0) {
+    let coverIndex = startCoverIndex;
     return orders.map(item => {
       // 可预约判定：有效收款状态 + 至少一项有"已付未用"次数（paid_sessions - used > 0）
       // ticket 2026-05-19 paid_sessions：可消费门槛由 remaining > 0 升级为"还有已付未用的次数"
@@ -94,6 +110,7 @@ Page({
         const paid = Number(i.paid_sessions ?? 0);
         return {
           ...i,
+          coverIndex: coverIndex++,
           unit: i.unit || (i.product_type === '家居产品' ? '盒' : '次'),
           paid_sessions: paid,
           // NULL 卡（0040 前未回填）：wxml 据此把「已付 0」改显「已付 —」
@@ -132,41 +149,53 @@ Page({
   },
 
   async loadOrders() {
+    const epoch = ++this._epoch;
     this._page = 1;
-    this.setData({ isLoading: true, loadError: false, hasMore: true });
+    this._coverWindow?.invalidate();
+    this._coverWindow?.setVisible(false);
+    this.setData({ isLoading: true, loadingMore: false, loadError: false, hasMore: true });
     try {
-      const payload = this._buildListPayload(1);
-      const data = await callClientApi('order.list', payload);
-      const orders: any[] = data?.orders || [];
-      this.setData({
-        list: this._mapOrders(orders),
-        hasMore: data?.hasMore ?? false,
-      });
+      const data = await callClientApi('order.list', this._buildListPayload(1));
+      if (epoch !== this._epoch) return;
+      const list = this._mapOrders(data?.orders || []);
+      const coverRows = withInitialCoverVisible(list.flatMap(order => order.items.map(() => ({}))));
+      this._coverWindow?.invalidate();
+      this.setData({ list, coverRows, hasMore: data?.hasMore ?? false });
     } catch {
+      if (epoch !== this._epoch) return;
       Toast.fail('加载失败');
       this.setData({ loadError: true });
     } finally {
-      this.setData({ isLoading: false });
+      if (epoch === this._epoch) this.setData({ isLoading: false }, () => this._refreshCovers());
     }
   },
 
   async loadMore() {
-    this._page += 1;
+    if (this.data.isLoading || this.data.loadingMore || !this.data.hasMore) return;
+    const epoch = this._epoch;
+    const page = this._page + 1;
     this.setData({ loadingMore: true });
     try {
-      const payload = this._buildListPayload(this._page);
-      const data = await callClientApi('order.list', payload);
-      const orders: any[] = data?.orders || [];
-      this.setData({
-        list: [...this.data.list, ...this._mapOrders(orders)],
-        hasMore: data?.hasMore ?? false,
+      const data = await callClientApi('order.list', this._buildListPayload(page));
+      if (epoch !== this._epoch) return;
+      const seen = new Set(this.data.list.map(order => order.sale_order_id));
+      const unique = (data?.orders || []).filter((order: any) => {
+        if (seen.has(order.sale_order_id)) return false;
+        seen.add(order.sale_order_id); return true;
       });
+      const next = this._mapOrders(unique, this.data.coverRows.length);
+      const covers = withInitialCoverVisible(next.flatMap(order => order.items.map(() => ({}))), this.data.coverRows.length);
+      this._page = page;
+      this._coverWindow?.invalidate();
+      this.setData({
+        ...buildAppendPatch('list', this.data.list.length, [...this.data.list, ...next]),
+        ...buildAppendPatch('coverRows', this.data.coverRows.length, [...this.data.coverRows, ...covers]),
+        hasMore: data?.hasMore ?? false,
+      }, () => { if (epoch === this._epoch) this._refreshCovers(); });
     } catch {
-      // 加载更多失败，回退页码，用户可重试
-      this._page -= 1;
-      Toast.fail('加载更多失败');
+      if (epoch === this._epoch) Toast.fail('加载更多失败');
     } finally {
-      this.setData({ loadingMore: false });
+      if (epoch === this._epoch) this.setData({ loadingMore: false });
     }
   },
 
