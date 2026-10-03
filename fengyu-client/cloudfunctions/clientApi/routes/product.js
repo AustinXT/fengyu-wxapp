@@ -720,10 +720,19 @@ async function spuDetail(ctx) {
  * 其余仅对当前绑定门店所属市场可见。
  */
 async function experienceCardList(ctx) {
+  const { limit, cursor } = ctx.event.payload || {}
+  const pageSize = normalizeProductPageSize(limit)
+  const decoded = decodeProductCursor(cursor)
   const params = []
   const marketScopeFilter = buildMarketScopeFilter(ctx.auth, params, 'sk')
 
-  const rows = await pg.query(`
+  let cursorFilter = ''
+  if (decoded) {
+    params.push(decoded.sortOrder, decoded.productId)
+    cursorFilter = `AND (sk.sort_order, sk.sku_id) > ($${params.length - 1}::int, $${params.length}::text)`
+  }
+  params.push(pageSize + 1)
+  const probedRows = await pg.query(`
     SELECT
       sk.sku_id, sk.product_type, sk.spec_name,
       sk.price, sk.special_price, sk.session_count, sk.unit,
@@ -731,14 +740,24 @@ async function experienceCardList(ctx) {
       p.product_id, p.name AS product_name,
       p.cover_image, p.description
     FROM product_skus sk
-    LEFT JOIN mall_product_skus mps ON mps.sku_id = sk.sku_id
+    LEFT JOIN LATERAL (
+      SELECT product_id FROM mall_product_skus
+      WHERE sku_id = sk.sku_id ORDER BY product_id ASC LIMIT 1
+    ) mps ON true
     LEFT JOIN products p ON p.product_id = mps.product_id
     WHERE sk.is_experience = true
       AND sk.is_enabled = true
       AND sk.deleted_at IS NULL
       ${marketScopeFilter}
+      ${cursorFilter}
     ORDER BY sk.sort_order ASC, sk.sku_id ASC
+    LIMIT $${params.length}
   `, params)
+
+  const hasMore = probedRows.length > pageSize
+  const rows = probedRows.slice(0, pageSize)
+  const last = rows[rows.length - 1]
+  const nextCursor = hasMore ? encodeProductCursor({ sort_order: last.sort_order, product_id: last.sku_id }) : null
 
   // issue #230：体验卡列表卡片是 200rpx 方图，走小档。
   // LEFT JOIN products 时 cover_image 本就可能为 NULL，safeThumbUrl 同样返回 null，语义一致。
@@ -746,7 +765,7 @@ async function experienceCardList(ctx) {
     row.cover_image = safeThumbUrl(row.cover_image, PRODUCT_THUMB_BOX_SMALL)
   }
 
-  ctx.result = { skuList: rows }
+  ctx.result = { skuList: rows, hasMore, nextCursor }
 }
 
 module.exports = {

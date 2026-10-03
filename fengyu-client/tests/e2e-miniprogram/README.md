@@ -81,3 +81,12 @@ cd fengyu-client && printf '\n' | tcb fn config update clientApi
 | appId 不匹配 | IDE 当前装载的小程序非 client，切到 fengyu-client/miniprogram |
 | FUNCTION_NOT_FOUND | 同上，cloud function 注册在 client 的 envId |
 | PG 残留 | `bun fengyu-client/tests/e2e-miniprogram/cleanup.mjs` |
+
+
+### #273 图片窗口专项（无需共享业务库）
+
+`node fengyu-client/tests/e2e-miniprogram/cover-window.spec.mjs` 在独立ignored编译目录测试200体验卡/200订单明细，往返及observer失效后每个页面最多24图片节点，且可视槽位完整。源码订单入口仍关闭，仅测试产物启用。微信工具RC版本握手缺字段时直接用automator协议并核验SDK3.14.3，不修改node_modules。
+
+如需真实体验卡分页链路，先在127.0.0.1:54416的专用`issue256cireplay`库重放全部迁移，再显式设置`COVER_WINDOW_PG_TEST_URL`运行同一命令。它通过自动化协议调用真实product路由与真实SQL，测试200条分页、市场过滤和缩略URL；所有合成夹具在事务中，结束ROLLBACK。订单明细仍为合成API回包，不声称验证真实订单后端或CloudBase认证。无需关闭真实项目的域名校验，也不部署云函数。
+
+兼容发布期间，`scripts/deploy-cloudfunctions.sh prod client`上传前会只读核验生产有效体验SKU数量不超过20；数量超限、目标不符或无法核验均拒绝。云函数先于新小程序发布，旧版退出兼容期后再统一调整此临时门禁。

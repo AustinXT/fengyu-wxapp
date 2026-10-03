@@ -384,6 +384,11 @@ for _ch in primary shadow; do
   fi
 done
 
+# #273：旧前端没有体验卡翻页入口，兼容期生产最多20条；只读核验失败即阻止上传。
+if [[ "$DO_CLIENT" == "1" && "$DO_PRIMARY" == "1" ]]; then
+  node "$ROOT/scripts/check-experience-pagination-compat.cjs" "$ROOT/fengyu-client/cloudbaserc.json"
+fi
+
 # ── 占位符扫描：渲染后仍含占位符的 env 给出告警（不中止，部分占位是预期的，如 prod 未填的 SM4）──
 SCAN_FILES=()
 [[ "$DO_STAFF"  == "1" ]] && SCAN_FILES+=("$ROOT/fengyu-staff/cloudbaserc.json")
