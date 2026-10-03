@@ -47,8 +47,14 @@ test('体验卡刷新丢弃旧回包，翻页使用cursor且重建窗口', async
 
 test('200张体验图滚动到尾部仅保留窗口图，隐藏断开', async () => {
   const page = instance(experience);
-  api.mockResolvedValueOnce({ skuList: Array.from({ length: 200 }, (_, i) => ({ sku_id: String(i), cover_image: 'x' })) });
+  api.mockResolvedValueOnce({ skuList: Array.from({ length: 20 }, (_, i) => ({ sku_id: String(i), cover_image: 'x' })), hasMore: true, nextCursor: 'c1' });
   await page.loadList();
+  for (let batch = 1; batch < 10; batch++) {
+    api.mockResolvedValueOnce({ skuList: Array.from({ length: 20 }, (_, i) => ({ sku_id: String(batch * 20 + i), cover_image: 'x' })), hasMore: batch < 9, nextCursor: batch < 9 ? `c${batch+1}` : null });
+    await page.loadList(true);
+  }
+  expect(page.data.skuList).toHaveLength(200);
+  expect(api).toHaveBeenCalledTimes(10);
   const observer = (wx as any).__lastObserver();
   expect(observer.relativeToSelector).toBe('');
   for (let i = 0; i < 200; i++) observer.callback({ dataset: { idx: String(i) }, intersectionRatio: i >= 194 ? 1 : 0 });
