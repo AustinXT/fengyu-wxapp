@@ -114,6 +114,7 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
   let measuring = false;
   let observer: WechatMiniprogram.IntersectionObserver | null = null;
   let pending: Record<number, boolean> = {};
+  let distances: Record<number, number> = {};
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
   let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
   let visible = true;
@@ -159,11 +160,13 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
   function applyWindow(values: Record<number, boolean>) {
     const list = getList();
     if (!list) return;
-    let count = 0;
+    const wanted = list.map((item, idx) => ({ idx, wants: values[idx] ?? Boolean(item?.[FLAG]) }))
+      .filter(row => row.wants).sort((a, b) => (distances[a.idx] ?? Infinity) - (distances[b.idx] ?? Infinity) || a.idx - b.idx);
+    // 真正可视区域距离为0，优先于屏外预加载；数量上限不能裁掉可视封面。
+    const selected = new Set(wanted.slice(0, MAX_VISIBLE_COVERS).map(row => row.idx));
     const patch: Record<string, boolean> = {};
     list.forEach((item, idx) => {
-      const wants = values[idx] ?? Boolean(item?.[FLAG]);
-      const want = wants && count++ < MAX_VISIBLE_COVERS;
+      const want = selected.has(idx);
       if (Boolean(item?.[FLAG]) !== want) patch[`${options.listKey}[${idx}].${FLAG}`] = want;
     });
     if (Object.keys(patch).length) page.setData(patch);
@@ -194,9 +197,11 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
           const values: Record<number, boolean> = {};
           const list = getList() ?? [];
           list.forEach((_, idx) => { values[idx] = false; });
+          distances = {};
           slots.forEach((slot: any) => {
             const idx = Number(slot.dataset?.idx);
             if (slot.dataset?.idx === undefined || slot.dataset?.idx === '' || !Number.isInteger(idx) || idx < 0 || idx >= list.length) return;
+            distances[idx] = Math.max(0, top - slot.bottom, slot.top - bottom);
             values[idx] = Number.isFinite(slot.top) && Number.isFinite(slot.bottom)
               && slot.bottom > top - margin && slot.top < bottom + margin;
           });
@@ -236,6 +241,7 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
     clearTimers();
     disconnect();
     pending = {};
+    distances = {};
   }
 
   function refresh() {
@@ -289,6 +295,8 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
           clearTimeout(fallbackTimer);
           fallbackTimer = null;
         }
+        const rect = res.boundingClientRect, viewport = res.relativeRect;
+        if (rect && viewport) distances[idx] = Math.max(0, viewport.top + margin - rect.bottom, rect.top - (viewport.bottom - margin));
         pending[idx] = res.intersectionRatio > 0;
         scheduleFlush(gen);
       });

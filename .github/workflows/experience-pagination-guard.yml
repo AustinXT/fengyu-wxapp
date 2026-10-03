@@ -1,0 +1,25 @@
+name: Experience pagination deployment guard
+on:
+  pull_request:
+    paths:
+      - 'scripts/deploy-cloudfunctions.sh'
+      - 'db/scripts/_lib/assert-db-target.js'
+      - 'db/package.json'
+      - 'db/package-lock.json'
+      - 'db/schema/product.ts'
+      - 'scripts/check-experience-pagination-compat.cjs'
+      - 'scripts/__tests__/experience-pagination-compat.test.cjs'
+      - 'fengyu-client/cloudfunctions/clientApi/routes/product.js'
+      - '.github/workflows/experience-pagination-guard.yml'
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+        working-directory: db
+      - run: bash -n scripts/deploy-cloudfunctions.sh
+      - run: node --test scripts/__tests__/experience-pagination-compat.test.cjs

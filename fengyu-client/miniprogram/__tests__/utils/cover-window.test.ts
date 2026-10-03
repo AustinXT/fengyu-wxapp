@@ -513,3 +513,19 @@ test('重叠布局200个相交回调也最多24图；数字dataset下标可用',
   for (let idx=0; idx<200; idx++) (wx as any).__lastObserver().callback({ dataset: { idx }, intersectionRatio: 1 });
   vi.advanceTimersByTime(50); expect(page.data.spuList.filter((r: any) => r.coverVisible)).toHaveLength(24); w.dispose();
 });
+
+
+describe('数量上限优先可视槽位', () => {
+  it('屏外的低下标不能挤掉视口内的高下标', () => {
+    const page = makePage('spuList', 40);
+    const window = createCoverWindow(page, { scrollSelector: '', slotSelector: '.slot', listKey: 'spuList' });
+    window.refresh();
+    for (let idx = 0; idx < 40; idx++) {
+      (wx as any).__lastObserver().callback({ dataset: { idx }, intersectionRatio: 1, boundingClientRect: { top: idx * 30 - 600, bottom: idx * 30 - 570 }, relativeRect: { top: -600, bottom: 1200 } } as any);
+    }
+    vi.advanceTimersByTime(50);
+    expect(page.data.spuList.slice(20, 40).every((row: any) => row.coverVisible)).toBe(true);
+    expect(page.data.spuList.filter((row: any) => row.coverVisible)).toHaveLength(24);
+    window.dispose();
+  });
+});
