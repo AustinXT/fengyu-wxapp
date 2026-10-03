@@ -56,7 +56,6 @@ Page({
     if (append && (this.data.isLoading || this.data.loadingMore || !this.data.hasMore)) return;
     const epoch = append ? this._epoch : ++this._epoch;
     if (!append) {
-      this._cursor = null;
       this._coverWindow?.invalidate();
       this._coverWindow?.setVisible(false);
     }
@@ -64,7 +63,7 @@ Page({
     try {
       const data = await callClientApi<{ skuList: ExperienceCardSku[]; hasMore?: boolean; nextCursor?: string | null }>(
         'product.experienceCardList',
-        { limit: SPU_PAGE_SIZE, cursor: this._cursor }
+        { limit: SPU_PAGE_SIZE, cursor: append ? this._cursor : null }
       );
       if (epoch !== this._epoch) return;
       // 体验卡按会员价分流（#6=B）：会员展示会员价 + 划线标价，非会员只看标价

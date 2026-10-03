@@ -94,3 +94,12 @@ test('订单切Tab/刷新废弃旧翻页回包及其loading状态', async () => 
   expect(page._page).toBe(1);
   page.onUnload();
 });
+
+ test('刷新失败保留旧游标，后续触底沿原链追加', async () => {
+  const page = instance(experience);
+  api.mockResolvedValueOnce({ skuList: [{ sku_id: 'old' }], hasMore: true, nextCursor: 'c1' }); await page.loadList();
+  api.mockRejectedValueOnce(new Error('offline')); await page.loadList();
+  api.mockResolvedValueOnce({ skuList: [{ sku_id: 'next' }], hasMore: false }); await page.loadList(true);
+  expect(api.mock.calls.at(-1)[1].cursor).toBe('c1');
+  expect(page.data.skuList.map((r: any) => r.sku_id)).toEqual(['old', 'next']); page.onUnload();
+});
