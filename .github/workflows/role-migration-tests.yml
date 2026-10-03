@@ -3,6 +3,8 @@ on:
   pull_request:
     paths:
       - 'fengyu-admin/src/actions/role-migrations*'
+      - 'fengyu-admin/src/actions/employees.ts'
+      - 'fengyu-admin/src/lib/session-role-guards.ts'
       - 'fengyu-admin/src/lib/role-migration-pending*'
       - 'fengyu-admin/src/lib/org-ancestry.ts'
       - 'fengyu-admin/src/lib/permissions.ts'

@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { it, expect, vi } from 'vitest'
 import { Client } from 'pg'
 import { PgDialect } from 'drizzle-orm/pg-core'
@@ -49,4 +50,14 @@ it.skipIf(!url)('真实PG：明确调店才生成待办，多次调店/保留兼
     expect((await db.query("UPDATE permission_roles SET scope_id=$1 WHERE id=$2 AND employee_id=$3 AND role=$4 AND scope_id=$5 RETURNING id", ['nodeC', 2, 'E', 'staff', 'nodeB'])).rowCount).toBe(0)
     await db.query('ROLLBACK')
   } finally { await db.query('ROLLBACK').catch(() => {}); await db.end() }
+})
+
+
+it('真实调店writer与待办reader的JSON字段契约不漂移', () => {
+  const writer=readFileSync('src/actions/employees.ts','utf8')
+  const payload=writer.match(/logOperation\(session, 'permission\.scopeSync\.skipped', 'permission_role', employeeId, \{\s*reason: 'manual_review_required', ([\s\S]*?)\}, tx\)/)?.[1]
+  expect(payload).toBeDefined()
+  expect(payload).toMatch(/oldStoreId/)
+  expect(payload).toMatch(/newStoreId: nextStoreId/)
+  expect(payload).toMatch(/roles/)
 })

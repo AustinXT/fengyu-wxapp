@@ -81,6 +81,18 @@ it.skipIf(!url)('真实action双连接交错：advisory等待、旧CAS冲突、�
     await owner.query(`DELETE FROM operation_logs WHERE target_id<>'E'; DELETE FROM permission_roles WHERE employee_id<>'E'; DELETE FROM staff_wechat_users WHERE employee_id NOT IN ('E','operator');`)
     state.session.roles[0].isSuperAdmin=true
     const input = { employeeId: 'E', targetScopeId: 'new', decision: 'migrate' as const, bindings: [{ id: 1, role: 'manager', scopeId: 'old' }] }
+    // 真实HOF反证：无assign动作的旧店只读角色不提供retain权限范围。
+    const savedSession=state.session
+    state.session={ ...savedSession, roles:[
+      { ...savedSession.roles[0], role:'manager', isSuperAdmin:false, scopeId:'new', actions:['permission:assign'], scopeStoreIds:['S'], scopeOrgNodeIds:['new'] },
+      { ...savedSession.roles[0], role:'reader', isSuperAdmin:false, scopeId:'old', actions:['permission:list'], scopeStoreIds:['O'], scopeOrgNodeIds:['old'] },
+    ], permissions:{ actions:['permission:list','permission:assign'],scopeStoreIds:['O','S'],scopeOrgNodeIds:['old','new'] } }
+    const eventId=(await owner.query("SELECT min(id)::text AS id FROM operation_logs WHERE target_id='E'")).rows[0].id
+    await expect(reviewEmployeeRoleMigration({ ...input,decision:'retain',eventId })).rejects.toThrow('PERMISSION_DENIED:')
+    expect((await owner.query("SELECT count(*)::int AS cnt FROM operation_logs WHERE action='permission.scopeReview.completed'")).rows[0].cnt).toBe(0)
+    state.session=savedSession
+    pids.length=0
+
     const a = reviewEmployeeRoleMigration(input); tasks.push(a); await Promise.race([paused, a.then(() => { throw new Error('action未进入预期交错点') })])
     // 立即注册拒绝处理，避免预期CONFLICT被runner判为unhandled rejection。
     const b = reviewEmployeeRoleMigration(input).then(value => ({ value }), error => ({ error })); tasks.push(b)
