@@ -10,7 +10,7 @@ awk '/^backup_safe_compose\(\)/ { printing=1 } printing { print } printing && /^
 remote_dir="$test_root/remote"
 component=admin
 mkdir -p "$remote_dir/data/backup-control/states" "$test_root/mock-bin"
-printf '#!/bin/sh\necho compose >> $test_root/compose-calls\n' > "$test_root/mock-bin"/docker
+printf '#!/bin/sh\nif [ "$1" = inspect ]; then echo "${MOCK_WORKER_STATE:-running}"; else echo compose >> "$test_root/compose-calls"; fi\n' > "$test_root/mock-bin"/docker
 chmod +x "$test_root/mock-bin"/docker
 export PATH="$test_root/mock-bin":$PATH
 export test_root
@@ -39,3 +39,13 @@ component=analyst
 backup_safe_compose up -d
 test "$(wc -l < "$test_root/compose-calls")" = 3
 printf 'GUARD_BEHAVIOR_PASS\n'
+
+# 停止的旧worker允许安装恢复代码，残留仍保留给新worker恢复。
+component=admin
+export MOCK_WORKER_STATE=exited
+backup_safe_compose up -d
+test "$(wc -l < "$test_root/compose-calls")" = 4
+# 两个远端脚本的独立副本必须一致。
+awk '/^backup_safe_compose\(\)/ { n++; printing=(n==2) } printing { print } printing && /^}/ { exit }' \
+  "$script_dir/deploy-common.sh" > "$test_root/helper-two.sh"
+cmp "$test_root/helper.sh" "$test_root/helper-two.sh"

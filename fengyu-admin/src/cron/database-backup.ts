@@ -220,7 +220,12 @@ async function recoverInterruptedBackups(currentId?: string): Promise<void> {
   // 调用方持 runtime.lock：其它备份/部署均不可能在清理期间启动。
   for (const name of await readdir(statesDir())) {
     if (!/^[0-9a-f-]+\.json$/.test(name) || name === `${currentId}.json`) continue
-    const status = JSON.parse(await readFile(path.join(statesDir(), name), 'utf8')) as BackupStatus
+    let status: BackupStatus
+    try { status = JSON.parse(await readFile(path.join(statesDir(), name), 'utf8')) as BackupStatus } catch (error) {
+      console.error('[database-backup] invalid backup state:', name, error)
+      continue
+    }
+    if (status.id !== name.replace(/\.json$/, '') || !['scheduled', 'manual'].includes(status.kind) || !Number.isFinite(Date.parse(status.createdAt))) continue
     if (status.state !== 'running') continue
     const completedAt = new Date().toISOString()
     const failed: BackupStatus = { ...status, state: 'failed', completedAt, updatedAt: completedAt,
@@ -253,8 +258,23 @@ export async function performDatabaseBackup(
   requestedBy?: string,
 ): Promise<BackupStatus> {
   await ensureDirectories()
+  let release: () => Promise<void>
+  try { release = await acquireBackupLock() } catch (error) {
+    if (error instanceof BackupBusyError) throw error
+    const now = new Date().toISOString()
+    const failed: BackupStatus = { id, kind, state: 'failed', createdAt: now, updatedAt: now, completedAt: now,
+      errorCode: 'BACKUP_FAILED', message: '备份锁不可用，请查看 cron worker 日志' }
+    await writeStatus(failed)
+    await recordBackupOutcome(failed, requestedBy).catch(() => undefined)
+    console.error('[database-backup] lock failed:', error)
+    await notifyOps(`⚠️ 数据库备份锁不可用（${kind}），请查看 cron worker 日志。`)
+    return failed
+  }
+  try { return await performBackupUnderLock(kind, id, requestedBy) } finally { await release() }
+}
+
+async function performBackupUnderLock(kind: BackupKind, id: string, requestedBy?: string): Promise<BackupStatus> {
   const createdAt = new Date().toISOString()
-  const release = await acquireBackupLock()
   let partialPath: string | null = null
   const running: BackupStatus = { id, kind, state: 'running', createdAt, updatedAt: createdAt }
   try {
@@ -333,36 +353,34 @@ export async function performDatabaseBackup(
     return status
   } finally {
     if (partialPath) await rm(partialPath, { force: true }).catch(() => undefined)
-    await release()
   }
 }
 
 export async function processManualBackupRequests(): Promise<void> {
   await ensureDirectories()
-  const names = (await readdir(requestsDir())).filter((name) => /^[0-9a-f-]+\.json$/.test(name)).sort()
-  const name = names[0]
-  if (!name) return
-  const requestPath = path.join(requestsDir(), name)
-  const claimedPath = `${requestPath}.running`
+  // 先持锁再领取，维护恢复不会把刚领取但还没开始的请求当孤儿删除。
+  let release: () => Promise<void>
+  try { release = await acquireBackupLock() } catch (error) {
+    if (error instanceof BackupBusyError) return
+    throw error
+  }
   try {
+    await recoverInterruptedBackups()
+    const names = (await readdir(requestsDir())).filter((name) => /^[0-9a-f-]+\.json$/.test(name)).sort()
+    const name = names[0]
+    if (!name) return
+    const requestPath = path.join(requestsDir(), name)
+    const claimedPath = `${requestPath}.running`
     await rename(requestPath, claimedPath)
-  } catch {
-    return
-  }
-  try {
-    const request = JSON.parse(await readFile(claimedPath, 'utf8')) as BackupRequest
-    if (request.kind !== 'manual' || request.id !== name.replace(/\.json$/, '')) throw new Error('invalid backup request')
-    await performDatabaseBackup('manual', request.id, request.requestedBy)
-  } catch (error) {
-    if (!(error instanceof BackupBusyError)) throw error
-    await rename(claimedPath, requestPath)
-    return
-  } finally {
-    // 互斥失败时请求已重新排队，保留 manual-active.lock。
-    const pending = await stat(requestPath).catch(() => null)
-    if (!pending) await rm(claimedPath, { force: true })
-    if (!pending) await rm(path.join(backupControlDir(), 'manual-active.lock'), { force: true })
-  }
+    try {
+      const request = JSON.parse(await readFile(claimedPath, 'utf8')) as BackupRequest
+      if (request.kind !== 'manual' || request.id !== name.replace(/\.json$/, '')) throw new Error('invalid backup request')
+      await performBackupUnderLock('manual', request.id, request.requestedBy)
+    } finally {
+      await rm(claimedPath, { force: true })
+      await rm(path.join(backupControlDir(), 'manual-active.lock'), { force: true })
+    }
+  } finally { await release() }
 }
 
 function beijingDay(now = new Date()): string {

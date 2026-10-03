@@ -297,17 +297,24 @@ backup_safe_compose() {
   if [ ! -d "$control" ]; then docker compose "$@"; return; fi
   guard=$(cat <<'BACKUP_GUARD'
 control=$1; shift
-if [ -e "$control/backup.lock" ] || grep -Eq '"state"[[:space:]]*:[[:space:]]*"running"' "$control"/states/*.json 2>/dev/null; then
+# 宿主root首建锁时也保持容器uid1001可读写，不受root umask影响。
+if [ "$(id -u)" = 0 ]; then chown 1001:1001 "$control/runtime.lock" && chmod 600 "$control/runtime.lock" || exit 75; fi
+worker_state=$(docker inspect -f '{{.State.Status}}' fengyu-cron-worker 2>/dev/null || true)
+# 已停止的容器没有活备份，允许安装恢复代码；残留由新版worker持锁恢复。
+case "$worker_state" in exited|dead|created) orphan_only=true ;; *) orphan_only=false ;; esac
+if [ "$orphan_only" = false ] && { [ -e "$control/backup.lock" ] || grep -Eq '"state"[[:space:]]*:[[:space:]]*"running"' "$control"/states/*.json 2>/dev/null; }; then
   echo "ERROR: database backup is running or interrupted; deployment refused. Check settings/diagnostics and backup-control states." >&2
+  grep -E '"state"[[:space:]]*:[[:space:]]*"running"' "$control"/states/*.json >&2 || true
   exit 75
 fi
 exec docker compose "$@"
 BACKUP_GUARD
 )
   if [ -w "$control" ]; then
-    if flock -n -E 75 "$control/runtime.lock" sh -c "$guard" sh "$control" "$@"; then return; else guard_rc=$?; fi
+    if flock -w "${backup_guard_wait:-0}" -E 75 "$control/runtime.lock" sh -c "$guard" sh "$control" "$@"; then return; else guard_rc=$?; fi
   else
-    if sudo -n flock -n -E 75 "$control/runtime.lock" sh -c "$guard" sh "$control" "$@"; then return; else guard_rc=$?; fi
+    sudo -n true || { echo "ERROR: backup guard requires passwordless sudo" >&2; return 75; }
+    if sudo -n flock -w "${backup_guard_wait:-0}" -E 75 "$control/runtime.lock" sh -c "$guard" sh "$control" "$@"; then return; else guard_rc=$?; fi
   fi
   echo "ERROR: backup guard refused admin switch (exit=$guard_rc); check settings/diagnostics. Retry after the backup completes." >&2
   return "$guard_rc"
@@ -581,7 +588,14 @@ fi
 if [ "$switch_rc" != 0 ] || ! full_health; then
   echo "ERROR: $component release $release_id failed; starting automatic rollback" >&2
   docker logs --tail 80 "$current_container" 2>&1 || true
-  if run_release_state "$rollback_state" && rollback_health; then
+  # 自动回滚等备份完成再切换，超时保留现场而不是杀掉活备份。
+  backup_guard_wait=180
+  if run_release_state "$rollback_state"; then rollback_rc=0; else rollback_rc=$?; fi
+  if [ "$rollback_rc" = 75 ]; then
+    echo "ROLLBACK_DEFERRED: backup guard blocked rollback; preserved $release_dir and $rollback_state" >&2
+    exit 75
+  fi
+  if [ "$rollback_rc" = 0 ] && rollback_health; then
     echo "ROLLBACK_OK: restored $(state_get "$rollback_state" release_id)" >&2
     exit 1
   fi
@@ -659,17 +673,24 @@ backup_safe_compose() {
   if [ ! -d "$control" ]; then docker compose "$@"; return; fi
   guard=$(cat <<'BACKUP_GUARD'
 control=$1; shift
-if [ -e "$control/backup.lock" ] || grep -Eq '"state"[[:space:]]*:[[:space:]]*"running"' "$control"/states/*.json 2>/dev/null; then
+# 宿主root首建锁时也保持容器uid1001可读写，不受root umask影响。
+if [ "$(id -u)" = 0 ]; then chown 1001:1001 "$control/runtime.lock" && chmod 600 "$control/runtime.lock" || exit 75; fi
+worker_state=$(docker inspect -f '{{.State.Status}}' fengyu-cron-worker 2>/dev/null || true)
+# 已停止的容器没有活备份，允许安装恢复代码；残留由新版worker持锁恢复。
+case "$worker_state" in exited|dead|created) orphan_only=true ;; *) orphan_only=false ;; esac
+if [ "$orphan_only" = false ] && { [ -e "$control/backup.lock" ] || grep -Eq '"state"[[:space:]]*:[[:space:]]*"running"' "$control"/states/*.json 2>/dev/null; }; then
   echo "ERROR: database backup is running or interrupted; deployment refused. Check settings/diagnostics and backup-control states." >&2
+  grep -E '"state"[[:space:]]*:[[:space:]]*"running"' "$control"/states/*.json >&2 || true
   exit 75
 fi
 exec docker compose "$@"
 BACKUP_GUARD
 )
   if [ -w "$control" ]; then
-    if flock -n -E 75 "$control/runtime.lock" sh -c "$guard" sh "$control" "$@"; then return; else guard_rc=$?; fi
+    if flock -w "${backup_guard_wait:-0}" -E 75 "$control/runtime.lock" sh -c "$guard" sh "$control" "$@"; then return; else guard_rc=$?; fi
   else
-    if sudo -n flock -n -E 75 "$control/runtime.lock" sh -c "$guard" sh "$control" "$@"; then return; else guard_rc=$?; fi
+    sudo -n true || { echo "ERROR: backup guard requires passwordless sudo" >&2; return 75; }
+    if sudo -n flock -w "${backup_guard_wait:-0}" -E 75 "$control/runtime.lock" sh -c "$guard" sh "$control" "$@"; then return; else guard_rc=$?; fi
   fi
   echo "ERROR: backup guard refused admin switch (exit=$guard_rc); check settings/diagnostics. Retry after the backup completes." >&2
   return "$guard_rc"

@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const runtime = vi.hoisted(() => ({ busy: false, commands: [] as string[] }))
+const runtime = vi.hoisted(() => ({ busy: false, lockError: false, commands: [] as string[] }))
 vi.mock('@/db', () => ({ db: { execute: vi.fn(async () => [{ size: '100' }]) } }))
 vi.mock('./lib/notify', () => ({ notifyOps: vi.fn(async () => undefined) }))
 vi.mock('node:child_process', async (importOriginal) => {
@@ -16,7 +16,8 @@ vi.mock('node:child_process', async (importOriginal) => {
   child.stdin = { end: () => queueMicrotask(() => child.emit('close', 0)) }
   queueMicrotask(() => {
     if (command === 'flock') {
-      if (runtime.busy) child.emit('close', 75)
+      if (runtime.lockError) child.emit('error', new Error('flock missing'))
+      else if (runtime.busy) child.emit('close', 75)
       else child.stdout.emit('data', Buffer.from('locked\n'))
     } else child.emit('close', 1) // pg_dump 故障不会访问任何业务库。
   })
@@ -33,7 +34,7 @@ const partial = `fengyu-scheduled-20261003T030000Z-${id}.dump.partial`
 const file = (name: string) => path.join(root, 'control', name)
 
 beforeEach(async () => {
-  runtime.busy = false; runtime.commands = []
+  runtime.busy = false; runtime.lockError = false; runtime.commands = []
   root = await mkdtemp(path.join(os.tmpdir(), 'backup-255-'))
   vi.stubEnv('DATABASE_BACKUP_REQUEST_DIR', path.join(root, 'control'))
   vi.stubEnv('DATABASE_BACKUP_DIR', path.join(root, 'data'))
@@ -103,4 +104,17 @@ describe('备份重启恢复与部署互斥', () => {
     expect(await readFile(path.join(root, 'data', good), 'utf8')).toBe('valid')
     expect(await readFile(path.join(root, 'data', 'unrelated.partial'), 'utf8')).toBe('unrelated')
   })
+  it('坏状态文件不拖垮维护；锁基础设施错误可诊断且定时当天不重试', async () => {
+    await writeFile(file(`states/${id}.json`), 'broken-json')
+    await maintainBackupRuntime()
+    runtime.lockError = true
+    const result = await runScheduledBackupIfDue(now)
+    expect(result?.state).toBe('failed')
+    expect(result?.message).toContain('备份锁不可用')
+    expect((await readFile(file('scheduled-day.txt'), 'utf8')).trim()).toBe('2026-10-03')
+    const count = runtime.commands.length
+    await runScheduledBackupIfDue(now)
+    expect(runtime.commands).toHaveLength(count)
+  })
+
 })

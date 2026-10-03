@@ -67,3 +67,5 @@ metadata:
 ### 备份与发版（#255）
 
 prod 发版避开北京时间 03:00–03:03。admin 的部署、手动回滚与自动回滚在 compose up 阶段持 backup-control/runtime.lock 的 flock；备份在途时拒绝切换。旧版 backup.lock 或 running 状态也会阻止部署，先查看 /settings/diagnostics 和 cron 日志，确认孤儿后恢复；不要删除活备份锁。新版 worker 在取得内核锁后立即把中断状态标 failed、清理 partial 和旧锁，并放开中断当日的定时标记以补跑。runtime.lock 文件永久保留，内核锁随进程退出释放。
+
+首次升级遇到旧版孤儿状态时：先核对 cron-worker 内无 pg_dump/pg_restore 活进程，停止旧 cron-worker 后重跑部署；已停止的 worker 无活备份，守卫允许安装新代码并由新 worker 自动恢复，勿手改 states JSON。自动回滚可等待备份最多 180 秒；超时标 ROLLBACK_DEFERRED 并保留现场，随后重试回滚。
