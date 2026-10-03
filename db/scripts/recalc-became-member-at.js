@@ -24,6 +24,9 @@
  *   backfill-membership-upgrade-doc-type 的「选跃迁那一刻的单」语义），守卫会与
  *   旧 became_member_at 形成循环依赖。
  *
+ * #257 A+B：按当前达标订单选候选，不以旧 customer_type 作为前提；排除甲方测试账号。
+ * 仅维护仍达标者的既有首次达标归因，不清空降级者的历史归因；再达标定义留待 E。
+ *
  * 幂等：UPDATE WHERE became_member_at IS DISTINCT FROM new_became，二次运行命中 0 行。
  *   不 bump updated_at（与在线五端 became_member_at UPDATE 对齐）。
  *
@@ -121,7 +124,7 @@ SELECT DISTINCT ON (oa.client_user_id)
        u.became_member_at AS old_became
   FROM order_amounts oa
   JOIN client_wechat_users u ON u.user_id = oa.client_user_id
- WHERE u.customer_type = '会员客'
+ WHERE u.name IS DISTINCT FROM '谢廷(测试)'
    AND oa.non_trial >= $1::numeric
  ORDER BY oa.client_user_id, oa.paid_at ASC NULLS LAST, oa.created_at ASC, oa.sale_order_id ASC
 `
@@ -160,6 +163,7 @@ const ANOMALY_SQL = `
 SELECT
   (SELECT COUNT(*)::int FROM client_wechat_users u
     WHERE u.customer_type = '会员客'
+      AND u.name IS DISTINCT FROM '谢廷(测试)'
       AND NOT EXISTS (SELECT 1 FROM _target t WHERE t.user_id = u.user_id)) AS member_no_qualifying,
   (SELECT COUNT(*)::int FROM client_wechat_users
     WHERE customer_type='会员客' AND became_member_at IS NULL) AS member_became_null,
@@ -242,7 +246,9 @@ async function main() {
   }
 }
 
-main().catch((err) => {
+if (require.main === module) main().catch((err) => {
   console.error('FATAL:', err)
   process.exit(1)
 })
+
+module.exports = { BUILD_TARGET_SQL, UPDATE_SQL, FETCH_THRESHOLD_SQL }

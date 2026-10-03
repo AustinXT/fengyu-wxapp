@@ -681,3 +681,37 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
     })
   })
 })
+
+
+// #257：金额/归因镜像保持原有守护，方向按实时与离线分开；C 的红检保留到后续落地。
+describe('#257 顾客分类方向守护', () => {
+  for (const [label, file] of RUNTIME_FILES.filter(([, file]) => file !== ADMIN_RECOMPUTE_TS)) {
+    test(`${label} 实时写路径只能升级`, () => {
+      const src = fs.readFileSync(file, 'utf8')
+      expect(src).toMatch(/CASE customer_type[\s\S]*?END\)\s*< \(CASE/)
+    })
+  }
+  test('B 离线分类预览与更新均双向（不得残留 rank 保护）', () => {
+    const src = fs.readFileSync(SCRIPT_RECALC_ALL_TYPES, 'utf8')
+    expect(src).toContain('WHERE old_type IS DISTINCT FROM new_type')
+    expect(src).toContain('AND u.customer_type IS DISTINCT FROM t.new_type')
+    expect(src).not.toContain('TYPE_RANK_CASE')
+    expect(src).not.toMatch(/CASE u\.customer_type/)
+  })
+  for (const [label, file] of [
+    ['all-types', SCRIPT_RECALC_ALL_TYPES], ['became', SCRIPT_RECALC_BECAME_MEMBER],
+    ['doc-type', SCRIPT_BACKFILL_UPGRADE_DOC_TYPE],
+  ]) {
+    test(`B ${label} 候选排除测试账号，按计算订单而非旧档位选单`, () => {
+      const src = fs.readFileSync(file, 'utf8')
+      const build = src.match(/const BUILD_TARGET(?:_TABLE)?_SQL = `([\s\S]*?)`/)[1]
+      expect(build).toContain("u.name IS DISTINCT FROM '谢廷(测试)'")
+      expect(build).not.toMatch(/u\.customer_type = '会员客'/)
+    })
+  }
+  test('C 红检：cron重算入口必须能降级且会员客不能早退（A+B本轮不实现C）', () => {
+    const src = fs.readFileSync(ADMIN_RECOMPUTE_TS, 'utf8')
+    expect(src).not.toMatch(/if \(cur\.rows\[0\]\?\.customer_type === '会员客'\) return/)
+    expect(src).toMatch(/customer_type (?:<>|IS DISTINCT FROM)/)
+  })
+})
