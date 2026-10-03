@@ -6,7 +6,10 @@
     "pages/manager/manager",
     "pages/detail/detail",
     "pages/workbench/workbench",
-    "pages/mine/mine"
+    "pages/mine/mine",
+    "pages/goal/goal",
+    "pages/pk/pk",
+    "pages/range/range"
   ],
   "window": {
     "navigationBarTitleText": "凤御 · 日报",
