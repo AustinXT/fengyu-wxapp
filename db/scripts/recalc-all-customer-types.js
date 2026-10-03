@@ -311,6 +311,10 @@ async function recalcCustomerTypesInTransaction(client) {
   const type = await client.query(UPDATE_TYPE_SQL)
   const level = await client.query(UPDATE_LEVEL_SQL)
   const became = await client.query(UPDATE_BECAME_SQL)
+  const check = await client.query(SELFCHECK_SQL)
+  if (Number(check.rows[0].member_no_became) > 0) {
+    throw new Error('会员客缺失入会时间，拒绝提交顾客分类补算')
+  }
   return { typeCount: type.rowCount, levelCount: level.rowCount, becameCount: became.rowCount }
 }
 

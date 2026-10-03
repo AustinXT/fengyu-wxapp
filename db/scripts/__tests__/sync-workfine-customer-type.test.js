@@ -16,6 +16,7 @@ function fakeClient(threshold = '3000', failBuild = false) {
       if (sql.includes("WHERE key = 'new_member_threshold'")) {
         return { rows: threshold === undefined ? [] : [{ v: threshold }], rowCount: 1 }
       }
+      if (sql.includes('AS member_no_became')) return { rows: [{ member_no_became: 0, nonmember_with_level: 0 }] }
       if (failBuild && sql.includes('CREATE TEMP TABLE _recalc_target')) throw new Error('补算故障')
       return { rows: [], rowCount: sql.trimStart().startsWith('UPDATE client_wechat_users u') ? 1 : 0 }
     },
@@ -67,4 +68,22 @@ test('顾客staging写入当前schema：显式枚举转换，不再写已移除c
   assert.ok(!/\bcategory\b/.test(customer))
   assert.ok(customer.includes('member_level::member_level'))
   assert.ok(customer.includes('customer_source::customer_source'))
+})
+
+test('自动入口与CLI同样拒绝缺失历史入会时间的会员', async () => {
+  const client = fakeClient()
+  const query = client.query.bind(client)
+  client.query = async (sql, params) => sql.includes('AS member_no_became')
+    ? { rows: [{ member_no_became: 1 }] } : query(sql, params)
+  await assert.rejects(syncCustomers(mssql, { connect: async () => client }, false), /缺失入会时间/)
+  assert.equal(client.calls.at(-1).sql, 'ROLLBACK')
+})
+test('批量等级阈值与cron等级纯函数逐档一致', () => {
+  const fs = require('node:fs'), path = require('node:path')
+  const cron = fs.readFileSync(path.resolve(__dirname, '../../../fengyu-admin/src/cron/lib/member-level.ts'), 'utf8')
+  const batch = fs.readFileSync(require.resolve('../recalc-all-customer-types'), 'utf8')
+  const rules = [...cron.matchAll(/if \(spend >= (\d+)\) return '([^']+)'/g)]
+  assert.equal(rules.length, 4)
+  for (const [, amount, name] of rules) assert.ok(new RegExp(`>=\\s*${amount}\\s+THEN\\s+'${name}'`).test(batch))
+  assert.ok(batch.includes("WHEN COALESCE(s.spend, 0) >= (SELECT v FROM threshold) THEN '初钻'"))
 })
