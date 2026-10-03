@@ -82,3 +82,10 @@
 - 验收限制：当前绑定管理员无主门店，不能替代普通员工填报验收；真实经营月/四周日期与PK分班未收到用户决定，保持空配置；共享库未写入虚构日报。后续需有门店的员工身份完成保存/提交/店长回读，以及业务配置后的目标和PK验证。三角色截图自动化在首个首页后超时，不将其计为全角色UI验收。
 - 交付PR https://github.com/AustinXT/fengyu-wxapp/pull/523 ，仍待合并。已同步本机daily分支；在PR合入dev前，其他会话不得从旧dev再次生成0062。外部双谱系按用户明确指示跳过。
 - 脱敏执行证据在起点仓库 `_tmp/daily-v2-release/`。prod未迁移、未部署。
+
+### 2026-10-03 日报配置 HTTP 页面异常修复
+
+- 实际浏览器 `/settings/daily` 控制台确认 `TypeError: crypto.randomUUID is not a function`，HTTP IP 地址不支持该安全上下文 API。
+- 提交 `f199f9bbd702` 将经营月与 PK 班级 ID 改为 `crypto.getRandomValues` 生成，并改用惰性表单初始化。回归测试 2 项通过，admin `npx tsc --noEmit` 通过。
+- dev admin release `dev-f199f9bbd702-b4377b31991a-20261003T103707Z-28830`，脚本 exit 0 / RELEASE_OK；未执行数据库迁移。
+- 使用真实已登录浏览器刷新后，版本显示 `f199f9bbd702`，经营月和四周日期表单正常显示，新增经营月、PK 页签切换正常。未写入业务日期或分班配置；已有经营月的添加班级行为通过 HTTP 环境组件回归验证。
