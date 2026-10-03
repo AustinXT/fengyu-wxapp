@@ -1878,6 +1878,51 @@ describe('mergeClientProfile — 积分批次余额重算', () => {
     }
   })
 
+  it('#301 事务外读到空绑定后另一次分配已提交：合并保留新绑定且不谎报迁移', async () => {
+    ;(db.select as any)
+      .mockReturnValueOnce(singleRowSelect({ userId: 'active-user', openid: 'openid-active', boundEmployeeId: null, boundEmployeeName: null }))
+      .mockReturnValueOnce(singleRowSelect({ userId: 'orphan-user', openid: null, boundEmployeeId: 'EMP-ORPHAN', boundEmployeeName: '孤儿美容师' }))
+    const updates: Record<string, unknown>[] = []
+    const forUpdate = vi.fn().mockResolvedValue([{ boundEmployeeId: 'EMP-NEW', boundEmployeeName: '新分配美容师' }])
+    const where = vi.fn().mockReturnValue({ for: forUpdate })
+    const tx = {
+      select: vi.fn(() => ({ from: vi.fn(() => ({ where })) })),
+      update: vi.fn(() => ({ set: vi.fn((values: Record<string, unknown>) => {
+        updates.push(values); return { where: vi.fn().mockResolvedValue({ count: 1 }) }
+      }) })),
+      delete: vi.fn(() => ({ where: vi.fn().mockResolvedValue({ count: 1 }) })),
+    }
+    ;(db.transaction as any).mockImplementation(async (fn: (arg: typeof tx) => Promise<void>) => fn(tx))
+    const result = await mergeClientProfile('active-user', 'orphan-user')
+    expect(result.success).toBe(true)
+    expect(forUpdate).toHaveBeenCalledWith('update')
+    for (const values of updates) {
+      expect(values).not.toHaveProperty('boundEmployeeId')
+      expect(values).not.toHaveProperty('boundEmployeeName')
+    }
+    expect(result.fieldsMigrated).not.toContain('boundEmployeeId')
+    expect(result.fieldsMigrated).not.toContain('boundEmployeeName')
+  })
+
+  it('#301 锁内仍是空绑定：保留原有孤儿绑定迁移行为', async () => {
+    ;(db.select as any)
+      .mockReturnValueOnce(singleRowSelect({ userId: 'active-user', openid: 'openid-active', boundEmployeeId: null, boundEmployeeName: null }))
+      .mockReturnValueOnce(singleRowSelect({ userId: 'orphan-user', openid: null, boundEmployeeId: 'EMP-ORPHAN', boundEmployeeName: '孤儿美容师' }))
+    const updates: Record<string, unknown>[] = []
+    const tx = {
+      select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => ({ for: vi.fn().mockResolvedValue([{ boundEmployeeId: null, boundEmployeeName: null }]) })) })) })),
+      update: vi.fn(() => ({ set: vi.fn((values: Record<string, unknown>) => {
+        updates.push(values); return { where: vi.fn().mockResolvedValue({ count: 1 }) }
+      }) })),
+      delete: vi.fn(() => ({ where: vi.fn().mockResolvedValue({ count: 1 }) })),
+    }
+    ;(db.transaction as any).mockImplementation(async (fn: (arg: typeof tx) => Promise<void>) => fn(tx))
+    const result = await mergeClientProfile('active-user', 'orphan-user')
+    expect(result.success).toBe(true)
+    expect(updates).toContainEqual(expect.objectContaining({ boundEmployeeId: 'EMP-ORPHAN', boundEmployeeName: '孤儿美容师' }))
+    expect(result.fieldsMigrated).toContain('boundEmployeeId')
+  })
+
   it('迁移积分批次后，在同一事务内按批次重算目标顾客余额缓存', async () => {
     ;(db.select as any)
       .mockReturnValueOnce(singleRowSelect({
