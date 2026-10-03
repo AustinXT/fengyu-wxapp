@@ -31,7 +31,12 @@ describe('进销存编号与实体引用表单守卫', () => {
     expect(operations).not.toContain('员工编号')
     expect(operations).not.toContain('setSupplierName')
     expect(operations).toContain('请选择员工')
-    expect(operations).toContain('请选择供应商')
+    // 自采供应商可不指定；指定时仍只能从档案选项取ID，不能手输名称。
+    const selfPurchase = operations.slice(operations.indexOf('function SelfPurchaseForm('))
+    expect(selfPurchase).toMatch(/<Select value=\{supplierId\}/)
+    expect(selfPurchase).toContain('<option value="">未指定</option>')
+    expect(selfPurchase).toContain('value={supplier.supplierId}')
+    expect(selfPurchase).toContain('supplierId: supplierId || null')
   })
 
   it('员工小程序库存业务继续使用产品、批次和门店选择器', () => {
