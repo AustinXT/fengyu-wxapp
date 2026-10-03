@@ -300,6 +300,27 @@ SELECT
   (SELECT COUNT(*) FROM client_wechat_users WHERE customer_type != '会员客' AND member_level IS NOT NULL)::int AS nonmember_with_level
 `
 
+/** Caller owns BEGIN/COMMIT/ROLLBACK; reuse the authoritative batch SQL (#256). */
+async function recalcCustomerTypesInTransaction(client, userIds) {
+  const { rows } = await client.query(FETCH_THRESHOLD_SQL)
+  const threshold = rows[0] ? Number(rows[0].v) : NaN
+  if (!Number.isFinite(threshold) || threshold <= 0) {
+    throw new Error('system_configs.new_member_threshold 缺失或非法，拒绝补算顾客分类')
+  }
+  await client.query(BUILD_TARGET_TABLE_SQL, [threshold])
+  // 默认CLI仍全库；同步传入已锁定的身份范围，不写无关顾客。
+  if (userIds !== undefined) {
+    if (!Array.isArray(userIds) || userIds.some(id => typeof id !== 'string' || !id)) throw new Error('非法顾客补算范围')
+    await client.query('DELETE FROM _recalc_target WHERE NOT (user_id = ANY($1::text[]))', [userIds])
+  }
+  const type = await client.query(UPDATE_TYPE_SQL)
+  const level = await client.query(UPDATE_LEVEL_SQL)
+  const became = await client.query(UPDATE_BECAME_SQL)
+  const check = await client.query(SELFCHECK_SQL)
+  // 人工会员可能没有历史达标消费；不可因不可补齐的既有行阻断档案同步。
+  return { typeCount: type.rowCount, levelCount: level.rowCount, becameCount: became.rowCount, selfCheck: check.rows[0] }
+}
+
 async function main() {
   if (!PG_CONFIG.connectionString) {
     console.error('FATAL: DATABASE_URL 或 PG_CONNECTION_STRING 必须设置')
@@ -387,7 +408,11 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error('未捕获异常:', err)
-  process.exit(1)
-})
+if (require.main === module) {
+  main().catch((err) => {
+    console.error('未捕获异常:', err)
+    process.exit(1)
+  })
+}
+
+module.exports = { recalcCustomerTypesInTransaction }
