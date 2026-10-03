@@ -175,7 +175,8 @@ async function casePagingRejectsBeforeSQL() {
   for (const action of ['message.list', 'card.history', 'service.list', 'order.list', 'appointment.list']) {
     for (const bad of [{ pageSize: null }, { pageSize: 2.5 }, { pageSize: 'abc' }, { page: Number.MAX_SAFE_INTEGER }]) {
       const response = await invokeAs(TEST_CLIENT_OPENID, action, { cardId: 'missing-card', ...bad })
-      if (response.code !== -400 || response.errorType !== 'INVALID_PARAMS') {
+      if (response.code !== -400 || response.errorType !== 'INVALID_PARAMS'
+        || !/page 和 pageSize|分页偏移量过大/.test(response.message)) {
         throw new Error(`${action}: expected INVALID_PARAMS/-400, got ${response.code}/${response.errorType}`)
       }
     }
