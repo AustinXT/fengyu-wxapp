@@ -114,7 +114,29 @@ async function casePhoneRequired() {
   }
 }
 
+async function caseBoundedOverflow() {
+  const { userId, openid } = await makeClient('CL5')
+  const templateId = `${NS}_CTPL_CL5`
+  await createTestCouponTemplate({ templateId })
+  await pgQuery(
+    `INSERT INTO user_coupons (coupon_id, template_id, user_id, status, expire_at)
+     SELECT $1 || n::text, $2, $3, '未使用', NOW() + INTERVAL '30 days'
+     FROM generate_series(1, 1000) n`,
+    [`${NS}_CPN_CL5_`, templateId, userId],
+  )
+  const allowed = await invokeAs(openid, 'coupon.list', {})
+  if (allowed.code !== 0 || allowed.data.coupons.length !== 1000) throw new Error('1000 rows must remain visible')
+  await createTestCoupon({ couponId: `${NS}_CPN_CL5_1001`, templateId, userId })
+  for (const action of ['coupon.list', 'coupon.available']) {
+    const response = await invokeAs(openid, action, { items: [{ skuId: 'missing-sku', quantity: 1, amount: 1 }] })
+    if (response.code !== -400 || response.errorType !== 'INVALID_STATE' || !response.message.includes('单次查询上限')) {
+      throw new Error(`${action}: expected bounded overflow INVALID_STATE/-400, got ${response.code}/${response.errorType}`)
+    }
+  }
+}
+
 const CASES = [
+  ['1000券正常/1001券list与available明确INVALID_STATE', caseBoundedOverflow],
   ['list all returns 3 status coupons', caseAllStatuses],
   ['list filtered by status=未使用 returns only 1', caseStatusFilter],
   ['lazy-sweep flips expired 未使用 → 已过期 in DB', caseLazyExpire],
