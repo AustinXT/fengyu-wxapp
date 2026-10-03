@@ -16,7 +16,8 @@ describe('#257 C 每日分类重算', () => {
     expect(q.params).toEqual([1980])
     expect(q.sql).toContain('u.customer_type IS DISTINCT FROM c.new_type')
     expect(q.sql).not.toContain('SET member_level')
-    expect(q.sql).not.toContain('SET became_member_at')
+    expect(q.sql).toContain('COALESCE(u.became_member_at, c.first_qualified_at)')
+    expect(q.sql).toContain('SET is_membership_upgrade = true')
   })
   it('金额CTE与离线脚本独立副本逐字对齐', () => {
     const src = readFileSync('../db/scripts/recalc-all-customer-types.js','utf8')

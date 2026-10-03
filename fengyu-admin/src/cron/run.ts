@@ -8,25 +8,10 @@
  * STEP 间存在 happens-before 关系（STEP 2 升级后，STEP 3/4 应读到新等级），
  * 因此必须串行而非并发。
  *
- * STEP 顺序（2026-04-26 sale-order-domain-refactor 后）：
- *   1. closeExpiredAppointments — 业务清扫，先关掉超期预约（与后续重算无依赖）
- *   分类重算 customerTypes 先于状态、等级与权益，确保这些步骤读到新分类。
-   2. customerStatus           — 重算 client_wechat_users.customer_status
- *   3. monthlyActivity          — 重算 monthly_activity 月度客活（依赖 customer_type，不依赖等级）
- *   4. memberLevels             — 重算会员等级 + 升降级权益（依赖最新 sale_orders）
- *   5. spendingTier             — 重算 spending_tier 终身消费档位（依赖 sale_orders）
- *   6. birthday                 — 当日生日权益（依赖 member_level）
- *   7. thanksgiving             — 月度感恩权益（仅 20 号；依赖 member_level）
- *   8. resetCrossStoreFlags     — 重置顾客临时跨店标记（写入清扫；员工出差已改为长期保留，2026-07-13）
- *   9. pointsExpiry             — 积分批次过期扣减 + 60/30/7 天到期提醒
- *  10. visitPointsRetry         — 重试服务完成时失败的到店积分（仅失败日志，不扫历史）
- *  11. pointsAudit              — 积分余额一致性校验（只读告警）
- *  12. roleTypeNullsAudit       — sa/sc role_type NULL 监控（只读告警）
- *  13. paymentInvariants        — 6 项资金不变量守护（只读告警；新增 2026-04-26）
- *  14. refundCascadeCoverage    — 退款 5 通道级联巡检（只读告警；新增 2026-05-18）
- *  15. storeUnbindOrphans       — store_unbind_requests 孤儿巡检（只读告警；新增 2026-05-18）
- *
- *  客活/消费档位（STEP 3/5）2026-05-26 从 db/scripts/ 游离脚本纳入 cron-worker，根治筛选空。
+ * STEP顺序以STEPS数组为准：先业务清扫，再customerTypes、状态/等级/消费档位、
+ * 权益、积分补偿与审计。customerTypes必须先于状态、等级及权益。
+ * 顾客降为非会员后保留历史等级字段，但生日/感恩只向当前会员客发放。
+
  */
 
 import { db } from '@/db'

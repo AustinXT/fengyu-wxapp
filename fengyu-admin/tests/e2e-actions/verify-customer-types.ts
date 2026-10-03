@@ -20,7 +20,7 @@ try {
   psql(`ALTER TABLE client_wechat_users ADD name text;
     CREATE TYPE customer_status AS ENUM ('保有会员-稳定','保有会员-有效','沉睡','冰冻','休眠');
     CREATE TYPE spending_tier AS ENUM ('10W+','6-10W','3-6W','1-3W','1990-1W','<1990');
-    ALTER TABLE client_wechat_users ADD customer_status customer_status, ADD spending_tier spending_tier;
+    ALTER TABLE client_wechat_users ADD customer_status customer_status, ADD spending_tier spending_tier, ADD birthday date;
     CREATE TABLE service_orders(client_user_id text,status text,service_date date);
     CREATE TABLE system_configs(key text PRIMARY KEY,value text);
     INSERT INTO system_configs VALUES('new_member_threshold','1980');
@@ -34,6 +34,8 @@ try {
   const testBefore = psql("SELECT row_to_json(u) FROM client_wechat_users u WHERE user_id='U_pure'")
   await refreshCustomerTypes(db)
   for(const [id,type] of [['U_none','流量客'],['U_small','小美客'],['U_trial','体验客'],['U_refund','会员客'],['U_legacy','会员客']]) assert.equal(psql(`SELECT customer_type FROM client_wechat_users WHERE user_id='${id}'`),type)
+  assert.equal(psql("SELECT became_member_at IS NOT NULL FROM client_wechat_users WHERE user_id='U_refund'"),'t')
+  assert.equal(psql("SELECT is_membership_upgrade FROM sale_orders WHERE sale_order_id='O_refund'"),'t')
   assert.equal(psql("SELECT row_to_json(u) FROM client_wechat_users u WHERE user_id='U_pure'"),testBefore)
   const once = psql('SELECT json_agg(u ORDER BY user_id)::text FROM client_wechat_users u')
   assert.equal((await refreshCustomerTypes(db)).updated,0)
@@ -44,11 +46,19 @@ try {
   assert.deepEqual(changed.customerTypeChanged,{from:'会员客',to:'小美客'})
   assert.equal(psql("SELECT json_build_array(member_level,became_member_at,(SELECT is_membership_upgrade FROM sale_orders WHERE sale_order_id='O_legacy')) FROM client_wechat_users WHERE user_id='U_legacy'"),beforeHistory)
   assert.equal((await db.transaction(tx=>recomputeCustomerTagsInTx(tx,'U_legacy'))).customerTypeChanged,null)
+  const {grantBirthdayBenefits} = await import('../../src/cron/steps/grant-birthday-benefits')
+  const {grantThanksgivingBenefits} = await import('../../src/cron/steps/grant-thanksgiving-benefits')
+  psql("INSERT INTO system_configs VALUES('birthday_benefits','{}'),('thanksgiving_benefits','{}'); UPDATE client_wechat_users SET birthday='2026-07-20' WHERE user_id='U_legacy'; INSERT INTO service_orders VALUES('U_legacy','已完成','2026-07-20');")
+  const ctx = {referenceDate:new Date('2026-07-20T03:00:00+08:00')}
+  assert.equal((await grantBirthdayBenefits(db,ctx)).total,0)
+  assert.equal((await grantThanksgivingBenefits(db,ctx)).total,0)
   psql("UPDATE sale_orders SET received=3000 WHERE sale_order_id='O_legacy'")
   assert.deepEqual((await db.transaction(tx=>recomputeCustomerTagsInTx(tx,'U_legacy'))).customerTypeChanged,{from:'小美客',to:'会员客'})
+  assert.equal((await grantBirthdayBenefits(db,ctx)).total,1)
+  assert.equal((await grantThanksgivingBenefits(db,ctx)).total,1)
   psql("UPDATE system_configs SET value='0' WHERE key='new_member_threshold'")
   await assert.rejects(()=>refreshCustomerTypes(db),/会员门槛/)
-  console.log('PASS: 真实cron+helper双向、退款毛实收、无单、测试整行保护、同日幂等、历史字段保留、再达标升级、阈值拒绝')
+  console.log('PASS: 真实cron+helper双向、退款毛实收、无单、测试整行保护、同日幂等、历史字段保留、降级无生日/感恩资格、再达标恢复资格、阈值拒绝')
 } finally {
   const g = globalThis as typeof globalThis & {pgClient?: {end:()=>Promise<void>}}
   if(g.pgClient) await g.pgClient.end()

@@ -1,4 +1,4 @@
-/** #257 C：每日按#187单笔非体验毛实收双向对齐；只修改分类，历史归因留E。 */
+/** #257 C：每日按#187单笔非体验毛实收双向对齐；双向分类；首次入会归因仍按既有首笔达标单，降级不清历史，E新定义另定。 */
 import { sql } from 'drizzle-orm'
 import type { Db } from '../run'
 import { rowsAffected } from '@/lib/pg-rows'
@@ -74,20 +74,38 @@ export function customerTypeBatchSql(threshold: number) {
   return sql`
     ${sql.raw(CUSTOMER_TYPE_AMOUNTS_SQL)},
     classified AS (
-      SELECT u.user_id,
+      SELECT u.user_id, u.customer_type AS old_type, q.sale_order_id AS first_qualified_order, q.first_qualified_at,
              CASE
-               WHEN EXISTS (SELECT 1 FROM order_amounts oa WHERE oa.client_user_id = u.user_id AND oa.non_trial >= ${threshold}) THEN '会员客'
+               WHEN q.sale_order_id IS NOT NULL THEN '会员客'
                WHEN EXISTS (SELECT 1 FROM order_amounts oa WHERE oa.client_user_id = u.user_id AND oa.non_trial > 0) THEN '小美客'
                WHEN EXISTS (SELECT 1 FROM order_amounts oa WHERE oa.client_user_id = u.user_id AND oa.trial > 0) THEN '体验客'
                ELSE '流量客'
              END::customer_type AS new_type
         FROM client_wechat_users u
+        LEFT JOIN LATERAL (
+          SELECT oa.sale_order_id, COALESCE(oa.paid_at, oa.created_at) AS first_qualified_at
+            FROM order_amounts oa
+           WHERE oa.client_user_id = u.user_id AND oa.non_trial >= ${threshold}
+           ORDER BY oa.paid_at ASC NULLS LAST, oa.created_at ASC, oa.sale_order_id ASC LIMIT 1
+        ) q ON true
        WHERE u.name IS DISTINCT FROM '谢廷(测试)'
+    ),
+    flagged_orders AS (
+      -- 先订单再客户，与收款/历史审核的写入顺序一致；final UPDATE显式依赖RETURNING完成。
+      UPDATE sale_orders o SET is_membership_upgrade = true
+        FROM classified c
+       WHERE o.sale_order_id = c.first_qualified_order AND c.new_type = '会员客'
+         AND c.old_type IS DISTINCT FROM c.new_type
+         AND o.is_membership_upgrade IS DISTINCT FROM true
+      RETURNING o.sale_order_id
     )
-    UPDATE client_wechat_users u SET customer_type = c.new_type, updated_at = NOW()
+    UPDATE client_wechat_users u SET customer_type = c.new_type,
+      became_member_at = CASE WHEN c.new_type = '会员客' THEN COALESCE(u.became_member_at, c.first_qualified_at) ELSE u.became_member_at END,
+      updated_at = NOW()
       FROM classified c
      WHERE u.user_id = c.user_id AND u.name IS DISTINCT FROM '谢廷(测试)'
        AND u.customer_type IS DISTINCT FROM c.new_type
+       AND (SELECT count(*) FROM flagged_orders) >= 0
   `
 }
 
