@@ -295,27 +295,36 @@ backup_safe_compose() {
   control="$remote_dir/data/backup-control"
   # 首次部署尚无 worker/控制目录；无备份需要保护。
   if [ ! -d "$control" ]; then docker compose "$@"; return; fi
+  guard_stamp=$(mktemp)
   guard=$(cat <<'BACKUP_GUARD'
-control=$1; shift
+control=$1; guard_stamp=$2; shift 2
 # 宿主root首建锁时也保持容器uid1001可读写，不受root umask影响。
 if [ "$(id -u)" = 0 ]; then chown 1001:1001 "$control/runtime.lock" && chmod 600 "$control/runtime.lock" || exit 75; fi
-worker_state=$(docker inspect -f '{{.State.Status}}' fengyu-cron-worker 2>/dev/null || true)
+if ! worker_state=$(docker inspect -f '{{.State.Status}}' fengyu-cron-worker 2>/dev/null); then
+  containers=$(docker ps -a --format '{{.Names}}') || exit 75
+  if printf '%s\n' "$containers" | grep -qx fengyu-cron-worker; then exit 75; fi
+  worker_state=absent
+fi
 # 已停止的容器没有活备份，允许安装恢复代码；残留由新版worker持锁恢复。
-case "$worker_state" in exited|dead|created) orphan_only=true ;; *) orphan_only=false ;; esac
+case "$worker_state" in exited|dead|created|absent) orphan_only=true ;; *) orphan_only=false ;; esac
 if [ "$orphan_only" = false ] && { [ -e "$control/backup.lock" ] || grep -Eq '"state"[[:space:]]*:[[:space:]]*"running"' "$control"/states/*.json 2>/dev/null; }; then
   echo "ERROR: database backup is running or interrupted; deployment refused. Check settings/diagnostics and backup-control states." >&2
   grep -E '"state"[[:space:]]*:[[:space:]]*"running"' "$control"/states/*.json >&2 || true
   exit 75
 fi
+printf guarded > "$guard_stamp"
 exec docker compose "$@"
 BACKUP_GUARD
 )
   if [ -w "$control" ]; then
-    if flock -w "${backup_guard_wait:-0}" -E 75 "$control/runtime.lock" sh -c "$guard" sh "$control" "$@"; then return; else guard_rc=$?; fi
+    if flock -w "${backup_guard_wait:-0}" -E 75 "$control/runtime.lock" sh -c "$guard" sh "$control" "$guard_stamp" "$@"; then rm -f "$guard_stamp"; return; else guard_rc=$?; fi
   else
-    sudo -n true || { echo "ERROR: backup guard requires passwordless sudo" >&2; return 75; }
-    if sudo -n flock -w "${backup_guard_wait:-0}" -E 75 "$control/runtime.lock" sh -c "$guard" sh "$control" "$@"; then return; else guard_rc=$?; fi
+    sudo -n true || { rm -f "$guard_stamp"; echo "ERROR: backup guard requires passwordless sudo" >&2; return 75; }
+    if sudo -n flock -w "${backup_guard_wait:-0}" -E 75 "$control/runtime.lock" sh -c "$guard" sh "$control" "$guard_stamp" "$@"; then rm -f "$guard_stamp"; return; else guard_rc=$?; fi
   fi
+  # 未进入compose时，锁/权限/守卫故障都按安全拒绝返回，不误触发自动回滚。
+  if [ ! -s "$guard_stamp" ]; then guard_rc=75; fi
+  rm -f "$guard_stamp"
   echo "ERROR: backup guard refused admin switch (exit=$guard_rc); check settings/diagnostics. Retry after the backup completes." >&2
   return "$guard_rc"
 }
@@ -671,27 +680,36 @@ backup_safe_compose() {
   control="$remote_dir/data/backup-control"
   # 首次部署尚无 worker/控制目录；无备份需要保护。
   if [ ! -d "$control" ]; then docker compose "$@"; return; fi
+  guard_stamp=$(mktemp)
   guard=$(cat <<'BACKUP_GUARD'
-control=$1; shift
+control=$1; guard_stamp=$2; shift 2
 # 宿主root首建锁时也保持容器uid1001可读写，不受root umask影响。
 if [ "$(id -u)" = 0 ]; then chown 1001:1001 "$control/runtime.lock" && chmod 600 "$control/runtime.lock" || exit 75; fi
-worker_state=$(docker inspect -f '{{.State.Status}}' fengyu-cron-worker 2>/dev/null || true)
+if ! worker_state=$(docker inspect -f '{{.State.Status}}' fengyu-cron-worker 2>/dev/null); then
+  containers=$(docker ps -a --format '{{.Names}}') || exit 75
+  if printf '%s\n' "$containers" | grep -qx fengyu-cron-worker; then exit 75; fi
+  worker_state=absent
+fi
 # 已停止的容器没有活备份，允许安装恢复代码；残留由新版worker持锁恢复。
-case "$worker_state" in exited|dead|created) orphan_only=true ;; *) orphan_only=false ;; esac
+case "$worker_state" in exited|dead|created|absent) orphan_only=true ;; *) orphan_only=false ;; esac
 if [ "$orphan_only" = false ] && { [ -e "$control/backup.lock" ] || grep -Eq '"state"[[:space:]]*:[[:space:]]*"running"' "$control"/states/*.json 2>/dev/null; }; then
   echo "ERROR: database backup is running or interrupted; deployment refused. Check settings/diagnostics and backup-control states." >&2
   grep -E '"state"[[:space:]]*:[[:space:]]*"running"' "$control"/states/*.json >&2 || true
   exit 75
 fi
+printf guarded > "$guard_stamp"
 exec docker compose "$@"
 BACKUP_GUARD
 )
   if [ -w "$control" ]; then
-    if flock -w "${backup_guard_wait:-0}" -E 75 "$control/runtime.lock" sh -c "$guard" sh "$control" "$@"; then return; else guard_rc=$?; fi
+    if flock -w "${backup_guard_wait:-0}" -E 75 "$control/runtime.lock" sh -c "$guard" sh "$control" "$guard_stamp" "$@"; then rm -f "$guard_stamp"; return; else guard_rc=$?; fi
   else
-    sudo -n true || { echo "ERROR: backup guard requires passwordless sudo" >&2; return 75; }
-    if sudo -n flock -w "${backup_guard_wait:-0}" -E 75 "$control/runtime.lock" sh -c "$guard" sh "$control" "$@"; then return; else guard_rc=$?; fi
+    sudo -n true || { rm -f "$guard_stamp"; echo "ERROR: backup guard requires passwordless sudo" >&2; return 75; }
+    if sudo -n flock -w "${backup_guard_wait:-0}" -E 75 "$control/runtime.lock" sh -c "$guard" sh "$control" "$guard_stamp" "$@"; then rm -f "$guard_stamp"; return; else guard_rc=$?; fi
   fi
+  # 未进入compose时，锁/权限/守卫故障都按安全拒绝返回，不误触发自动回滚。
+  if [ ! -s "$guard_stamp" ]; then guard_rc=75; fi
+  rm -f "$guard_stamp"
   echo "ERROR: backup guard refused admin switch (exit=$guard_rc); check settings/diagnostics. Retry after the backup completes." >&2
   return "$guard_rc"
 }

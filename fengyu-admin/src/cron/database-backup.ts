@@ -226,7 +226,9 @@ async function recoverInterruptedBackups(currentId?: string): Promise<void> {
       continue
     }
     if (status.id !== name.replace(/\.json$/, '') || !['scheduled', 'manual'].includes(status.kind) || !Number.isFinite(Date.parse(status.createdAt))) continue
-    if (status.state !== 'running') continue
+    const orphanClaim = status.state === 'queued' && status.kind === 'manual'
+      && await stat(path.join(requestsDir(), `${status.id}.json.running`)).catch(() => null)
+    if (status.state !== 'running' && !orphanClaim) continue
     const completedAt = new Date().toISOString()
     const failed: BackupStatus = { ...status, state: 'failed', completedAt, updatedAt: completedAt,
       errorCode: 'BACKUP_FAILED', message: '备份进程中断，已恢复备份队列；定时备份将补跑' }
@@ -267,7 +269,7 @@ export async function performDatabaseBackup(
     await writeStatus(failed)
     await recordBackupOutcome(failed, requestedBy).catch(() => undefined)
     console.error('[database-backup] lock failed:', error)
-    await notifyOps(`⚠️ 数据库备份锁不可用（${kind}），请查看 cron worker 日志。`)
+    await notifyOps(`⚠️ 数据库备份锁不可用（${kind}），请查看 cron worker 日志。`).catch(() => undefined)
     return failed
   }
   try { return await performBackupUnderLock(kind, id, requestedBy) } finally { await release() }
@@ -376,6 +378,10 @@ export async function processManualBackupRequests(): Promise<void> {
       const request = JSON.parse(await readFile(claimedPath, 'utf8')) as BackupRequest
       if (request.kind !== 'manual' || request.id !== name.replace(/\.json$/, '')) throw new Error('invalid backup request')
       await performBackupUnderLock('manual', request.id, request.requestedBy)
+    } catch (error) {
+      const now = new Date().toISOString()
+      await writeStatus({ id: name.replace(/\.json$/, ''), kind: 'manual', state: 'failed', createdAt: now, updatedAt: now, completedAt: now, errorCode: 'BACKUP_FAILED', message: '备份请求损坏，请重新发起' })
+      throw error
     } finally {
       await rm(claimedPath, { force: true })
       await rm(path.join(backupControlDir(), 'manual-active.lock'), { force: true })

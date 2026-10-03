@@ -383,6 +383,10 @@ export function validateConfig(env, config) {
     if (/PLACEHOLDER|CHANGE_ME|REPLACE_ME|^<[^>]+>$/.test(value)) fail(`${key} still contains a placeholder`)
   }
 
+  if (config.DATABASE_BACKUP_REQUEST_DIR && config.DATABASE_BACKUP_REQUEST_DIR !== '/var/lib/fengyu/backup-control') {
+    fail('DATABASE_BACKUP_REQUEST_DIR must match the backup-control bind mount')
+  }
+
   assertDatabaseUrl('PG_CONNECTION_STRING', config.PG_CONNECTION_STRING, target.migrationHost)
   assertDatabaseUrl('ADMIN_DATABASE_URL', config.ADMIN_DATABASE_URL, target.containerDbHost)
   if (config.CLOUDBASE_ENV_ID !== target.cloudBaseEnvId) {

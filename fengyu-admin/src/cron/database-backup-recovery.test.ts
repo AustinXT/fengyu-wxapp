@@ -117,4 +117,13 @@ describe('备份重启恢复与部署互斥', () => {
     expect(runtime.commands).toHaveLength(count)
   })
 
+  it('领取后尚未写running即重启的queued状态也收敛为failed', async () => {
+    await writeFile(file(`states/${id}.json`), JSON.stringify({ id, kind: 'manual', state: 'queued', createdAt: now.toISOString(), updatedAt: now.toISOString() }))
+    await writeFile(file(`requests/${id}.json.running`), '{}')
+    await writeFile(file('manual-active.lock'), '')
+    await maintainBackupRuntime()
+    expect(JSON.parse(await readFile(file(`states/${id}.json`), 'utf8')).state).toBe('failed')
+    expect(await stat(file(`requests/${id}.json.running`)).catch(() => null)).toBeNull()
+  })
+
 })
