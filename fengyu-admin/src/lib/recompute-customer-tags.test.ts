@@ -20,9 +20,9 @@ describe('#257 C 单顾客双向重算', () => {
     expect(await recomputeCustomerTagsInTx({execute} as never,'U1')).toMatchObject({customerTypeChanged:null})
     expect(execute.mock.calls.some(([s])=>compile(s).sql.includes('SET customer_type'))).toBe(false)
   })
-  it('阈值失效拒绝分类更新', async () => {
-    const execute = vi.fn().mockResolvedValueOnce([{customer_type:'会员客'}]).mockResolvedValueOnce([])
-    await expect(recomputeCustomerTagsInTx({execute} as never,'U1')).rejects.toThrow('会员门槛')
-    expect(execute).toHaveBeenCalledTimes(2)
+  it('阈值失效不写分类、不阻断其余审核标签', async () => {
+    const execute = vi.fn().mockResolvedValueOnce([{customer_type:'会员客'}]).mockResolvedValueOnce([]).mockResolvedValue([])
+    expect(await recomputeCustomerTagsInTx({execute} as never,'U1')).toMatchObject({customerTypeChanged:null})
+    expect(execute.mock.calls.some(([s])=>compile(s).sql.includes('SET customer_type'))).toBe(false)
   })
 })

@@ -5,7 +5,7 @@
  *   - 原入口的整体 try 单点：任一 STEP 抛异常 → 后续 STEP 全部跳过
  *   - 此处改为 STEP 级隔离：单 STEP 失败仅记 errorStepCount + console.error，不影响下一 STEP
  *
- * STEP 间存在 happens-before 关系（STEP 2 升级后，STEP 3/4 应读到新等级），
+ * STEP 间存在 happens-before 关系（分类重算后，状态/等级/权益应读到新分类），
  * 因此必须串行而非并发。
  *
  * STEP顺序以STEPS数组为准：先业务清扫，再customerTypes、状态/等级/消费档位、
@@ -44,7 +44,7 @@ export interface DailyJobsResult {
 
 /**
  * STEP 函数签名：
- *   - 写入类 STEP（前 5 个）：(db, ctx?) 支持时间注入
+ *   - 写入类 STEP（分类/状态/等级等）：(db, ctx?) 支持时间注入
  *   - 审计类 STEP（后 5 个，只读）：(db) 不依赖时间窗口，签名兼容（额外 ctx 参数忽略）
  *
  * TypeScript 上声明为统一类型，运行时审计 STEP 忽略 ctx。

@@ -29,6 +29,7 @@ try {
     UPDATE client_wechat_users SET member_level='初钻',became_member_at='2025-06-01' WHERE user_id='U_legacy';
     UPDATE sale_orders SET is_membership_upgrade=true WHERE sale_order_id='O_legacy';`)
   const {db} = await import('../../src/db')
+  const {sql} = await import('drizzle-orm')
   const {refreshCustomerTypes} = await import('../../src/cron/steps/refresh-customer-types')
   const {recomputeCustomerTagsInTx} = await import('../../src/lib/recompute-customer-tags')
   const testBefore = psql("SELECT row_to_json(u) FROM client_wechat_users u WHERE user_id='U_pure'")
@@ -56,9 +57,26 @@ try {
   assert.deepEqual((await db.transaction(tx=>recomputeCustomerTagsInTx(tx,'U_legacy'))).customerTypeChanged,{from:'小美客',to:'会员客'})
   assert.equal((await grantBirthdayBenefits(db,ctx)).total,1)
   assert.equal((await grantThanksgivingBenefits(db,ctx)).total,1)
-  psql("UPDATE system_configs SET value='0' WHERE key='new_member_threshold'")
+  // 真实并发：快照之后另一连接写入合法分类，旧批量重算必须40001整体回滚。
+  psql("UPDATE sale_orders SET received=400 WHERE sale_order_id='O_legacy'; UPDATE client_wechat_users SET customer_type='流量客',became_member_at=NULL WHERE user_id='U_refund'; UPDATE sale_orders SET is_membership_upgrade=false WHERE sale_order_id='O_refund';")
+  const withRace = {
+    transaction: (fn: Parameters<typeof db.transaction>[0], options: Parameters<typeof db.transaction>[1]) => db.transaction(async tx => {
+      await tx.execute(sql`SELECT customer_type FROM client_wechat_users WHERE user_id='U_legacy'`)
+      await db.execute(sql`UPDATE client_wechat_users SET customer_type='体验客',updated_at=NOW() WHERE user_id='U_legacy'`)
+      return fn(tx)
+    }, options),
+  } as typeof db
+  await assert.rejects(()=>refreshCustomerTypes(withRace), (e: any)=>e.code==='40001'||e.cause?.code==='40001')
+  assert.equal(psql("SELECT customer_type FROM client_wechat_users WHERE user_id='U_legacy'"),'体验客')
+  assert.equal(psql("SELECT customer_type FROM client_wechat_users WHERE user_id='U_refund'"),'流量客')
+  assert.equal(psql("SELECT became_member_at IS NULL FROM client_wechat_users WHERE user_id='U_refund'"),'t')
+  assert.equal(psql("SELECT is_membership_upgrade FROM sale_orders WHERE sale_order_id='O_refund'"),'f')
+  psql("UPDATE sale_orders SET received=3000 WHERE sale_order_id='O_legacy'")
+  await refreshCustomerTypes(db)
+  psql("UPDATE system_configs SET value='0'  WHERE key='new_member_threshold'")
   await assert.rejects(()=>refreshCustomerTypes(db),/会员门槛/)
-  console.log('PASS: 真实cron+helper双向、退款毛实收、无单、测试整行保护、同日幂等、历史字段保留、降级无生日/感恩资格、再达标恢复资格、阈值拒绝')
+  assert.equal((await db.transaction(tx=>recomputeCustomerTagsInTx(tx,'U_legacy'))).customerTypeChanged,null)
+  console.log('PASS: 真实cron+helper双向、退款毛实收、无单、customerTypes步骤测试整行保护、同日幂等、历史字段保留、降级无生日/感恩资格、再达标恢复资格、并发40001整体回滚、阈值拒绝/审核跳过分类')
 } finally {
   const g = globalThis as typeof globalThis & {pgClient?: {end:()=>Promise<void>}}
   if(g.pgClient) await g.pgClient.end()

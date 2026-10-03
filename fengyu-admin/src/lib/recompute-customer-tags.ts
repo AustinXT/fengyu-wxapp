@@ -19,7 +19,7 @@
 
 import { sql } from 'drizzle-orm'
 import { db } from '@/db'
-import { getCustomerTypeThreshold } from '@/cron/steps/refresh-customer-types'
+import { getCustomerTypeThreshold, CUSTOMER_TYPE_THRESHOLD_UNAVAILABLE } from '@/cron/steps/refresh-customer-types'
 import { rowsAffected } from '@/lib/pg-rows'
 import { getMemberThreshold } from '@/cron/config'
 import { loadJsonConfig } from '@/cron/lib/benefits-loader'
@@ -151,7 +151,15 @@ async function recomputeCustomerTypeForUser(
   const oldType = curRows[0]?.customer_type ?? null
   if (!curRows[0]) return null
 
-  const threshold = await getCustomerTypeThreshold(tx)
+  let threshold: number
+  try {
+    threshold = await getCustomerTypeThreshold(tx)
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== CUSTOMER_TYPE_THRESHOLD_UNAVAILABLE) throw error
+    // 配置无效不做分类写入；保留原审核可用性，待修正配置后每日重算补齐。
+    console.warn('[customer-tags] skipped classification: invalid member threshold')
+    return null
+  }
 
   // 八处 SQL 镜像副本，修改时必须同步其余七处（staffApi order.js + clientApi order.js + payNotify index.js
   // + admin orders.ts + 本文件 + db/scripts/recalc-all-customer-types.js + db/scripts/recalc-became-member-at.js）；

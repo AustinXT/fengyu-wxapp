@@ -4,13 +4,14 @@ import type { Db } from '../run'
 import { rowsAffected } from '@/lib/pg-rows'
 
 type Executor = Pick<Db, 'execute'>
+export const CUSTOMER_TYPE_THRESHOLD_UNAVAILABLE = 'INVALID_STATE: 会员门槛配置不可用，停止顾客分类重算'
 
 // 降级不使用缓存/默认阈值；配置不可用时本步骤拒绝写入。
 export async function getCustomerTypeThreshold(db: Executor): Promise<number> {
   const rows = await db.execute(sql`SELECT value FROM system_configs WHERE key = 'new_member_threshold'`) as unknown as Array<{ value: string }>
   const raw = rows[0]?.value
   const value = typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : NaN
-  if (!Number.isFinite(value) || value <= 0) throw new Error('INVALID_STATE: 会员门槛配置不可用，停止顾客分类重算')
+  if (!Number.isFinite(value) || value <= 0) throw new Error(CUSTOMER_TYPE_THRESHOLD_UNAVAILABLE)
   return value
 }
 
@@ -91,7 +92,7 @@ export function customerTypeBatchSql(threshold: number) {
        WHERE u.name IS DISTINCT FROM '谢廷(测试)'
     ),
     flagged_orders AS (
-      -- 先订单再客户，与收款/历史审核的写入顺序一致；final UPDATE显式依赖RETURNING完成。
+      -- 标记和分类在同一事务提交；RETURNING依赖不构成其他写入方的全局锁序协议。
       UPDATE sale_orders o SET is_membership_upgrade = true
         FROM classified c
        WHERE o.sale_order_id = c.first_qualified_order AND c.new_type = '会员客'
@@ -113,5 +114,5 @@ export async function refreshCustomerTypes(db: Db): Promise<{ updated: number }>
   return db.transaction(async tx => {
     const threshold = await getCustomerTypeThreshold(tx)
     return { updated: rowsAffected(await tx.execute(customerTypeBatchSql(threshold))) }
-  })
+  }, { isolationLevel: 'repeatable read' })
 }

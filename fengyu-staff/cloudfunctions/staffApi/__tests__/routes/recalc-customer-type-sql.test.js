@@ -716,3 +716,12 @@ describe('#257 顾客分类方向守护', () => {
     expect(src).toMatch(/customer_type (?:<>|IS DISTINCT FROM)/)
   })
 })
+
+// #257 C：新增第九处金额CTE副本，即使只跑staff快照也不能漏掉cron。
+test('C 每日cron批量金额CTE与离线真实SQL逐字一致', () => {
+  const cronFile = path.resolve(path.dirname(ADMIN_RECOMPUTE_TS), '../cron/steps/refresh-customer-types.ts')
+  const cron = fs.readFileSync(cronFile, 'utf8').match(/CUSTOMER_TYPE_AMOUNTS_SQL = `([\s\S]*?)`/)[1]
+  const offline = fs.readFileSync(SCRIPT_RECALC_ALL_TYPES, 'utf8')
+  const amounts = offline.slice(offline.indexOf('refund_by_item AS ('), offline.indexOf(',\nqualified_orders AS ('))
+  expect(cron.trim()).toBe(('WITH\n' + amounts).trim())
+})
