@@ -21,6 +21,9 @@ async function load(id) {
     [id.appid, id.openid],
   );
   if (!user) return null;
+  return loadEmployee(user);
+}
+async function loadEmployee(user) {
   if (user.is_resigned)
     throw new Error("PERMISSION_DENIED: 员工已离职，请联系管理员");
   const roles = await pg.query(
@@ -87,13 +90,28 @@ async function load(id) {
     scopeOrgNodeIds,
   };
 }
+async function requireTestUser(employeeId) {
+  const [user] = await pg.query(
+    `SELECT u.employee_id,u.name,u.is_resigned,u.store_id,s.store_name,u.position_name,o.name AS org_name
+     FROM staff_wechat_users u LEFT JOIN stores s ON s.store_id=u.store_id
+     LEFT JOIN org_nodes o ON o.id=COALESCE(u.org_node_id,s.org_node_id)
+     WHERE u.employee_id=$1`,
+    [employeeId],
+  );
+  if (!user) throw new Error("NOT_FOUND: 测试员工不存在");
+  return loadEmployee(user);
+}
 async function requireUser(id) {
   const user = await load(id);
   if (!user) throw new Error("PHONE_REQUIRED: 请先授权手机号绑定员工身份");
   return user;
 }
 async function login(ctx) {
-  ctx.result = { user: await load(ctx.identity) };
+  ctx.result = {
+    user: ctx.testEmployeeId
+      ? await requireTestUser(ctx.testEmployeeId)
+      : await load(ctx.identity),
+  };
 }
 async function bindPhone(ctx) {
   const phone = await resolvePhone(ctx.cloud, ctx.event.payload);
@@ -134,16 +152,14 @@ async function bindPhone(ctx) {
   ctx.result = { user: await requireUser(ctx.identity) };
 }
 async function bindTestCode(ctx) {
-  const {
-    verifyTestCode,
-    consumeTestBinding,
-  } = require("../utils/test-binding");
-  let config;
-  try {
-    config = require("../utils/test-binding.json");
-  } catch (_) {}
-  const employeeId = verifyTestCode(ctx.event.payload, config);
-  await consumeTestBinding(pg, ctx.identity, employeeId);
-  ctx.result = { user: await requireUser(ctx.identity) };
+  ctx.result = { user: await requireTestUser(ctx.testEmployeeId) };
 }
-module.exports = { identity, requireUser, login, bindPhone, bindTestCode };
+module.exports = {
+  identity,
+  requireUser,
+  login,
+  bindPhone,
+  bindTestCode,
+  testIdentity: (...args) => require("../utils/test-binding").testIdentity(...args),
+  requireTestUser,
+};

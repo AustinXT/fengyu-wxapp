@@ -10,7 +10,8 @@ Page({
     this.setData({ loading: true });
     try {
       const data = await callApi<{ report: Report; entries: Business[]; own: boolean; canEdit: boolean }>(
-        'manager.detail', { id: this.data.id || undefined, date: this.data.date || undefined });
+        'manager.detail', { id: this.data.id || undefined, date: this.data.date || undefined,
+          workspace: wx.getStorageSync('dailyWorkspace') });
       this.setData({ ...data, submittedLabel: data.report.updated_at || data.report.submitted_at || '' });
     } catch (e) { showError(e); } finally { this.setData({ loading: false }); }
   },

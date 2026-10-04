@@ -2,6 +2,7 @@ const pg = require("../db/pg");
 const v = require("../utils/validation");
 const { reportStores } = require('../utils/report-scope');
 const submissions = require('../utils/submission-range');
+const metrics = require('./metrics');
 function assertStore(ctx, storeId) {
   if (
     typeof storeId !== "string" ||
@@ -46,8 +47,12 @@ async function detail(ctx) {
     `SELECT snapshot,feedback,follow_up AS "followUp" FROM daily_report_entries WHERE report_id=$1 ORDER BY business_type,business_id`,
     [report.id],
   );
+  const metricSnapshot = metrics.reportSnapshotForViewer(
+    report.metric_snapshot, ctx.auth, report, payload.workspace,
+  );
   ctx.result = {
-    report, own, canEdit: own && report.report_date === v.today(),
+    report: { ...report, metric_snapshot: metricSnapshot },
+    own, canEdit: own && report.report_date === v.today(),
     entries: entries.map((e) => ({
       ...e.snapshot,
       feedback: e.feedback,

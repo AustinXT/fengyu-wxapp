@@ -72,9 +72,7 @@ Page({
       dates: string
       current: boolean
       automatic: boolean
-      sales: string
-      consumption: string
-      counts: string
+      metrics: { label: string; value: string }[]
     }[],
     sales: '',
     consumption: '',
@@ -104,6 +102,7 @@ Page({
       unit: string
       month: string
       week: string
+      weekPercent: string
     }[],
     monthError: '',
     weekError: '',
@@ -125,6 +124,8 @@ Page({
     try {
       const { user } = await login()
       if (!user) throw Error('请先绑定员工身份')
+      if (this.data.scope === 'personal' && user.managerStores.length > 0)
+        throw Error('店长无需设置个人经营目标，请在店长工作台设置本店目标')
       let scopes = [{ id: user.employeeId, name: user.name }]
       if (this.data.scope === 'store')
         scopes = user.managerStores.map((s) => ({
@@ -215,23 +216,25 @@ Page({
         week && target?.weeks[week.id]?.consumption != null
           ? amount(target.weeks[week.id].consumption)
           : '',
-      weeks: (period?.weeks || []).map((w, i) => ({
-        id: w.id,
-        name: w.name,
-        dates: `${w.start} 至 ${w.end}`,
-        current: w.id === week?.id,
-        automatic: i === 3,
-        sales: amount(target?.weeks[w.id]?.sales),
-        consumption: amount(target?.weeks[w.id]?.consumption),
-        counts: ['visits', 'newCustomers', 'projects']
-          .map(
-            (k) =>
-              target?.weeks[w.id]?.[
-                k as 'visits' | 'newCustomers' | 'projects'
-              ] ?? '未设置',
-          )
-          .join(' / '),
-      })),
+      weeks: (period?.weeks || []).map((w, i) => {
+        const values = target?.weeks[w.id]
+        const weeklyValue = (value: number | null | undefined) =>
+          i === 3 && value == null ? '待计算' : amount(value)
+        return {
+          id: w.id,
+          name: w.name,
+          dates: `${w.start} 至 ${w.end}`,
+          current: w.id === week?.id,
+          automatic: i === 3,
+          metrics: [
+            { label: '业绩', value: weeklyValue(values?.sales) },
+            { label: '消耗', value: weeklyValue(values?.consumption) },
+            { label: '客量', value: String(values?.visits ?? '未设置') },
+            { label: '新客', value: String(values?.newCustomers ?? '未设置') },
+            { label: '项目数', value: String(values?.projects ?? '未设置') },
+          ],
+        }
+      }),
       ready: true,
     })
     this.percent()
@@ -311,6 +314,10 @@ Page({
         unit: '人次',
         month: this.data.visits,
         week: this.data.weekVisits,
+        weekPercent:
+          this.data.weekVisits !== '' && Number(this.data.visits) > 0
+            ? ((Number(this.data.weekVisits) * 100) / Number(this.data.visits)).toFixed(1) + '%'
+            : '—',
       },
       {
         key: 'newCustomers',
@@ -319,6 +326,10 @@ Page({
         unit: '人',
         month: this.data.newCustomers,
         week: this.data.weekNewCustomers,
+        weekPercent:
+          this.data.weekNewCustomers !== '' && Number(this.data.newCustomers) > 0
+            ? ((Number(this.data.weekNewCustomers) * 100) / Number(this.data.newCustomers)).toFixed(1) + '%'
+            : '—',
       },
       {
         key: 'projects',
@@ -327,6 +338,10 @@ Page({
         unit: '次',
         month: this.data.projects,
         week: this.data.weekProjects,
+        weekPercent:
+          this.data.weekProjects !== '' && Number(this.data.projects) > 0
+            ? ((Number(this.data.weekProjects) * 100) / Number(this.data.projects)).toFixed(1) + '%'
+            : '—',
       },
     ]
     for (const field of countFields) {

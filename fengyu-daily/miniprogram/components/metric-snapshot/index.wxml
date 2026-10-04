@@ -1,1 +1,22 @@
-<view wx:if="{{snapshot}}" class="metric-card"><view class="heading">{{frozen?'提交时经营快照':'当日实际完成'}} · {{scopeLabel}}</view><view class="muted">{{periodLabel}}</view><view class="metrics"><view><text>本日销售完成（元）</text><view>{{daySales}}</view></view><view><text>本日消耗完成（元）</text><view>{{dayConsumption}}</view></view><block wx:if="{{snapshot.period && !compact}}"><view><text>本周销售完成率</text><view>{{weekSales}}</view></view><view><text>本周消耗完成率</text><view>{{weekConsumption}}</view></view></block></view><block wx:if="{{snapshot.month && !compact}}"><view class="muted">本月销售 {{monthSales}}</view><view class="muted">本月消耗 {{monthConsumption}}</view></block><view wx:if="{{frozen && savedAt}}" class="muted">快照时间：{{savedAt}}</view></view><view wx:elif="{{frozen}}" class="metric-card muted">此记录未保存经营快照，不用当前数据替代。</view>
+<view wx:if="{{snapshot}}" class="metric-card">
+  <view class="heading">{{frozen ? '提交时实际经营快照' : '当日实际完成'}} · {{scopeLabel}}</view>
+  <view class="muted">{{periodLabel}}</view>
+  <view wx:if="{{!compact}}" class="actual-grid">
+    <view class="actual-row actual-head"><text>指标</text><text>当日</text><text>本周累计</text><text>本月累计</text></view>
+    <view wx:for="{{rows}}" wx:key="key" class="actual-row">
+      <text class="metric-label">{{item.label}}</text>
+      <text class="actual-today">{{item.day}}</text>
+      <text>{{item.week}}</text>
+      <text>{{item.month}}</text>
+    </view>
+  </view>
+  <view wx:else class="actual-grid compact">
+    <view wx:for="{{rows}}" wx:key="key" class="actual-row">
+      <text class="metric-label">{{item.label}}</text>
+      <text class="actual-today">{{item.day}}</text>
+    </view>
+  </view>
+  <view wx:if="{{!compact}}" class="muted metric-note">客量按已完成服务单统计；新客按首次到店顾客去重；项目数按已消耗次数统计。</view>
+  <view wx:if="{{frozen && savedAt}}" class="muted">快照时间：{{savedAt}}</view>
+</view>
+<view wx:elif="{{frozen}}" class="metric-card muted">此记录未保存经营快照，不用当前数据替代。</view>

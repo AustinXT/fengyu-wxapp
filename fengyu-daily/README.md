@@ -95,9 +95,9 @@ DAILY_DEPLOY_BACKEND=wechat WX_DEVTOOLS_PORT=41652 bash scripts/deploy-cloudfunc
 
 ### 尚未开通手机号能力时的开发测试
 
-执行 `node scripts/create-daily-test-binding.mjs <员工手机号>`，只读开发库核对在职员工，生成4小时有效的随机测试码。原码保存在忽略文件 `_tmp/daily-deploy/test-binding-code.txt`，云函数配置 `utils/test-binding.json` 仅保存哈希、目标员工编号和有效期，并随统一部署入口上传；两个文件都不能提交 Git。
+执行 `node scripts/create-daily-test-binding.mjs <员工手机号>`，或对日报测试账号使用 `node scripts/create-daily-test-binding.mjs DLYTEST_<账号编号>`，只读开发库核对在职员工，生成4小时有效的随机测试码。原码保存在忽略文件 `_tmp/daily-deploy/test-binding-code-<员工编号>.txt`，云函数配置 `utils/test-binding.json` 仅保存哈希、目标员工编号和有效期，并随统一部署入口上传；两个文件都不能提交 Git。配置可同时包含多个测试账号。
 
-开发版首页的“开发测试绑定”输入该码，即可用日报自身 OPENID 绑定已有员工编号。服务端同时要求 `DEPLOY_CHANNEL=shadow` 和固定开发库地址；正式版不显示入口，正式通道/生产库拒绝调用。绑定事务锁定员工行，已绑定的员工或微信不能再次使用，也不会覆盖员工端 OPENID。该入口仅用于当前开发测试，并非正式管理员发码功能。
+开发版首页的“开发测试身份”输入该码，即可切换到对应测试员工；其它 API 会持续使用该测试身份，退出后恢复原微信身份。测试身份只在开发库请求中临时解析，不写入微信绑定表，也不会改变员工端身份。同时要求 `DEPLOY_CHANNEL=shadow` 和固定开发库地址；正式版不显示入口，正式通道/生产库拒绝调用。该入口仅用于当前开发测试，并非正式管理员发码功能。
 
 ## 验证
 

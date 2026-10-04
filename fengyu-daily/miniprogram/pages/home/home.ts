@@ -17,6 +17,7 @@ Page({
     historyLoading: false,
     statusLoading: false,
     goalError: false,
+    showGoalEntry: true,
     historyError: false,
     statusError: false,
     binding: false,
@@ -47,7 +48,10 @@ Page({
     this.setData({ loading: !this.data.user, refreshing: true, error: false, date: today() });
     try {
       const { user, workspace } = await login();
-      this.setData({ user, workspace });
+      const isStoreManager = (user?.managerStores || []).length > 0;
+      this.setData({ user, workspace,
+        showGoalEntry: workspace === 'manager' || (workspace === 'employee' && !isStoreManager),
+      });
       syncTabs(this, workspace, 0);
       if (user) {
         if (workspace === "management") {
@@ -62,7 +66,7 @@ Page({
         }
         this.setData({ loading: false, goalLoading: true, historyLoading: true, statusLoading: true,
           goalError: false, historyError: false, statusError: false });
-        const goalTask = (async () => {
+        const goalTask = workspace === 'employee' && isStoreManager ? Promise.resolve() : (async () => {
 
           const scope = workspace === 'manager' ? 'store' : 'personal';
           const scopeId = scope === 'store' ? user.managerStores[0]?.store_id : user.employeeId;
@@ -145,6 +149,7 @@ Page({
     this.setData({ binding: true });
     try {
       await callApi("auth.bindTestCode", { code: this.data.testCode });
+      wx.setStorageSync("dailyTestBindingCode", this.data.testCode);
       this.setData({ testCode: "" });
       await this.load();
     } catch (e) {
@@ -152,6 +157,12 @@ Page({
     } finally {
       this.setData({ binding: false });
     }
+  },
+  exitTestIdentity() {
+    if (!this.data.testBinding) return;
+    wx.removeStorageSync("dailyTestBindingCode");
+    wx.removeStorageSync("dailyWorkspace");
+    void this.load();
   },
   history() {
     if (this.data.workspace === "employee")
@@ -169,6 +180,7 @@ Page({
   pk() { wx.navigateTo({ url: '/pages/pk/pk' }); },
   goal() {
     if (this.data.goalError) { void this.load(); return; }
+    if (this.data.workspace === 'employee' && (this.data.user?.managerStores || []).length > 0) return;
     const scope = this.data.workspace === 'management' ? 'market' : this.data.workspace === 'manager' ? 'store' : 'personal';
     wx.navigateTo({ url: '/pages/goal/goal?scope=' + scope });
   },

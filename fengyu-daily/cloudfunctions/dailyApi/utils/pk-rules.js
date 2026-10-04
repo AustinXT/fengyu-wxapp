@@ -19,7 +19,7 @@ function validateClasses(classes) {
 // 沿用原型的周完成率降序：无目标或零目标置后，同率保持输入顺序。
 // 用整数交叉乘法比较，避免浮点近似改变排名。
 function rankRows(rows, metric) {
-  if (!['sales', 'consumption'].includes(metric) || !Array.isArray(rows))
+  if (!['sales', 'consumption', 'visits', 'newCustomers', 'projects'].includes(metric) || !Array.isArray(rows))
     throw Error('INVALID_PARAMS: 无效PK指标');
   const items = rows.map((row, index) => {
     const values = row[metric];

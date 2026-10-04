@@ -33,29 +33,63 @@ export async function directory(query: any, allowedStores: any) {
   return { stores: visible, fullMarkets, people }
 }
 export function participantObjects(dir: any, assignments: any) {
-  return dir.people.flatMap((person: any) => {
+  const marketRepresentatives = new Map<string, any>()
+  for (const person of dir.people) {
+    if (
+      person.market_id &&
+      dir.fullMarkets.includes(person.market_id) &&
+      !marketRepresentatives.has(person.market_id)
+    ) {
+      marketRepresentatives.set(person.market_id, person)
+    }
+  }
+  const marketParticipants = [...marketRepresentatives].flatMap(
+    ([marketId, person]: [string, any]) => {
+      const marketStores = dir.stores.filter(
+        (store: any) => store.market_id === marketId,
+      )
+      const storeIds = new Set(marketStores.map((store: any) => store.id))
+      const marketAssignments = assignments.filter((assignment: any) =>
+        storeIds.has(assignment.store_id),
+      )
+      const classIds = new Set(
+        marketAssignments.map((assignment: any) => assignment.class_id),
+      )
+      // 市场目标覆盖整个市场；只有市场内所有门店都属于同一个班级时，才把市场目标放进该班 PK。
+      if (
+        !marketStores.length ||
+        marketAssignments.length !== marketStores.length ||
+        classIds.size !== 1
+      ) {
+        return []
+      }
+      const store = marketStores[0]
+      return [
+        {
+          employeeId: person.employeeId,
+          name: person.name,
+          position: '市场目标',
+          scope: 'market',
+          scopeId: marketId,
+          scopeName: store.area,
+          storeId: null,
+          storeName: `${store.area || '市场'}合计`,
+          marketId,
+          area: store.area || '',
+          classId: marketAssignments[0].class_id,
+          legion: '',
+          mentor: null,
+        },
+      ]
+    },
+  )
+  const storeParticipants = dir.people.flatMap((person: any) => {
     const store = dir.stores.find((s: any) => s.id === person.storeId)
-    const market = person.market_id || store?.market_id
-    const marketRole =
-      person.market_id && dir.fullMarkets.includes(person.market_id)
-    if (person.market_id && !marketRole) return []
-    const ownAssignment = assignments.find(
-      (a: any) => a.store_id === person.storeId,
-    )
-    const assignment = ownAssignment
-    if (marketRole && store?.market_id !== market) return []
+    if (person.market_id) return []
+    const assignment = assignments.find((a: any) => a.store_id === person.storeId)
     if (!assignment) return []
-    const scope = marketRole
-      ? 'market'
-      : person.manager && store
-        ? 'store'
-        : 'personal'
-    const scopeId =
-      scope === 'market'
-        ? market
-        : scope === 'store'
-          ? person.storeId
-          : person.employeeId
+    const scope = person.manager && store ? 'store' : 'personal'
+    const scopeId = scope === 'store' ? person.storeId : person.employeeId
     return [
       {
         employeeId: person.employeeId,
@@ -63,23 +97,16 @@ export function participantObjects(dir: any, assignments: any) {
         position: person.position || '',
         scope,
         scopeId,
-        scopeName:
-          scope === 'market'
-            ? dir.stores.find((s: any) => s.market_id === market)?.area
-            : scope === 'store'
-              ? store.name
-              : person.name,
+        scopeName: scope === 'store' ? store.name : person.name,
         storeId: person.storeId,
         storeName: store?.name || '未分配门店',
-        marketId: market,
-        area:
-          store?.area ||
-          dir.stores.find((s: any) => s.market_id === market)?.area ||
-          '',
+        marketId: store?.market_id || null,
+        area: store?.area || '',
         classId: assignment.class_id,
         legion: assignment.legion,
         mentor: assignment.mentor_name,
       },
     ]
   })
+  return [...storeParticipants, ...marketParticipants]
 }

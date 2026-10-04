@@ -76,12 +76,25 @@ export interface Report {
 }
 export interface MetricSnapshot {
   scope: 'personal' | 'store' | 'market';
-  day: { sales: number; consumption: number };
+  scopeId?: string;
+  day: MetricActuals;
+  actuals?: { day: MetricActuals; week: MetricActuals | null; month: MetricActuals | null };
   period: { id: string; name: string; start: string; end: string } | null;
-  week: { name: string; sales: { done: number; target: number | null }; consumption: { done: number; target: number | null } } | null;
-  month: { sales: { done: number; target: number | null }; consumption: { done: number; target: number | null } } | null;
+  week: { id?: string; name: string; start?: string; end?: string; sales?: { done: number; target: number | null }; consumption?: { done: number; target: number | null } } | null;
+  month: { start?: string; end?: string; sales?: { done: number; target: number | null }; consumption?: { done: number; target: number | null } } | null;
+  scopes?: Partial<Record<'personal' | 'store' | 'market', {
+    scope: 'personal' | 'store' | 'market'; scopeId: string;
+    day: MetricActuals; week: MetricActuals | null; month: MetricActuals | null;
+  }>>;
   savedAt?: string;
   guidance?: { mentor: { employeeId: string; name: string } | null; peer: { employeeId: string; name: string } | null };
+}
+export interface MetricActuals {
+  sales: number;
+  consumption: number;
+  visits?: number;
+  newCustomers?: number;
+  projects?: number;
 }
 export interface Editor {
   date: string;
@@ -103,9 +116,15 @@ export async function callApi<T>(
   payload: object = {},
   extra: object = {},
 ): Promise<T> {
+  const testCode = wx.getAccountInfoSync().miniProgram.envVersion === "develop"
+    ? wx.getStorageSync("dailyTestBindingCode") as string
+    : "";
+  const requestPayload = testCode && action !== "auth.bindTestCode"
+    ? { ...payload, testCode }
+    : payload;
   const response = await wx.cloud.callFunction({
     name: functionName(),
-    data: { action, payload, ...extra },
+    data: { action, payload: requestPayload, ...extra },
   });
   const result = response.result as {
     code: number;

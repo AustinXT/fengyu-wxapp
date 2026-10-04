@@ -1207,6 +1207,15 @@
     .target-metric b { display:block; margin-top:5px; font-size:15px; }
     .target-progress { margin:11px 0 0; color:var(--muted); font-size:11px; line-height:1.6; }
     .target-progress strong { color:var(--text); }
+    .actual-snapshot { border-color:#eadfdd; background:#fff; }
+    .actual-snapshot__hint { margin:-2px 0 12px; color:var(--muted); font-size:11px; line-height:1.6; }
+    .actual-table { display:grid; grid-template-columns:minmax(48px,.72fr) repeat(3,minmax(0,1fr)); align-items:center; }
+    .actual-table__head { padding:7px 3px; color:var(--muted); font-size:10px; text-align:right; }
+    .actual-table__head:first-child { text-align:left; }
+    .actual-table__cell { min-width:0; padding:11px 3px; border-top:1px solid var(--line); font-size:11px; text-align:right; white-space:nowrap; }
+    .actual-table__cell.metric { color:#414854; font-weight:700; text-align:left; }
+    .actual-table__cell.today { color:var(--ink); font-size:12px; font-weight:800; }
+    .actual-snapshot__foot { margin-top:10px; color:var(--muted); font-size:10px; line-height:1.6; }
     .goal-metric-card { margin:12px 0; padding:13px; border:1px solid var(--line); border-radius:11px; background:#fff; }
     .goal-metric-card h3 { margin:0; font-size:15px; }
     .goal-month-input { width:100%; box-sizing:border-box; margin:8px 0 12px; padding:11px; border:1px solid var(--line); border-radius:9px; font:inherit; }
@@ -1251,11 +1260,18 @@
     .goal-penalty-summary { margin-top:10px; color:#59616d; font-size:11px; line-height:1.5; }
     .goal-lock-note { margin:10px 0 0; color:#737b87; font-size:11px; line-height:1.6; }
     .goal-week-list { margin-bottom:12px; }
-    .goal-week-list__item { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:11px 0; border-top:1px solid var(--line); font-size:12px; }
+    .goal-week-list__item { padding:12px 0; border-top:1px solid var(--line); }
     .goal-week-list__item:first-child { border-top:0; }
-    .goal-week-list__item small { display:block; margin-top:3px; color:var(--muted); font-size:11px; }
-    .goal-week-list__item b { text-align:right; font-size:12px; }
+    .goal-week-list__head { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; margin-bottom:9px; }
+    .goal-week-list__head strong { font-size:13px; }
+    .goal-week-list__head small { display:block; margin-top:3px; color:var(--muted); font-size:11px; }
+    .goal-week-list__badge { flex:0 0 auto; padding:3px 7px; border-radius:999px; background:#f4f5f7; color:var(--muted); font-size:10px; }
+    .goal-week-metrics { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:6px; }
+    .goal-week-metric { min-width:0; padding:8px 7px; border:1px solid var(--line); border-radius:8px; background:#fafafa; }
+    .goal-week-metric span { display:block; overflow:hidden; color:var(--muted); font-size:10px; line-height:1.4; text-overflow:ellipsis; white-space:nowrap; }
+    .goal-week-metric b { display:block; margin-top:4px; overflow-wrap:anywhere; font-size:11px; font-weight:700; line-height:1.35; }
     .goal-week-list__item.current { color:var(--brand); }
+    @media (max-width:600px) { .goal-week-metrics { grid-template-columns:repeat(3,minmax(0,1fr)); } }
     .goal-week-input { margin-top:12px; }
     .goal-week-input__hint { margin-top:-7px; color:var(--muted); font-size:11px; }
     .goal-error { margin:8px 0 0; color:var(--danger); font-size:12px; }
@@ -1543,19 +1559,28 @@
       function dailyNotesDetail(row) {const notes=dailyNotes(row);return [["action","今日行动"],["growth","今日成长"],["plan","明日计划"]].map(([key,label])=>detailBlock(label,notes[key])).join("")+(notes.summary?detailBlock("其他补充（保留原内容）",notes.summary):"");}
       function personActual(ownerId,date) {
         const index=data.employees.findIndex(p=>p.id===ownerId),day=Number(date.slice(-2));
-        return {sales:7200+day*100+Math.max(0,index)*230,consumption:4900+day*100+Math.max(0,index)*170};
+        return {sales:7200+day*100+Math.max(0,index)*230,consumption:4900+day*100+Math.max(0,index)*170,
+          visits:4+(day+Math.max(0,index))%9,newCustomers:(day+Math.max(0,index))%4,projects:6+(day*2+Math.max(0,index))%13};
       }
+      const actualKeys=["sales","consumption","visits","newCustomers","projects"];
+      const emptyActual=()=>Object.fromEntries(actualKeys.map(key=>[key,0]));
+      function addActual(total,value){for(const key of actualKeys)total[key]+=Number(value?.[key]||0);return total;}
+      function storeActual(storeId,date){return employeesForStore(storeId).filter(p=>!p.role.includes("店长")).reduce((sum,p)=>addActual(sum,personActual(p.id,date)),emptyActual());}
+      function marketActual(marketId,date){return data.stores.filter(s=>marketId==="all"||s.marketId===marketId).reduce((sum,s)=>addActual(sum,storeActual(s.id,date)),emptyActual());}
       function dailyActual(ownerId=state.form.ownerId||currentUser().id,date=state.form.date||data.today) {
         const person=employee(ownerId),people=person.role.includes("店长")?employeesForStore(person.storeId).filter(p=>!p.role.includes("店长")):[person];
-        return people.reduce((sum,p)=>{const actual=personActual(p.id,date);return {sales:sum.sales+actual.sales,consumption:sum.consumption+actual.consumption};},{sales:0,consumption:0});
+        return people.reduce((sum,p)=>addActual(sum,personActual(p.id,date)),emptyActual());
       }
       function captureSnapshot(ownerId,date,period=reportPeriod(date)) {
-        const person=employee(ownerId),scope=person.role.includes("店长")?"store":"personal",owner=scope==="store"?person.storeId:ownerId;
-        let saved=null;try{saved=JSON.parse(localStorage.getItem(TARGETS_KEY)||"{}")[`${scope}:${owner}:${period?.monthId}`];}catch(_){}
-        const totals=(start,end)=>{const total={sales:0,consumption:0};if(start&&end)for(let day=start;day<=end;day=dateAdd(day,1)){const actual=dailyActual(ownerId,day);total.sales+=actual.sales;total.consumption+=actual.consumption;}return total;};
-        const weekDone=totals(period?.week?.start,date),monthDone=totals(period?.start,date),week={},month={};
-        for(const metric of ["sales","consumption"]){const item=saved?.[metric],weeks=period?.weeks||[],weekId=period?.week?.id;let target=item?.weeks?.[weekId]??null;if(weekId===weeks[3]?.id&&item&&weeks.slice(0,3).every(w=>item.weeks?.[w.id]!=null))target=Number(item.month)-weeks.slice(0,3).reduce((sum,w)=>sum+Number(item.weeks[w.id]),0);week[metric]={target,done:weekDone[metric]};month[metric]={target:item?.month??null,done:monthDone[metric]};}
-        return {savedAt:`${date} 16:22`,date,ownerId,scope,scopeId:owner,demo:true,day:dailyActual(ownerId,date),week,month};
+        const person=employee(ownerId),marketId=store(person.storeId).marketId;
+        const calculators={personal:d=>personActual(ownerId,d),store:d=>storeActual(person.storeId,d),market:d=>marketActual(marketId,d),allMarkets:d=>marketActual("all",d)};
+        const scopes={};
+        for(const [key,calculate] of Object.entries(calculators)){
+          const totals=(start,end)=>{const total=emptyActual();if(start&&end)for(let day=start;day<=end;day=dateAdd(day,1))addActual(total,calculate(day));return total;};
+          scopes[key]={day:calculate(date),week:totals(period?.week?.start,date),month:totals(period?.start,date)};
+        }
+        const scope=person.role.includes("店长")?"store":"personal";
+        return {savedAt:`${date} 16:22`,date,ownerId,scope,scopeId:scope==="store"?person.storeId:ownerId,demo:true,scopes};
       }
       function businessForReport(ownerId,date) {
         if(ownerId==="zhang"&&date===data.today)return data.business.filter(x=>x.date===date).map(x=>({...structuredClone(x),ownerId}));
@@ -1564,7 +1589,11 @@
           {id:`XS-${stamp}-${ownerId}`,ownerId,date,type:"sale",auto:true,allocated:true,title:`居家护理产品 · ${person.name}的演示顾客`}];
       }
       function initialEntries(ownerId,date) {return businessForReport(ownerId,date).filter(x=>x.auto&&(x.type!=="sale"||x.allocated!==false)).map(x=>({id:x.id,businessSnapshot:x,feedback:"",issue:""}));}
-      function normalizeReport(row,ownerId) {return {...structuredClone(row),ownerId,summary:legacySummary(row),entries:Array.isArray(row.entries)?structuredClone(row.entries):[]};}
+      function normalizeReport(row,ownerId) {
+        const normalized={...structuredClone(row),ownerId,summary:legacySummary(row),entries:Array.isArray(row.entries)?structuredClone(row.entries):[]};
+        if(normalized.snapshot?.demo&&!normalized.snapshot.scopes){const previous=normalized.snapshot;normalized.snapshot={...captureSnapshot(ownerId,row.date,normalized.period||reportPeriod(row.date)),savedAt:previous.savedAt||previous.capturedAt||`${row.date} 16:22`};}
+        return normalized;
+      }
       function reportPayload(collection) {const items={};for(const [ownerId,rows] of Object.entries(collection))for(const row of rows)items[`${ownerId}:${row.date}`]=normalizeReport(row,ownerId);return {version:1,items};}
       function decodeReports(raw) {const payload=JSON.parse(raw);if(payload?.version!==1||!payload.items||typeof payload.items!=="object"||Array.isArray(payload.items))throw new Error("日报存储格式不正确");const collection={};for(const [key,row] of Object.entries(payload.items)){if(!row||!data.employees.some(p=>p.id===row.ownerId)||!/^\d{4}-\d{2}-\d{2}$/.test(row.date)||key!==`${row.ownerId}:${row.date}`||!["draft","submitted"].includes(row.status))throw new Error("日报记录格式不正确");(collection[row.ownerId]??=[]).push(normalizeReport(row,row.ownerId));}return collection;}
       function syncReportStatus() {for(const person of data.employees)person.status=records(person.id).find(row=>row.date===data.today)?.status||"missing";}
@@ -1682,10 +1711,20 @@
       function rangeReportPage({title,subtitle,stats,listTitle,rows}){ return `${chrome()}${nav(title)}<div class="content no-tabs">${periodSwitch(state.period)}${statsCard("提交概况",stats,subtitle)}<div class="card"><div class="section-head"><div class="section-title">${listTitle}</div></div>${rows||'<div class="notice">当前范围暂无可查看的明细。</div>'}</div></div>${toast()}`; }
       function marketReportPage(){ const m=market(state.selectedMarket), stores=data.stores.filter(x=>x.marketId===m.id), people=data.employees.filter(x=>stores.some(s=>s.id===x.storeId)); return rangeReportPage({title:`${m.name}日报`,subtitle:`${m.name} · ${periodLabel(state.period)}`,stats:submissionStats(people,state.period),listTitle:"门店列表",rows:stores.map(storeRow).join("")}); }
       function storeReportPage(){ const s=store(state.selectedStore), people=employeesForStore(s.id); return rangeReportPage({title:`${s.name}日报`,subtitle:`${market(s.marketId).name} · ${periodLabel(state.period)}`,stats:submissionStats(people,state.period),listTitle:"人员提交列表",rows:people.map(x=>personRow(x,state.period)).join("")}); }
-      function snapshotCard(snapshot){
-        if(!snapshot?.day||!snapshot?.week||!snapshot?.month)return '<div class="notice">此记录未保存完整经营快照，不能用当前数据替代。</div>';
-        const s=snapshot,week=s.week,month=s.month,amount=value=>value==null?"未设置":money(value);
-        return `<div class="card target-card"><div class="section-head"><div class="section-title">提交时经营快照 · ${s.scope==="store"?"本店":"个人"}${s.demo?' · 演示数据':''}</div></div><div class="target-metric-grid target-metric-grid--snapshot"><div class="target-metric"><span>本日销售完成</span><b>${amount(s.day.sales)}</b></div><div class="target-metric"><span>本日消耗完成</span><b>${amount(s.day.consumption)}</b></div><div class="target-metric"><span>本周销售完成率</span><b>${pct(week.sales?.done,week.sales?.target)}</b></div><div class="target-metric"><span>本周消耗完成率</span><b>${pct(week.consumption?.done,week.consumption?.target)}</b></div></div><div class="section-sub">快照时间：${escapeHtml(s.savedAt||"未记录")}</div><div class="target-progress">本月销售 ${amount(month.sales?.done)} / ${amount(month.sales?.target)} · 消耗 ${amount(month.consumption?.done)} / ${amount(month.consumption?.target)}</div></div>`;
+      function snapshotCard(snapshot,person){
+        if(!snapshot?.scopes)return '<div class="notice">此记录未保存完整经营快照，不能用当前数据替代。</div>';
+        let key="personal",scopeLabel="个人实际";
+        if(state.role==="manager"){key="store";scopeLabel=`${store(person.storeId).name} · 本店汇总`;}
+        else if(state.role==="admin"){
+          if(state.adminScope==="market") {key="market";scopeLabel=`${market(store(person.storeId).marketId).name} · 市场汇总`;}
+          else if(state.selectedMarket==="all"){key="allMarkets";scopeLabel="全部授权市场汇总";}
+          else {key="market";scopeLabel=`${market(state.selectedMarket).name} · 市场汇总`;}
+        }
+        const values=snapshot.scopes[key]||snapshot.scopes.personal;
+        const definitions=[["sales","业绩","元"],["consumption","消耗","元"],["visits","客量","单"],["newCustomers","新客","人"],["projects","项目数","次"]];
+        const show=(metric,period)=>{const value=values?.[period]?.[metric];if(value==null)return "—";return metric==="sales"||metric==="consumption"?money(value):`${Number(value).toLocaleString("zh-CN")}${definitions.find(item=>item[0]===metric)?.[2]||""}`;};
+        const rows=definitions.map(([metric,label])=>`<div class="actual-table__cell metric">${label}</div><div class="actual-table__cell today">${show(metric,"day")}</div><div class="actual-table__cell">${show(metric,"week")}</div><div class="actual-table__cell">${show(metric,"month")}</div>`).join("");
+        return `<div class="card actual-snapshot"><div class="section-head"><div class="section-title">提交时实际经营 · ${scopeLabel}${snapshot.demo?' · 演示数据':''}</div></div><div class="actual-snapshot__hint">仅展示实际完成：当日、当周累计、当月累计；不与目标完成率混在一起。</div><div class="actual-table"><div class="actual-table__head">指标</div><div class="actual-table__head">当日</div><div class="actual-table__head">本周累计</div><div class="actual-table__head">本月累计</div>${rows}</div><div class="actual-snapshot__foot">客量按已完成服务单统计；新客按首次到店顾客去重；项目数按已消耗次数统计。汇总范围按后台门店 / 市场口径计算。<br>快照时间：${escapeHtml(snapshot.savedAt||"未记录")}</div></div>`;
       }
       function detailPage(){
         const person=employee(state.selectedEmployee),row=records(person.id).find(x=>x.date===state.selectedRecordDate);
@@ -1696,7 +1735,7 @@
         const entryBlocks=entries.map(entry=>businessCard(entry,true)).join("");
         const notesContent=`<div class="daily-section-heading"><strong>二 整日补充</strong></div>${dailyNotesDetail(row)}`;
         const oldContent=`<div class="notice">此记录未保存业务单据明细。</div>${notesContent}`;
-        return `${chrome()}${nav("日报详情")}<div class="content no-tabs"><div class="card"><div class="section-head"><div><div class="section-title">${row.date}</div><div class="section-sub">${person.name} · ${person.role} · ${store(person.storeId).name}</div></div>${tag(row.status)}</div><div class="meta-line"><span>经营周期</span><b>${escapeHtml(row.periodLabel||"未保存周期信息")}</b></div>${row.updatedAt?`<div class="meta-line"><span>最近提交</span><b>${escapeHtml(row.updatedAt)}</b></div>`:""}</div>${row.status==="submitted"?snapshotCard(row.snapshot):''}${entries.length?`<div class="daily-section-heading"><strong>一 关联业务条目</strong><span class="tag">${entries.length} 条</span></div>${entryBlocks}${notesContent}`:oldContent}<div class="card"><div class="section-title">指导关系</div><div class="data-row"><span>指导员</span><b>${escapeHtml(row.mentor||"未选择")}</b></div><div class="data-row"><span>同事</span><b>${escapeHtml(row.peer||"未选择")}</b></div></div>${editable?'<button class="primary-action" data-action="edit-today">修改今日日报</button>':''}</div>${toast()}`;
+        return `${chrome()}${nav("日报详情")}<div class="content no-tabs"><div class="card"><div class="section-head"><div><div class="section-title">${row.date}</div><div class="section-sub">${person.name} · ${person.role} · ${store(person.storeId).name}</div></div>${tag(row.status)}</div><div class="meta-line"><span>经营周期</span><b>${escapeHtml(row.periodLabel||"未保存周期信息")}</b></div>${row.updatedAt?`<div class="meta-line"><span>最近提交</span><b>${escapeHtml(row.updatedAt)}</b></div>`:""}</div>${row.status==="submitted"?snapshotCard(row.snapshot,person):''}${entries.length?`<div class="daily-section-heading"><strong>一 关联业务条目</strong><span class="tag">${entries.length} 条</span></div>${entryBlocks}${notesContent}`:oldContent}<div class="card"><div class="section-title">指导关系</div><div class="data-row"><span>指导员</span><b>${escapeHtml(row.mentor||"未选择")}</b></div><div class="data-row"><span>同事</span><b>${escapeHtml(row.peer||"未选择")}</b></div></div>${editable?'<button class="primary-action" data-action="edit-today">修改今日日报</button>':''}</div>${toast()}`;
       }
       function detailBlock(title,text){ return `<div class="card"><div class="section-title">${title}</div><p style="margin:10px 0 0;color:#444c58;font-size:13px;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere">${escapeHtml(text||"未填写")}</p></div>`; }
       function minePage(){
@@ -1708,7 +1747,7 @@
       const priorYearDemo = {month:{range:"2025-06-27 至 2025-07-26",sales:238400,consumption:166800},weeks:{w1:{range:"2025-06-27 至 07-03",sales:52000,consumption:38000},w2:{range:"2025-07-04 至 07-10",sales:60000,consumption:41000},w3:{range:"2025-07-11 至 07-18",sales:65000,consumption:44000},w4:{range:"2025-07-19 至 07-26",sales:61400,consumption:43800}}};
       const priorReference = (scope,metric,weekId) => { if(state.selectedMonth!=="2026-07")return '<div class="goal-reference">暂无去年对应经营周数据（演示）</div>';const row=weekId?priorYearDemo.weeks[weekId]:priorYearDemo.month,factor=scope==="market"?20:scope==="store"?5:1,label=weekId?"去年对应经营周实际":"去年对应经营月实际";return `<div class="goal-reference">${label}：<strong>${money(row[metric]*factor)}</strong><span class="goal-reference__dates">${row.range} · 演示数据，仅供设目标参考</span></div>`; };
       function goalMonthField(metric,label,draft,scope){const item=draft[metric],confirmed=draft.monthConfirmed;return `<div><label class="field-label">月${label}目标（元）</label>${confirmed?`<div class="goal-locked-value">${money(item.month)}</div>`:`<input class="goal-month-input" type="number" min="0" step="1" data-target-input="${metric}:month" value="${escapeHtml(item.month)}">`}${priorReference(scope,metric)}</div>`;}
-      function goalWeekList(draft,current){const weeks=targetWeeks();return `<div class="card goal-card goal-week-list"><div class="goal-card__head"><h3>经营周安排</h3><span class="tag">按周设置</span></div>${weeks.map((week,index)=>{const sales=weeklyAmounts(draft.sales)[week.id],consumption=weeklyAmounts(draft.consumption)[week.id],isCurrent=current?.id===week.id,auto=index===3,status=auto?(sales===null?"待前三周设置后自动计算":`${money(sales)} / ${money(consumption)}`):draft.weekConfirmed[week.id]?`${money(sales)} / ${money(consumption)}`:isCurrent?"本周待设置":"待设置";return `<div class="goal-week-list__item ${isCurrent?'current':''}"><div><strong>${week.name}${isCurrent?' · 当前':''}</strong><small>${week.start.slice(5)} 至 ${week.end.slice(5)} · ${daysInWeek(week)} 天</small></div><b>${status}</b></div>`;}).join("")}<div class="goal-lock-note">金额顺序为业绩 / 消耗。第 4 周自动取月目标扣除前三周后的余额。</div></div>`;}
+      function goalWeekList(draft,current){const weeks=targetWeeks();return `<div class="card goal-card goal-week-list"><div class="goal-card__head"><h3>经营周安排</h3><span class="tag">按周设置</span></div>${weeks.map((week,index)=>{const sales=weeklyAmounts(draft.sales)[week.id],consumption=weeklyAmounts(draft.consumption)[week.id],isCurrent=current?.id===week.id,auto=index===3,configured=Boolean(draft.weekConfirmed[week.id]),amountValue=value=>auto?(value===null?"待计算":money(value)):configured?money(value):"未设置",metrics=[["业绩",amountValue(sales)],["消耗",amountValue(consumption)],["客量","未设置"],["新客","未设置"],["项目数","未设置"]];return `<div class="goal-week-list__item ${isCurrent?'current':''}"><div class="goal-week-list__head"><div><strong>${week.name}</strong><small>${week.start.slice(5)} 至 ${week.end.slice(5)} · ${daysInWeek(week)} 天</small></div>${isCurrent?'<span class="goal-week-list__badge">当前</span>':''}${auto?'<span class="goal-week-list__badge">自动余额</span>':''}</div><div class="goal-week-metrics">${metrics.map(([label,value])=>`<div class="goal-week-metric"><span>${label}</span><b>${value}</b></div>`).join("")}</div></div>`;}).join("")}<div class="goal-lock-note">五项目标同级展示；第 4 周业绩、消耗自动取月目标扣除前三周后的余额。</div></div>`;}
       function goalWeekField(metric,label,draft,scope,week){const raw=draft[metric].weeks[week.id],rate=Number(draft[metric].month)>0&&raw!==""&&raw!=null?`${(Number(raw)/Number(draft[metric].month)*100).toFixed(1)}%`:'--';return `<div class="goal-week-input"><label class="field-label">本周${label}目标（元）</label><input class="goal-month-input" type="number" min="0" step="1" data-target-input="${metric}:week:${week.id}" value="${raw==null?'':escapeHtml(raw)}" placeholder="填写本周目标金额"><div class="goal-week-input__hint">占月目标 <span data-week-percent="${metric}">${rate}</span></div>${priorReference(scope,metric,week.id)}</div>`;}
       function goalPage(){
         const scope=state.goalScope||targetScopeFromRole(),draft=state.goalDraft||targetFor(scope),current=goalWeek(),july=state.selectedMonth==="2026-07",confirmed=draft.monthConfirmed;

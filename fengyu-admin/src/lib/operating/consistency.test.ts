@@ -67,7 +67,7 @@ describe('日报和Web独立实现口径守护', () => {
       ),
     )
   })
-  it('岗位映射范围一致，无门店总监不自动归入其他门店或班级', () => {
+  it('店长按门店目标映射，市场目标仅在完整市场同属一个班级时参与 PK', () => {
     const people = [
       { employeeId: 'e', storeId: 's1' },
       { employeeId: 'boss', storeId: 's1', manager: true },
@@ -85,7 +85,14 @@ describe('日报和Web独立实现口径守护', () => {
     )
     expect(
       participantObjects(dir, assignments).map((p: any) => p.scope),
-    ).toEqual(['personal', 'store', 'market'])
+    ).toEqual(['personal', 'store'])
+    const sameClass = participantObjects(dir, [
+      { store_id: 's1', class_id: 'c1' },
+      { store_id: 's2', class_id: 'c1' },
+    ])
+    expect(sameClass.filter((p: any) => p.scope === 'market')).toEqual([
+      expect.objectContaining({ employeeId: 'director', scopeId: 'm1', classId: 'c1' }),
+    ])
     const partial = { ...dir, fullMarkets: [] }
     expect(
       participantObjects(partial, assignments).some(

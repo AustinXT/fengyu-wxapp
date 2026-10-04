@@ -29,11 +29,25 @@ exports.main = async (event) => {
   try {
     const route = routes[event?.action];
     if (!route) throw new Error("INVALID_PARAMS: 不支持的操作");
-    const identity = await auth.identity(cloud.getWXContext());
+    const wxIdentity = await auth.identity(cloud.getWXContext());
     if (!process.env.PG_CONNECTION_STRING?.trim())
       throw new Error("INVALID_STATE: 日报服务尚未配置数据库连接，请联系管理员完成云函数配置。");
-    const ctx = { event, identity, cloud, auth: null, result: null };
-    if (route[0] !== "auth") ctx.auth = await auth.requireUser(identity);
+    let identity = wxIdentity;
+    let testEmployeeId = null;
+    if (event?.action === "auth.bindTestCode") {
+      let config;
+      try { config = require("./utils/test-binding.json"); } catch (_) {}
+      testEmployeeId = auth.testIdentity(wxIdentity, event.payload, config).employeeId;
+    } else if (event?.payload?.testCode) {
+      let config;
+      try { config = require("./utils/test-binding.json"); } catch (_) {}
+      testEmployeeId = auth.testIdentity(wxIdentity, { code: event.payload.testCode }, config).employeeId;
+    }
+    const ctx = { event, identity, wxIdentity, testEmployeeId, cloud, auth: null, result: null };
+    if (route[0] !== "auth")
+      ctx.auth = testEmployeeId
+        ? await auth.requireTestUser(testEmployeeId)
+        : await auth.requireUser(identity);
     await require("./routes/" + route[0])[route[1]](ctx);
     return { code: 0, message: "success", data: ctx.result };
   } catch (e) {

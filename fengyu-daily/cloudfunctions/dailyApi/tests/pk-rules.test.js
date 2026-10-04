@@ -32,3 +32,14 @@ test('整数交叉乘法在金额较大时仍准确识别相近完成率', () =>
   assert.equal(rankRows(rows, 'sales')[0].id, 'full');
   assert.throws(() => rankRows(rows, 'unknown'));
 });
+
+test('客量、新客、项目数也按周目标完成率排序', () => {
+  const rows = [
+    { id: 'A', visits: { weekTarget: 10, weekDone: 5 }, newCustomers: { weekTarget: 4, weekDone: 3 }, projects: { weekTarget: 20, weekDone: 10 } },
+    { id: 'B', visits: { weekTarget: 10, weekDone: 8 }, newCustomers: { weekTarget: 4, weekDone: 2 }, projects: { weekTarget: 20, weekDone: 15 } },
+    { id: 'C', visits: { weekTarget: null, weekDone: 100 }, newCustomers: { weekTarget: 0, weekDone: 100 }, projects: { weekTarget: null, weekDone: 100 } },
+  ];
+  assert.deepEqual(rankRows(rows, 'visits').map((x) => x.id), ['B', 'A', 'C']);
+  assert.deepEqual(rankRows(rows, 'newCustomers').map((x) => x.id), ['A', 'B', 'C']);
+  assert.deepEqual(rankRows(rows, 'projects').map((x) => x.id), ['B', 'A', 'C']);
+});

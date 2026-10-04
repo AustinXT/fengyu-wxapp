@@ -39,11 +39,11 @@ const automator = require("miniprogram-automator");
         name: "测试员工",
         storeId: "UI-STORE",
         storeName: "测试门店",
-        managerStores: [{ store_id: "UI-STORE", store_name: "测试门店" }],
+        managerStores: globalThis.__dailyUiStoreManager === false ? [] : [{ store_id: "UI-STORE", store_name: "测试门店" }],
         scopedStores: [{ store_id: "UI-STORE", store_name: "测试门店" }],
         availableWorkspaces: ["employee", "manager", "management"],
         staffLevel: globalThis.__dailyUiMarket ? 'market' : "headquarters", positionName: "顾问", orgName: "测试总部",
-        roleBindings: [{role:"manager",roleName:"店长",scopeType:"门店",scopeName:"测试门店"}],
+        roleBindings: globalThis.__dailyUiStoreManager === false ? [] : [{role:"manager",roleName:"店长",scopeType:"门店",scopeName:"测试门店"}],
       };
       const entry = {
         businessType: "service",
@@ -58,9 +58,12 @@ const automator = require("miniprogram-automator");
       const period = { id: 'UI-PERIOD', name: '测试经营月', start: date.slice(0, 8) + '01', end: date.slice(0, 8) + '28', version: 1,
         weeks: [0, 1, 2, 3].map((i) => ({ id: 'w' + (i + 1), name: '第' + (i + 1) + '周', start: date.slice(0, 8) + String(i * 7 + 1).padStart(2, '0'), end: date.slice(0, 8) + String((i + 1) * 7).padStart(2, '0') })) };
       const summary = { due: 2, submitted: 1, missing: 1, rate: 50 }, range = { label: '今日', start: date, end: date, kind: 'today' };
-      const snapshot = { scope: 'personal', period, day: { sales: 5000, consumption: 6000 },
-        week: { name: '第1周', sales: { done: 5000, target: 10000 }, consumption: { done: 6000, target: 10000 } },
-        month: { sales: { done: 5000, target: 40000 }, consumption: { done: 6000, target: 40000 } }, savedAt: new Date().toISOString() };
+      const dayActual = { sales: 5000, consumption: 6000, visits: 5, newCustomers: 2, projects: 7 };
+      const weekActual = { sales: 15000, consumption: 12000, visits: 15, newCustomers: 4, projects: 20 };
+      const monthActual = { sales: 30000, consumption: 25000, visits: 30, newCustomers: 9, projects: 42 };
+      const snapshot = { scope: 'personal', scopeId: user.employeeId, period, day: dayActual,
+        actuals: { day: dayActual, week: weekActual, month: monthActual },
+        week: { name: '第1周' }, month: { start: period.start, end: period.end }, savedAt: new Date().toISOString() };
       let data;
       switch (options.data.action) {
         case 'period.list': data = { periods: [period], period, week: period.weeks[0] }; break;
@@ -73,7 +76,8 @@ const automator = require("miniprogram-automator");
         case 'business.list': data = { entries: [] }; break;
         case 'pk.classes': data = { period, classes: [{ id: 'UI-CLASS', name: '测试班级', members: 1, stores: 1 }], scopeLabel: '排名仅统计授权门店' }; break;
         case 'pk.read': data = { period, week: period.weeks[0], scopeLabel: '排名仅统计授权门店', rows: [{ employeeId: user.employeeId, name: user.name, area: '测试市场', legion: '测试军团', group: '测试小组', mentor: '测试指导员', rank: 1,
-          sales: { weekTarget: 10000, weekDone: 5000, monthTarget: 10000, monthDone: 5000 }, consumption: { weekTarget: 10000, weekDone: 6000, monthTarget: 10000, monthDone: 6000 } }] }; break;
+          sales: { weekTarget: 10000, weekDone: 5000, monthTarget: 10000, monthDone: 5000 }, consumption: { weekTarget: 10000, weekDone: 6000, monthTarget: 10000, monthDone: 6000 },
+          visits: { weekTarget: 10, weekDone: 4, monthTarget: 40, monthDone: 12 }, newCustomers: { weekTarget: 5, weekDone: 2, monthTarget: 20, monthDone: 6 }, projects: { weekTarget: 20, weekDone: 8, monthTarget: 80, monthDone: 24 } }] }; break;
         case 'management.read': data = { summary, range, markets: [{ id: 'UI-MARKET', name: '测试市场', ...summary }],
           stores: [{ store_id: 'UI-STORE', store_name: '测试门店', org_node_id: 'UI-MARKET', ...summary }],
           employees: [{ employee_id: user.employeeId, name: user.name, store_id: 'UI-STORE', store_name: '测试门店', position_name: '顾问', due: 2, submitted: 1 }],
@@ -138,7 +142,7 @@ const automator = require("miniprogram-automator");
     });
     const output = path.resolve(__dirname, "../../_tmp/daily-ui");
     fs.mkdirSync(output, { recursive: true });
-    await mp.evaluate(() => wx.setStorageSync("dailyWorkspace", "employee"));
+    await mp.evaluate(() => { globalThis.__dailyUiStoreManager = false; wx.setStorageSync("dailyWorkspace", "employee"); });
     const home = await mp.reLaunch("/pages/home/home");
     await wait(() => home.data("user"), "home");
     assert.equal((await home.data("user")).employeeId, "UI-EMP");
@@ -201,7 +205,14 @@ const automator = require("miniprogram-automator");
     await wait(() => pk.data('ready'), "pk");
     assert.equal((await pk.data('rows'))[0].weekRate, '60.0%');
     await mp.screenshot({ path: path.join(output, 'pk-consumption.png') });
+    for (const [metric, done, rate] of [['visits', '4', '40.0%'], ['newCustomers', '2', '40.0%'], ['projects', '8', '40.0%']]) {
+      await pk.callMethod('metricChange', { currentTarget: { dataset: { metric } } });
+      await wait(() => pk.data('ready'), `pk-${metric}`);
+      assert.equal((await pk.data('rows'))[0].weekDoneText, done);
+      assert.equal((await pk.data('rows'))[0].weekRate, rate);
+    }
     await mp.evaluate(() => wx.setStorageSync('dailyWorkspace', 'manager'));
+    await mp.evaluate(() => { globalThis.__dailyUiStoreManager = true; });
     const storeWorkbench = await mp.reLaunch('/pages/workbench/workbench');
     await wait(() => storeWorkbench.data('ready'), "storeWorkbench");
     assert.equal(await storeWorkbench.data('workspace'), 'manager');
@@ -232,7 +243,7 @@ const automator = require("miniprogram-automator");
     const mine = await mp.reLaunch('/pages/mine/mine');
     await wait(() => mine.data('user'), "mine");
     await mp.screenshot({ path: path.join(output, 'mine.png') });
-    await mp.evaluate(() => { globalThis.__dailyUiSubmitted = true; wx.setStorageSync('dailyWorkspace', 'employee'); });
+    await mp.evaluate(() => { globalThis.__dailyUiSubmitted = true; globalThis.__dailyUiStoreManager = false; wx.setStorageSync('dailyWorkspace', 'employee'); });
     await mp.navigateTo('/pages/report/report');
     await wait(async () => (await mp.currentPage()).path === 'pages/detail/detail', '本人提交后只读详情');
     const ownDetail = await mp.currentPage();
@@ -248,10 +259,10 @@ const automator = require("miniprogram-automator");
     await wait(async () => (await mp.currentPage()).path === 'pages/detail/detail', '取消修改返回只读');
     assert.deepEqual(exceptions, []);
     console.log(
-      "UI 验证通过：三套工作台、市场角色、填写保存、只读详情、目标校验、个人记录、PK双榜、组织筛选和市场详情（模拟接口）",
+      "UI 验证通过：三套工作台、市场角色、填写保存、只读详情、目标校验、个人记录、PK五项榜单、组织筛选和市场详情（模拟接口）",
     );
   } finally {
-    await mp.evaluate(() => { delete globalThis.__dailyUiSubmitted; delete globalThis.__dailyUiTarget; delete globalThis.__dailyUiMarket; });
+    await mp.evaluate(() => { delete globalThis.__dailyUiSubmitted; delete globalThis.__dailyUiTarget; delete globalThis.__dailyUiMarket; delete globalThis.__dailyUiStoreManager; });
     await mp.evaluate((workspace) => wx.setStorageSync("dailyWorkspace", workspace), savedWorkspace);
     await mp.restoreWxMethod("cloud.callFunction");
     await mp.restoreWxMethod("showModal");

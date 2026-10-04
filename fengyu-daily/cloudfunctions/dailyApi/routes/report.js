@@ -49,12 +49,20 @@ async function read(ctx) {
   const map = new Map(
     stored.map((e) => [e.businessType + ":" + e.businessId, e]),
   );
+  const workspace = ctx.event.payload?.workspace;
+  const rawMetricSnapshot = report?.status === 'submitted'
+    ? report.metric_snapshot
+    : await metrics.captureReportSnapshot(pg.query, ctx.auth, {
+        date, workspace, includeAllScopes: false,
+      });
+  const metricSnapshot = metrics.reportSnapshotForViewer(
+    rawMetricSnapshot, ctx.auth, report || { employee_id: ctx.auth.employeeId, store_id: ctx.auth.storeId }, workspace,
+  );
   ctx.result = {
     date,
-    report: report || null,
+    report: report ? { ...report, metric_snapshot: report.status === 'submitted' ? metricSnapshot : report.metric_snapshot } : null,
     readOnly: report?.status === "submitted" && date !== v.today(),
-    metrics: report?.status === 'submitted' ? report.metric_snapshot || null
-      : await metrics.capture(pg.query, ctx.auth, { date, ...metricScope(ctx.auth, ctx.event.payload?.workspace) }),
+    metrics: metricSnapshot,
     entries: current.map((b) => ({
       ...b,
       auto: map.get(b.businessType + ':' + b.businessId)?.snapshot.auto === false ? false : b.auto,
@@ -128,8 +136,8 @@ async function write(ctx, submit) {
     )
       throw new Error("CONFLICT: 业务归属已变化，请重新加载；填写内容尚未保存");
     const id = old?.id || randomUUID();
-    const metricSnapshot = submit ? await metrics.capture(query, ctx.auth,
-      { date: input.reportDate, ...metricScope(ctx.auth, ctx.event.payload?.workspace) }) : null;
+    const metricSnapshot = submit ? await metrics.captureReportSnapshot(query, ctx.auth,
+      { date: input.reportDate, workspace: ctx.event.payload?.workspace }) : null;
     const guidance = await contacts.validate(query, ctx.auth, input.mentorEmployeeId, input.peerEmployeeId);
     if (metricSnapshot) metricSnapshot.guidance = guidance;
     const [report] = await query(
@@ -176,7 +184,11 @@ async function write(ctx, submit) {
         ],
       );
     }
-    return { report };
+    const visibleReport = metricSnapshot
+      ? { ...report, metric_snapshot: metrics.reportSnapshotForViewer(
+          report.metric_snapshot, ctx.auth, report, ctx.event.payload?.workspace) }
+      : report;
+    return { report: visibleReport };
   });
 }
 async function history(ctx) {

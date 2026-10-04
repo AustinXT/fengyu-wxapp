@@ -1,13 +1,14 @@
 import { callApi, showError, today } from '../../utils/cloud';
 interface Period { id: string; name: string; start: string; end: string }
 interface Values { weekTarget: number | null; weekDone: number; monthTarget: number | null; monthDone: number }
-interface Row { employeeId: string; name: string; area: string; storeName: string; legion: string; group: string; mentor: string; rank: number; sales: Values; consumption: Values }
-const money = (n: number | null) => n === null ? '未设置' : (n / 100).toFixed(2);
+type Metric = 'sales' | 'consumption' | 'visits' | 'newCustomers' | 'projects';
+interface Row { employeeId: string; name: string; area: string; storeName: string; legion: string; group: string; mentor: string; rank: number; sales: Values; consumption: Values; visits: Values; newCustomers: Values; projects: Values }
+const formatValue = (metric: Metric, n: number | null) => n === null ? '未设置' : metric === 'sales' || metric === 'consumption' ? (n / 100).toFixed(2) : String(n);
 const rate = (done: number, target: number | null) => target && target > 0 ? (done / target * 100).toFixed(1) + '%' : '—';
 Page({
   data: { loading: false, ready: false, periods: [] as Period[], periodIndex: 0,
     classes: [] as { id: string; name: string; members: number; stores: number }[], classIndex: 0,
-    sortDescending: false, legionOptions: ['不限'] as string[], areaOptions: ['不限'] as string[], legionIndex: 0, areaIndex: 0, allRows: [] as Row[], selectedClass: false, status: '', metric: 'sales', weekName: '', scopeLabel: '', rows: [] as (Row & { weekTargetText: string; weekDoneText: string; monthTargetText: string; monthDoneText: string; weekRate: string; monthRate: string })[] },
+    sortDescending: false, legionOptions: ['不限'] as string[], areaOptions: ['不限'] as string[], legionIndex: 0, areaIndex: 0, allRows: [] as Row[], selectedClass: false, status: '', metric: 'sales' as Metric, weekName: '', scopeLabel: '', rows: [] as (Row & { weekTargetText: string; weekDoneText: string; monthTargetText: string; monthDoneText: string; weekRate: string; monthRate: string })[] },
   onShow() { void this.load(); },
   async load() {
     if (this.data.loading) return;
@@ -40,9 +41,9 @@ Page({
     const rows = this.data.allRows.filter((r) => (!this.data.legionIndex || r.legion === legion) && (!this.data.areaIndex || r.area === area))
       .slice().sort((a, b) => this.data.sortDescending ? b.rank - a.rank : a.rank - b.rank)
       .map((r) => {
-        const v = this.data.metric === 'sales' ? r.sales : r.consumption;
-        return { ...r, weekTargetText: money(v.weekTarget), weekDoneText: money(v.weekDone), monthTargetText: money(v.monthTarget),
-          monthDoneText: money(v.monthDone), weekRate: rate(v.weekDone, v.weekTarget), monthRate: rate(v.monthDone, v.monthTarget) };
+        const v = r[this.data.metric];
+        return { ...r, weekTargetText: formatValue(this.data.metric, v.weekTarget), weekDoneText: formatValue(this.data.metric, v.weekDone), monthTargetText: formatValue(this.data.metric, v.monthTarget),
+          monthDoneText: formatValue(this.data.metric, v.monthDone), weekRate: rate(v.weekDone, v.weekTarget), monthRate: rate(v.monthDone, v.monthTarget) };
       });
     this.setData({ rows });
   },

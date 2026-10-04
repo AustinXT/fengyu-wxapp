@@ -30,8 +30,10 @@ test("真实 PG 最小闭环、归属、并发和门店权限", { skip: !url }, 
     "139" + String(Math.floor(Math.random() * 10000000)).padStart(7, "0");
   const day = today(),
     old = "2025-01-01",
+    currentPeriodId = prefix + 'current-period',
     appid = "wx4da3e1e9ad861396",
     ident = { appid, openid: prefix + "wx" };
+  const addDays = (date, days) => new Date(Date.parse(date + 'T12:00:00Z') + days * 86400000).toISOString().slice(0, 10);
   const user = {
     employeeId: a,
     name: "测试员工",
@@ -225,6 +227,27 @@ test("真实 PG 最小闭环、归属、并发和门店权限", { skip: !url }, 
       );
       assert.equal(await auth.requireUser(ident).then((x) => x.employeeId), a);
     });
+    await t.test('先设置五项目标，再进入日报填写流程', async () => {
+      const weeks = [0, 1, 2, 3].map((i) => ({ id: 'w' + (i + 1), name: '第' + (i + 1) + '周',
+        start: addDays(day, i * 7), end: addDays(day, i * 7 + 6) }));
+      await pg.query(`INSERT INTO daily_operating_periods(id,name,start_date,end_date,weeks)
+        VALUES($1,'闭环测试经营月',$2,$3,$4::jsonb)`,
+      [currentPeriodId, day, addDays(day, 27), JSON.stringify(weeks)]);
+      const target = require('../routes/target');
+      const targetCtx = (payload) => ({ auth: user, event: { payload: {
+        scope: 'personal', periodId: currentPeriodId, periodVersion: 1, ...payload,
+      } } });
+      await target.confirmMonth(targetCtx({ version: 0, sales: '500', consumption: '200',
+        visits: '40', newCustomers: '10', projects: '80', penalty: '真实库闭环验证' }));
+      await target.saveWeek(targetCtx({ version: 1, sales: '125', consumption: '50',
+        visits: '10', newCustomers: '2', projects: '20' }));
+      const read = targetCtx({ date: day });
+      await target.read(read);
+      assert.equal(read.result.target.sales, 50000);
+      assert.equal(read.result.target.weeks.w1.visits, 10);
+      assert.equal(read.result.target.weeks.w1.newCustomers, 2);
+      assert.equal(read.result.target.weeks.w1.projects, 20);
+    });
     assert.equal((await run(report.status, { date: day })).status, null);
     let editor = await run(report.read, { date: day });
     await t.test(
@@ -326,7 +349,8 @@ test("真实 PG 最小闭环、归属、并发和门店权限", { skip: !url }, 
       assert.equal(own.own, true); assert.equal(own.canEdit, day === require('../utils/validation').today());
       assert.equal(own.report.id, saved.report.id);
       await assert.rejects(run(manager.detail, { date: day }, { ...user, employeeId: b }), /NOT_FOUND/);
-      assert.equal(detail.report.metric_snapshot.day.consumption, 3000);
+      assert.equal(detail.report.metric_snapshot.day.consumption, 10000);
+      assert.equal(detail.report.metric_snapshot.scope, 'store');
       await assert.rejects(
         () => run(manager.list, { date: day, storeId: s2 }, boss),
         /PERMISSION_DENIED/,
@@ -460,6 +484,8 @@ test("真实 PG 最小闭环、归属、并发和门店权限", { skip: !url }, 
       await assert.rejects(() => auth.requireUser(ident), /PERMISSION_DENIED/);
     });
   } finally {
+    await pg.query('DELETE FROM daily_operating_targets WHERE period_id=$1', [currentPeriodId]);
+    await pg.query('DELETE FROM daily_operating_periods WHERE id=$1', [currentPeriodId]);
     // 独立临时库将在验证结束销毁；关闭连接，避免 node:test 挂起。
     await pg.getPool().end();
   }

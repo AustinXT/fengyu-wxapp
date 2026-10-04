@@ -16,6 +16,13 @@ Page({
     this.setData({ loading: true });
     try {
       const { user, workspace } = await login();
+      const scopeLabels = Array.from(
+        new Map(
+          (user?.roleBindings || [])
+            .filter((role) => role.scopeName)
+            .map((role) => [role.scopeId || role.scopeName, role.scopeName] as const),
+        ).values(),
+      );
       this.setData({
         user,
         workspace,
@@ -25,11 +32,7 @@ Page({
             : workspace === "manager"
               ? "店长"
               : "员工",
-        scopeLabel:
-          user?.roleBindings
-            .map((r) => r.scopeName)
-            .filter(Boolean)
-            .join("、") || "本人日报",
+        scopeLabel: scopeLabels.join("、") || "本人日报",
       });
       syncTabs(this, workspace, 2);
     } catch (e) {
