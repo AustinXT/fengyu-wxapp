@@ -2,7 +2,7 @@
 import { sql } from 'drizzle-orm'
 import { db } from '@/db'
 import { withPermission } from '@/lib/with-permission'
-import { scopeSessionToAllActions } from '@/lib/action-scope'
+import { scopeSessionToActions, scopeSessionToAllActions } from '@/lib/action-scope'
 import { isAdminScope, hasPermission } from '@/lib/permissions'
 import { isEmployeeWithinScopeRoots, isNodeWithinScopeRoots } from '@/lib/org-ancestry'
 import { lockOrgTree, lockActiveAdminCount } from '@/lib/invariant-locks'
@@ -19,7 +19,9 @@ async function visibleEmployee(session: Parameters<typeof isAdminScope>[0], empl
 
 export const getEmployeeRoleMigration = withPermission('permission:list', async (session, employeeId: string) => {
   if (typeof employeeId !== 'string' || !employeeId.trim()) throw new Error('INVALID_PARAMS: 员工编号不合法')
-  const employee = await visibleEmployee(session, employeeId)
+  // HOF保留三种动作的角色供能力预览；读取可见性仍只由list角色决定。
+  const readSession = scopeSessionToActions(session, ['permission:list'])
+  const employee = await visibleEmployee(readSession, employeeId)
   const roles = await db.execute(sql`
     SELECT pr.id::float8 AS id, pr.role, rd.name AS role_name, pr.scope_id, n.name AS scope_name, n.type AS scope_type,
       s.org_node_id AS target_scope_id, s.store_name AS target_store_name,
@@ -32,15 +34,23 @@ export const getEmployeeRoleMigration = withPermission('permission:list', async 
     WHERE pr.employee_id = ${employeeId} ORDER BY pr.id
   `) as unknown as Array<{ id: number; role: string; role_name: string; scope_id: string; scope_name: string; scope_type: string; target_scope_id: string | null; target_store_name: string | null; target_exists: boolean; is_super_admin: boolean; allowed_scope_types: string[] }>
   const pending = await db.execute(pendingRoleMigrationsSql(employeeId)) as unknown as Array<{ event_id: string; binding_id: number; created_at: string }>
-  const roots = session.roles.map(r => r.scopeId)
+  const roots = readSession.roles.map(r => r.scopeId)
+  const assignSession = scopeSessionToActions(session, ['permission:assign'])
+  const assignRoots = assignSession.roles.map(r => r.scopeId)
   const migrationSession = scopeSessionToAllActions(session, ['permission:assign', 'permission:revoke'])
   const migrationRoots = migrationSession.roles.map(r => r.scopeId)
-  const scopedRoles = (await Promise.all(roles.map(async role => ({ ...role, canReview: isAdminScope(session)
-    || await isNodeWithinScopeRoots(role.scope_id, roots), canMigrate: Boolean(!role.is_super_admin && role.allowed_scope_types?.includes('门店') && role.target_scope_id
+  const assignEmployeeVisible = isAdminScope(assignSession) || await isEmployeeWithinScopeRoots(employee, assignRoots)
+  const migrationEmployeeVisible = isAdminScope(migrationSession) || await isEmployeeWithinScopeRoots(employee, migrationRoots)
+  const scopedRoles = (await Promise.all(roles.map(async role => ({ ...role,
+    visible: isAdminScope(readSession) || await isNodeWithinScopeRoots(role.scope_id, roots),
+    canReview: Boolean(assignEmployeeVisible && (isAdminScope(assignSession) || await isNodeWithinScopeRoots(role.scope_id, assignRoots))),
+    canMigrate: Boolean(migrationEmployeeVisible && !role.is_super_admin && role.allowed_scope_types?.includes('门店') && role.target_scope_id
       && (isAdminScope(migrationSession) || (await isNodeWithinScopeRoots(role.scope_id, migrationRoots)
-        && await isNodeWithinScopeRoots(role.target_scope_id, migrationRoots)))) })))).filter(role => role.canReview)
+        && await isNodeWithinScopeRoots(role.target_scope_id, migrationRoots))))
+  })))).filter(role => role.visible).map(({ visible: _visible, ...role }) => role)
   return { roles: scopedRoles, pending: pending.filter(p => scopedRoles.some(r => r.id === p.binding_id)), resigned: employee.is_resigned }
-})
+}, { scopeActions: ['permission:list', 'permission:assign', 'permission:revoke'] })
+
 
 export const reviewEmployeeRoleMigration = withPermission('permission:assign', async (session, input: {
   employeeId: string; targetScopeId: string | null; eventId?: string; decision: 'migrate' | 'retain';

@@ -7,7 +7,7 @@ const state = vi.hoisted(() => ({ db: null as any, session: null as any }))
 vi.mock('@/db', () => ({ db: { execute: (...args: any[]) => state.db.execute(...args), transaction: (...args: any[]) => state.db.transaction(...args) } }))
 vi.mock('@/lib/auth', () => ({ getSession: async () => state.session }))
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }))
-import { reviewEmployeeRoleMigration, getRoleMigrationQueue } from './role-migrations'
+import { reviewEmployeeRoleMigration, getRoleMigrationQueue, getEmployeeRoleMigration } from './role-migrations'
 const url = process.env.ROLE_MIGRATION_PG_TEST_URL
 it.skipIf(!url)('真实action双连接交错：advisory等待、旧CAS冲突、目标去重及审计失败回滚', async () => {
   const parsed = new URL(url!)
@@ -92,6 +92,31 @@ it.skipIf(!url)('真实action双连接交错：advisory等待、旧CAS冲突、�
     expect((await owner.query("SELECT count(*)::int AS cnt FROM operation_logs WHERE action='permission.scopeReview.completed'")).rows[0].cnt).toBe(0)
     state.session=savedSession
     pids.length=0
+    // 真HOF：读和双动作来自不同角色，预览仍可迁移；写权限不扩大list读取范围。
+    const role = (scopeId: string, actions: string[]) => ({ role:'custom', isSuperAdmin:false, scopeId, actions,
+      scopeStoreIds:scopeId==='root'?['O','S']:scopeId==='old'?['O']:['S'], scopeOrgNodeIds:scopeId==='root'?['root','old','new']:[scopeId] })
+    const previewSession = (roles: ReturnType<typeof role>[]) => {
+      state.session={ ...savedSession, roles, permissions:{
+        actions:[...new Set(roles.flatMap(r=>r.actions))],
+        scopeStoreIds:[...new Set(roles.flatMap(r=>r.scopeStoreIds))],
+        scopeOrgNodeIds:[...new Set(roles.flatMap(r=>r.scopeOrgNodeIds))],
+      } }
+    }
+    previewSession([role('root',['permission:list']),role('root',['permission:assign','permission:revoke'])])
+    expect((await getEmployeeRoleMigration('E')).roles[0]).toMatchObject({canReview:true,canMigrate:true})
+    previewSession([role('root',['permission:list']),role('old',['permission:assign']),role('new',['permission:revoke'])])
+    expect((await getEmployeeRoleMigration('E')).roles[0]).toMatchObject({canMigrate:false})
+    await expect(reviewEmployeeRoleMigration(input)).rejects.toThrow('PERMISSION_DENIED:')
+    previewSession([role('new',['permission:list']),role('root',['permission:assign','permission:revoke'])])
+    expect(await getEmployeeRoleMigration('E')).toMatchObject({roles:[],pending:[]})
+    previewSession([role('old',['permission:list']),role('root',['permission:assign','permission:revoke'])])
+    await expect(getEmployeeRoleMigration('E')).rejects.toThrow('NOT_FOUND:')
+    previewSession([role('root',['permission:list'])])
+    expect((await getEmployeeRoleMigration('E')).roles[0]).toMatchObject({canReview:false,canMigrate:false})
+    previewSession([role('root',['permission:assign','permission:revoke'])])
+    await expect(getEmployeeRoleMigration('E')).rejects.toThrow('PERMISSION_DENIED')
+    previewSession([role('root',['permission:list']),role('root',['permission:assign','permission:revoke'])])
+    // 随后的实际迁移与并发冲突使用同一个分角色会话，证明预览与执行一致。
 
     const a = reviewEmployeeRoleMigration(input); tasks.push(a); await Promise.race([paused, a.then(() => { throw new Error('action未进入预期交错点') })])
     // 立即注册拒绝处理，避免预期CONFLICT被runner判为unhandled rejection。
