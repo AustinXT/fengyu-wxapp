@@ -1,1 +1,6 @@
-{"navigationBarTitleText": "日报详情", "usingComponents": {}}
+{
+  "navigationBarTitleText": "日报详情",
+  "usingComponents": {
+    "metric-snapshot": "/components/metric-snapshot/index"
+  }
+}

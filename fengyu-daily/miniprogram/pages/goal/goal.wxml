@@ -1,0 +1,26 @@
+<page-header back="{{true}}" title="{{title}}" />
+<view class="page">
+  <picker wx:if="{{periods.length}}" range="{{periods}}" range-key="name" value="{{periodIndex}}" data-kind="period" bindchange="selection" disabled="{{loading || saving}}"><view class="card row">{{periods[periodIndex].name}}<text class="link">选择经营月 ⌄</text></view></picker>
+  <picker wx:if="{{scopes.length>1}}" range="{{scopes}}" range-key="name" value="{{scopeIndex}}" data-kind="scope" bindchange="selection" disabled="{{loading || saving}}"><view class="card row">{{scopes[scopeIndex].name}}<text class="link">切换范围 ⌄</text></view></picker>
+  <view wx:if="{{loading}}" class="skeleton">正在读取经营目标…</view>
+  <view wx:elif="{{!period}}" class="card empty">尚未配置经营周期，请联系管理员。</view>
+  <block wx:elif="{{ready}}">
+    <view wx:if="{{!editable}}" class="notice">历史或未来经营月仅可查看。</view>
+    <view class="card"><view class="row"><view class="title">本经营月目标</view><view class="tag {{confirmed?'ok':'warn'}}">{{confirmed?'已确认 · 不可修改':'待确认'}}</view></view>
+      <view class="muted">{{period.start}} 至 {{period.end}}</view>
+      <view wx:if="{{confirmed}}" class="month-summary"><view><view class="muted">业绩目标（元）</view><view class="amount">{{monthSales}}</view></view><view><view class="muted">消耗目标（元）</view><view class="amount">{{monthConsumption}}</view></view></view>
+      <block wx:else><view class="label">月业绩目标（元）</view><input class="goal-input" type="digit" data-field="sales" value="{{sales}}" bindinput="input" disabled="{{saving || !editable}}" />
+      <view class="label">月消耗目标（元）</view><input class="goal-input" type="digit" data-field="consumption" value="{{consumption}}" bindinput="input" disabled="{{saving || !editable}}" /></block>
+      <view class="muted reference">去年对应经营月实际：{{monthReference}}</view>
+      <block wx:if="{{scope==='personal'}}"><view class="label">本月负激励</view><view wx:if="{{confirmed}}">{{penalty}}</view><textarea wx:else data-field="penalty" value="{{penalty}}" bindinput="input" maxlength="500" auto-height disabled="{{saving || !editable}}" placeholder="例如：未完成目标吃鲱鱼罐头" /></block>
+      <view wx:if="{{!confirmed && editable && monthError}}" class="goal-error">{{monthError}}</view>
+    </view>
+    <view wx:if="{{confirmed && editable && !automatic && weekError}}" class="goal-error">{{weekError}}</view>
+    <view wx:if="{{confirmed && week}}" class="card"><view class="title">{{week.name}}目标</view><view class="muted">{{week.start}} 至 {{week.end}} · 只填写当前经营周</view>
+      <view wx:if="{{automatic}}" class="notice">第4周目标自动取月目标扣除前三周后的余额，无需填写。</view>
+      <block wx:else><view class="label">本周业绩目标（元）</view><input class="goal-input" type="digit" data-field="weekSales" value="{{weekSales}}" bindinput="input" disabled="{{saving || !editable}}" /><view class="muted">占月目标 {{weekSalesPercent}}</view><view class="label">本周消耗目标（元）</view><input class="goal-input" type="digit" data-field="weekConsumption" value="{{weekConsumption}}" bindinput="input" disabled="{{saving || !editable}}" /><view class="muted">占月目标 {{weekConsumptionPercent}}</view><view class="muted reference">去年对应经营周实际：{{weekReference}}</view></block>
+    </view>
+    <view wx:if="{{confirmed}}" class="card"><view class="title">经营周安排</view><view wx:for="{{weeks}}" wx:key="id" class="list-row"><view>{{item.name}}{{item.current?' · 当前':''}}<view class="muted">{{item.dates}}{{item.automatic?' · 自动余额':''}}</view></view><view class="week-values">{{item.sales}} / {{item.consumption}}</view></view><view class="muted">金额顺序为业绩／消耗。未设置的经营周不按零计算。</view></view>
+  </block>
+</view>
+<view wx:if="{{ready && editable}}" class="footer"><button wx:if="{{!confirmed}}" class="primary" data-kind="month" bindtap="save" loading="{{saving}}" disabled="{{saving || !!monthError}}">确认本月目标</button><button wx:elif="{{week && !automatic}}" class="primary" data-kind="week" bindtap="save" loading="{{saving}}" disabled="{{saving || !!weekError}}">{{target.weeks[week.id].sales!==null && target.weeks[week.id].consumption!==null ? '更新本周目标' : '保存本周目标'}}</button></view>
