@@ -4,6 +4,7 @@
  */
 
 const pg = require('../db/pg')
+const { normalizePaging } = require('../utils/paging')
 const { requirePhone } = require('../middleware/auth')
 const { loadServiceItems, finalizeServiceOrder } = require('../utils/service-finalize')
 const { DEPOSIT_REFUND_REMARK } = require('../utils/deposit-refund-remark')
@@ -83,9 +84,8 @@ async function detail(ctx) {
  */
 async function list(ctx) {
   const { userId } = ctx.auth
-  const { page = 1, pageSize = 20 } = ctx.event.payload || {}
+  const { pageSize, offset } = normalizePaging(ctx.event.payload || {})
 
-  const offset = (page - 1) * pageSize
 
   const records = await pg.query(`
     SELECT

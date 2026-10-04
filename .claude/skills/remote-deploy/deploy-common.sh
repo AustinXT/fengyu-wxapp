@@ -289,6 +289,58 @@ chmod 700 "$deploy_root" "$state_dir" "$release_root"
 exec 9>"$deploy_root/deploy.lock"
 flock -n 9 || { echo "ERROR: another remote deployment is active" >&2; exit 1; }
 
+# #255：与 cron 的内核锁互斥，锁覆盖 compose up，避免检查后新备份启动的竞态。
+backup_safe_compose() {
+  if [ "$component" != "admin" ]; then docker compose "$@"; return; fi
+  control="$remote_dir/data/backup-control"
+  # 首次部署尚无 worker/控制目录；无备份需要保护。
+  if [ ! -d "$control" ]; then docker compose "$@"; return; fi
+  guard_stamp=$(mktemp)
+  guard=$(cat <<'BACKUP_GUARD'
+control=$1; guard_stamp=$2; shift 2
+# 宿主root首建锁时也保持容器uid1001可读写，不受root umask影响。
+if [ "$(id -u)" = 0 ]; then chown 1001:1001 "$control/runtime.lock" && chmod 600 "$control/runtime.lock" || exit 75; fi
+if ! worker_state=$(docker inspect -f '{{.State.Status}}' fengyu-cron-worker 2>/dev/null); then
+  containers=$(docker ps -a --format '{{.Names}}') || exit 75
+  if printf '%s\n' "$containers" | grep -qx fengyu-cron-worker; then exit 75; fi
+  worker_state=absent
+fi
+# 已停止的容器没有活备份，允许安装恢复代码；残留由新版worker持锁恢复。
+case "$worker_state" in exited|dead|created|absent) orphan_only=true ;; *) orphan_only=false ;; esac
+if [ "$orphan_only" = false ] && { [ -e "$control/backup.lock" ] || grep -Eq '"state"[[:space:]]*:[[:space:]]*"running"' "$control"/states/*.json 2>/dev/null; }; then
+  echo "ERROR: database backup is running or interrupted; deployment refused. Check settings/diagnostics and backup-control states." >&2
+  grep -E '"state"[[:space:]]*:[[:space:]]*"running"' "$control"/states/*.json >&2 || true
+  exit 75
+fi
+printf guarded > "$guard_stamp"
+exec docker compose "$@"
+BACKUP_GUARD
+)
+  if [ -w "$control" ]; then
+    if flock -w "${backup_guard_wait:-0}" -E 75 "$control/runtime.lock" sh -c "$guard" sh "$control" "$guard_stamp" "$@"; then rm -f "$guard_stamp"; return; else guard_rc=$?; fi
+  else
+    sudo -n true || { rm -f "$guard_stamp"; echo "ERROR: backup guard requires passwordless sudo" >&2; return 75; }
+    if sudo -n flock -w "${backup_guard_wait:-0}" -E 75 "$control/runtime.lock" sh -c "$guard" sh "$control" "$guard_stamp" "$@"; then rm -f "$guard_stamp"; return; else guard_rc=$?; fi
+  fi
+  # 未进入compose时，锁/权限/守卫故障都按安全拒绝返回，不误触发自动回滚。
+  if [ ! -s "$guard_stamp" ]; then
+    guard_rc=75
+    # 活备份持锁时guard体不会执行，必须在flock外只读输出当前状态。
+    if [ -r "$control" ]; then
+      grep -E '"state"[[:space:]]*:[[:space:]]*"running"' "$control"/states/*.json >&2 2>/dev/null || true
+    else
+      sudo -n sh -c 'grep -E "\"state\"[[:space:]]*:[[:space:]]*\"running\"" "$1"/states/*.json' sh "$control" >&2 2>/dev/null || true
+    fi
+    echo "ERROR: backup runtime is busy or unavailable (exit=75); check settings/diagnostics, then retry." >&2
+  else
+    # compose自定义75也不冒充锁冲突，应该进入正常自动回滚。
+    [ "$guard_rc" != 75 ] || guard_rc=1
+    echo "ERROR: compose failed after the backup guard passed (exit=$guard_rc)" >&2
+  fi
+  rm -f "$guard_stamp"
+  return "$guard_rc"
+}
+
 # 历史秘密文件不再参与新版发布，只收紧权限并保留兼容回滚能力。
 # test 服务器 .env 属主 www-data 而 SSH 用户是 ubuntu，chmod 可能 EPERM，需 sudo -n 兜底。
 secure_legacy_env_file() {
@@ -313,6 +365,11 @@ secure_legacy_env_file "$remote_dir/.analyst-runtime.env"
 compose_release() {
   target_release="$1"
   shift
+  if [ "${1:-}" = "up" ]; then
+    backup_safe_compose --project-directory "$remote_dir" --env-file "$target_release/compose.env" \
+      -f "$target_release/docker-compose.yml" -f "$target_release/docker-compose.remote.yml" "$@"
+    return
+  fi
   docker compose \
     --project-directory "$remote_dir" \
     --env-file "$target_release/compose.env" \
@@ -512,7 +569,7 @@ run_release_state() {
         export "$legacy_key=legacy-not-used"
       fi
     done
-    docker compose \
+    backup_safe_compose \
       --project-directory "$remote_dir" \
       --env-file "$remote_dir/.env" \
       --env-file "$legacy_runtime" \
@@ -542,10 +599,24 @@ else
 fi
 
 ensure_admin_runtime_dirs
-if ! compose_release "$release_dir" up -d --no-build $(services_for_component) || ! full_health; then
+if compose_release "$release_dir" up -d --no-build $(services_for_component); then
+  switch_rc=0
+else
+  switch_rc=$?
+fi
+# 互斥拒绝发生在切换前，不自动回滚或改发布状态。
+[ "$switch_rc" != 75 ] || exit 75
+if [ "$switch_rc" != 0 ] || ! full_health; then
   echo "ERROR: $component release $release_id failed; starting automatic rollback" >&2
   docker logs --tail 80 "$current_container" 2>&1 || true
-  if run_release_state "$rollback_state" && rollback_health; then
+  # 自动回滚等备份完成再切换，超时保留现场而不是杀掉活备份。
+  backup_guard_wait=180
+  if run_release_state "$rollback_state"; then rollback_rc=0; else rollback_rc=$?; fi
+  if [ "$rollback_rc" = 75 ]; then
+    echo "ROLLBACK_DEFERRED: backup guard blocked rollback; preserved $release_dir and $rollback_state" >&2
+    exit 75
+  fi
+  if [ "$rollback_rc" = 0 ] && rollback_health; then
     echo "ROLLBACK_OK: restored $(state_get "$rollback_state" release_id)" >&2
     exit 1
   fi
@@ -615,6 +686,58 @@ test -f "$current_state" && test -f "$previous_state" || {
 exec 9>"$deploy_root/deploy.lock"
 flock -n 9 || { echo "ERROR: another remote deployment is active" >&2; exit 1; }
 
+# #255：与 cron 的内核锁互斥，锁覆盖 compose up，避免检查后新备份启动的竞态。
+backup_safe_compose() {
+  if [ "$component" != "admin" ]; then docker compose "$@"; return; fi
+  control="$remote_dir/data/backup-control"
+  # 首次部署尚无 worker/控制目录；无备份需要保护。
+  if [ ! -d "$control" ]; then docker compose "$@"; return; fi
+  guard_stamp=$(mktemp)
+  guard=$(cat <<'BACKUP_GUARD'
+control=$1; guard_stamp=$2; shift 2
+# 宿主root首建锁时也保持容器uid1001可读写，不受root umask影响。
+if [ "$(id -u)" = 0 ]; then chown 1001:1001 "$control/runtime.lock" && chmod 600 "$control/runtime.lock" || exit 75; fi
+if ! worker_state=$(docker inspect -f '{{.State.Status}}' fengyu-cron-worker 2>/dev/null); then
+  containers=$(docker ps -a --format '{{.Names}}') || exit 75
+  if printf '%s\n' "$containers" | grep -qx fengyu-cron-worker; then exit 75; fi
+  worker_state=absent
+fi
+# 已停止的容器没有活备份，允许安装恢复代码；残留由新版worker持锁恢复。
+case "$worker_state" in exited|dead|created|absent) orphan_only=true ;; *) orphan_only=false ;; esac
+if [ "$orphan_only" = false ] && { [ -e "$control/backup.lock" ] || grep -Eq '"state"[[:space:]]*:[[:space:]]*"running"' "$control"/states/*.json 2>/dev/null; }; then
+  echo "ERROR: database backup is running or interrupted; deployment refused. Check settings/diagnostics and backup-control states." >&2
+  grep -E '"state"[[:space:]]*:[[:space:]]*"running"' "$control"/states/*.json >&2 || true
+  exit 75
+fi
+printf guarded > "$guard_stamp"
+exec docker compose "$@"
+BACKUP_GUARD
+)
+  if [ -w "$control" ]; then
+    if flock -w "${backup_guard_wait:-0}" -E 75 "$control/runtime.lock" sh -c "$guard" sh "$control" "$guard_stamp" "$@"; then rm -f "$guard_stamp"; return; else guard_rc=$?; fi
+  else
+    sudo -n true || { rm -f "$guard_stamp"; echo "ERROR: backup guard requires passwordless sudo" >&2; return 75; }
+    if sudo -n flock -w "${backup_guard_wait:-0}" -E 75 "$control/runtime.lock" sh -c "$guard" sh "$control" "$guard_stamp" "$@"; then rm -f "$guard_stamp"; return; else guard_rc=$?; fi
+  fi
+  # 未进入compose时，锁/权限/守卫故障都按安全拒绝返回，不误触发自动回滚。
+  if [ ! -s "$guard_stamp" ]; then
+    guard_rc=75
+    # 活备份持锁时guard体不会执行，必须在flock外只读输出当前状态。
+    if [ -r "$control" ]; then
+      grep -E '"state"[[:space:]]*:[[:space:]]*"running"' "$control"/states/*.json >&2 2>/dev/null || true
+    else
+      sudo -n sh -c 'grep -E "\"state\"[[:space:]]*:[[:space:]]*\"running\"" "$1"/states/*.json' sh "$control" >&2 2>/dev/null || true
+    fi
+    echo "ERROR: backup runtime is busy or unavailable (exit=75); check settings/diagnostics, then retry." >&2
+  else
+    # compose自定义75也不冒充锁冲突，应该进入正常自动回滚。
+    [ "$guard_rc" != 75 ] || guard_rc=1
+    echo "ERROR: compose failed after the backup guard passed (exit=$guard_rc)" >&2
+  fi
+  rm -f "$guard_stamp"
+  return "$guard_rc"
+}
+
 state_get() {
   awk -F= -v key="$2" '$1==key {sub(/^[^=]*=/, ""); print; exit}' "$1"
 }
@@ -662,7 +785,7 @@ else
 fi
 
 if [ "$mode" = "release" ]; then
-  docker compose --project-directory "$remote_dir" --env-file "$release_dir/compose.env" \
+  backup_safe_compose --project-directory "$remote_dir" --env-file "$release_dir/compose.env" \
     -f "$release_dir/docker-compose.yml" -f "$release_dir/docker-compose.remote.yml" \
     up -d --no-build $services
 elif [ "$mode" = "legacy" ]; then
@@ -683,7 +806,7 @@ elif [ "$mode" = "legacy" ]; then
       export "$legacy_key=legacy-not-used"
     fi
   done
-  docker compose --project-directory "$remote_dir" --env-file "$remote_dir/.env" --env-file "$runtime" \
+  backup_safe_compose --project-directory "$remote_dir" --env-file "$remote_dir/.env" --env-file "$runtime" \
     -f "$remote_dir/docker-compose.yml" -f "$remote_dir/docker-compose.remote.yml" \
     up -d --no-build $services
 else

@@ -681,3 +681,47 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
     })
   })
 })
+
+
+// #257：金额/归因镜像保持原有守护，方向按实时与离线分开；C 已补实际每日调度与helper双向。
+describe('#257 顾客分类方向守护', () => {
+  for (const [label, file] of RUNTIME_FILES.filter(([, file]) => file !== ADMIN_RECOMPUTE_TS)) {
+    test(`${label} 实时写路径只能升级`, () => {
+      const src = fs.readFileSync(file, 'utf8')
+      expect(src).toMatch(/CASE customer_type[\s\S]*?END\)\s*< \(CASE/)
+    })
+  }
+  test('B 离线分类预览与更新均双向（不得残留 rank 保护）', () => {
+    const src = fs.readFileSync(SCRIPT_RECALC_ALL_TYPES, 'utf8')
+    expect(src).toContain('WHERE old_type IS DISTINCT FROM new_type')
+    expect(src).toContain('AND u.customer_type IS DISTINCT FROM t.new_type')
+    expect(src).not.toContain('TYPE_RANK_CASE')
+    expect(src).not.toMatch(/CASE u\.customer_type/)
+  })
+  for (const [label, file] of [
+    ['all-types', SCRIPT_RECALC_ALL_TYPES], ['became', SCRIPT_RECALC_BECAME_MEMBER],
+    ['doc-type', SCRIPT_BACKFILL_UPGRADE_DOC_TYPE],
+  ]) {
+    test(`B ${label} 候选排除测试账号，分类与历史归因通道分工明确`, () => {
+      const src = fs.readFileSync(file, 'utf8')
+      const build = src.match(/const BUILD_TARGET(?:_TABLE)?_SQL = `([\s\S]*?)`/)[1]
+      expect(build).toContain("u.name IS DISTINCT FROM '谢廷(测试)'")
+      if (label === 'all-types') expect(build).not.toMatch(/u\.customer_type = '会员客'/)
+      else expect(build).toContain("u.customer_type = '会员客'")
+    })
+  }
+  test('C：admin重算helper能降级且会员客不能早退', () => {
+    const src = fs.readFileSync(ADMIN_RECOMPUTE_TS, 'utf8')
+    expect(src).not.toMatch(/if \(oldType === '会员客'\) return null/)
+    expect(src).toMatch(/customer_type (?:<>|IS DISTINCT FROM)/)
+  })
+})
+
+// #257 C：新增第九处金额CTE副本，即使只跑staff快照也不能漏掉cron。
+test('C 每日cron批量金额CTE与离线真实SQL逐字一致', () => {
+  const cronFile = path.resolve(path.dirname(ADMIN_RECOMPUTE_TS), '../cron/steps/refresh-customer-types.ts')
+  const cron = fs.readFileSync(cronFile, 'utf8').match(/CUSTOMER_TYPE_AMOUNTS_SQL = `([\s\S]*?)`/)[1]
+  const offline = fs.readFileSync(SCRIPT_RECALC_ALL_TYPES, 'utf8')
+  const amounts = offline.slice(offline.indexOf('refund_by_item AS ('), offline.indexOf(',\nqualified_orders AS ('))
+  expect(cron.trim()).toBe(('WITH\n' + amounts).trim())
+})

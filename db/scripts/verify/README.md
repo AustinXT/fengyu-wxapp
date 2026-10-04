@@ -86,3 +86,8 @@ docker stop pg-187-verify
 - 脚本用的正则**与守护测试 `recalc-customer-type-sql.test.js` 同款**。改了 SQL 结构（比如
   `GROUP BY` 尾部）两边都要同步，否则这里会报「提取失败」。
 - fixtures 是**最小 schema**，只建判定用得到的列。跃迁 SQL 引用新列时要在这里补。
+
+
+## customer-type-offline-sql.cjs — #257 A+B
+
+从仓库根运行 `node db/scripts/verify/customer-type-offline-sql.cjs`。脚本自建唯一名字的临时 Docker PostgreSQL 16，准备既有#187正负例，执行真实三个离线脚本SQL并逐条断言：双向升降、无单/零额、退款毛实收、历史无明细回退、测试账号不动、重复运行幂等、归因脚本单独执行不得标记非会员、只读审计可执行。结束无论成功失败都只销毁本次自建容器；不读取 DATABASE_URL，不连接任何业务库。需本机 Docker 可用。

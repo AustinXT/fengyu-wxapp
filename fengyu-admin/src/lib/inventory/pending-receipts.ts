@@ -2,10 +2,10 @@ import 'server-only'
 import { db } from '@/db'
 import { sql, type SQL } from 'drizzle-orm'
 import { ApiError } from '@/lib/api-error'
+import { resolvePaging } from '@/lib/paging'
 import { shanghaiToday } from '@/lib/datetime'
 import type { AuthSession } from '@/lib/types'
 import { resolveExportBatchLimit, resolveExportKeysetPage, type ExportBatchOptions, type ExportBatchResult } from '@/lib/export-pagination'
-import { resolvePaging } from '@/lib/paging'
 import { inventoryScopedOrgNodeIds } from './access'
 import { assertRealCalendarDate } from './settlements'
 import type { PendingReceiptFilters, PendingReceiptKind, PendingReceiptOptions, PendingReceiptPage, PendingReceiptRow } from './pending-receipt-types'
@@ -98,12 +98,18 @@ async function queryRows(query: SQL): Promise<PendingReceiptRow[]> {
 
 export async function listPendingReceiptsForSession(session: AuthSession, input: PendingReceiptFilters & { page?: unknown; size?: unknown }): Promise<PendingReceiptPage> {
   const filters = normalizePendingReceiptFilters(input)
-  const { page: safePage, pageSize } = resolvePaging({ page: input.page, pageSize: input.size, defaultPageSize: 20, allowedPageSizes: [20, 50, 100] })
+  const requested = resolvePaging({
+    page: input.page,
+    pageSize: typeof input.size === 'string' ? Number(input.size) : input.size,
+    defaultPageSize: 20, allowedPageSizes: [20, 50, 100],
+  })
   const where = pendingReceiptWhereSql(filters, inventoryScopedOrgNodeIds(session))
   const count = await db.execute(sql`SELECT count(*)::int AS total FROM inventory_doc_items i JOIN inventory_docs d ON d.id = i.doc_id WHERE ${where}`)
   const total = Number((count as unknown as Array<{ total: number }>)[0]?.total ?? 0)
-  const page = Math.min(safePage, Math.max(1, Math.ceil(total / pageSize)))
-  const { offset } = resolvePaging({ page, pageSize, defaultPageSize: 20, allowedPageSizes: [20, 50, 100] })
+  const { page, pageSize, offset } = resolvePaging({
+    page: Math.min(requested.page, Math.max(1, Math.ceil(total / requested.pageSize))),
+    pageSize: requested.pageSize, defaultPageSize: 20, allowedPageSizes: [20, 50, 100],
+  })
   const rows = await queryRows(pendingReceiptSelectSql(where, shanghaiToday(), pageSize, offset))
   return { rows, total, page, pageSize }
 }

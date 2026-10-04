@@ -242,9 +242,9 @@ interface CustomerBalanceResponse {
   pointsDeductionMaxRate?: number;
 }
 
-/** 顾客是否会员：会员客 或 有钻石等级（与后端 member-pricing 同口径） */
+/** 顾客是否会员：仅当前会员客（与后端 member-pricing 同口径，历史等级不授予会员价） */
 function deriveIsMember(c: { customerType?: string | null; memberLevel?: string | null } | null): boolean {
-  return !!c && (c.customerType === '会员客' || (c.memberLevel != null && c.memberLevel !== ''));
+  return !!c && c.customerType === '会员客';
 }
 
 /**
