@@ -3,14 +3,14 @@
  */
 
 const pg = require('../db/pg')
+const { normalizePaging } = require('../utils/paging')
 
 /**
  * 消息列表
  */
 async function list(ctx) {
   const { userId } = ctx.auth
-  const { page = 1, pageSize = 20 } = ctx.event.payload || {}
-  const offset = (page - 1) * pageSize
+  const { pageSize, offset } = normalizePaging(ctx.event.payload || {})
 
   const records = await pg.query(`
     SELECT id, title, body, message_type, is_read, ref_entity_type, ref_entity_id, created_at

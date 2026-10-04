@@ -1,5 +1,7 @@
 import {
   check,
+  bigint,
+  boolean,
   date,
   index,
   integer,
@@ -10,6 +12,7 @@ import {
   timestamp,
   uniqueIndex,
   varchar,
+  foreignKey,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { staffWechatUsers } from "./user";
@@ -55,6 +58,10 @@ export const dailyReports = pgTable(
     action: text("action").notNull().default(""),
     growth: text("growth").notNull().default(""),
     plan: text("plan").notNull().default(""),
+    mentorEmployeeId: varchar("mentor_employee_id", { length: 30 }).references(() => staffWechatUsers.employeeId),
+    peerEmployeeId: varchar("peer_employee_id", { length: 30 }).references(() => staffWechatUsers.employeeId),
+    periodSnapshot: jsonb("period_snapshot"),
+    metricSnapshot: jsonb("metric_snapshot"),
     submittedAt: timestamp("submitted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -74,6 +81,66 @@ export const dailyReports = pgTable(
     check("chk_daily_version", sql`${t.version} > 0`),
   ],
 );
+
+const auditColumns = () => ({
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const dailyOperatingPeriods = pgTable('daily_operating_periods', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  startDate: date('start_date').notNull(),
+  endDate: date('end_date').notNull(),
+  weeks: jsonb('weeks').notNull(),
+  version: integer('version').notNull().default(1),
+  ...auditColumns(),
+}, (t) => [
+  check('chk_daily_period_dates', sql`${t.startDate} <= ${t.endDate}`),
+  check('chk_daily_period_weeks', sql`jsonb_typeof(${t.weeks}) = 'array' AND jsonb_array_length(${t.weeks}) = 4`),
+  check('chk_daily_period_version', sql`${t.version} > 0`),
+]);
+
+export const dailyOperatingTargets = pgTable('daily_operating_targets', {
+  periodId: text('period_id').notNull().references(() => dailyOperatingPeriods.id),
+  scope: text('scope').notNull(),
+  scopeId: text('scope_id').notNull(),
+  sales: bigint('sales', { mode: 'number' }).notNull(),
+  consumption: bigint('consumption', { mode: 'number' }).notNull(),
+  penalty: text('penalty').notNull().default(''),
+  monthConfirmed: boolean('month_confirmed').notNull().default(false),
+  weeks: jsonb('weeks').notNull().default(sql`'{}'::jsonb`),
+  version: integer('version').notNull().default(1),
+  ...auditColumns(),
+}, (t) => [
+  primaryKey({ columns: [t.periodId, t.scope, t.scopeId] }),
+  check('chk_daily_target_scope', sql`${t.scope} IN ('personal','store','market')`),
+  check('chk_daily_target_amount', sql`${t.sales} > 0 AND ${t.consumption} > 0 AND ${t.sales} <= 9007199254740991 AND ${t.consumption} <= 9007199254740991`),
+  check('chk_daily_target_version', sql`${t.version} > 0`),
+]);
+
+export const dailyPkClasses = pgTable('daily_pk_classes', {
+  id: text('id').primaryKey(),
+  periodId: text('period_id').notNull().references(() => dailyOperatingPeriods.id),
+  name: varchar('name', { length: 30 }).notNull(),
+  ...auditColumns(),
+}, (t) => [
+  uniqueIndex('uq_daily_pk_period_name').on(t.periodId, t.name),
+  uniqueIndex('uq_daily_pk_period_id').on(t.periodId, t.id),
+]);
+
+export const dailyPkStores = pgTable('daily_pk_stores', {
+  periodId: text('period_id').notNull().references(() => dailyOperatingPeriods.id),
+  storeId: text('store_id').notNull().references(() => stores.storeId),
+  classId: text('class_id').notNull(),
+  legion: text('legion').notNull().default(''),
+  groupName: text('group_name').notNull().default(''),
+  mentorName: text('mentor_name').notNull().default(''),
+  ...auditColumns(),
+}, (t) => [
+  primaryKey({ columns: [t.periodId, t.storeId] }),
+  foreignKey({ columns: [t.periodId, t.classId], foreignColumns: [dailyPkClasses.periodId, dailyPkClasses.id] }),
+]);
 
 export const dailyReportEntries = pgTable(
   "daily_report_entries",

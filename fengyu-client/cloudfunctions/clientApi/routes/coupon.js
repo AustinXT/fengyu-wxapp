@@ -5,6 +5,7 @@
  */
 
 const pg = require('../db/pg')
+const { assertBoundedList, BOUNDED_LIST_FETCH_LIMIT } = require('../utils/paging')
 const { requirePhone } = require('../middleware/auth')
 
 /**
@@ -32,6 +33,7 @@ async function list(ctx) {
     whereClause += ` AND uc.status = $${params.length}`
   }
 
+  params.push(BOUNDED_LIST_FETCH_LIMIT)
   const coupons = await pg.query(`
     SELECT
       uc.coupon_id, uc.status, uc.expire_at, uc.used_at, uc.created_at,
@@ -49,8 +51,10 @@ async function list(ctx) {
         WHEN '已使用' THEN 1
         WHEN '已过期' THEN 2
       END,
-      uc.expire_at ASC
+      uc.expire_at ASC, uc.coupon_id ASC
+    LIMIT $${params.length}
   `, params)
+  assertBoundedList(coupons)
 
   // 查询适用门店名称（批量）
   const storeIds = new Set()
@@ -162,8 +166,10 @@ async function available(ctx) {
     JOIN coupon_templates ct ON uc.template_id = ct.template_id
     WHERE uc.user_id = $1 AND uc.status = '未使用' AND uc.expire_at > NOW()
       AND ct.is_active = true
-    ORDER BY uc.expire_at ASC
-  `, [userId])
+    ORDER BY uc.expire_at ASC, uc.coupon_id ASC
+    LIMIT $2
+  `, [userId, BOUNDED_LIST_FETCH_LIMIT])
+  assertBoundedList(coupons)
 
   if (coupons.length === 0) {
     ctx.result = { coupons: [] }

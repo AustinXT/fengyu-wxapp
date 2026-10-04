@@ -1,7 +1,7 @@
 /**
  * 会员价分流定价 helper —— 「仅会员享受会员价（special_price），非会员按标价（price）」。
  *
- * 会员判定口径（产品决策）：customer_type='会员客' 或 member_level 非空，任一满足即会员。
+ * 会员判定口径（产品决策）：仅当前 customer_type='会员客'；#257 降档保留的历史 member_level 不授予会员价。
  * 体验卡（is_experience）同口径（#6=B，不再豁免）：会员享会员价（special_price），非会员按标价。
  * 会员价须严格 < 标价才生效（guard 脏数据：DB 无 special_price <= price 约束）。
  *
@@ -10,9 +10,9 @@
  * 套餐（bundle_price / unit_member_price）是另一套机制，不经过此 helper。
  */
 
-/** 顾客是否会员：会员客 或 有钻石等级（member_level 非空）。 */
-function isMember(customerType, memberLevel) {
-  return customerType === '会员客' || (memberLevel != null && memberLevel !== '')
+/** 顾客是否会员：仅当前会员客；历史钻石等级不决定价格资格。 */
+function isMember(customerType, _memberLevel) {
+  return customerType === '会员客'
 }
 
 /**
