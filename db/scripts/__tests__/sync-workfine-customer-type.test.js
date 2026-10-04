@@ -90,7 +90,7 @@ test('批量等级阈值与cron等级纯函数逐档一致', () => {
 
 
 test('导出的顾客同步入口也拒绝生产、query覆盖及未声明目标', async () => {
-  for (const connectionString of [undefined, 'postgres://test:test@118.178.196.26:5433/fengyu_wxapp', 'postgres://test:test@101.34.242.103:5433/fengyu_wxapp?host=118.178.196.26']) {
+  for (const connectionString of [undefined, 'http://127.0.0.1:54416/issue256schema', 'postgres://test:test@118.178.196.26:5433/fengyu_wxapp', 'postgres://test:test@101.34.242.103:5433/fengyu_wxapp?host=118.178.196.26']) {
     let connected=false;
     await assert.rejects(syncCustomers(mssql,{options:{connectionString},connect:async()=>{connected=true;return fakeClient()}},false), /拒绝顾客同步/)
     assert.equal(connected,false)
@@ -102,4 +102,18 @@ test('规范dev目标放行且调用真实顾客同步与补算（连接替身�
   await syncCustomers(mssql, { options: { connectionString: 'postgres://test:test@101.34.242.103:5433/fengyu_wxapp' }, connect: async () => client }, false)
   assert.ok(client.calls.some(call => call.sql.includes('CREATE TEMP TABLE _recalc_target')))
   assert.equal(client.calls.at(-1).sql, 'COMMIT')
+})
+
+test('真实重算CLI拒绝旧库/未知目标/缺显式DATABASE_URL，require helper不触发门禁', () => {
+  const { spawnSync } = require('node:child_process')
+  const script = require.resolve('../recalc-all-customer-types')
+  for (const target of [undefined, 'postgres://test:test@47.113.202.7:5433/fengyu_wxapp', 'postgres://test:test@127.0.0.1:54416/issue256schema']) {
+    const env = { ...process.env, PG_CONNECTION_STRING:'postgres://test:test@101.34.242.103:5433/fengyu_wxapp' }
+    delete env.DATABASE_URL
+    if (target !== undefined) env.DATABASE_URL=target
+    const result=spawnSync(process.execPath,[script,'--apply'],{env,encoding:'utf8',timeout:3000})
+    assert.equal(result.status,1)
+    assert.match(result.stderr,/DATABASE_URL 必须显式指向/)
+    assert.doesNotMatch(result.stdout,/RECALC-CUSTOMER-TYPE/)
+  }
 })

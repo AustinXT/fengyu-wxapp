@@ -49,6 +49,7 @@
  */
 
 const { Pool } = require('pg')
+const { assertDbTargetOrExit } = require('./_lib/assert-db-target')
 
 const PG_CONFIG = {
   connectionString: process.env.DATABASE_URL || process.env.PG_CONNECTION_STRING,
@@ -391,6 +392,7 @@ async function main() {
 }
 
 if (require.main === module) {
+  assertDbTargetOrExit(process.env.DATABASE_URL)
   main().catch((err) => {
     console.error('未捕获异常:', err)
     process.exit(1)

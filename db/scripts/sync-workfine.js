@@ -552,7 +552,7 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
     let privateTest = false;
     try {
       const url = new URL(raw);
-      privateTest = url.hostname === '127.0.0.1' && url.port === '54416'
+      privateTest = ['postgres:', 'postgresql:'].includes(url.protocol) && url.hostname === '127.0.0.1' && url.port === '54416'
         && url.pathname === '/issue256schema' && !url.search && !url.hash;
     } catch (_) { /* 下面统一拒绝无法确认的目标。 */ }
     if (isProdDbTarget(raw) || (!isAllowedDbTarget(raw) && !privateTest)) {
