@@ -46,3 +46,21 @@
 新增调查复核：service_items.employee_id schema NOT NULL；同时工具仍显式过滤null/空白主操防候选统计失真。个人名单导出检查真实父目录及所有祖先的.git，拒绝仓库/软链入仓库，0600且wx不覆盖；工具7条边界测试通过。
 
 止血检查点：110个admin顾客用例通过（含源非空、读空后新分配已提交、锁内仍空继续原迁移）。临时PG使用真实Drizzle同款查询确认读到新绑定、FOR NO KEY UPDATE使后续分配等待提交；未执行真实Server Action对业务库写入。该确定性竞态已修，但未证明生产8月覆盖率下降由它导致，原60%效果验收仍待。
+
+## 2026-10-04 继续轮：完整合并动作回归
+
+恢复同一 PR 分支并合入最新 origin/dev（02e9d8063，#520/#522 已合并）。原 worktree/checkpoint 目录已缺失；a199 提交、研究文档及私有调查导出仍在，未重做历史调查或伪造缺失的本地评审文件。
+
+新增 `fengyu-admin/tests/e2e-actions/verify-customer-binding.mjs`，从 admin 运行：
+```bash
+bun --preload ./tests/e2e-actions/_admin-preload.mjs ./tests/e2e-actions/verify-customer-binding.mjs
+```
+脚本自建唯一临时 PostgreSQL 容器、强制 E2E_DATABASE_URL 为 localhost 随机端口，finally 停容器，不读取或写入业务库。实际调用完整 mergeClientProfile 和真实 Drizzle；会话、权限、审计与 Next 缓存使用既有替身。夹具仅包含本动作所需列/外键，不冒充完整迁移重放或真实鉴权验收。
+
+三例通过：
+1. 事务外读取未绑定后，另一 PG 连接在事务开始前完成新分配：保留新员工 ID/姓名，fieldsMigrated 不虚报搬迁绑定，ordersReassigned=1。
+2. 锁内仍未绑定：按既有规则搬孤儿绑定，返回字段与数据库一致。
+3. 已有员工绑定：不覆盖为孤儿员工。
+每例同时验证九张引用表全部迁移、积分余额重算与孤儿删除。临时移除 #301 保护块后，同一完整动作回归在绑定字段迁移断言失败；finally 已恢复源码。此为对原确定性竞态的回归判据，不证明它解释了生产 8 月下跌。
+
+最新 admin tsc 通过，顾客单测 110/110。新增测试本身不改变员工归属业务规则。PR 仍 draft：新客归属方式未选择，生产历史根因及 ≥60% 实效验收尚无足够证据。下一步由业务确定分配时点/负责人，再实现、完整验证与最终双谱系评审；存量回填依据仍另属阶段 2。
