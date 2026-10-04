@@ -32,9 +32,9 @@ V2 增加配置经营月及四周、个人／本店／市场目标、真实销�
 | 小程序 AppID | `wx4da3e1e9ad861396` |
 | CloudBase 环境 | `cloud1-d5gz7zr8x6c38bd49` |
 | 开发版函数 | `dailyApiDev` |
-| 开发业务库 | `101.34.242.103:5433/fengyu_wxapp` |
+| 开发业务库 | `101.34.242.103:8151/fengyu_daily_dev` |
 
-本期仅部署开发版；体验版/正式版调用 `dailyApi`，正式发布需单独配置和部署。账号凭据不进入源码；开发库连接串来自忽略提交的 `envs/dev.env`。
+本期仅部署开发版；体验版/正式版调用 `dailyApi`，正式发布需单独配置和部署。账号凭据不进入源码；开发库连接串来自忽略提交的 `envs/daily.env`。
 
 ## 身份与权限
 
@@ -85,7 +85,7 @@ DAILY_DEPLOY_BACKEND=wechat WX_DEVTOOLS_PORT=41652 bash scripts/deploy-cloudfunc
 
 先在正确环境的控制台创建同名 `dailyApiDev`，运行版本选择 **Node.js 18.15**。微信 CLI 首次创建采用默认版本，因此脚本禁止它首次创建。
 
-控制台「版本与配置 → 配置 → 高级配置」需设置：超时 **30 秒**、内存 **256 MB**；环境变量 `PG_CONNECTION_STRING` 使用本地 `envs/dev.env` 中的同名值，`TZ=Asia/Shanghai`，`DEPLOY_CHANNEL=shadow`。凭据不要粘贴到聊天或提交到 Git。
+控制台「版本与配置 → 配置 → 高级配置」需设置：超时 **30 秒**、内存 **256 MB**；环境变量 `PG_CONNECTION_STRING` 使用本地 `envs/daily.env` 中的同名值，`TZ=Asia/Shanghai`，`DEPLOY_CHANNEL=shadow`。凭据不要粘贴到聊天或提交到 Git。
 
 微信 CLI 上传必须使用 `--report` 等待逐函数结果，再下载云端代码，比对入口、登录、日报及数据库文件；仅退出码为 0 不代表代码已更新。脚本包含这些回读检查。
 
@@ -130,3 +130,7 @@ UI 自动化通过开发者工具，临时模拟接口返回；不替代真实�
 ### 2026-10-03 dev 更新
 
 正式迁移0062已执行到共享dev库；四张V2表及四个字段齐全。dailyApiDev新版代码、运行配置及真实身份读取已核验，admin开发版已发布，小程序已重新编译。完整执行记录见 docs/handoff/daily-v2-implementation.md。经营周期与PK配置仍为空，需业务日期/分班决定；当前管理员无主门店，员工填报提交闭环需有门店的员工身份。交付PR #523 待合并，其他开发者应先集成本迁移，避免再次生成0062。
+
+### 日报独立调试环境（2026-10-04）
+
+日报开发版已切换到独立8151数据库；本地后台运行 `npm --prefix fengyu-admin run dev:daily`，访问 http://localhost:3010。共用dev后台和5433库不改。完整操作、候选迁移状态、备份及验收限制见 [独立调试说明](../docs/handoff/daily-isolated-debug.md)。

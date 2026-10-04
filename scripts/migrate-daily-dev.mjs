@@ -46,7 +46,7 @@ try {
       throw new Error("开发库迁移时序超过日报，但未记录日报迁移，停止操作");
   }
   console.log(
-    `日报开发库迁移：101.34.242.103:5433/fengyu_wxapp，待执行 ${pending.length} 条`,
+    `日报开发库迁移：101.34.242.103:8151/fengyu_daily_dev，待执行 ${pending.length} 条`,
   );
   if (process.argv.includes("--apply")) {
     await migrate(drizzle(client), {

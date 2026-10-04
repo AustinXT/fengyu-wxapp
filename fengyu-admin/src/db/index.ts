@@ -18,6 +18,13 @@ const connectionString =
   process.env.DATABASE_URL ??
   'postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp'
 
+if (process.env.DAILY_ISOLATED === '1') {
+  const target = new URL(connectionString)
+  if (target.hostname !== '101.34.242.103' || target.port !== '8151' || target.pathname !== '/fengyu_daily_dev' || target.search) {
+    throw new Error('日报独立后台禁止连接其他数据库')
+  }
+}
+
 // timestamp 列自 migration 0076 起统一为 `timestamp with time zone`（OID 1184）。
 // PG 会话由下方 connection 显式设为 Asia/Shanghai，并在 ParameterStatus 中断言，返回 +08 字面量。
 // postgres.js 内置 `new Date(value)` 正确解析为绝对时刻，drizzle column reader 直通，无需自定义 parser。

@@ -12,7 +12,7 @@
       "memorySize": 256,
       "installDependency": true,
       "envVariables": {
-        "PG_CONNECTION_STRING": "${DEV_PG_CONNECTION_STRING}",
+        "PG_CONNECTION_STRING": "${DAILY_PG_CONNECTION_STRING}",
         "DEPLOY_CHANNEL": "shadow",
         "TZ": "Asia/Shanghai"
       }

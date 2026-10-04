@@ -13,7 +13,7 @@ if (fs.readFileSync(path.join(ROOT, "envs/.active"), "utf8").trim() !== "prod")
 const rc = config(),
   cwd = path.join(ROOT, "fengyu-daily");
 console.log(
-  `日报部署计划：dailyApiDev → ${DAILY_ENV} → dev PostgreSQL 101.34.242.103:5433/fengyu_wxapp`,
+  `日报部署计划：dailyApiDev → ${DAILY_ENV} → dev PostgreSQL 101.34.242.103:8151/fengyu_daily_dev`,
 );
 if (plan === "1") {
   console.log("仅预览，无配置写入和部署");

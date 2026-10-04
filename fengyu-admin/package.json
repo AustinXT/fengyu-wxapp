@@ -27,7 +27,8 @@
     "test:e2e:inventory-ui": "playwright test --config=tests/e2e-inventory-ui/playwright.inventory.config.ts",
     "test:visual": "playwright test tests/e2e-pages/visual",
     "test:visual:update": "playwright test tests/e2e-pages/visual --update-snapshots",
-    "test:all": "vitest run && playwright test"
+    "test:all": "vitest run && playwright test",
+    "dev:daily": "node ../scripts/start-daily-admin.mjs"
   },
   "dependencies": {
     "@alicloud/ocr-api20210707": "^3.1.3",

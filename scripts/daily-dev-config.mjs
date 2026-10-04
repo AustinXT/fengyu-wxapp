@@ -7,19 +7,25 @@ export const ROOT = path.resolve(
 );
 export const DAILY_ENV = "cloud1-d5gz7zr8x6c38bd49";
 export function devConnection() {
-  const content = fs.readFileSync(path.join(ROOT, "envs/dev.env"), "utf8");
+  const content = fs.readFileSync(path.join(ROOT, "envs/daily.env"), "utf8");
   const match = content.match(/^PG_CONNECTION_STRING=(.*)$/m);
-  if (!match) throw new Error("envs/dev.env 缺少 PG_CONNECTION_STRING");
+  if (!match) throw new Error("envs/daily.env 缺少 PG_CONNECTION_STRING");
   const raw = match[1].trim().replace(/^["']|["']$/g, "");
-  const url = new URL(raw);
+  return validateDailyConnection(raw);
+}
+export function validateDailyConnection(raw) {
+  let url;
+  try { url = new URL(raw); } catch { throw new Error("日报数据库连接格式错误"); }
   if (
+    !["postgres:", "postgresql:"].includes(url.protocol) ||
+    !url.username || !url.password ||
     url.hostname !== "101.34.242.103" ||
-    url.port !== "5433" ||
-    url.pathname !== "/fengyu_wxapp" ||
+    url.port !== "8151" ||
+    url.pathname !== "/fengyu_daily_dev" ||
     url.search
   ) {
     throw new Error(
-      "日报开发库必须为 101.34.242.103:5433/fengyu_wxapp，且不能包含连接覆盖参数",
+      "日报开发库必须为 101.34.242.103:8151/fengyu_daily_dev，且不能包含连接覆盖参数",
     );
   }
   return raw;

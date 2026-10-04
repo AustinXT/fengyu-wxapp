@@ -10,7 +10,7 @@ const config = {
 };
 const env = {
   DEPLOY_CHANNEL: "shadow",
-  PG_CONNECTION_STRING: "postgres://test:test@101.34.242.103:5433/fengyu_wxapp",
+  PG_CONNECTION_STRING: "postgres://test:test@101.34.242.103:8151/fengyu_daily_dev",
 };
 test("测试码服务端确定员工编号，不接受客户端选择员工", () => {
   assert.equal(
@@ -45,6 +45,7 @@ test("正式通道、生产库、连接覆盖参数均不能使用测试绑定",
         "postgres://test:test@118.178.196.26:5432/fengyu_wxapp",
     },
     { ...env, PG_CONNECTION_STRING: env.PG_CONNECTION_STRING + "?host=other" },
+    { ...env, PG_CONNECTION_STRING: "postgres://test:test@101.34.242.103:5433/fengyu_wxapp" },
     {},
   ])
     assert.throws(

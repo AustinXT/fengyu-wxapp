@@ -8,8 +8,8 @@ function verifyTestCode(payload, config, env = process.env, now = Date.now()) {
     env.DEPLOY_CHANNEL !== "shadow" ||
     !url ||
     url.hostname !== "101.34.242.103" ||
-    url.port !== "5433" ||
-    url.pathname !== "/fengyu_wxapp" ||
+    url.port !== "8151" ||
+    url.pathname !== "/fengyu_daily_dev" ||
     url.search
   )
     throw Error("PERMISSION_DENIED: 测试绑定仅限日报开发库");
