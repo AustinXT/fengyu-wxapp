@@ -30,6 +30,7 @@ interface Target {
   >
 }
 interface Result {
+  periods: Period[]
   reference?: {
     period: { start: string; end: string }
     month: { sales: number; consumption: number }
@@ -124,10 +125,6 @@ Page({
     try {
       const { user } = await login()
       if (!user) throw Error('请先绑定员工身份')
-      const { periods, period } = await callApi<{
-        periods: Period[]
-        period: Period | null
-      }>('period.list')
       let scopes = [{ id: user.employeeId, name: user.name }]
       if (this.data.scope === 'store')
         scopes = user.managerStores.map((s) => ({
@@ -145,14 +142,9 @@ Page({
       )
       this.setData({
         user,
-        periods,
         scopes,
         scopeIndex,
         scopeId: scopes[scopeIndex]?.id || '',
-        periodIndex: Math.max(
-          0,
-          periods.findIndex((p) => p.id === period?.id),
-        ),
         title:
           this.data.scope === 'store'
             ? '本店经营目标'
@@ -176,6 +168,7 @@ Page({
       periodId: this.data.periods[this.data.periodIndex]?.id,
     })
     const { target, period, week, reference } = result
+    const periods = result.periods || []
     const automatic = !!week && period?.weeks[3].id === week.id
     this.setData({
       monthReference: reference
@@ -185,6 +178,8 @@ Page({
         ? `${reference.week.start} 至 ${reference.week.end} · 业绩 ${amount(reference.week.sales)} / 消耗 ${amount(reference.week.consumption)} 元`
         : '暂无去年对应经营周数据',
       period,
+      periods,
+      periodIndex: Math.max(0, periods.findIndex((p) => p.id === period?.id)),
       week,
       target,
       automatic,

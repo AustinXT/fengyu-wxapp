@@ -5,7 +5,7 @@ import {
   workspace,
   query,
   queryWith,
-  resolve,
+  today,
   type Filters,
 } from '@/lib/operating/workspace'
 import { expand, writeTarget } from '@/lib/operating/target-write'
@@ -26,6 +26,7 @@ export const getOwnOperatingTarget = withPermission(
     session,
     input: { periodId?: string; scope?: string; scopeId?: string } = {},
   ) => {
+    const date = today()
     const data = await workspace(
       session,
       { periodId: input.periodId },
@@ -38,7 +39,7 @@ export const getOwnOperatingTarget = withPermission(
         s.scopeId === (input.scopeId || session.employeeId),
     )
     if (!scope) throw Error('PERMISSION_DENIED: 只能填写本人或本人管理范围目标')
-    const resolved = await resolve(query, { periodId: input.periodId })
+    const resolved = { date, period: data.period, week: data.week }
     const rows = resolved.period
       ? await query(
           'SELECT * FROM daily_operating_targets WHERE period_id=$1 AND scope=$2 AND scope_id=$3',

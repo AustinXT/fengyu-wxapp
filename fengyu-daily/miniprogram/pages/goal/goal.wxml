@@ -8,12 +8,13 @@
     <view wx:if="{{!editable}}" class="notice">历史或未来经营月仅可查看。</view>
     <view class="card"><view class="row"><view class="title">本经营月目标</view><view class="tag {{confirmed?'ok':'warn'}}">{{confirmed && countsConfirmed ? '已确认 · 不可修改' : confirmed ? '补充三项目标' : '待确认'}}</view></view>
       <view class="muted">{{period.start}} 至 {{period.end}}</view>
-      <view wx:if="{{confirmed}}" class="month-summary"><view><view class="muted">业绩目标（元）</view><view class="amount">{{monthSales}}</view></view><view><view class="muted">消耗目标（元）</view><view class="amount">{{monthConsumption}}</view></view></view>
-      <block wx:else><view class="label">月业绩目标（元）</view><input class="goal-input" type="digit" data-field="sales" value="{{sales}}" bindinput="input" disabled="{{saving || !editable}}" />
-      <view class="label">月消耗目标（元）</view><input class="goal-input" type="digit" data-field="consumption" value="{{consumption}}" bindinput="input" disabled="{{saving || !editable}}" /></block>
-      <view wx:for="{{countFields}}" wx:key="key"><view class="label">月{{item.label}}目标（{{item.unit}}）</view><view wx:if="{{countsConfirmed}}">{{item.month}}</view><input wx:else class="goal-input" type="number" data-field="{{item.key}}" value="{{item.month}}" bindinput="input" disabled="{{saving || !editable}}" /></view>
+      <view class="month-summary">
+        <view class="goal-metric"><view class="muted">业绩目标（元）</view><view wx:if="{{confirmed}}" class="amount">{{monthSales}}</view><input wx:else class="goal-input metric-input" type="digit" data-field="sales" value="{{sales}}" bindinput="input" disabled="{{saving || !editable}}" /></view>
+        <view class="goal-metric"><view class="muted">消耗目标（元）</view><view wx:if="{{confirmed}}" class="amount">{{monthConsumption}}</view><input wx:else class="goal-input metric-input" type="digit" data-field="consumption" value="{{consumption}}" bindinput="input" disabled="{{saving || !editable}}" /></view>
+        <view wx:for="{{countFields}}" wx:key="key" class="goal-metric"><view class="muted">月{{item.label}}目标（{{item.unit}}）</view><view wx:if="{{countsConfirmed}}" class="amount">{{item.month}}</view><input wx:else class="goal-input metric-input" type="number" data-field="{{item.key}}" value="{{item.month}}" bindinput="input" disabled="{{saving || !editable}}" /></view>
+      </view>
       <view class="muted reference">去年对应经营月实际：{{monthReference}}</view>
-      <block wx:if="{{scope==='personal'}}"><view class="label">本月负激励</view><view wx:if="{{confirmed}}">{{penalty}}</view><textarea wx:else data-field="penalty" value="{{penalty}}" bindinput="input" maxlength="500" auto-height disabled="{{saving || !editable}}" placeholder="例如：未完成目标吃鲱鱼罐头" /></block>
+      <view wx:if="{{scope==='personal'}}" class="incentive-row"><view class="incentive-label">本月负激励</view><view wx:if="{{confirmed}}" class="incentive-value">{{penalty}}</view><textarea wx:else class="incentive-input" data-field="penalty" value="{{penalty}}" bindinput="input" maxlength="500" auto-height disabled="{{saving || !editable}}" placeholder="例如：未完成目标吃鲱鱼罐头" /></view>
       <view wx:if="{{(!confirmed || !countsConfirmed) && editable && monthError}}" class="goal-error">{{monthError}}</view>
     </view>
     <view wx:if="{{confirmed && editable && !automatic && weekError}}" class="goal-error">{{weekError}}</view>

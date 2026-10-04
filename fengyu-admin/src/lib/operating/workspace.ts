@@ -123,11 +123,11 @@ export async function workspace(
   pk = false,
   metadataOnly = false,
 ) {
-  const { period, week } = await resolve(query, filters)
-  const periods = await query(
-    'SELECT id,name FROM daily_operating_periods ORDER BY start_date DESC',
-  )
-  const all = await query('SELECT store_id FROM stores')
+  const [{ period, week }, periods, all] = await Promise.all([
+    resolve(query, filters),
+    query('SELECT id,name FROM daily_operating_periods ORDER BY start_date DESC'),
+    query('SELECT store_id FROM stores'),
+  ])
   const allowed =
     isAdminScope(session) || session.roles.some((r) => r.scopeType === '总部')
       ? all.map((s) => s.store_id)
@@ -208,16 +208,20 @@ export async function workspace(
     rows: [] as OperatingRow[],
   }
   if (!period || metadataOnly) return empty
-  const classes = await query(
-    'SELECT DISTINCT c.id,c.name FROM daily_pk_classes c JOIN daily_pk_stores ps ON ps.class_id=c.id AND ps.period_id=c.period_id WHERE c.period_id=$1 AND ps.store_id=ANY($2::text[]) ORDER BY c.name',
-    [period.id, selectedStores.map((s: any) => s.id)],
-  )
+  const [classes, assignments] = await Promise.all([
+    query(
+      'SELECT DISTINCT c.id,c.name FROM daily_pk_classes c JOIN daily_pk_stores ps ON ps.class_id=c.id AND ps.period_id=c.period_id WHERE c.period_id=$1 AND ps.store_id=ANY($2::text[]) ORDER BY c.name',
+      [period.id, selectedStores.map((s: any) => s.id)],
+    ),
+    pk
+      ? query(
+          'SELECT * FROM daily_pk_stores WHERE period_id=$1 AND store_id=ANY($2::text[]) ORDER BY store_id',
+          [period.id, selectedStores.map((s: any) => s.id)],
+        )
+      : Promise.resolve([]),
+  ])
   if (filters.classId && !classes.some((c) => c.id === filters.classId))
     throw Error('PERMISSION_DENIED: 无此班级查看权限')
-  const assignments = await query(
-    'SELECT * FROM daily_pk_stores WHERE period_id=$1 AND store_id=ANY($2::text[]) ORDER BY store_id',
-    [period.id, selectedStores.map((s: any) => s.id)],
-  )
   let objects: any[]
   const selectedDir = {
     ...dir,
@@ -290,19 +294,29 @@ export async function workspace(
   }
   const cutoff = today() < period.end ? today() : period.end
   const ids = selectedStores.map((s: any) => s.id)
+  const marketIds = new Set(
+    objects.filter((o: any) => o.scope === 'market').map((o: any) => o.scopeId),
+  )
   const [events, targets, first] = await Promise.all([
-    series(query, {
-      storeIds: ids,
-      employeeIds: objects.map((o) => o.employeeId).filter(Boolean),
-      start: period.start,
-      end: cutoff,
+    db.transaction(async (tx) => {
+      // 报表视图的复杂计划会触发数秒 JIT 编译；仅本次统计禁用，事务结束自动恢复。
+      await tx.execute(sql`SET LOCAL jit = off`)
+      return series(queryWith(tx), {
+        storeIds: ids,
+        employeeIds: objects.map((o) => o.employeeId).filter(Boolean),
+        start: period.start,
+        end: cutoff,
+      })
     }),
     query('SELECT * FROM daily_operating_targets WHERE period_id=$1', [
       period.id,
     ]),
-    marketNewCustomers(query, ids, period.start, cutoff),
+    marketIds.size
+      ? marketNewCustomers(query, ids, period.start, cutoff)
+      : Promise.resolve([]),
   ])
   for (const region of regions) {
+    if (!marketIds.has(region.id)) continue
     const inRegion = (id: string) =>
       selectedStores.some((s: any) => s.id === id && s.market_id === region.id)
     for (const date of new Set(

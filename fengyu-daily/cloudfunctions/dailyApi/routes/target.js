@@ -1,6 +1,6 @@
 const pg = require('../db/pg');
 const v = require('../utils/validation');
-const { resolve } = require('./period');
+const { resolve, normalize } = require('./period');
 const { targetScope } = require('../utils/target-scope');
 const { cents, validateMonth, weeklyTargets, validateCounts, countKeys } = require('../utils/operating-target');
 function expand(target, period) {
@@ -19,10 +19,25 @@ async function load(query, periodId, scope, scopeId, lock = false) {
   return row || null;
 }
 async function read(ctx) {
-  const scope = await targetScope(ctx.auth, ctx.event.payload || {}, pg.query);
-  const resolved = await resolve(pg.query, ctx.event.payload);
-  ctx.result = { ...resolved, ...scope, reference: await require('../utils/prior-reference').reference(pg.query, ctx.auth, scope, resolved.period, resolved.week), target: resolved.period
-    ? expand(await load(pg.query, resolved.period.id, scope.scope, scope.scopeId), resolved.period) : null };
+  const payload = ctx.event.payload || {};
+  const [scope, resolved, periodRows] = await Promise.all([
+    targetScope(ctx.auth, payload, pg.query),
+    resolve(pg.query, payload),
+    pg.query('SELECT * FROM daily_operating_periods ORDER BY start_date DESC'),
+  ]);
+  const [targetRow, reference] = resolved.period
+    ? await Promise.all([
+        load(pg.query, resolved.period.id, scope.scope, scope.scopeId),
+        require('../utils/prior-reference').reference(pg.query, ctx.auth, scope, resolved.period, resolved.week),
+      ])
+    : [null, null];
+  ctx.result = {
+    ...resolved,
+    ...scope,
+    periods: periodRows.map(normalize),
+    reference,
+    target: resolved.period ? expand(targetRow, resolved.period) : null,
+  };
 }
 async function write(ctx, month) {
   const payload = ctx.event.payload || {};

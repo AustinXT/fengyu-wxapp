@@ -16,10 +16,13 @@ async function reference(query, auth, scope, period, week) {
   const prior = normalize(candidates[0]);
   const metrics = require('../routes/metrics');
   const stores = await metrics.scopeStores(query, auth, scope);
-  const month = await metrics.totals(query, scope, stores, prior.start, prior.end);
   const index = week ? period.weeks.findIndex((w) => w.id === week.id) : -1;
   const priorWeek = index >= 0 ? prior.weeks[index] : null;
+  const [month, weekTotals] = await Promise.all([
+    metrics.totals(query, scope, stores, prior.start, prior.end),
+    priorWeek ? metrics.totals(query, scope, stores, priorWeek.start, priorWeek.end) : null,
+  ]);
   return { period: { name: prior.name, start: prior.start, end: prior.end }, month,
-    week: priorWeek ? { ...priorWeek, ...(await metrics.totals(query, scope, stores, priorWeek.start, priorWeek.end)) } : null };
+    week: priorWeek && weekTotals ? { ...priorWeek, ...weekTotals } : null };
 }
 module.exports = { reference };

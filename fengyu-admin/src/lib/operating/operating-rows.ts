@@ -11,12 +11,17 @@ export function buildRows(
   const targets = new Map<string, any>(
     targetRows.map((t: any) => [`${t.scope}:${t.scope_id}`, t]),
   )
+  const eventsByScope = new Map<string, any[]>()
+  for (const event of events) {
+    const id = `${event.scope}:${event.id}`
+    const daily = eventsByScope.get(id)
+    if (daily) daily.push(event)
+    else eventsByScope.set(id, [event])
+  }
   return objects.map((object: any) => {
     const target = targets.get(`${object.scope}:${object.scopeId}`)
     const configured = target?.month_confirmed ? expand(target, period) : null
-    const daily = events.filter(
-      (e: any) => e.scope === object.scope && e.id === object.scopeId,
-    )
+    const daily = eventsByScope.get(`${object.scope}:${object.scopeId}`) ?? []
     const values: any = {}
     for (const key of keys) {
       const sum = (a: any, b: any) =>
