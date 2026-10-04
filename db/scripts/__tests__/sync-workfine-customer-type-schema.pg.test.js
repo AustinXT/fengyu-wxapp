@@ -34,6 +34,35 @@ test('完整迁移schema上的真实顾客同步路径（手机号/无手机号�
     const upgraded = (await db.query('SELECT customer_type, became_member_at, member_level_upgraded_at FROM client_wechat_users WHERE user_id=$1', [user])).rows[0]
     assert.equal(upgraded.customer_type, '会员客'); assert.ok(upgraded.became_member_at); assert.equal(upgraded.member_level_upgraded_at, null)
     assert.equal((await db.query("SELECT customer_type FROM client_wechat_users WHERE user_id='WF256-unrelated'")).rows[0].customer_type, '流量客', '自动补算不碰本批之外顾客')
+    // 实际同步完成档案UPDATE/补算后仍持事务：父行非键锁不应挡FK写入，仍应挡并发UPDATE。
+    const peer = new Client({ connectionString: url }); await peer.connect()
+    let releaseSync, enterSync
+    const held = new Promise(resolve => { enterSync = resolve })
+    const release = new Promise(resolve => { releaseSync = resolve })
+    let syncTask
+    try {
+      await peer.query('CREATE TABLE wf256_fk_probe(client_user_id text REFERENCES client_wechat_users(user_id))')
+      const pausedPool = { options: { connectionString: url }, connect: async () => ({
+        query: async (sql, params) => {
+          if (sql === 'COMMIT') { enterSync(); await release }
+          return db.query(sql, params)
+        }, release() {},
+      }) }
+      syncTask = syncCustomers(source([{ customer_id: ids[0], phone: '19990002656', name: '更新合成档案' }]), pausedPool, false)
+      // 为拒绝立即登记处理，避免测试进程unhandled rejection；仍由await真正验证结果。
+      syncTask.catch(() => {})
+      await Promise.race([held, syncTask.then(() => { throw Error('未进入COMMIT前交错点') })])
+      await peer.query('BEGIN')
+      await peer.query("SET LOCAL lock_timeout='300ms'")
+      await peer.query('INSERT INTO wf256_fk_probe VALUES($1)', [user])
+      await peer.query('COMMIT')
+      await peer.query('BEGIN')
+      await peer.query("SET LOCAL lock_timeout='300ms'")
+      await assert.rejects(peer.query('UPDATE client_wechat_users SET points_balance=points_balance+1 WHERE user_id=$1', [user]), error => error.code === '55P03')
+      await peer.query('ROLLBACK')
+      releaseSync(); await syncTask
+      assert.equal((await db.query('SELECT name FROM client_wechat_users WHERE user_id=$1', [user])).rows[0].name, '更新合成档案')
+    } finally { releaseSync(); await syncTask?.catch(() => {}); await peer.query('ROLLBACK').catch(() => {}); await peer.query('DROP TABLE IF EXISTS wf256_fk_probe'); await peer.end() }
     const blocker = new Client({ connectionString: url }); await blocker.connect()
     try {
       await blocker.query('BEGIN'); await blocker.query('SELECT user_id FROM client_wechat_users WHERE user_id=$1 FOR UPDATE', [user])

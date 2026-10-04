@@ -681,7 +681,7 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
     await client.query('CREATE TEMP TABLE _cust_sync_scope ON COMMIT DROP AS SELECT customer_id, phone FROM _cust_staging')
     await client.query(`SELECT c.user_id FROM client_wechat_users c
       WHERE EXISTS (SELECT 1 FROM _cust_sync_scope s WHERE c.customer_id = s.customer_id OR c.phone = s.phone)
-      ORDER BY c.user_id FOR UPDATE OF c NOWAIT`)
+      ORDER BY c.user_id FOR NO KEY UPDATE OF c NOWAIT`)
 
     // 3-pre. 先按 customer_id 更新已有行（处理 PG 中无 phone 但 WorkFine 新增 phone 的场景）
     // 避免 step 3a INSERT 时触发 customer_id 唯一约束冲突
