@@ -63,6 +63,12 @@ describe('#361 权限、scope与 keyset', () => {
     const page = await listPendingReceipts({ page: '99999', size: '20' })
     expect(page).toMatchObject({ total: 1, page: 1, rows: [{ id: '9007199254740993', sentQuantity: 10, receivedQuantity: 3, pendingQuantity: 7, transitDays: 9 }] })
   })
+  it.each([['2.9', '50', 2, 50, 50], [Infinity, '20', 1, 20, 0], [{ toString: null }, { toString: null }, 1, 20, 0], ['1e21', '7', 1, 20, 0]])('分页非法值优雅回落或截断 %j/%j', async (inputPage, size, page, pageSize, offset) => {
+    execute.mockResolvedValueOnce([{ total: 1000 }]).mockResolvedValueOnce([])
+    expect(await listPendingReceipts({ page: inputPage, size })).toMatchObject({ page, pageSize })
+    const query = compile(execute.mock.calls[1][0])
+    expect(query.params.slice(-2)).toEqual([pageSize, offset])
+  })
   it.each(['0', '-1', '1.2', '9223372036854775808', 2, null])('拒绝坏worker游标 %j', async cursor => {
     await expect(exportPendingReceipts({}, { limit: 2, cursor } as never)).rejects.toThrow('INVALID_STATE')
     expect(execute).not.toHaveBeenCalled()
