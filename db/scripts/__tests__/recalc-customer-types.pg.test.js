@@ -6,7 +6,7 @@ const { recalcCustomerTypesInTransaction } = require('../recalc-all-customer-typ
 const url = process.env.CUSTOMER_TYPE_PG_TEST_URL
 
 // 仅一次性私有容器；绝不触及业务库/共享测试库。
-test('历史分类：真实SQL、只升不降、幂等、补等级/时间且不设置权益标记', { skip: !url }, async () => {
+test('历史分类：真实SQL、离线双向分类与历史保留、幂等、补等级/时间且不设置权益标记', { skip: !url }, async () => {
   const parsed = new URL(url)
   assert.ok(['localhost', '127.0.0.1'].includes(parsed.hostname))
   assert.equal(parsed.port, '54416')
@@ -25,7 +25,7 @@ test('历史分类：真实SQL、只升不降、幂等、补等级/时间且不�
       CREATE TEMP TABLE system_configs (key text, value text);
       INSERT INTO system_configs VALUES ('new_member_threshold', '3000');
       CREATE TEMP TABLE client_wechat_users (
-        user_id text PRIMARY KEY, customer_type customer_type DEFAULT '流量客', member_level member_level,
+        user_id text PRIMARY KEY, name text, customer_type customer_type DEFAULT '流量客', member_level member_level,
         became_member_at timestamptz, updated_at timestamptz DEFAULT '2020-01-01',
         member_level_upgraded_at timestamptz, old_member_level member_level
       );
@@ -49,7 +49,7 @@ test('历史分类：真实SQL、只升不降、幂等、补等级/时间且不�
         ('ignored','empty',now(),now(),'待支付','销售单',9000,0);
       INSERT INTO sale_items VALUES ('t','ti',100,100,true,'购买');
     `)
-    assert.deepEqual(await recalcCustomerTypesInTransaction(db), { typeCount: 4, levelCount: 1, becameCount: 2, selfCheck: { member_no_became: 0, nonmember_with_level: 0 } })
+    assert.deepEqual(await recalcCustomerTypesInTransaction(db), { typeCount: 5, levelCount: 1, becameCount: 2, selfCheck: { member_no_became: 0, nonmember_with_level: 1 } })
     const first = (await db.query('SELECT * FROM client_wechat_users ORDER BY user_id')).rows
     const member = first.find(r => r.user_id === 'member')
     assert.equal(member.customer_type, '会员客')
@@ -64,9 +64,13 @@ test('历史分类：真实SQL、只升不降、幂等、补等级/时间且不�
     assert.equal(first.find(r => r.user_id === 'small').customer_type, '小美客')
     assert.equal(first.find(r => r.user_id === 'trial').customer_type, '体验客')
     assert.equal(first.find(r => r.user_id === 'empty').updated_at.toISOString(), '2020-01-01T00:00:00.000Z')
-    assert.equal(first.find(r => r.user_id === 'keep').member_level, '金钻')
+    // #257已合入：离线分类双向对齐，降档不清除历史等级/入会时间。
+    const keep = first.find(r => r.user_id === 'keep')
+    assert.equal(keep.customer_type, '流量客')
+    assert.equal(keep.member_level, '金钻')
+    assert.equal(keep.became_member_at.toISOString(), '2020-01-01T00:00:00.000Z')
     await db.query('DROP TABLE _recalc_target')
-    assert.deepEqual(await recalcCustomerTypesInTransaction(db), { typeCount: 0, levelCount: 0, becameCount: 0, selfCheck: { member_no_became: 0, nonmember_with_level: 0 } })
+    assert.deepEqual(await recalcCustomerTypesInTransaction(db), { typeCount: 0, levelCount: 0, becameCount: 0, selfCheck: { member_no_became: 0, nonmember_with_level: 1 } })
     assert.deepEqual((await db.query('SELECT * FROM client_wechat_users ORDER BY user_id')).rows, first)
     await db.query('ROLLBACK')
   } finally {
