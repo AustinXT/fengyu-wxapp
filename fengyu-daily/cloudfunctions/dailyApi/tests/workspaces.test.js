@@ -5,7 +5,7 @@ const {
   deriveStaffLevel,
   deriveAvailableLoginLevels,
 } = require("../utils/scope");
-test("多身份层级和管理入口沿用员工端，管理层必须具备看板权限和门店范围", () => {
+test("多身份层级和管理入口沿用员工端，看板权限与授权市场或门店共同控制入口", () => {
   assert.equal(
     deriveStaffLevel([
       { role: "staff", scopeType: "门店" },
@@ -27,6 +27,8 @@ test("多身份层级和管理入口沿用员工端，管理层必须具备看�
     "management",
   ]);
   assert.deepEqual(deriveAvailableLoginLevels("headquarters", [], true), []);
+  assert.deepEqual(deriveAvailableLoginLevels('market', [], true, [{ scopeType: '市场', scopeId: 'M1' }]), ['management']);
+  assert.deepEqual(deriveAvailableLoginLevels('market', [], false, [{ scopeType: '市场', scopeId: 'M1' }]), []);
 });
 test("普通员工不能调用管理总览，店长查看范围不会扩展为所有角色门店", () => {
   const auth = {

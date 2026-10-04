@@ -246,6 +246,7 @@ export const MENU_CONFIG: MenuNode[] = [
       { label: '权限矩阵', icon: SlidersHorizontal, href: '/settings/permission-matrix', requiredActions: ['system:config'] },
       { label: '消息中心', icon: MessageSquare, href: '/messages', requiredActions: ['message:list'] },
       { label: '操作日志', icon: ScrollText, href: '/logs', requiredActions: ['operation_log:list'] },
+      { label: '日报经营配置', icon: Settings, href: '/settings/daily', requiredActions: ['system:config'] },
       { label: '系统配置', icon: Settings, href: '/settings', requiredActions: ['system:config'] },
       {
         label: '系统自检',
@@ -306,6 +307,7 @@ export function getVisibleMenuItems(session: AuthSession): MenuNode[] {
     : session.roles.map((role) => role.scopeType)
   // 同角色判定复用 withAllPermissions 的收窄函数，菜单与页面闸门不会各算各的
   const visibleItem = (item: MenuItem) => hasMenuItemAccess(item, actions, scopeTypes)
+    && (item.href !== '/settings/daily' || isAdminScope(scopeSessionToActions(session, ['system:config'])))
     && (item.href !== '/inventory/settlements' || isAdminScope(session)
       || scopeSessionToActions(session, ['inventory:store_settlement_view']).roles.some((role) =>
         role.scopeType === '门店'

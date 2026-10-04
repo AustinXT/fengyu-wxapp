@@ -1,48 +1,51 @@
 const pg = require("../db/pg");
 const v = require("../utils/validation");
 const { requireManagement } = require("../utils/report-scope");
+const submissions = require('../utils/submission-range');
 async function read(ctx) {
   requireManagement(ctx.auth);
-  const date = v.date(ctx.event.payload?.date);
-  const storeIds = ctx.auth.scopedStores.map((s) => s.store_id);
-  const [nodes, employees] = await Promise.all([
-    pg.query(
-      "SELECT id,name,type,parent_id FROM org_nodes WHERE id=ANY($1::text[]) ORDER BY sort_order,name",
-      [ctx.auth.scopeOrgNodeIds],
-    ),
-    pg.query(
-      `SELECT u.employee_id,u.name,u.store_id,s.store_name,r.id AS report_id
-      FROM staff_wechat_users u JOIN stores s ON s.store_id=u.store_id
-      LEFT JOIN daily_reports r ON r.employee_id=u.employee_id AND r.store_id=u.store_id AND r.report_date=$2 AND r.status='submitted'
-      WHERE u.store_id=ANY($1::text[]) AND NOT u.is_resigned ORDER BY s.store_name,u.name`,
-      [storeIds, date],
-    ),
-  ]);
-  const stores = ctx.auth.scopedStores.map((s) => {
+  const range = await submissions.range(pg.query, ctx.event.payload);
+  const date = range.date;
+  const nodes = await pg.query(
+    'SELECT id,name,type,parent_id FROM org_nodes WHERE id=ANY($1::text[]) ORDER BY sort_order,name',
+    [ctx.auth.scopeOrgNodeIds]);
+  const nodeId = ctx.event.payload?.nodeId;
+  if (nodeId && !nodes.some((n) => n.id === nodeId)) throw Error('PERMISSION_DENIED: 无权查看该组织范围');
+  const descendants = new Set(nodeId ? [nodeId] : nodes.map((n) => n.id));
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const n of nodes) if (n.parent_id && descendants.has(n.parent_id) && !descendants.has(n.id)) {
+      descendants.add(n.id); changed = true;
+    }
+  }
+  const scopedStores = ctx.auth.scopedStores.filter((s) => !nodeId || descendants.has(s.org_node_id));
+  const employees = await submissions.people(pg.query, scopedStores.map((s) => s.store_id), range);
+  const stores = scopedStores.map((s) => {
     const people = employees.filter((e) => e.store_id === s.store_id);
-    const submitted = people.filter((e) => e.report_id).length;
     return {
       ...s,
-      due: people.length,
-      submitted,
-      missing: people.length - submitted,
-      rate: people.length ? Math.round((submitted / people.length) * 100) : 0,
+      ...submissions.summary(people),
     };
   });
-  const submitted = employees.filter((e) => e.report_id).length;
+  const markets = nodes.filter((n) => n.type === '市场').map((market) => {
+    const ids = new Set([market.id]);
+    let growing = true;
+    while (growing) {
+      growing = false;
+      for (const n of nodes) if (ids.has(n.parent_id) && !ids.has(n.id)) { ids.add(n.id); growing = true; }
+    }
+    const storeIds = new Set(stores.filter((s) => ids.has(s.org_node_id)).map((s) => s.store_id));
+    return { id: market.id, name: market.name, ...submissions.summary(employees.filter((e) => storeIds.has(e.store_id))) };
+  }).filter((m) => m.due > 0);
   ctx.result = {
     date,
-    nodes,
+    range,
+    selectedNodeId: nodeId || null,
+    nodes, markets,
     stores,
     employees,
-    summary: {
-      due: employees.length,
-      submitted,
-      missing: employees.length - submitted,
-      rate: employees.length
-        ? Math.round((submitted / employees.length) * 100)
-        : 0,
-    },
+    summary: submissions.summary(employees),
   };
 }
 module.exports = { read };

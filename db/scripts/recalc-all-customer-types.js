@@ -19,7 +19,8 @@
  *     4. 否则 ⇒ 流量客
  *   （#187 2026-09-18：判定金额从 total_amount 换成毛实收 = sale_items.received 净额
  *    + 该行逐项退款额，按 sale_amount 封顶；无明细行的历史单回退订单级 received。）
- *   仅"向上跃迁"（rank: 流量客<体验客<小美客<会员客），保护已被手工或 payNotify 升级过的行。
+ *   按计算值双向对齐 customer_type（#257）；甲方测试账号「谢廷(测试)」排除。
+ *   member_level 与已有 became_member_at 不因降档清空；再达标归因留待 E 阶段。
  *
  * 同事务额外维护：
  *   - 会员客升级行：member_level 仅在原值为 NULL 时按滚动 12 个月净消费写入
@@ -43,7 +44,7 @@
  *   先在dev 库 101.34.242.103:5433/fengyu_wxapp 跑 --apply 验证；生产库 118.178.196.26:5433/fengyu_wxapp 再跑一次（必跑）。两端均 5433/fengyu_wxapp，仅 IP 区分。
  *
  * 幂等：
- *   - customer_type 仅向上跃迁；二次运行时已是目标态的不再 UPDATE。
+ *   - customer_type 双向同步；二次运行时已是目标态的不再 UPDATE。
  *   - member_level / became_member_at 仅在原 NULL 时写入；不覆盖历史值。
  */
 
@@ -209,31 +210,13 @@ SELECT u.user_id,
   LEFT JOIN xiaomei_users x ON x.user_id = u.user_id
   LEFT JOIN tiyan_users  t ON t.user_id = u.user_id
   LEFT JOIN spend_12m    s ON s.user_id = u.user_id
-`
-
-const TYPE_RANK_CASE = `
-  CASE customer_type
-    WHEN '流量客' THEN 0 WHEN '体验客' THEN 1
-    WHEN '小美客' THEN 2 WHEN '会员客' THEN 3
-  END
-`
-const NEW_TYPE_RANK_CASE = `
-  CASE new_type
-    WHEN '流量客' THEN 0 WHEN '体验客' THEN 1
-    WHEN '小美客' THEN 2 WHEN '会员客' THEN 3
-  END
+ WHERE u.name IS DISTINCT FROM '谢廷(测试)'
 `
 
 const PREVIEW_TRANSITIONS_SQL = `
 SELECT old_type, new_type, COUNT(*)::int AS cnt
   FROM _recalc_target
- WHERE (CASE old_type
-          WHEN '流量客' THEN 0 WHEN '体验客' THEN 1
-          WHEN '小美客' THEN 2 WHEN '会员客' THEN 3
-        END) < (CASE new_type
-          WHEN '流量客' THEN 0 WHEN '体验客' THEN 1
-          WHEN '小美客' THEN 2 WHEN '会员客' THEN 3
-        END)
+ WHERE old_type IS DISTINCT FROM new_type
  GROUP BY old_type, new_type
  ORDER BY old_type, new_type
 `
@@ -256,20 +239,15 @@ SELECT COUNT(*)::int AS cnt
    AND first_qualified_at IS NOT NULL
 `
 
-// 按 rank 严格向上跃迁；对已是目标态或更高的不动
+// #257：离线通道双向对齐，目标态不变时不写；实时路径仍只负责升级。
 const UPDATE_TYPE_SQL = `
 UPDATE client_wechat_users u
    SET customer_type = t.new_type,
        updated_at = NOW()
   FROM _recalc_target t
  WHERE u.user_id = t.user_id
-   AND (CASE u.customer_type
-          WHEN '流量客' THEN 0 WHEN '体验客' THEN 1
-          WHEN '小美客' THEN 2 WHEN '会员客' THEN 3
-        END) < (CASE t.new_type
-          WHEN '流量客' THEN 0 WHEN '体验客' THEN 1
-          WHEN '小美客' THEN 2 WHEN '会员客' THEN 3
-        END)
+   AND u.name IS DISTINCT FROM '谢廷(测试)'
+   AND u.customer_type IS DISTINCT FROM t.new_type
 `
 
 const UPDATE_LEVEL_SQL = `
@@ -296,7 +274,7 @@ UPDATE client_wechat_users u
 
 const SELFCHECK_SQL = `
 SELECT
-  (SELECT COUNT(*) FROM client_wechat_users WHERE customer_type = '会员客' AND became_member_at IS NULL)::int AS member_no_became,
+  (SELECT COUNT(*) FROM client_wechat_users WHERE customer_type = '会员客' AND became_member_at IS NULL AND name IS DISTINCT FROM '谢廷(测试)')::int AS member_no_became,
   (SELECT COUNT(*) FROM client_wechat_users WHERE customer_type != '会员客' AND member_level IS NOT NULL)::int AS nonmember_with_level
 `
 
@@ -322,20 +300,24 @@ async function main() {
     }
     log(`阈值: ${threshold}（来自 system_configs.new_member_threshold）`)
 
-    await client.query('BEGIN')
+    await client.query(apply ? 'BEGIN ISOLATION LEVEL REPEATABLE READ' : 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY')
     log('构建 _recalc_target 临时表...')
-    await client.query(BUILD_TARGET_TABLE_SQL, [threshold])
+    const targetSelect = BUILD_TARGET_TABLE_SQL.replace(/^\s*CREATE TEMP TABLE _recalc_target ON COMMIT DROP AS\s*/, '')
+    if (apply) await client.query(BUILD_TARGET_TABLE_SQL, [threshold])
+    const queryTarget = (query) => apply
+      ? client.query(query)
+      : client.query(`WITH _recalc_target AS (${targetSelect}) ${query}`, [threshold])
 
-    const transitions = await client.query(PREVIEW_TRANSITIONS_SQL)
-    log(`customer_type 待跃迁分布:`)
-    let totalUp = 0
+    const transitions = await queryTarget(PREVIEW_TRANSITIONS_SQL)
+    log(`customer_type 待双向对齐分布:`)
+    let totalChanged = 0
     for (const r of transitions.rows) {
       log(`  ${r.old_type} → ${r.new_type}: ${r.cnt}`)
-      totalUp += r.cnt
+      totalChanged += r.cnt
     }
-    log(`  合计待 UPDATE customer_type: ${totalUp} 行`)
+    log(`  合计待 UPDATE customer_type: ${totalChanged} 行`)
 
-    const levels = await client.query(PREVIEW_LEVEL_SQL)
+    const levels = await queryTarget(PREVIEW_LEVEL_SQL)
     log(`member_level 初始化分布（会员客 ∩ old_level=NULL）:`)
     let totalLevel = 0
     for (const r of levels.rows) {
@@ -344,7 +326,7 @@ async function main() {
     }
     log(`  合计待 UPDATE member_level: ${totalLevel} 行`)
 
-    const became = await client.query(PREVIEW_BECAME_SQL)
+    const became = await queryTarget(PREVIEW_BECAME_SQL)
     log(`became_member_at 待回填: ${became.rows[0].cnt} 行`)
 
     if (!apply) {
@@ -387,7 +369,9 @@ async function main() {
   }
 }
 
-main().catch((err) => {
+if (require.main === module) main().catch((err) => {
   console.error('未捕获异常:', err)
   process.exit(1)
 })
+
+module.exports = { BUILD_TARGET_TABLE_SQL, PREVIEW_TRANSITIONS_SQL, UPDATE_TYPE_SQL, UPDATE_LEVEL_SQL, UPDATE_BECAME_SQL, FETCH_THRESHOLD_SQL }
