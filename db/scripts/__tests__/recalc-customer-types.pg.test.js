@@ -26,7 +26,7 @@ test('历史分类：真实SQL、离线双向分类与历史保留、幂等、�
       INSERT INTO system_configs VALUES ('new_member_threshold', '3000');
       CREATE TEMP TABLE client_wechat_users (
         user_id text PRIMARY KEY, name text, customer_type customer_type DEFAULT '流量客', member_level member_level,
-        became_member_at timestamptz, updated_at timestamptz DEFAULT '2020-01-01',
+        became_member_at timestamptz, updated_at timestamptz DEFAULT '2020-01-01T00:00:00Z',
         member_level_upgraded_at timestamptz, old_member_level member_level
       );
       CREATE TEMP TABLE sale_orders (
@@ -40,7 +40,7 @@ test('历史分类：真实SQL、离线双向分类与历史保留、幂等、�
       CREATE TEMP TABLE sale_order_payments (sale_order_id text, note text, change_type text, status text);
       INSERT INTO client_wechat_users(user_id, customer_type, member_level, became_member_at) VALUES
         ('member','流量客',NULL,NULL), ('small','流量客',NULL,NULL), ('trial','流量客',NULL,NULL),
-        ('nullpaid','流量客',NULL,NULL), ('empty','流量客',NULL,NULL), ('keep','会员客','金钻','2020-01-01');
+        ('nullpaid','流量客',NULL,NULL), ('empty','流量客',NULL,NULL), ('keep','会员客','金钻','2020-01-01T00:00:00Z');
       INSERT INTO sale_orders VALUES
         ('m','member', now()-interval '2 months', now()-interval '2 months','已完成','销售单',4000,0),
         ('s','small',now(),now(),'已支付','销售单',100,0),
