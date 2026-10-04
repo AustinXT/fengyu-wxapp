@@ -5,9 +5,9 @@ describe('isMember', () => {
   it('会员客 → true', () => {
     expect(isMember('会员客', null)).toBe(true)
   })
-  it('有钻石等级（member_level 非空）→ true', () => {
-    expect(isMember('流量客', '星钻')).toBe(true)
-    expect(isMember(null, '初钻')).toBe(true)
+  it('降档或缺少当前分类，历史钻石等级不授予会员价', () => {
+    expect(isMember('流量客', '星钻')).toBe(false)
+    expect(isMember(null, '初钻')).toBe(false)
   })
   it('流量客 + 无等级 → false', () => {
     expect(isMember('流量客', null)).toBe(false)
