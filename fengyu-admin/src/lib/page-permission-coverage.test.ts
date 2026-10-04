@@ -96,6 +96,7 @@ const LIST_PAGE_GATES: Record<string, Clause[]> = {
   '/messages': ['message:list'],
   '/logs': ['operation_log:list'],
   '/settings': ['system:config'],
+  '/settings/daily': ['system:config'],
 }
 
 /**
