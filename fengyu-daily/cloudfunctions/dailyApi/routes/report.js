@@ -4,6 +4,8 @@ const v = require("../utils/validation");
 const { candidates } = require("./business");
 const metrics = require('./metrics');
 const contacts = require('./contacts');
+const jitDisabledQuery = require('../utils/query-with-jit-disabled');
+const { performance } = require('node:perf_hooks');
 function metricScope(auth, workspace) {
   if (workspace === 'manager' && auth.managerStores?.some((s) => s.store_id === auth.storeId))
     return { scope: 'store', scopeId: auth.storeId };
@@ -25,22 +27,40 @@ async function status(ctx) {
   ctx.result = { status: report?.status || null };
 }
 async function read(ctx) {
+  const startedAt = performance.now();
+  const timings = {};
+  const measure = async (name, operation) => {
+    const started = performance.now();
+    try { return await operation(); }
+    finally { timings[name] = Math.round(performance.now() - started); }
+  };
   const date = v.date(ctx.event.payload?.date);
-  const [report] = await pg.query(
+  const [report] = await measure('reportRow', () => pg.query(
     "SELECT * FROM daily_reports WHERE employee_id=$1 AND report_date=$2",
     [ctx.auth.employeeId, date],
-  );
-  const stored = report ? await entries(pg.query, report.id) : [];
-  const current =
-    report?.status === "submitted"
-      ? stored.map((e) => e.snapshot)
-      : (await candidates(pg.query, ctx.auth.employeeId, date)).filter((b) => !report || stored.some((e) => e.businessType === b.businessType && e.businessId === b.businessId));
+  ));
+  const stored = report ? await measure('storedEntries', () => entries(pg.query, report.id)) : [];
+  const workspace = ctx.event.payload?.workspace;
+  // Business candidates and the operating snapshot are independent reads.
+  // Running them together avoids making the page wait for their durations to add up.
+  const currentPromise = report?.status === 'submitted'
+    ? Promise.resolve(stored.map((e) => e.snapshot))
+    : measure('businessCandidates', () => candidates(pg.query, ctx.auth.employeeId, date)).then((rows) =>
+      rows.filter((b) => !report || stored.some((e) => e.businessType === b.businessType && e.businessId === b.businessId)));
+  const metricPromise = report?.status === 'submitted'
+    ? Promise.resolve(report.metric_snapshot)
+    : measure('metricSnapshot', () => metrics.captureReportSnapshot(pg.query, ctx.auth, {
+        date, workspace, includeAllScopes: false,
+      }));
+  const [current, rawMetricSnapshot] = await Promise.all([currentPromise, metricPromise]);
   if (report?.status !== 'submitted') {
     const manual = stored.filter((e) => e.snapshot.auto === false);
-    const byDate = new Map();
+    const sourceDates = [...new Set(manual.map((e) => e.snapshot.businessDate || date).filter((d) => d !== date))];
+    const historicalRows = await measure('historicalCandidates', async () => Promise.all(sourceDates.map(async (sourceDate) =>
+      [sourceDate, await candidates(pg.query, ctx.auth.employeeId, sourceDate)])));
+    const byDate = new Map([[date, current], ...historicalRows]);
     for (const e of manual) {
       const sourceDate = e.snapshot.businessDate || date;
-      if (!byDate.has(sourceDate)) byDate.set(sourceDate, await candidates(pg.query, ctx.auth.employeeId, sourceDate));
       const fresh = byDate.get(sourceDate).find((b) => b.businessId === e.businessId && b.businessType === e.businessType);
       if (!current.some((b) => b.businessId === e.businessId && b.businessType === e.businessType))
         current.push({ ...(fresh || e.snapshot), auto: false, unavailable: !fresh });
@@ -49,12 +69,6 @@ async function read(ctx) {
   const map = new Map(
     stored.map((e) => [e.businessType + ":" + e.businessId, e]),
   );
-  const workspace = ctx.event.payload?.workspace;
-  const rawMetricSnapshot = report?.status === 'submitted'
-    ? report.metric_snapshot
-    : await metrics.captureReportSnapshot(pg.query, ctx.auth, {
-        date, workspace, includeAllScopes: false,
-      });
   const metricSnapshot = metrics.reportSnapshotForViewer(
     rawMetricSnapshot, ctx.auth, report || { employee_id: ctx.auth.employeeId, store_id: ctx.auth.storeId }, workspace,
   );
@@ -70,6 +84,7 @@ async function read(ctx) {
       followUp: map.get(b.businessType + ":" + b.businessId)?.followUp || "",
     })),
   };
+  console.log('report.read timing', { ...timings, total: Math.round(performance.now() - startedAt) });
 }
 async function write(ctx, submit) {
   const input = v.body(ctx.event.payload);
@@ -77,6 +92,7 @@ async function write(ctx, submit) {
     throw new Error("INVALID_STATE: 员工尚未分配门店，请联系管理员");
   ctx.result = await pg.transaction(async (client) => {
     const query = async (sql, args) => (await client.query(sql, args)).rows;
+    query.withJitDisabled = (sql, args) => jitDisabledQuery.onClient(client, sql, args);
     // 同员工/日期串行化；包括尚未创建首份草稿的并发请求。
     await query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [
       ctx.auth.employeeId + ":" + input.reportDate,

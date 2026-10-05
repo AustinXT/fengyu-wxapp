@@ -24,7 +24,7 @@ test('提交快照按日报日截止，按个人、本店、市场分别冻结�
     if (sql.includes('FROM ancestors WHERE type=\'市场\'')) return [{ id: 'm1' }];
     if (sql.includes('FROM stores WHERE org_node_id IN')) return [{ store_id: 's1' }, { store_id: 's2' }];
     if (sql.includes('FROM staff_wechat_users WHERE store_id')) return [{ employee_id: 'e1' }, { employee_id: 'e2' }];
-    if (sql.includes('WITH valid AS')) return [
+    if (sql.includes('WITH selected AS')) return [
       { scope: 'personal', id: 'e1', date: '2026-10-04', sales: 12000, consumption: 8000, visits: 2, newCustomers: 1, projects: 3 },
       { scope: 'store', id: 's1', date: '2026-10-03', sales: 5000, consumption: 4000, visits: 2, newCustomers: 1, projects: 2 },
       { scope: 'store', id: 's1', date: '2026-10-04', sales: 10000, consumption: 7000, visits: 3, newCustomers: 1, projects: 5 },
@@ -58,8 +58,10 @@ test('提交快照按日报日截止，按个人、本店、市场分别冻结�
   assert.deepEqual(snapshot.scopes.market.week, {
     sales: 30000, consumption: 16000, visits: 7, newCustomers: 1, projects: 12,
   });
-  const seriesCall = calls.find((call) => call.sql.includes('WITH valid AS'));
+  const seriesCall = calls.find((call) => call.sql.includes('WITH selected AS'));
   assert.equal(seriesCall.params[3], '2026-10-04');
+  assert.match(seriesCall.sql, /CROSS JOIN LATERAL/);
+  assert.match(seriesCall.sql, /so\.client_user_id=clients\.client_user_id/);
   const newCustomerCall = calls.find((call) => call.sql.includes('WITH first_visit AS'));
   assert.equal(newCustomerCall.params[2], '2026-10-04');
 });

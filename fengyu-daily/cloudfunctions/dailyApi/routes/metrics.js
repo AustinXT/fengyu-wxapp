@@ -4,6 +4,8 @@ const target = require('./target');
 const { targetScope } = require('../utils/target-scope');
 const { excludeDepositRefundSql } = require('../utils/consume-filter');
 const { series, marketNewCustomers } = require('../utils/operating-series');
+const jitDisabledQuery = require('../utils/query-with-jit-disabled');
+const { performance } = require('node:perf_hooks');
 
 const actualKeys = ['sales', 'consumption', 'visits', 'newCustomers', 'projects'];
 const emptyActual = () => Object.fromEntries(actualKeys.map((key) => [key, 0]));
@@ -26,7 +28,14 @@ function sumMarketNewCustomers(rows, start, end) {
 // through the report date. Store/market counts use scope-level events so
 // shared customers are not double-counted by summing employee rows.
 async function captureReportSnapshot(query, auth, payload = {}) {
-  const { date, period, week } = await resolve(query, payload);
+  const startedAt = performance.now();
+  const timings = {};
+  const measure = async (name, operation) => {
+    const started = performance.now();
+    try { return await operation(); }
+    finally { timings[name] = Math.round(performance.now() - started); }
+  };
+  const { date, period, week } = await measure('periodResolve', () => resolve(query, payload));
   if (!auth.storeId) throw Error('INVALID_STATE: 员工尚未分配门店');
   const start = period?.start || date;
   const requestedWorkspace = payload.workspace;
@@ -34,24 +43,29 @@ async function captureReportSnapshot(query, auth, payload = {}) {
     auth.managerStores?.some((store) => store.store_id === auth.storeId)
     ? 'store' : 'personal';
   const includeAllScopes = payload.includeAllScopes !== false;
-  const [marketRow] = includeAllScopes ? await query(
+  const [marketRow] = includeAllScopes ? await measure('marketLookup', () => query(
     "WITH RECURSIVE ancestors AS (SELECT n.id,n.parent_id,n.type FROM stores s JOIN org_nodes n ON n.id=s.org_node_id WHERE s.store_id=$1 UNION ALL SELECT n.id,n.parent_id,n.type FROM org_nodes n JOIN ancestors a ON a.parent_id=n.id) SELECT id FROM ancestors WHERE type='市场' ORDER BY id LIMIT 1",
     [auth.storeId],
-  ) : [];
+  )) : [];
   const marketId = marketRow?.id || null;
-  const marketStores = includeAllScopes && marketId ? await query(
+  const marketStores = includeAllScopes && marketId ? await measure('marketStores', () => query(
     'WITH RECURSIVE descendants AS (SELECT id FROM org_nodes WHERE id=$1 UNION ALL SELECT n.id FROM org_nodes n JOIN descendants d ON n.parent_id=d.id) SELECT store_id FROM stores WHERE org_node_id IN (SELECT id FROM descendants) ORDER BY store_id',
     [marketId],
-  ) : [];
+  )) : [];
   const marketStoreIds = [...new Set([auth.storeId, ...marketStores.map((row) => row.store_id)])];
-  const employees = includeAllScopes ? await query(
+  const employees = includeAllScopes ? await measure('employees', () => query(
     'SELECT employee_id FROM staff_wechat_users WHERE store_id=ANY($1::text[]) AND NOT is_resigned',
     [marketStoreIds],
-  ) : [];
+  )) : [];
   const employeeIds = [...new Set([auth.employeeId, ...employees.map((row) => row.employee_id)])];
-  const events = await series(query, { storeIds: marketStoreIds, employeeIds, start, end: date });
-  const firstVisits = includeAllScopes && marketId
-    ? await marketNewCustomers(query, marketStoreIds, start, date) : [];
+  const seriesQuery = query.withJitDisabled ||
+    (query === pg.query ? jitDisabledQuery.query : query);
+  const [events, firstVisits] = await Promise.all([
+    measure('operatingSeries', () => series(seriesQuery, { storeIds: marketStoreIds, employeeIds, start, end: date })),
+    includeAllScopes && marketId
+      ? measure('marketNewCustomers', () => marketNewCustomers(query, marketStoreIds, start, date))
+      : Promise.resolve([]),
+  ]);
   const ranges = {
     day: [date, date],
     week: week ? [week.start, date] : null,
@@ -77,7 +91,7 @@ async function captureReportSnapshot(query, auth, payload = {}) {
   } : { [preferredScope]: makeScope(preferredScope, preferredScope === 'store' ? auth.storeId : auth.employeeId) };
   if (includeAllScopes && marketId) scopes.market = makeScope('market', marketId, marketStoreIds);
   const preferred = scopes[preferredScope];
-  return {
+  const result = {
     ...preferred,
     date,
     scopes,
@@ -86,6 +100,8 @@ async function captureReportSnapshot(query, auth, payload = {}) {
     week: week ? { id: week.id, name: week.name, start: week.start, end: week.end } : null,
     savedAt: new Date().toISOString(),
   };
+  console.log('report.metrics timing', { ...timings, total: Math.round(performance.now() - startedAt) });
+  return result;
 }
 
 function selectReportSnapshot(snapshot, scope) {

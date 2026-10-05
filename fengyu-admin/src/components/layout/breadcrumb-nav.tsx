@@ -60,6 +60,7 @@ const ROUTE_LABELS: Record<string, string> = {
   "/messages": "消息中心",
   "/logs": "操作日志",
   "/settings": "系统配置",
+  "/settings/daily": "日报经营配置",
   "/settings/diagnostics": "系统自检",
   "/settings/lakala-diagnostics": "系统自检",
 }
