@@ -133,16 +133,17 @@ try {
     if(scrollSelector)query.select(scrollSelector).boundingClientRect();else query.selectViewport().fields({size:true});
     query.exec(([slots,view])=>{
      const rows=p.data[key];
-     resolve({rows:rows.length,visible:rows.flatMap((r,i)=>r.coverVisible?[i]:[]),missing:slots.filter(r=>r.top<(view.bottom??view.height) && r.bottom>(view.top??0) && !rows[Number(r.dataset.idx)].coverVisible).map(r=>r.dataset.idx),height:view.height});
+     resolve({rows:rows.length,slots:slots.length,visible:rows.flatMap((r,i)=>r.coverVisible?[i]:[]),missing:slots.filter(r=>r.top<(view.bottom??view.height) && r.bottom>(view.top??0) && !rows[Number(r.dataset.idx)].coverVisible).map(r=>r.dataset.idx),height:view.height});
     });
    }),key,selector,scrollSelector);
    assert(state.height>0,label+'必须获得实际视口尺寸');
-   if(state.missing.length===0 && (requiredIndex===null || state.visible.includes(requiredIndex)))break;
+   if(state.slots===state.rows && state.missing.length===0 && (requiredIndex===null || state.visible.includes(requiredIndex)))break;
    await wait(100);
   }
   const images=await page.$$(selector+' image');
   console.log(label,{...state,images:images.length,scroll:await page.scrollTop()});
   assert(state.visible.length<=24);assert(images.length<=24);
+  assert.equal(state.slots,state.rows,label+'真实封面槽位必须已渲染齐全');
   assert.deepEqual(state.missing,[],label+'可视封面不能被上限裁掉');
   if(requiredIndex!==null)assert(state.visible.includes(requiredIndex),label+'必须实际滚动到目标槽位');
   return state.visible;
@@ -164,6 +165,7 @@ try {
  console.log('L3 开始测量回退');
  await mp.evaluate(()=>{getApp().globalData.__coverDisableObserver=true;});
  page=await route('navigateTo','/pagesExperience/list/list');console.log('L3 回退页面已打开');await wait(1000);for(let i=0;i<9;i++){await page.callMethod('loadList',true);await wait(150)}
+ await snapshot('fallback-top','skuList','.experience-cover-slot','',0);
  await mp.pageScrollTo(999999);const fb=await snapshot('fallback-bottom','skuList','.experience-cover-slot','',199);assert(fb.includes(199));assert(!fb.includes(0));
  await mp.pageScrollTo(0);const ft=await snapshot('fallback-return','skuList','.experience-cover-slot','',0);assert(ft.includes(0));assert(!ft.includes(199));
  if(scope==='full') {
