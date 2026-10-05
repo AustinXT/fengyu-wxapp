@@ -102,6 +102,30 @@ try {
   await assert.rejects(() => biz.createMarketReplenishment({ ...input,
     items: [{ skuId: SKU_SELF, purchaseQuantity: 1, sourceRequestItemIds: [requestItem.id] }] }), /INVALID_STATE/)
   console.log('PASS 原提取流程血缘与来源校验')
+
+  session(storeA1Session())
+  const selfRequest = await biz.createStoreReplenishmentRequest({ storeId: STA1_ID, marketId: MKA_ORG,
+    items: [{ skuId: SKU_SELF, quantity: 4 }] })
+  const [selfRequestItem] = await docItems(selfRequest.id)
+  session(marketASession())
+  const mixed = await biz.createMarketReplenishment({ ...input, items: [
+    { skuId: SKU_SELF, purchaseQuantity: 2, sourceRequestItemIds: [] },
+    { skuId: SKU_SUPPLY, purchaseQuantity: 1, sourceRequestItemIds: [requestItem.id] },
+  ] })
+  const mixedItems = await docItems(mixed.id)
+  const independentItem = mixedItems.find((item) => item.sku_id === SKU_SELF)
+  const extractedItem = mixedItems.find((item) => item.sku_id === SKU_SUPPLY)
+  assert.equal(Number(independentItem.request_quantity), 0)
+  assert.equal(Number(extractedItem.request_quantity), 6)
+  const mixedLinks = await pgQuery("SELECT from_item_id,to_item_id,quantity FROM inventory_doc_links WHERE to_doc_id=$1 AND relation_type='门店报货汇总'", [mixed.id])
+  assert.equal(mixedLinks.length, 1)
+  assert.equal(Number(mixedLinks[0].from_item_id), Number(requestItem.id))
+  assert.equal(Number(mixedLinks[0].to_item_id), Number(extractedItem.id))
+  assert.equal(Number(mixedLinks[0].quantity), 1)
+  assert.equal((await pgQuery('SELECT COUNT(*)::int AS n FROM inventory_doc_links WHERE from_item_id=$1', [selfRequestItem.id]))[0].n, 0)
+  assert.equal(Number((await docItems(selfRequest.id))[0].fulfilled_quantity), 0)
+  console.log('PASS 混合单：独立行零需求无血缘，提取行仅占实际采购量，独立SKU门店需求不占用')
+
 } catch (error) {
   console.error(error)
   process.exitCode = 1

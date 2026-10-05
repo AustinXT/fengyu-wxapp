@@ -3009,6 +3009,28 @@ describe('市场报货草稿（#348）', () => {
     await waitFor(() => expect(createMarketReplenishment).toHaveBeenCalledWith(expect.objectContaining({ items: [{ skuId: 'SKU-1', sourceRequestItemIds: [], purchaseQuantity: 1 }] })))
   })
 
+  it('#531 重新汇总保留数量暂时清空的独立行并可追加不同商品门店需求', async () => {
+    mockDocs({})
+    vi.mocked(summarizeStoreReplenishmentRequests).mockResolvedValue({ marketId: 'M1', items: [summaryLine('SKU-2', [21], 3)] })
+    renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1] })
+    const picker = await screen.findByRole('combobox', { name: '添加独立报货商品' })
+    await waitFor(() => expect(picker).not.toBeDisabled())
+    fireEvent.change(picker, { target: { value: 'SKU-1' } })
+    fireEvent.change(screen.getByRole('spinbutton', { name: '实际采购 精华液 SKU-1' }), { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: '汇总门店报货' }))
+    await screen.findByRole('spinbutton', { name: '实际采购 商品SKU-2 SKU-2' })
+    expect(screen.getByRole('spinbutton', { name: '实际采购 精华液 SKU-1' })).toHaveValue(null)
+    fireEvent.change(screen.getByRole('spinbutton', { name: '实际采购 精华液 SKU-1' }), { target: { value: '2' } })
+    fireEvent.click(screen.getByRole('checkbox', { name: '选择 商品SKU-2 SKU-2' }))
+    fireEvent.change(screen.getByRole('spinbutton', { name: '实际采购 商品SKU-2 SKU-2' }), { target: { value: '3' } })
+    await waitFor(() => expect(screen.getAllByText('无匹配福利，按标准价')).toHaveLength(2))
+    fireEvent.submit(screen.getByRole('button', { name: '创建市场报货单' }).closest('form')!)
+    await waitFor(() => expect(createMarketReplenishment).toHaveBeenCalledWith(expect.objectContaining({ items: [
+      { skuId: 'SKU-2', sourceRequestItemIds: [21], purchaseQuantity: 3 },
+      { skuId: 'SKU-1', sourceRequestItemIds: [], purchaseQuantity: 2 },
+    ] })))
+  })
+
   it('#531 独立草稿续编不绑定后来出现的同商品门店需求，可提交空来源', async () => {
     const detail = draftDetail([{ skuId: 'SKU-X', quantity: 2 }])
     detail.items[0].requestQuantity = 0

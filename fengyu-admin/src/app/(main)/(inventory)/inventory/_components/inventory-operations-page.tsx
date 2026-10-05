@@ -2285,7 +2285,7 @@ function MarketReportForm({
   const [endDate, setEndDate] = useState('')
   const [remark, setRemark] = useState('')
   const [lines, setLines] = useState<MarketReportLine[]>([])
-    const [quoteResult, setQuoteResult] = useState<MarketPromotionQuoteResult | null>(null)
+  const [quoteResult, setQuoteResult] = useState<MarketPromotionQuoteResult | null>(null)
   const [loadingSummary, setLoadingSummary] = useState(false)
   const [quoting, setQuoting] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -2397,12 +2397,18 @@ function MarketReportForm({
       })
       if (epoch !== epochRef.current) return
       const summaryLines = summaryToMarketReportLines(summary)
-      // 编辑草稿时重新汇总：保留当前已勾选的明细与数量，别把草稿整片冲掉
-      setLines(lines.length > 0
-        ? mergeMarketReportDraftLines(summaryLines, lines
-            .filter((line) => line.selected && positiveNumber(line.purchaseQuantity) !== null)
-            .map((line) => ({ ...line, quantity: positiveNumber(line.purchaseQuantity)!, requestQuantity: line.independent ? 0 : undefined })))
-        : summaryLines)
+      // 独立行保留原始输入（含暂未填写/未勾选行），重新汇总不能删除用户已选商品。
+      setLines((previous) => {
+        const independentLines = previous.filter((line) => line.independent)
+        const independentSkus = new Set(independentLines.map((line) => line.skuId))
+        const extractedSummary = summaryLines.filter((line) => !independentSkus.has(line.skuId))
+        const merged = previous.length > 0
+          ? mergeMarketReportDraftLines(extractedSummary, previous
+              .filter((line) => !line.independent && line.selected && positiveNumber(line.purchaseQuantity) !== null)
+              .map((line) => ({ ...line, quantity: positiveNumber(line.purchaseQuantity)! })))
+          : extractedSummary
+        return [...merged, ...independentLines]
+      })
       if (summary.items.length === 0) toast.info('当前没有待汇总的门店报货明细')
     } catch (error) {
       if (epoch === epochRef.current) toast.error(actionErrorMessage(error, '汇总门店报货失败'))
@@ -2703,6 +2709,7 @@ function MarketReportForm({
       {lines.length > 0 && (
         <div className="space-y-3">
           <h3 className="text-sm font-medium">市场报货明细</h3>
+          <p className="text-xs text-[#888888]">独立报货不提取门店需求。同一商品已独立报货时，汇总不会改写其来源；如需提取该商品，请退出编辑后重新汇总。</p>
           <div className="overflow-x-auto rounded-[var(--radius)] border border-[var(--border)]">
             <table className="w-full min-w-[860px] text-sm">
               <thead className="bg-[var(--muted)] text-left text-xs text-[var(--muted-foreground)]">
