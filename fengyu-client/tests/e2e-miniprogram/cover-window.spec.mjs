@@ -53,15 +53,10 @@ const wait=ms=>new Promise(r=>setTimeout(r,ms));
 // RC模拟器个别导航已完成却不回callWxMethod的Promise；调用真实导航API，
 // 以实际路由与后续数据/几何判据等待就绪，不依赖那条丢失的协议回执。
 async function route(method,url) {
- async function invoke() {
-  await mp.evaluate((method,url)=>{
-   if(method==='navigateTo')wx.navigateTo({url});
-   else if(method==='switchTab')wx.switchTab({url});
-   else wx.navigateBack();
-  },method,url);
- }
- await invoke();
- // 与automator内置changeRoute一样等待原生导航完成，避免就绪轮询挤占RC路由队列。
+ // 通过专用callWxMethod发导航，避免App.callFunction沙箱异步副作用被后续RPC打断。
+ // RC可能丢失完成回执；只对这项协议错误继续检查实际目标路由，不吞业务/参数错误。
+ try { await mp.callWxMethod(method,method==='navigateBack'?{}:{url}); }
+ catch(error) { if(!/timeout waiting for automator response|^timeout$/.test(error.message))throw error; }
  await wait(3000);
  for(let i=0;i<60;i++){
   const p=await mp.currentPage();

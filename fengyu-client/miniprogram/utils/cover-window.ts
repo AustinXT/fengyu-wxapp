@@ -218,7 +218,7 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
     }
   }
 
-  /** observer失效后用原生视图测量持续追踪窗口，不放开整列。 */
+  /** 原生测量持续校准窗口，覆盖观察器缺失或中途静默，不放开整列。 */
   function startMeasuredFallback() {
     const gen = generation;
     // 保持首屏兜底，但无论何种能力故障都不突破数量上限。
