@@ -19,10 +19,10 @@ export const TARGETS = Object.freeze({
     migrationHost: '101.34.242.103',
     containerDbHost: '172.18.0.1',
     // CloudBase 标识归属断言用（方案 A：envId 随 TARGETS 入库，与 PG host 断言同一防线）
-    // dev 仍用独立 dev CloudBase 环境（cloud1-*）；2026-09-01 起仅 PG 随部署迁至 lx-test
-    cloudBaseEnvId: 'cloud1-3gpht4b01ff88838',
-    staffEnvId: 'cloud1-9g3ydpg512eecc99',
-    cdnBase: 'https://636c-cloud1-3gpht4b01ff88838-1406056527.tcb.qcloud.la',
+    // 单 CloudBase 环境：dev/prod 共用 envId，通过 *Dev 影子函数与独立 PG 目标隔离。
+    cloudBaseEnvId: 'fengyu-client-prod-d1cga6909c0ba',
+    staffEnvId: 'fengyu-staff-prod-d4dtv6052992e9',
+    cdnBase: 'https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la',
   }),
   prod: Object.freeze({
     sshHost: 'lx-prod', // ~/.ssh/config 别名（原 fengyu-prod，2026-09-04 改名）
@@ -430,6 +430,7 @@ export function buildServiceEnvs(config) {
     admin: {
       NODE_ENV: 'production',
       TZ: 'Asia/Shanghai',
+      ENV_PROFILE: config.ENV_PROFILE,
       DATABASE_URL: config.ADMIN_DATABASE_URL,
       JWT_SECRET: config.ADMIN_JWT_SECRET,
       RSA_PRIVATE_KEY: config.ADMIN_RSA_PRIVATE_KEY,

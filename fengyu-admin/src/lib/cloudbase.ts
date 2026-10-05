@@ -2,11 +2,10 @@ import cloudbase from "@cloudbase/node-sdk"
 import type fs from "node:fs"
 import { ApiError } from "@/lib/api-error"
 
-// CDN 基址随环境切换（dev/prod 桶前缀不同，建桶时分配，不能从 envId 推算）。
-// 由 env 注入：prod → 6665-fengyu-client-prod-…，dev → 636c-cloud1-…；缺省兜底 dev 保本地行为。
+// dev/prod 共用当前 CloudBase 存储桶；CDN 基址由部署配置注入。
 export const CDN_BASE =
   process.env.CDN_BASE ??
-  "https://636c-cloud1-3gpht4b01ff88838-1406056527.tcb.qcloud.la"
+  "https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la"
 
 let app: ReturnType<typeof cloudbase.init> | null = null
 let staffApp: ReturnType<typeof cloudbase.init> | null = null
@@ -135,12 +134,26 @@ export async function deleteByCloudPaths(
  *
  * 失败时抛出；调用方负责用 Promise.allSettled 做容错（云函数缓存失效不是关键路径）。
  */
+function deploymentFunctionName(name: string): string {
+  const profile = process.env.ENV_PROFILE
+  if (profile !== "dev" && profile !== "prod") {
+    throw new ApiError("INVALID_STATE", "云函数发布通道未配置")
+  }
+  if (profile === "dev" && ["clientApi", "payNotify", "staffApi"].includes(name)) {
+    return `${name}Dev`
+  }
+  if (profile === "prod" && ["clientApiDev", "payNotifyDev", "staffApiDev"].includes(name)) {
+    throw new ApiError("INVALID_STATE", "生产后台不能调用影子云函数")
+  }
+  return name
+}
+
 export async function callClientFunction<T = unknown>(
   name: string,
   data: { action: string; payload?: Record<string, unknown> }
 ): Promise<T> {
   const app = getApp()
-  const res = await app.callFunction({ name, data })
+  const res = await app.callFunction({ name: deploymentFunctionName(name), data })
   return res.result as T
 }
 
@@ -149,7 +162,7 @@ export async function callStaffFunction<T = unknown>(
   name: string,
   data: { action: string; payload?: Record<string, unknown> },
 ): Promise<T> {
-  const res = await getStaffApp().callFunction({ name, data })
+  const res = await getStaffApp().callFunction({ name: deploymentFunctionName(name), data })
   return res.result as T
 }
 

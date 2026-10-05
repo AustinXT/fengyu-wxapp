@@ -156,16 +156,19 @@ test('all fixed environment targets validate and RSA mismatch fails closed', () 
   assert.throws(() => validateConfig('prod', config), /do not match/)
 })
 
-test('cloudbase identity keys must belong to the target environment', () => {
+test('shared CloudBase identities reject retired environments for both channels', () => {
   const cases = [
-    ['CLOUDBASE_ENV_ID', 'cloudBaseEnvId'],
-    ['STAFF_ENV_ID', 'staffEnvId'],
-    ['CDN_BASE', 'cdnBase'],
+    ['CLOUDBASE_ENV_ID', 'cloud1-3gpht4b01ff88838'],
+    ['STAFF_ENV_ID', 'cloud1-9g3ydpg512eecc99'],
+    ['CDN_BASE', 'https://636c-cloud1-3gpht4b01ff88838-1406056527.tcb.qcloud.la'],
   ]
-  for (const [key, field] of cases) {
-    const config = validConfig('dev')
-    config[key] = TARGETS.prod[field]
-    assert.throws(() => validateConfig('dev', config), /does not belong/)
+  for (const env of ['dev', 'prod']) {
+    const config = validConfig(env)
+    assert.equal(buildServiceEnvs(config).admin.ENV_PROFILE, env)
+    assert.equal(validateConfig(env, config).cloudBaseEnvId, 'fengyu-client-prod-d1cga6909c0ba')
+    for (const [key, value] of cases) {
+      assert.throws(() => validateConfig(env, { ...config, [key]: value }), /does not belong/)
+    }
   }
 })
 

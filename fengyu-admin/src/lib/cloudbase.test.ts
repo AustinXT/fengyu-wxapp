@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // Mock @cloudbase/node-sdk
 const mockUploadFile = vi.fn()
@@ -17,11 +17,14 @@ vi.mock('@cloudbase/node-sdk', () => ({
   },
 }))
 
-import { uploadFile, getTempFileUrl, deleteByCloudPaths, callStaffFunction, CDN_BASE } from './cloudbase'
+import { uploadFile, getTempFileUrl, deleteByCloudPaths, callStaffFunction, callClientFunction, CDN_BASE } from './cloudbase'
+
+afterEach(() => vi.unstubAllEnvs())
 
 describe('cloudbase', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    vi.stubEnv('ENV_PROFILE', 'prod')
     process.env.CLOUDBASE_ENV_ID = 'test-env'
     process.env.STAFF_ENV_ID = 'staff-test-env'
     process.env.STAFF_TENCENTCLOUD_SECRETID = 'staff-secret-id'
@@ -110,5 +113,32 @@ describe('cloudbase', () => {
       name: 'staffApi',
       data: { action: 'system.health', payload: {} },
     })
+  })
+})
+
+
+describe('云函数发布通道隔离', () => {
+  it.each(['clientApi', 'payNotify'])('dev 后台将 %s 路由到影子函数', async (name) => {
+    vi.stubEnv('ENV_PROFILE', 'dev')
+    mockCallFunction.mockResolvedValue({ result: { code: 0 } })
+    await callClientFunction(name, { action: 'system.health' })
+    expect(mockCallFunction).toHaveBeenLastCalledWith({ name: `${name}Dev`, data: { action: 'system.health' } })
+  })
+  it('dev 员工诊断路由到 staffApiDev', async () => {
+    vi.stubEnv('ENV_PROFILE', 'dev')
+    await callStaffFunction('staffApi', { action: 'system.health' })
+    expect(mockCallFunction).toHaveBeenLastCalledWith({ name: 'staffApiDev', data: { action: 'system.health' } })
+  })
+  it('缺少通道配置时拒绝调用，避免默认落入生产', async () => {
+    vi.stubEnv('ENV_PROFILE', '')
+    mockCallFunction.mockClear()
+    await expect(callClientFunction('clientApi', { action: 'system.health' })).rejects.toThrow('云函数发布通道未配置')
+    expect(mockCallFunction).not.toHaveBeenCalled()
+  })
+  it('生产后台拒绝影子函数', async () => {
+    vi.stubEnv('ENV_PROFILE', 'prod')
+    mockCallFunction.mockClear()
+    await expect(callClientFunction('clientApiDev', { action: 'system.health' })).rejects.toThrow('生产后台不能调用影子云函数')
+    expect(mockCallFunction).not.toHaveBeenCalled()
   })
 })
