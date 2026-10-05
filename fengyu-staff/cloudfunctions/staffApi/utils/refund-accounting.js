@@ -49,4 +49,32 @@ function allocateRefundAccounting(items, paidByItem, handlingFee, overdraftDeduc
     netRefundAmount: (caps[i] - fees[i] - deductions[i]) / 100 }))
 }
 
-module.exports = { allocateRefundAccounting }
+module.exports = { allocateRefundAccounting, remapLegacyOverpay }
+
+// 历史订单级余数必须先落到锁内仍可退余数的真实商品，再分摊手续费。
+// 使用真实余数容量，不能借用其它商品的整次本金或已折抵金额。
+function remapLegacyOverpay(items, availableByItem) {
+  const sentinel = items.find(it => it.refSaleItemId === 'OVERPAY')
+  if (!sentinel) return items
+  if (new Set(items.map(it => it.refSaleItemId)).size !== items.length) throw new Error('INVALID_PARAMS: 退款商品子项不能重复')
+  const real = items.filter(it => it.refSaleItemId !== 'OVERPAY').map(it => ({ ...it }))
+  const candidates = [...availableByItem].sort(([a], [b]) => a.localeCompare(b))
+  const caps = candidates.map(([id, amount]) => Math.max(0, cents(amount) - cents(real.find(it => it.refSaleItemId === id)?.overpayAmount)))
+  const total = cents(sentinel.refundAmount)
+  if (total > caps.reduce((sum, amount) => sum + amount, 0)) throw new Error('CONFLICT: OVERPAY_REFUNDABLE_CHANGED: 可退余数已变化，请刷新后重新发起退款')
+  const parts = allocate(total, candidates.map(([id], i) => ({ id, weight: caps[i] })), caps)
+  for (let i = 0; i < candidates.length; i += 1) {
+    if (parts[i] <= 0) continue
+    const id = candidates[i][0]
+    const existing = real.find(it => it.refSaleItemId === id)
+    if (existing) {
+      existing.refundAmount = (cents(existing.refundAmount) + parts[i]) / 100
+      existing.overpayAmount = (cents(existing.overpayAmount) + parts[i]) / 100
+    } else {
+      real.push({ ...sentinel, refSaleItemId: id, refundAmount: parts[i] / 100,
+        overpayAmount: parts[i] / 100, quantity: 0, sessionCount: 0,
+        isOverpay: false, isFullItemRefund: false })
+    }
+  }
+  return real
+}

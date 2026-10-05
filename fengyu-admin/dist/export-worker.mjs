@@ -162842,6 +162842,229 @@ function allocateRefundAccounting(items, paidByItem, handlingFee, overdraftDeduc
     netRefundAmount: (caps[i] - fees[i] - deductions[i]) / 100
   }));
 }
+function remapLegacyOverpay(items, availableByItem) {
+  const sentinel = items.find((it) => it.refSaleItemId === "OVERPAY");
+  if (!sentinel)
+    return items;
+  if (new Set(items.map((it) => it.refSaleItemId)).size !== items.length)
+    throw new Error("INVALID_PARAMS: 退款商品子项不能重复");
+  const real5 = items.filter((it) => it.refSaleItemId !== "OVERPAY").map((it) => ({ ...it }));
+  const candidates = [...availableByItem].sort(([a], [b2]) => a.localeCompare(b2));
+  const caps = candidates.map(([id, amount]) => Math.max(0, cents(amount) - cents(real5.find((it) => it.refSaleItemId === id)?.overpayAmount)));
+  const total = cents(sentinel.refundAmount);
+  if (total > caps.reduce((sum, amount) => sum + amount, 0))
+    throw new Error("CONFLICT: OVERPAY_REFUNDABLE_CHANGED: 可退余数已变化，请刷新后重新发起退款");
+  const parts = allocate(total, candidates.map(([id], i) => ({ id, weight: caps[i] })), caps);
+  for (let i = 0;i < candidates.length; i += 1) {
+    if (parts[i] <= 0)
+      continue;
+    const id = candidates[i][0];
+    const existing = real5.find((it) => it.refSaleItemId === id);
+    if (existing) {
+      existing.refundAmount = (cents(existing.refundAmount) + parts[i]) / 100;
+      existing.overpayAmount = (cents(existing.overpayAmount) + parts[i]) / 100;
+    } else {
+      real5.push({
+        ...sentinel,
+        refSaleItemId: id,
+        refundAmount: parts[i] / 100,
+        overpayAmount: parts[i] / 100,
+        quantity: 0,
+        sessionCount: 0,
+        isOverpay: false,
+        isFullItemRefund: false
+      });
+    }
+  }
+  return real5;
+}
+
+// src/lib/refund.ts
+function roundMoney(value) {
+  return Math.round(value * 100) / 100;
+}
+function calculateUnusedQuantity(item) {
+  if (!item)
+    return 0;
+  if (item.product_type === "疗程卡") {
+    const remaining = Number(item.remaining_sessions || 0);
+    if (item.paid_sessions == null)
+      return remaining;
+    const consumed = Number(item.session_count || 0) - remaining;
+    return Math.max(0, Math.min(remaining, Number(item.paid_sessions) - consumed));
+  }
+  if (item.refunded_quantity === undefined || item.converted_quantity === undefined) {
+    throw new Error("INVALID_STATE: REFUND_SOURCE_MISSING_QUANTITY_COLUMNS: " + "家居可退件数缺少 refunded_quantity / converted_quantity，取数处需补齐这两列");
+  }
+  const quantity = Number(item.quantity || 0);
+  const settled = Number(item.picked_up_quantity || 0) + Number(item.refunded_quantity || 0) + Number(item.converted_quantity || 0);
+  const physicalRemaining = Math.max(0, quantity - settled);
+  if (item.picked_quantity == null && item.converted_amount == null)
+    return physicalRemaining;
+  const toCents = (v) => Math.round(Number(v ?? 0) * 100);
+  const unitCents = toCents(item.unit_real_price);
+  if (unitCents <= 0)
+    return physicalRemaining;
+  const remainingCents = Math.max(0, toCents(item.received) - Number(item.picked_quantity || 0) * unitCents - toCents(item.converted_amount));
+  return Math.min(physicalRemaining, Math.floor(remainingCents / unitCents));
+}
+function computeItemOverpayRemainders(origItems) {
+  const result = new Map;
+  for (const it of origItems || []) {
+    const received = Number(it.received ?? 0) || 0;
+    if (received <= 0) {
+      result.set(it.sale_item_id, 0);
+      continue;
+    }
+    const unitRealPrice = Number(it.unit_real_price) || 0;
+    const hasPicked = it.picked_quantity != null;
+    const hasConvAmt = it.converted_amount != null;
+    if (it.product_type === "疗程卡" && !hasConvAmt || it.product_type !== "疗程卡" && hasPicked !== hasConvAmt) {
+      throw new Error("INVALID_STATE: REFUND_SOURCE_MISSING_CONVERTED_AMOUNT: 缺少已提货/已转换金额聚合，取数处需补齐");
+    }
+    const convertedAmount = Number(it.converted_amount ?? 0) || 0;
+    const convertedQuantity = Math.max(0, Number(it.converted_quantity ?? 0) || 0);
+    const hasConsumedDetail = it.picked_quantity != null || it.converted_amount != null;
+    const consumedValue = it.product_type === "疗程卡" ? Math.max(0, Number(it.session_count || 0) - Number(it.remaining_sessions || 0) - convertedQuantity) * unitRealPrice + convertedAmount : hasConsumedDetail ? Number(it.picked_quantity || 0) * unitRealPrice + convertedAmount : Math.max(0, Number(it.picked_up_quantity || 0) + convertedQuantity) * unitRealPrice;
+    const maxRefundableValue = calculateUnusedQuantity(it) * unitRealPrice;
+    result.set(it.sale_item_id, Math.max(0, roundMoney(received - consumedValue - maxRefundableValue)));
+  }
+  return result;
+}
+function computeOverpayRemainder(order, origItems) {
+  if (origItems.length > 0 && origItems.some((it) => it.received != null)) {
+    let total = 0;
+    for (const amount of computeItemOverpayRemainders(origItems).values())
+      total += amount;
+    return roundMoney(total);
+  }
+  const netReceived = Math.max(0, (Number(order?.received) || 0) - (Number(order?.refundedAmount) || 0));
+  let consumedValue = 0;
+  let maxSessionRefundable = 0;
+  for (const it of origItems) {
+    const urp = Number(it.unit_real_price) || 0;
+    if (it.product_type === "疗程卡") {
+      const sc = Number(it.session_count) || 0;
+      const rem = Number(it.remaining_sessions) || 0;
+      if (it.converted_amount == null) {
+        throw new Error("INVALID_STATE: REFUND_SOURCE_MISSING_CONVERTED_AMOUNT: 疗程卡缺少已转换金额聚合");
+      }
+      const convQty = Math.max(0, Number(it.converted_quantity) || 0);
+      const convAmt = Number(it.converted_amount) || 0;
+      consumedValue += Math.max(0, sc - rem - convQty) * urp + convAmt;
+    } else {
+      if (it.picked_quantity != null !== (it.converted_amount != null)) {
+        throw new Error("INVALID_STATE: REFUND_SOURCE_MISSING_CONVERTED_AMOUNT: 家居金额聚合必须同时提供");
+      }
+      consumedValue += (Number(it.picked_up_quantity) || 0) * urp + (it.converted_amount != null ? Number(it.converted_amount) || 0 : (Number(it.converted_quantity) || 0) * urp);
+    }
+    maxSessionRefundable += calculateUnusedQuantity(it) * urp;
+  }
+  consumedValue = roundMoney(consumedValue);
+  maxSessionRefundable = roundMoney(maxSessionRefundable);
+  return Math.max(0, roundMoney(netReceived - consumedValue - maxSessionRefundable));
+}
+function buildRefundDetails(origItems, requestItems) {
+  const itemMap = {};
+  for (const i of origItems)
+    itemMap[i.sale_item_id] = i;
+  const overpayByItem = computeItemOverpayRemainders(origItems);
+  const refundDetails = [];
+  let totalRefund = 0;
+  for (const req of requestItems) {
+    const orig = itemMap[req.saleItemId];
+    if (!orig)
+      throw new Error(`INVALID_PARAMS: 明细 ${req.saleItemId} 不存在`);
+    const maxUnused = calculateUnusedQuantity(orig);
+    const overpayAmount = req.includeOverpay === true ? Math.max(0, Number(overpayByItem.get(req.saleItemId) || 0)) : 0;
+    const requestedRaw = req.refundQuantity == null ? NaN : Number(req.refundQuantity);
+    const wantsOverpayOnly = requestedRaw === 0 && overpayAmount > 0;
+    const requested = wantsOverpayOnly ? 0 : orig.product_type === "疗程卡" ? maxUnused : Number.isFinite(requestedRaw) && requestedRaw > 0 ? requestedRaw : maxUnused;
+    if (requested <= 0 && overpayAmount <= 0) {
+      throw new Error(`INVALID_PARAMS: 明细 ${req.saleItemId} 退款数量必须大于 0`);
+    }
+    if (requested > maxUnused) {
+      throw new Error(`INVALID_STATE: 明细 ${req.saleItemId} 可退数量 ${maxUnused} 不足 ${requested}`);
+    }
+    const unitRealPrice = Number(orig.unit_real_price);
+    const refundAmount = roundMoney(unitRealPrice * requested + overpayAmount);
+    totalRefund += refundAmount;
+    const origServiceFee = Number(orig.service_fee || 0);
+    const origQty = Number(orig.quantity) || 1;
+    const refundServiceFee = -roundMoney(origServiceFee * requested / origQty);
+    const consumedQty = orig.product_type === "疗程卡" ? Number(orig.session_count || 0) - Number(orig.remaining_sessions || 0) : Number(orig.picked_up_quantity || 0) + Number(orig.refunded_quantity || 0) + Number(orig.converted_quantity || 0);
+    refundDetails.push({
+      refSaleItemId: req.saleItemId,
+      skuId: orig.sku_id,
+      productName: orig.product_name,
+      productType: orig.product_type,
+      sessionCount: orig.session_count,
+      unitPrice: Number(orig.unit_price),
+      quantity: requested,
+      unitRealPrice,
+      saleAmount: orig.sale_amount == null ? null : Number(orig.sale_amount),
+      refundAmount,
+      salesCategory: orig.sales_category,
+      serviceFee: refundServiceFee,
+      overpayAmount,
+      isFullItemRefund: requested >= maxUnused && consumedQty <= 0
+    });
+  }
+  return {
+    refundDetails,
+    totalRefund: roundMoney(totalRefund)
+  };
+}
+function isZeroCashPaidSessionRefund(refundDetails, handlingFee, totalRefund) {
+  const fee = Math.max(0, Number(handlingFee) || 0);
+  const total = Math.round((Number(totalRefund) || 0) * 100) / 100;
+  if (fee >= 0.001 || total >= 0.001)
+    return false;
+  const itemRefunds = refundDetails.filter((d) => !d.isOverpay && Number(d.quantity || 0) > 0);
+  return itemRefunds.length > 0 && itemRefunds.every((d) => {
+    const isUnconsumedZeroPrice = Math.abs(Number(d.unitRealPrice || 0)) < 0.001 && d.isFullItemRefund === true;
+    const isCourseCardDeposit = d.productType === "疗程卡" && Number(d.sessionCount || 0) > 0 && d.saleAmount != null && Number(d.saleAmount) <= 0 && d.isFullItemRefund === true;
+    return isUnconsumedZeroPrice || isCourseCardDeposit;
+  });
+}
+function capRefundAmounts(refundDetails, originalTotal, targetGross) {
+  if (originalTotal <= 0 || targetGross >= originalTotal || refundDetails.length === 0) {
+    return originalTotal;
+  }
+  const ratio = targetGross / originalTotal;
+  let allocated = 0;
+  for (const d of refundDetails) {
+    const v = Math.floor(d.refundAmount * ratio * 100) / 100;
+    d.refundAmount = v;
+    allocated += v;
+  }
+  const remainder = Math.round((targetGross - allocated) * 100) / 100;
+  if (remainder !== 0) {
+    let maxIdx = 0;
+    for (let i = 1;i < refundDetails.length; i += 1) {
+      if (refundDetails[i].refundAmount > refundDetails[maxIdx].refundAmount)
+        maxIdx = i;
+    }
+    refundDetails[maxIdx].refundAmount = Math.round((refundDetails[maxIdx].refundAmount + remainder) * 100) / 100;
+  }
+  return Math.round(targetGross * 100) / 100;
+}
+function isHandlingFeeInvalidForRefund(refundDetails, handlingFee) {
+  const fee = Math.max(0, Number(handlingFee) || 0);
+  if (fee <= 0)
+    return false;
+  const positiveCardUnitPrices = refundDetails.filter((d) => d.productType === "疗程卡").map((d) => Number(d.unitRealPrice)).filter((price) => Number.isFinite(price) && price > 0);
+  return positiveCardUnitPrices.length > 0 && fee >= Math.min(...positiveCardUnitPrices);
+}
+function splitRefundByOriginalPayment(refundAmount, _origPrepaidCardAmount, _origTotalAmount) {
+  return {
+    refundByCard: 0,
+    refundByOrigin: Math.round(refundAmount * 100) / 100
+  };
+}
+function resolveRefundPaymentMethod(_origPaymentMethod) {
+  return "线下";
+}
 
 // src/lib/refund-cascade.ts
 var import_drizzle_orm23 = __toESM(require_drizzle_orm(), 1);
@@ -163108,11 +163331,30 @@ async function cascadeRefund(tx, params) {
   }
   if (note && Array.isArray(note.items)) {
     const paidRows = await tx.execute(import_drizzle_orm23.sql`
-      SELECT si.sale_item_id, GREATEST(0, si.received::numeric
-        - ${import_drizzle_orm23.sql.raw(retainedRefundFeeSql("si.sale_order_id", "si.sale_item_id", true, "current_refund.id"))}) AS received
+      SELECT si.*, GREATEST(0, si.received::numeric
+        - ${import_drizzle_orm23.sql.raw(retainedRefundFeeSql("si.sale_order_id", "si.sale_item_id", true, "current_refund.id"))}) AS received, COALESCE(si.picked_up_quantity, 0) AS picked_quantity,
+          COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item
+            JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+            WHERE out_item.ref_sale_item_id = si.sale_item_id AND out_item.item_direction = '转出'
+              AND conv_order.status <> '已关闭'), 0) AS converted_amount,
+          COALESCE((SELECT SUM(out_item.quantity) FROM sale_items out_item
+            JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+            WHERE out_item.ref_sale_item_id = si.sale_item_id AND out_item.item_direction = '转出'
+              AND conv_order.status <> '已关闭'), 0)::int AS converted_quantity
         FROM sale_items si CROSS JOIN (SELECT ${refundPaymentId}::bigint AS id) current_refund
        WHERE si.sale_order_id = ${saleOrderId} AND si.item_direction = '购买' ORDER BY si.sale_item_id
     `);
+    if (note.items.some((it) => it.refSaleItemId === "OVERPAY")) {
+      note.items = remapLegacyOverpay(note.items, computeItemOverpayRemainders(paidRows));
+      effItems = note.items.map((it) => ({
+        saleItemId: it.refSaleItemId,
+        sessionCount: it.sessionCount ?? it.quantity ?? 0,
+        refundAmount: it.refundAmount,
+        overpayAmount: it.overpayAmount,
+        isOverpay: false,
+        isFullItemRefund: it.isFullItemRefund === true
+      }));
+    }
     const accounted = allocateRefundAccounting(note.items, new Map(paidRows.map((r) => [r.sale_item_id, Number(note.refundAccountingVersion === 2 ? note.items.find((it) => it.refSaleItemId === r.sale_item_id)?.paidAmount ?? r.received : r.received)])), Number(note.handlingFee ?? 0), Number(note.overdraftDeduction ?? 0));
     if (Math.round(accounted.reduce((sum, it) => sum + it.netRefundAmount, 0) * 100) !== Math.round(Math.abs(Number(payment.amount)) * 100)) {
       throw new Error("INVALID_STATE: 退款子项净额与主流水不一致");
@@ -163470,7 +163712,7 @@ function resolveUnitPrice(sku, member) {
 }
 
 // src/lib/treatment-tier-pricing.ts
-function roundMoney(value) {
+function roundMoney2(value) {
   return Math.round(value * 100) / 100;
 }
 function groupKey(row) {
@@ -163517,7 +163759,7 @@ function calculateTreatmentTierLineAmounts(lines, candidates, buyerIsMember, ord
     for (const index3 of indexes3) {
       const line5 = lines[index3];
       const lineSessions = Number(line5.sessionCount) * Math.max(1, Number(line5.quantity) || 1);
-      result[index3] = roundMoney(tier.amount * lineSessions / tier.sessionCount);
+      result[index3] = roundMoney2(tier.amount * lineSessions / tier.sessionCount);
     }
   }
   return result;
@@ -165019,7 +165261,7 @@ function purchaseLimitExceededMessage(row) {
   const name = row.specName || row.skuId;
   return `商品「${name}」每单最多可购买 ${row.purchaseLimit} 件`;
 }
-function roundMoney2(value) {
+function roundMoney3(value) {
   return Math.round((Number(value) || 0) * 100) / 100;
 }
 function moneyToCents(value) {
@@ -168260,7 +168502,7 @@ var createOrder = withPermission("sale_order:create", async (session4, data) => 
         requestedPoints: data.pointsUsed ?? null,
         pointsBalance: pointsRow?.pointsBalance,
         rawTotal,
-        currentAmount: roundMoney2(data.items.reduce((sum, item) => {
+        currentAmount: roundMoney3(data.items.reduce((sum, item) => {
           const itemSale = item.saleAmount ? Number(item.saleAmount) : Number(item.unitRealPrice) * item.quantity;
           return sum + Math.round(itemSale * 100) / 100;
         }, 0)),
@@ -168277,7 +168519,7 @@ var createOrder = withPermission("sale_order:create", async (session4, data) => 
       return { success: false, message: businessErrorMessage(err, "积分抵扣参数无效") };
     }
   }
-  const totalAmount = roundMoney2(data.items.reduce((sum, item) => {
+  const totalAmount = roundMoney3(data.items.reduce((sum, item) => {
     const itemSale = item.saleAmount ? Number(item.saleAmount) : Number(item.unitRealPrice) * item.quantity;
     return sum + Math.round(itemSale * 100) / 100;
   }, 0));
@@ -170534,195 +170776,6 @@ function isDowngrade(from, to) {
 
 // src/actions/refunds.ts
 init_db_time();
-
-// src/lib/refund.ts
-function roundMoney3(value) {
-  return Math.round(value * 100) / 100;
-}
-function calculateUnusedQuantity(item) {
-  if (!item)
-    return 0;
-  if (item.product_type === "疗程卡") {
-    const remaining = Number(item.remaining_sessions || 0);
-    if (item.paid_sessions == null)
-      return remaining;
-    const consumed = Number(item.session_count || 0) - remaining;
-    return Math.max(0, Math.min(remaining, Number(item.paid_sessions) - consumed));
-  }
-  if (item.refunded_quantity === undefined || item.converted_quantity === undefined) {
-    throw new Error("INVALID_STATE: REFUND_SOURCE_MISSING_QUANTITY_COLUMNS: " + "家居可退件数缺少 refunded_quantity / converted_quantity，取数处需补齐这两列");
-  }
-  const quantity = Number(item.quantity || 0);
-  const settled = Number(item.picked_up_quantity || 0) + Number(item.refunded_quantity || 0) + Number(item.converted_quantity || 0);
-  const physicalRemaining = Math.max(0, quantity - settled);
-  if (item.picked_quantity == null && item.converted_amount == null)
-    return physicalRemaining;
-  const toCents = (v) => Math.round(Number(v ?? 0) * 100);
-  const unitCents = toCents(item.unit_real_price);
-  if (unitCents <= 0)
-    return physicalRemaining;
-  const remainingCents = Math.max(0, toCents(item.received) - Number(item.picked_quantity || 0) * unitCents - toCents(item.converted_amount));
-  return Math.min(physicalRemaining, Math.floor(remainingCents / unitCents));
-}
-function computeItemOverpayRemainders(origItems) {
-  const result = new Map;
-  for (const it of origItems || []) {
-    const received = Number(it.received ?? 0) || 0;
-    if (received <= 0) {
-      result.set(it.sale_item_id, 0);
-      continue;
-    }
-    const unitRealPrice = Number(it.unit_real_price) || 0;
-    const hasPicked = it.picked_quantity != null;
-    const hasConvAmt = it.converted_amount != null;
-    if (it.product_type === "疗程卡" && !hasConvAmt || it.product_type !== "疗程卡" && hasPicked !== hasConvAmt) {
-      throw new Error("INVALID_STATE: REFUND_SOURCE_MISSING_CONVERTED_AMOUNT: 缺少已提货/已转换金额聚合，取数处需补齐");
-    }
-    const convertedAmount = Number(it.converted_amount ?? 0) || 0;
-    const convertedQuantity = Math.max(0, Number(it.converted_quantity ?? 0) || 0);
-    const hasConsumedDetail = it.picked_quantity != null || it.converted_amount != null;
-    const consumedValue = it.product_type === "疗程卡" ? Math.max(0, Number(it.session_count || 0) - Number(it.remaining_sessions || 0) - convertedQuantity) * unitRealPrice + convertedAmount : hasConsumedDetail ? Number(it.picked_quantity || 0) * unitRealPrice + convertedAmount : Math.max(0, Number(it.picked_up_quantity || 0) + convertedQuantity) * unitRealPrice;
-    const maxRefundableValue = calculateUnusedQuantity(it) * unitRealPrice;
-    result.set(it.sale_item_id, Math.max(0, roundMoney3(received - consumedValue - maxRefundableValue)));
-  }
-  return result;
-}
-function computeOverpayRemainder(order, origItems) {
-  if (origItems.length > 0 && origItems.some((it) => it.received != null)) {
-    let total = 0;
-    for (const amount of computeItemOverpayRemainders(origItems).values())
-      total += amount;
-    return roundMoney3(total);
-  }
-  const netReceived = Math.max(0, (Number(order?.received) || 0) - (Number(order?.refundedAmount) || 0));
-  let consumedValue = 0;
-  let maxSessionRefundable = 0;
-  for (const it of origItems) {
-    const urp = Number(it.unit_real_price) || 0;
-    if (it.product_type === "疗程卡") {
-      const sc = Number(it.session_count) || 0;
-      const rem = Number(it.remaining_sessions) || 0;
-      if (it.converted_amount == null) {
-        throw new Error("INVALID_STATE: REFUND_SOURCE_MISSING_CONVERTED_AMOUNT: 疗程卡缺少已转换金额聚合");
-      }
-      const convQty = Math.max(0, Number(it.converted_quantity) || 0);
-      const convAmt = Number(it.converted_amount) || 0;
-      consumedValue += Math.max(0, sc - rem - convQty) * urp + convAmt;
-    } else {
-      if (it.picked_quantity != null !== (it.converted_amount != null)) {
-        throw new Error("INVALID_STATE: REFUND_SOURCE_MISSING_CONVERTED_AMOUNT: 家居金额聚合必须同时提供");
-      }
-      consumedValue += (Number(it.picked_up_quantity) || 0) * urp + (it.converted_amount != null ? Number(it.converted_amount) || 0 : (Number(it.converted_quantity) || 0) * urp);
-    }
-    maxSessionRefundable += calculateUnusedQuantity(it) * urp;
-  }
-  consumedValue = roundMoney3(consumedValue);
-  maxSessionRefundable = roundMoney3(maxSessionRefundable);
-  return Math.max(0, roundMoney3(netReceived - consumedValue - maxSessionRefundable));
-}
-function buildRefundDetails(origItems, requestItems) {
-  const itemMap = {};
-  for (const i of origItems)
-    itemMap[i.sale_item_id] = i;
-  const overpayByItem = computeItemOverpayRemainders(origItems);
-  const refundDetails = [];
-  let totalRefund = 0;
-  for (const req of requestItems) {
-    const orig = itemMap[req.saleItemId];
-    if (!orig)
-      throw new Error(`INVALID_PARAMS: 明细 ${req.saleItemId} 不存在`);
-    const maxUnused = calculateUnusedQuantity(orig);
-    const overpayAmount = req.includeOverpay === true ? Math.max(0, Number(overpayByItem.get(req.saleItemId) || 0)) : 0;
-    const requestedRaw = req.refundQuantity == null ? NaN : Number(req.refundQuantity);
-    const wantsOverpayOnly = requestedRaw === 0 && overpayAmount > 0;
-    const requested = wantsOverpayOnly ? 0 : orig.product_type === "疗程卡" ? maxUnused : Number.isFinite(requestedRaw) && requestedRaw > 0 ? requestedRaw : maxUnused;
-    if (requested <= 0 && overpayAmount <= 0) {
-      throw new Error(`INVALID_PARAMS: 明细 ${req.saleItemId} 退款数量必须大于 0`);
-    }
-    if (requested > maxUnused) {
-      throw new Error(`INVALID_STATE: 明细 ${req.saleItemId} 可退数量 ${maxUnused} 不足 ${requested}`);
-    }
-    const unitRealPrice = Number(orig.unit_real_price);
-    const refundAmount = roundMoney3(unitRealPrice * requested + overpayAmount);
-    totalRefund += refundAmount;
-    const origServiceFee = Number(orig.service_fee || 0);
-    const origQty = Number(orig.quantity) || 1;
-    const refundServiceFee = -roundMoney3(origServiceFee * requested / origQty);
-    const consumedQty = orig.product_type === "疗程卡" ? Number(orig.session_count || 0) - Number(orig.remaining_sessions || 0) : Number(orig.picked_up_quantity || 0) + Number(orig.refunded_quantity || 0) + Number(orig.converted_quantity || 0);
-    refundDetails.push({
-      refSaleItemId: req.saleItemId,
-      skuId: orig.sku_id,
-      productName: orig.product_name,
-      productType: orig.product_type,
-      sessionCount: orig.session_count,
-      unitPrice: Number(orig.unit_price),
-      quantity: requested,
-      unitRealPrice,
-      saleAmount: orig.sale_amount == null ? null : Number(orig.sale_amount),
-      refundAmount,
-      salesCategory: orig.sales_category,
-      serviceFee: refundServiceFee,
-      overpayAmount,
-      isFullItemRefund: requested >= maxUnused && consumedQty <= 0
-    });
-  }
-  return {
-    refundDetails,
-    totalRefund: roundMoney3(totalRefund)
-  };
-}
-function isZeroCashPaidSessionRefund(refundDetails, handlingFee, totalRefund) {
-  const fee = Math.max(0, Number(handlingFee) || 0);
-  const total = Math.round((Number(totalRefund) || 0) * 100) / 100;
-  if (fee >= 0.001 || total >= 0.001)
-    return false;
-  const itemRefunds = refundDetails.filter((d) => !d.isOverpay && Number(d.quantity || 0) > 0);
-  return itemRefunds.length > 0 && itemRefunds.every((d) => {
-    const isUnconsumedZeroPrice = Math.abs(Number(d.unitRealPrice || 0)) < 0.001 && d.isFullItemRefund === true;
-    const isCourseCardDeposit = d.productType === "疗程卡" && Number(d.sessionCount || 0) > 0 && d.saleAmount != null && Number(d.saleAmount) <= 0 && d.isFullItemRefund === true;
-    return isUnconsumedZeroPrice || isCourseCardDeposit;
-  });
-}
-function capRefundAmounts(refundDetails, originalTotal, targetGross) {
-  if (originalTotal <= 0 || targetGross >= originalTotal || refundDetails.length === 0) {
-    return originalTotal;
-  }
-  const ratio = targetGross / originalTotal;
-  let allocated = 0;
-  for (const d of refundDetails) {
-    const v = Math.floor(d.refundAmount * ratio * 100) / 100;
-    d.refundAmount = v;
-    allocated += v;
-  }
-  const remainder = Math.round((targetGross - allocated) * 100) / 100;
-  if (remainder !== 0) {
-    let maxIdx = 0;
-    for (let i = 1;i < refundDetails.length; i += 1) {
-      if (refundDetails[i].refundAmount > refundDetails[maxIdx].refundAmount)
-        maxIdx = i;
-    }
-    refundDetails[maxIdx].refundAmount = Math.round((refundDetails[maxIdx].refundAmount + remainder) * 100) / 100;
-  }
-  return Math.round(targetGross * 100) / 100;
-}
-function isHandlingFeeInvalidForRefund(refundDetails, handlingFee) {
-  const fee = Math.max(0, Number(handlingFee) || 0);
-  if (fee <= 0)
-    return false;
-  const positiveCardUnitPrices = refundDetails.filter((d) => d.productType === "疗程卡").map((d) => Number(d.unitRealPrice)).filter((price) => Number.isFinite(price) && price > 0);
-  return positiveCardUnitPrices.length > 0 && fee >= Math.min(...positiveCardUnitPrices);
-}
-function splitRefundByOriginalPayment(refundAmount, _origPrepaidCardAmount, _origTotalAmount) {
-  return {
-    refundByCard: 0,
-    refundByOrigin: Math.round(refundAmount * 100) / 100
-  };
-}
-function resolveRefundPaymentMethod(_origPaymentMethod) {
-  return "线下";
-}
-
-// src/actions/refunds.ts
 "use server";
 var operatorAlias = alias(staffWechatUsers, "sop_operator");
 var auditorAlias = alias(staffWechatUsers, "sop_auditor");
@@ -171276,7 +171329,16 @@ var createRefund = withPermission("sale_order:refund_create", async (session4, i
   const primaryRefSaleItemId = realDetails.length === 1 ? realDetails[0].refSaleItemId : null;
   const primarySessionCount = realDetails.length === 1 ? realDetails[0].sessionCount ?? realDetails[0].quantity : null;
   const isWholeOrderRefund = sourceItems.length > 0 && sourceItems.every((oi) => refundDetails.some((d) => d.refSaleItemId === oi.sale_item_id && d.isFullItemRefund));
-  const accountedDetails = allocateRefundAccounting(refundDetails, new Map(sourceItems.map((it) => [it.sale_item_id, Number(it.received ?? 0)])), fee, overdraftDeduction);
+  let accountedDetails;
+  try {
+    accountedDetails = allocateRefundAccounting(refundDetails, new Map(sourceItems.map((it) => [it.sale_item_id, Number(it.received ?? 0)])), fee, overdraftDeduction);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.startsWith("INVALID_PARAMS:") || msg.startsWith("INVALID_STATE:")) {
+      return { success: false, error: { code: msg.startsWith("INVALID_PARAMS:") ? "INVALID_PARAMS" : "INVALID_STATE", message: msg.replace(/^[A-Z_]+:\s*/, "") } };
+    }
+    return { success: false, error: { code: "UNKNOWN", message: businessErrorMessage(err, "退款处理失败，请稍后重试") } };
+  }
   const paymentNote = JSON.stringify({
     refundAccountingVersion: 2,
     refundByCard,

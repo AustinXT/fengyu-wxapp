@@ -1,6 +1,7 @@
 import { settlePointsSafe } from './points-settle'
 import { retainedRefundFeeSql } from './refund-fee-sql'
-import { allocateRefundAccounting } from './refund-accounting'
+import { allocateRefundAccounting, remapLegacyOverpay } from './refund-accounting'
+import { computeItemOverpayRemainders, type RefundSourceItem } from './refund'
 /**
  * 退款级联回滚（cascadeRefund）—— 逐 item + 语义收敛
  *
@@ -457,11 +458,25 @@ export async function cascadeRefund(
   catch { note = null } // 沿用旧文本note的既有级联兜底，不将格式异常升级为未知错误。
   if (note && Array.isArray(note.items)) {
     const paidRows = (await tx.execute(sql`
-      SELECT si.sale_item_id, GREATEST(0, si.received::numeric
-        - ${sql.raw(retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true, 'current_refund.id'))}) AS received
+      SELECT si.*, GREATEST(0, si.received::numeric
+        - ${sql.raw(retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true, 'current_refund.id'))}) AS received, COALESCE(si.picked_up_quantity, 0) AS picked_quantity,
+          COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item
+            JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+            WHERE out_item.ref_sale_item_id = si.sale_item_id AND out_item.item_direction = '转出'
+              AND conv_order.status <> '已关闭'), 0) AS converted_amount,
+          COALESCE((SELECT SUM(out_item.quantity) FROM sale_items out_item
+            JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+            WHERE out_item.ref_sale_item_id = si.sale_item_id AND out_item.item_direction = '转出'
+              AND conv_order.status <> '已关闭'), 0)::int AS converted_quantity
         FROM sale_items si CROSS JOIN (SELECT ${refundPaymentId}::bigint AS id) current_refund
        WHERE si.sale_order_id = ${saleOrderId} AND si.item_direction = '购买' ORDER BY si.sale_item_id
-    `)) as unknown as Array<{ sale_item_id: string; received: string }>
+    `)) as unknown as Array<RefundSourceItem & { received: string }>
+    if (note.items.some((it: { refSaleItemId: string }) => it.refSaleItemId === 'OVERPAY')) {
+      note.items = remapLegacyOverpay(note.items, computeItemOverpayRemainders(paidRows))
+      effItems = note.items.map((it: { refSaleItemId: string; sessionCount?: number; quantity?: number; refundAmount?: number; overpayAmount?: number; isFullItemRefund?: boolean }) => ({ saleItemId: it.refSaleItemId,
+        sessionCount: it.sessionCount ?? it.quantity ?? 0, refundAmount: it.refundAmount,
+        overpayAmount: it.overpayAmount, isOverpay: false, isFullItemRefund: it.isFullItemRefund === true }))
+    }
     const accounted = allocateRefundAccounting(note.items,
       new Map(paidRows.map(r => [r.sale_item_id, Number(note.refundAccountingVersion === 2
         ? note.items.find((it: { refSaleItemId: string; paidAmount?: number }) => it.refSaleItemId === r.sale_item_id)?.paidAmount ?? r.received : r.received)])),

@@ -993,7 +993,16 @@ export const createRefund = withPermission(
     refundDetails.some((d) => d.refSaleItemId === oi.sale_item_id && d.isFullItemRefund),
   )
   // note 存 JSON（含展示字段 + 逐 item 明细），approveRefund 据此逐 item 级联（Bug Q/M）。两端对齐 staff note。
-  const accountedDetails = allocateRefundAccounting(refundDetails, new Map(sourceItems.map(it => [it.sale_item_id, Number(it.received ?? 0)])), fee, overdraftDeduction)
+  let accountedDetails: ReturnType<typeof allocateRefundAccounting<(typeof refundDetails)[number]>>
+  try {
+    accountedDetails = allocateRefundAccounting(refundDetails, new Map(sourceItems.map(it => [it.sale_item_id, Number(it.received ?? 0)])), fee, overdraftDeduction)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (msg.startsWith('INVALID_PARAMS:') || msg.startsWith('INVALID_STATE:')) {
+      return { success: false, error: { code: msg.startsWith('INVALID_PARAMS:') ? 'INVALID_PARAMS' : 'INVALID_STATE', message: msg.replace(/^[A-Z_]+:\s*/, '') } }
+    }
+    return { success: false, error: { code: 'UNKNOWN', message: businessErrorMessage(err, '退款处理失败，请稍后重试') } }
+  }
   const paymentNote = JSON.stringify({
     refundAccountingVersion: 2,
     refundByCard,

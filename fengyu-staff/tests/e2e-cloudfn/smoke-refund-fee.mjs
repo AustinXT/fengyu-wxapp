@@ -81,6 +81,32 @@ try {
   const { item: zeroItem } = await seed(zero, { total: 3000, sessions: 7, consumed: 7, legacy: true, unit: 398 })
   await approve(zero, [{ saleItemId: zeroItem, refundQuantity: 0, includeOverpay: true }], 0, true)
   const z = (await money(zero))[0]; assert.equal(Number(z.received), 2786); assert.equal(z.paid_sessions, 7)
+  // 旧OVERPAY哨兵+手续费：锁内映射到真实余数，不借商品整次本金。
+  for (const fee of [0, 100]) {
+    const id = `${NS}_F529_SENT_${fee}`
+    const { item } = await seed(id, { total: 3000, sessions: 7, consumed: 7, legacy: true, unit: 398 })
+    await invoke('order.createRefund', { refSaleOrderId: id, items: [{ saleItemId: item, refundQuantity: 0, includeOverpay: true }], handlingFee: fee, refundReason: '历史哨兵' })
+    const pending = (await pgQuery("SELECT id,note FROM sale_order_payments WHERE sale_order_id=$1 AND status='待审批'", [id]))[0]
+    const old = JSON.parse(pending.note)
+    delete old.refundAccountingVersion
+    old.items = [{ refSaleItemId: 'OVERPAY', quantity: 0, refundAmount: 214, isOverpay: true }]
+    await pgQuery('UPDATE sale_order_payments SET note=$2 WHERE id=$1', [pending.id, JSON.stringify(old)])
+    await invoke('order.approveRefund', { paymentId: Number(pending.id) })
+    const row = (await money(id))[0]
+    assert.equal(Number(row.received), 2786 + fee); assert.equal(row.paid_sessions, 7)
+    const canonical = JSON.parse((await pgQuery('SELECT note FROM sale_order_payments WHERE id=$1', [pending.id]))[0].note)
+    assert.equal(canonical.items[0].refSaleItemId, item); assert.equal(canonical.items[0].overpayAmount, 214)
+    assert.equal(canonical.items[0].handlingFee, fee); assert.equal(canonical.items[0].netRefundAmount, 214-fee)
+    // 保持原旧申请形态再提交，也不能重复退走已退款余数及保留手续费。
+    const stale = (await pgQuery(`INSERT INTO sale_order_payments
+      (sale_order_id,change_type,amount,payment_method,status,source_end,note)
+      SELECT sale_order_id,change_type,amount,payment_method,'待审批',source_end,$2
+      FROM sale_order_payments WHERE id=$1 RETURNING id`, [pending.id, JSON.stringify(old)]))[0]
+    const rejected = await invokeStaffApi('order.approveRefund', { paymentId: Number(stale.id), _testOpenid: TEST_MANAGER_OPENID })
+    assert.notEqual(rejected.code, 0)
+    assert.equal((await pgQuery('SELECT status FROM sale_order_payments WHERE id=$1', [stale.id]))[0].status, '待审批')
+    assert.equal(Number((await money(id))[0].received), 2786 + fee)
+  }
   // 全退手续费保留收入，员工角色池/销售提成净额归零，权益不随回款重算恢复。
   const full = `${NS}_F529_FULL`; const { item } = await seed(full)
   const receipt = (await pgQuery('SELECT id FROM sale_payment_item_receipts WHERE sale_item_id=$1', [item]))[0]

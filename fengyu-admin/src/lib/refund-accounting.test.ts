@@ -3,7 +3,7 @@ import { runInNewContext } from 'node:vm'
 import { createRequire } from 'node:module'
 import { retainedRefundFeeSql } from './refund-fee-sql'
 import { describe, expect, it } from 'vitest'
-import { allocateRefundAccounting } from './refund-accounting'
+import { allocateRefundAccounting, remapLegacyOverpay } from './refund-accounting'
 
 describe('退款手续费按实付分摊', () => {
   it('按实付而非退款毛额；扣除金额独立且净额勾稽', () => {
@@ -63,4 +63,23 @@ it('运维第五份手续费SQL独立副本与在线端逐字一致', () => {
     expect(sibling('si.sale_order_id', item, deduction, 'current_refund.id'))
       .toBe(retainedRefundFeeSql('si.sale_order_id', item, deduction, 'current_refund.id'))
   }
+})
+
+
+describe('历史OVERPAY按真实余数落到商品', () => {
+  it('多商品只分配可退余数，再按实付分摊手续费；跨端一致', () => {
+    const items = [{ refSaleItemId: 'OVERPAY', refundAmount: 40, isOverpay: true }]
+    const capacities = new Map([['A', 30], ['B', 10], ['C', 0]])
+    const rows = remapLegacyOverpay(items, capacities)
+    expect(rows.map(it => [it.refSaleItemId, it.refundAmount])).toEqual([['A', 30], ['B', 10]])
+    expect(allocateRefundAccounting(rows, new Map([['A', 300], ['B', 100]]), 20).map(it => it.handlingFee)).toEqual([15, 5])
+    expect(require('../../../fengyu-staff/cloudfunctions/staffApi/utils/refund-accounting.js').remapLegacyOverpay(items, capacities)).toEqual(rows)
+    expect(items[0].refSaleItemId).toBe('OVERPAY')
+  })
+  it('合并同商品真实退项，保留数量和全退标志，已申请余数不重复使用', () => {
+    const rows = remapLegacyOverpay([{ refSaleItemId: 'A', refundAmount: 110, overpayAmount: 10, quantity: 1, isFullItemRefund: true },
+      { refSaleItemId: 'OVERPAY', refundAmount: 20 }], new Map([['A', 30]]))
+    expect(rows).toEqual([{ refSaleItemId: 'A', refundAmount: 130, overpayAmount: 30, quantity: 1, isFullItemRefund: true }])
+    expect(() => remapLegacyOverpay([{ refSaleItemId: 'OVERPAY', refundAmount: 31 }], new Map([['A', 30]]))).toThrow('可退余数已变化')
+  })
 })
