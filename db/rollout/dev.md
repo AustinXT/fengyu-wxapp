@@ -105,3 +105,23 @@
 - 提交 `f199f9bbd702` 将经营月与 PK 班级 ID 改为 `crypto.getRandomValues` 生成，并改用惰性表单初始化。回归测试 2 项通过，admin `npx tsc --noEmit` 通过。
 - dev admin release `dev-f199f9bbd702-b4377b31991a-20261003T103707Z-28830`，脚本 exit 0 / RELEASE_OK；未执行数据库迁移。
 - 使用真实已登录浏览器刷新后，版本显示 `f199f9bbd702`，经营月和四周日期表单正常显示，新增经营月、PK 页签切换正常。未写入业务日期或分班配置；已有经营月的添加班级行为通过 HTTP 环境组件回归验证。
+
+
+## 2026-10-06 v1.17.20 dev 发版迁移核验（Codex）
+
+- 核验时间 `2026-10-05T16:00:37.261Z`；用户确认沿用 tag `v1.17.20`，发布 SHA `3c77448df3361eaa1b289893a1fc76366603fcfa`，包含未提交的单 CloudBase 环境配置与后台影子调用修复。
+- 显式目标 `101.34.242.103:5433/fengyu_wxapp`；执行前后全部63条 journal 按 when/SQL SHA-256 一一精确匹配，无缺失、额外记录、pending 或额外专项脚本。历史 when 非编号顺序，核验按身份集合比较。
+- `PGOPTIONS=-c lock_timeout=3s` 下真实 `npm --prefix db run db:migrate` 退出0，无新增迁移。最新 `0062_daily_v2_operating_pk` / `dc0ebb9de66e09ce48580fd43e1dff002ba8d439b8e1a560981474fc45e4e7ca` / when `1791020803394`。
+- 脱敏证据 `_tmp/release-dev-v1.17.20/migration-before.json`、`migration-after.json`、`migrate.log`。仅登记dev，prod未操作。
+
+
+### v1.17.20 dev 全量发布完成
+
+- 完成时间 `2026-10-05T16:19:27.013Z`，执行人 Codex。发布SHA `3c77448df3361eaa1b289893a1fc76366603fcfa`，实际镜像 revision `3c77448df336-dirty.c323a5759ff1`；包含单 CloudBase 环境配置/校验修复、admin按ENV_PROFILE路由影子函数、构建排除本地_tmp和本台账。未commit/push。
+- admin 首次构建被本地 `_tmp/acceptance-ui-copy` 的绝对路径导入阻断，未上传或切换；补充 `.dockerignore` 的 `**/_tmp` 后重试成功。admin release `dev-3c77448df336-dirty.c323a5759ff1-4499de4ec1db-20261005T160717Z-19960`；analyst release `dev-3c77448df336-dirty.c323a5759ff1-4499de4ec1db-20261005T161311Z-25801`，两脚本exit0/RELEASE_OK。
+- 两站运行中，HTTP3000/3001均307，DB均172.18.0.1:5433/fengyu_wxapp；脚本核验宿主公网101.34.242.103与5433监听通过；Analyst origin=https://analyst.meiyayabeauty.com/。admin线上ENV_PROFILE=dev，client/staff CloudBase标识为当前prod前缀，dev后台调用映射到*Dev。
+- 类型门禁均0错误；staff跨端399/admin跨端27/analyst476项通过；修复回归：部署配置16、admin云函数调用13项通过。db:migrate退出0，全部63条when/hash前后精确一致，无pending与专项脚本。最新0062与hash见上文。
+- 显式dev通道串行部署staffApiDev/clientApiDev/payNotifyDev，3行deployed、脚本exit0、变量回读通过。独立config pull/fn detail回读全部6个函数：primary PG118.178.196.26，shadow PG101.34.242.103，均5433/fengyu_wxapp；DEPLOY_CHANNEL与PAYNOTIFY_FN_NAME按归属匹配，staff开关false/release与true/develop正确，CLIENT_SECRET/CLIENT_APPSECRET/TMAP变量非空且配置匹配，分通道HMAC两端一致。正式函数只读核验，未部署。
+- 影子冒烟：staff空payload code=-1，staff/client auth.login、client store.list无身份请求code=-401，通过；不代表已登录业务流程验收。APP_VERSION两端v1.17.20，.active=prod。
+- 脱敏证据 `_tmp/release-dev-v1.17.20/`：迁移前后/日志、admin-deploy-retry.log、analyst-deploy.log、cloud-deploy.log、remote-verify.json、cloud-verify.json与smoke JSON。本台账收尾追加发生在两站构建后，镜像指纹对应构建时工作树。
+- Git未提交文件：runtime-config.mjs/runtime-config.test.mjs、.dockerignore、db/rollout/dev.md、admin cloudbase.ts/cloudbase.test.ts。本地忽略配置envs/dev.env的envId/CDN亦已修正。client/staff小程序如需更新须手工上传开发版；日报独立dailyApiDev不在release-all默认3函数范围内。本次prod无迁移或部署。

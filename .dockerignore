@@ -36,3 +36,6 @@ fengyu-admin/playwright.config.ts
 **/*.log
 .claude
 notes
+
+# 本地临时验收材料不进入构建上下文
+**/_tmp
