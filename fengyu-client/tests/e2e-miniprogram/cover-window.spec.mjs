@@ -148,15 +148,15 @@ try {
   return state.visible;
  }
  await snapshot('experience-top','skuList','.experience-cover-slot');
- await mp.pageScrollTo(999999);const bottom=await snapshot('experience-bottom','skuList','.experience-cover-slot');assert(bottom.includes(199));assert(!bottom.includes(0));
- await mp.pageScrollTo(0);const top=await snapshot('experience-return','skuList','.experience-cover-slot');assert(top.includes(0));assert(!top.includes(199));
+ await mp.pageScrollTo(999999);const bottom=await snapshot('experience-bottom','skuList','.experience-cover-slot','',199);assert(bottom.includes(199));assert(!bottom.includes(0));
+ await mp.pageScrollTo(0);const top=await snapshot('experience-return','skuList','.experience-cover-slot','',0);assert(top.includes(0));assert(!top.includes(199));
  page=await route('navigateTo','/pagesOrder/orders/orders');await wait(1000);assert.equal((await page.data()).coverRows.length,200);
- await snapshot('orders-top','coverRows','.order-cover-slot');await mp.pageScrollTo(999999);const ob=await snapshot('orders-bottom','coverRows','.order-cover-slot');assert(ob.includes(199));assert(!ob.includes(0));
+ await snapshot('orders-top','coverRows','.order-cover-slot');await mp.pageScrollTo(999999);const ob=await snapshot('orders-bottom','coverRows','.order-cover-slot','',199);assert(ob.includes(199));assert(!ob.includes(0));
  await mp.pageScrollTo(6000);await snapshot('orders-middle','coverRows','.order-cover-slot');
- await mp.pageScrollTo(0);const ot=await snapshot('orders-return','coverRows','.order-cover-slot');assert(ot.includes(0));assert(!ot.includes(199));
+ await mp.pageScrollTo(0);const ot=await snapshot('orders-return','coverRows','.order-cover-slot','',0);assert(ot.includes(0));assert(!ot.includes(199));
  await page.callMethod('onTabChange',{detail:{name:'已支付'}});
  await waitData(data=>data.activeTab==='已支付' && !data.isLoading && data.coverRows.length===200,'切Tab');
- await mp.pageScrollTo(999999);await snapshot('orders-tab-bottom','coverRows','.order-cover-slot');
+ await mp.pageScrollTo(999999);await snapshot('orders-tab-bottom','coverRows','.order-cover-slot','',199);
  page=await route('navigateBack','/pagesExperience/list/list');
  assert.equal((await page.data()).skuList.length,200);
  assert.equal((await page.data()).hasMore,false);
@@ -164,10 +164,10 @@ try {
  console.log('L3 开始测量回退');
  await mp.evaluate(()=>{getApp().globalData.__coverDisableObserver=true;});
  page=await route('navigateTo','/pagesExperience/list/list');console.log('L3 回退页面已打开');await wait(1000);for(let i=0;i<9;i++){await page.callMethod('loadList',true);await wait(150)}
- await mp.pageScrollTo(999999);const fb=await snapshot('fallback-bottom','skuList','.experience-cover-slot');assert(fb.includes(199));assert(!fb.includes(0));
- await mp.pageScrollTo(0);const ft=await snapshot('fallback-return','skuList','.experience-cover-slot');assert(ft.includes(0));assert(!ft.includes(199));
+ await mp.pageScrollTo(999999);const fb=await snapshot('fallback-bottom','skuList','.experience-cover-slot','',199);assert(fb.includes(199));assert(!fb.includes(0));
+ await mp.pageScrollTo(0);const ft=await snapshot('fallback-return','skuList','.experience-cover-slot','',0);assert(ft.includes(0));assert(!ft.includes(199));
  if(scope==='full') {
- page=await route('navigateTo','/pagesOrder/orders/orders');await wait(1000);await mp.pageScrollTo(6000);await snapshot('orders-fallback-middle','coverRows','.order-cover-slot');await mp.pageScrollTo(999999);await snapshot('orders-fallback-bottom','coverRows','.order-cover-slot');
+ page=await route('navigateTo','/pagesOrder/orders/orders');await wait(1000);await mp.pageScrollTo(6000);await snapshot('orders-fallback-middle','coverRows','.order-cover-slot');await mp.pageScrollTo(999999);await snapshot('orders-fallback-bottom','coverRows','.order-cover-slot','',199);
  // 共享窗口另外两个调用方：实际scroll-view、完整20条分页到200、故障回退与返回。
  for(const fallback of [false,true]) {
   await mp.evaluate(f=>{getApp().globalData.__coverDisableObserver=f},fallback);
