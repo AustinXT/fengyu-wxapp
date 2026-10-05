@@ -2998,6 +2998,128 @@ describe('市场报货草稿（#348）', () => {
     await waitFor(() => expect(saveMarketReplenishmentDraft).toHaveBeenCalled())
   })
 
+  it('#531 无门店需求时可独立选品创建，重复选品不重复成行', async () => {
+    mockDocs({})
+    renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1] })
+    const picker = await screen.findByRole('combobox', { name: '添加独立报货商品' })
+    await waitFor(() => expect(picker).not.toBeDisabled())
+    fireEvent.change(picker, { target: { value: 'SKU-1' } })
+    expect(screen.getByText('独立报货')).toBeInTheDocument()
+    fireEvent.change(picker, { target: { value: 'SKU-1' } })
+    expect(screen.getAllByRole('checkbox', { name: '选择 精华液 SKU-1' })).toHaveLength(1)
+    expect(summarizeStoreReplenishmentRequests).not.toHaveBeenCalled()
+    expect(picker).toHaveAttribute('data-filters', JSON.stringify({ reportable: true, availableToMarketId: 'M1' }))
+    await waitFor(() => expect(screen.getByText('无匹配福利，按标准价')).toBeInTheDocument())
+    fireEvent.submit(screen.getByRole('button', { name: '创建市场报货单' }).closest('form')!)
+    await waitFor(() => expect(createMarketReplenishment).toHaveBeenCalledWith(expect.objectContaining({ items: [{ skuId: 'SKU-1', sourceRequestItemIds: [], purchaseQuantity: 1 }] })))
+  })
+
+  it('#531 重新汇总保留数量暂时清空的独立行并可追加不同商品门店需求', async () => {
+    mockDocs({})
+    vi.mocked(summarizeStoreReplenishmentRequests).mockResolvedValue({ marketId: 'M1', items: [summaryLine('SKU-2', [21], 3)] })
+    renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1] })
+    const picker = await screen.findByRole('combobox', { name: '添加独立报货商品' })
+    await waitFor(() => expect(picker).not.toBeDisabled())
+    fireEvent.change(picker, { target: { value: 'SKU-1' } })
+    fireEvent.change(screen.getByRole('spinbutton', { name: '实际采购 精华液 SKU-1' }), { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: '汇总门店报货' }))
+    await screen.findByRole('spinbutton', { name: '实际采购 商品SKU-2 SKU-2' })
+    expect(screen.getByRole('spinbutton', { name: '实际采购 精华液 SKU-1' })).toHaveValue(null)
+    fireEvent.change(screen.getByRole('spinbutton', { name: '实际采购 精华液 SKU-1' }), { target: { value: '2' } })
+    expect(screen.getByRole('checkbox', { name: '选择 商品SKU-2 SKU-2' })).toBeChecked()
+    fireEvent.change(screen.getByRole('spinbutton', { name: '实际采购 商品SKU-2 SKU-2' }), { target: { value: '3' } })
+    await waitFor(() => expect(screen.getAllByText('无匹配福利，按标准价')).toHaveLength(2))
+    fireEvent.submit(screen.getByRole('button', { name: '创建市场报货单' }).closest('form')!)
+    await waitFor(() => expect(createMarketReplenishment).toHaveBeenCalledWith(expect.objectContaining({ items: [
+      { skuId: 'SKU-2', sourceRequestItemIds: [21], purchaseQuantity: 3 },
+      { skuId: 'SKU-1', sourceRequestItemIds: [], purchaseQuantity: 2 },
+    ] })))
+  })
+
+  it('#531 新建单可移除独立行，再汇总同商品门店需求', async () => {
+    mockDocs({})
+    vi.mocked(summarizeStoreReplenishmentRequests).mockResolvedValue({ marketId: 'M1', items: [summaryLine('SKU-1', [11], 3)] })
+    renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1] })
+    const picker = await screen.findByRole('combobox', { name: '添加独立报货商品' })
+    await waitFor(() => expect(picker).not.toBeDisabled())
+    fireEvent.change(picker, { target: { value: 'SKU-1' } })
+    fireEvent.click(screen.getByRole('button', { name: '移除独立报货 精华液 SKU-1' }))
+    expect(screen.queryByText('独立报货')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '汇总门店报货' }))
+    expect(await screen.findByRole('checkbox', { name: '选择 商品SKU-1 SKU-1' })).toBeChecked()
+    await waitFor(() => expect(screen.getByText('无匹配福利，按标准价')).toBeInTheDocument())
+    fireEvent.submit(screen.getByRole('button', { name: '创建市场报货单' }).closest('form')!)
+    await waitFor(() => expect(createMarketReplenishment).toHaveBeenCalledWith(expect.objectContaining({ items: [
+      { skuId: 'SKU-1', sourceRequestItemIds: [11], purchaseQuantity: 3 },
+    ] })))
+  })
+
+  it('#531 在途覆盖后待配为零的提取行，重新汇总不能变为独立报货', async () => {
+    mockDocs({})
+    vi.mocked(summarizeStoreReplenishmentRequests).mockResolvedValue({ marketId: 'M1', items: [{
+      ...summaryLine('SKU-2', [21], 4), outstandingQuantity: 0, suggestedPurchaseQuantity: 0,
+      inTransitQuantity: 4, inTransitCoveredQuantity: 4,
+    }] })
+    renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1] })
+    fireEvent.click(await screen.findByRole('button', { name: '汇总门店报货' }))
+    const selected = await screen.findByRole('checkbox', { name: '选择 商品SKU-2 SKU-2' })
+    fireEvent.click(selected)
+    fireEvent.change(screen.getByRole('spinbutton', { name: '实际采购 商品SKU-2 SKU-2' }), { target: { value: '2' } })
+    fireEvent.click(screen.getByRole('button', { name: '汇总门店报货' }))
+    await waitFor(() => expect(summarizeStoreReplenishmentRequests).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.getByRole('button', { name: '汇总门店报货' })).not.toBeDisabled())
+    expect(screen.queryByText('独立报货')).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.getByText('无匹配福利，按标准价')).toBeInTheDocument())
+    fireEvent.submit(screen.getByRole('button', { name: '创建市场报货单' }).closest('form')!)
+    await waitFor(() => expect(createMarketReplenishment).toHaveBeenCalledWith(expect.objectContaining({ items: [
+      { skuId: 'SKU-2', sourceRequestItemIds: [21], purchaseQuantity: 2 },
+    ] })))
+  })
+
+  it('#531 门店需求消失后恢复，连续汇总仍保持提取来源', async () => {
+    mockDocs({})
+    const summary = { marketId: 'M1', items: [summaryLine('SKU-2', [21], 4)] }
+    vi.mocked(summarizeStoreReplenishmentRequests)
+      .mockResolvedValueOnce(summary).mockResolvedValueOnce({ marketId: 'M1', items: [] }).mockResolvedValue(summary)
+    renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1] })
+    fireEvent.click(await screen.findByRole('button', { name: '汇总门店报货' }))
+    await screen.findByRole('checkbox', { name: '选择 商品SKU-2 SKU-2' })
+    fireEvent.click(screen.getByRole('button', { name: '汇总门店报货' }))
+    await waitFor(() => expect(summarizeStoreReplenishmentRequests).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.getByRole('button', { name: '汇总门店报货' })).not.toBeDisabled())
+    fireEvent.click(screen.getByRole('button', { name: '汇总门店报货' }))
+    await waitFor(() => expect(summarizeStoreReplenishmentRequests).toHaveBeenCalledTimes(3))
+    await waitFor(() => expect(screen.getByRole('button', { name: '汇总门店报货' })).not.toBeDisabled())
+    expect(screen.queryByText('独立报货')).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.getByText('无匹配福利，按标准价')).toBeInTheDocument())
+    fireEvent.submit(screen.getByRole('button', { name: '创建市场报货单' }).closest('form')!)
+    await waitFor(() => expect(createMarketReplenishment).toHaveBeenCalledWith(expect.objectContaining({ items: [
+      { skuId: 'SKU-2', sourceRequestItemIds: [21], purchaseQuantity: 4 },
+    ] })))
+  })
+
+  it('#531 独立草稿续编不绑定后来出现的同商品门店需求，可提交空来源', async () => {
+    const detail = draftDetail([{ skuId: 'SKU-X', quantity: 2 }])
+    detail.items[0].requestQuantity = 0
+    mockDocs({ inbox: segment([draftRow()]) })
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue(detail)
+    vi.mocked(summarizeStoreReplenishmentRequests).mockResolvedValue({ marketId: 'M1', items: [summaryLine('SKU-X', [11], 4)] })
+    renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1] })
+    await openDocsTab()
+    fireEvent.click(screen.getByRole('button', { name: '继续编辑 MBH-D1' }))
+    await screen.findByText('独立报货')
+    await waitFor(() => expect(screen.getByText('无匹配福利，按标准价')).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: '存草稿' }))
+    await waitFor(() => expect(saveMarketReplenishmentDraft).toHaveBeenCalledWith(expect.objectContaining({ items: [{ skuId: 'SKU-X', purchaseQuantity: 2, independent: true }] })))
+    fireEvent.submit(screen.getByRole('button', { name: '提交市场报货单' }).closest('form')!)
+    await waitFor(() => expect(createMarketReplenishment).toHaveBeenCalledWith(expect.objectContaining({ items: [{ skuId: 'SKU-X', purchaseQuantity: 2, sourceRequestItemIds: [] }] })))
+  })
+
+  it('#531 无门店需求的独立草稿行可恢复，与旧提取草稿区分', () => {
+    const lines = mergeMarketReportDraftLines([], [{ skuId: 'SKU-X', skuName: '商品X', specName: null, quantity: 2, requestQuantity: 0 }])
+    expect(lines[0]).toMatchObject({ independent: true, requestItemIds: [], selected: true })
+  })
+
   it('草稿里有、当前已无待汇总门店需求的商品：仍列出可存草稿，但提交前拦下', async () => {
     const lines = mergeMarketReportDraftLines([], [{ skuId: 'SKU-X', skuName: '商品X', specName: null, quantity: 2 }])
     expect(lines).toEqual([expect.objectContaining({ skuId: 'SKU-X', requestItemIds: [], selected: true, purchaseQuantity: '2' })])

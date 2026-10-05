@@ -4327,6 +4327,47 @@ describe('市场报货草稿（#348）', () => {
     expect(rendered().some((text) => text.includes('FROM inventory_doc_items') && text.includes('FOR UPDATE'))).toBe(false)
   })
 
+  it('#531 无门店来源可以独立报货，服务端重取价且不写门店血缘', async () => {
+    const { calls, rendered } = mockDraftTx(null)
+    const result = await createMarketReplenishment(SESSION, {
+      marketId: 'M1', supplyChainLocationId: 'HQ',
+      items: [{ skuId: 'SKU-1', sourceRequestItemIds: [], purchaseQuantity: 3, actualUnitPrice: 1 } as never],
+    })
+    expect(result.id).toMatch(/^MBH-/)
+    const item = calls.find((query) => renderSql(query).includes('INSERT INTO inventory_doc_items'))
+    expect(sqlParams(item)[14]).toBe('0')
+    expect(sqlParams(item)).toEqual(expect.arrayContaining(['100', '300']))
+    expect(rendered().some((q) => q.includes('INSERT INTO inventory_doc_links'))).toBe(false)
+    expect(rendered().some((q) => q.includes('FROM inventory_doc_items') && q.includes('FOR UPDATE'))).toBe(false)
+  })
+
+  it('#531 独立草稿写零需求标记，旧提取草稿仍为空值', async () => {
+    for (const independent of [true, false]) {
+      const { calls } = mockDraftTx(null)
+      await saveMarketReplenishmentDraft(SESSION, {
+        marketId: 'M1', supplyChainLocationId: 'HQ',
+        items: [{ skuId: 'SKU-1', purchaseQuantity: 2, independent }],
+      })
+      const item = calls.find((query) => renderSql(query).includes('INSERT INTO inventory_doc_items'))
+      expect(sqlParams(item)[14]).toBe(independent ? '0' : null)
+    }
+  })
+
+  it.each([0, -1, NaN, Infinity, 0.001, 1.005, 10000000000, true])('#531 拒绝非法数量 %s', async (quantity) => {
+    mockDraftTx(null)
+    const input = { marketId: 'M1', supplyChainLocationId: 'HQ', items: [{ skuId: 'SKU-1', sourceRequestItemIds: [], purchaseQuantity: quantity as number }] }
+    await expect(createMarketReplenishment(SESSION, input)).rejects.toThrow('INVALID_PARAMS:')
+    await expect(saveMarketReplenishmentDraft(SESSION, input)).rejects.toThrow('INVALID_PARAMS:')
+  })
+
+  it('#531 空来源可用但缺少/伪造来源以及重复 SKU 拒绝', async () => {
+    mockDraftTx(null)
+    const line = { skuId: 'SKU-1', sourceRequestItemIds: [], purchaseQuantity: 1 }
+    const input = { marketId: 'M1', supplyChainLocationId: 'HQ', items: [line, line] }
+    await expect(createMarketReplenishment(SESSION, input)).rejects.toThrow('商品不能重复')
+    await expect(createMarketReplenishment(SESSION, { ...input, items: [{ ...line, sourceRequestItemIds: undefined } as never] })).rejects.toThrow('来源明细须为数组')
+  })
+
   it('覆盖草稿：只重写明细与单头可改字段，状态保持草稿', async () => {
     const { rendered } = mockDraftTx(DRAFT)
     await saveMarketReplenishmentDraft(SESSION, {

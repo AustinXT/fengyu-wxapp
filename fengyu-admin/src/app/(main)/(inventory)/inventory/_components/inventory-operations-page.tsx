@@ -2183,6 +2183,7 @@ function ItemCompanyReplenishmentForm({
 }
 
 interface MarketReportLine {
+  independent?: boolean
   storeQuantities: Array<{ storeId: string | null; storeName: string; quantity: number }>
   skuId: string
   skuName: string
@@ -2218,23 +2219,32 @@ function summaryToMarketReportLines(summary: Awaited<ReturnType<typeof summarize
 /**
  * 把草稿明细叠到当前门店需求汇总上（#348）：只勾选草稿里的 SKU、数量取草稿值；
  * 草稿里有、但当前已无待汇总门店需求的 SKU 仍列出（requestItemIds 为空），可继续存草稿，
- * 提交前必须取消勾选 —— 市场报货的来源只能是当时仍未汇总的门店报货明细。
+ * 独立草稿行（requestQuantity=0）始终不绑定门店需求；旧提取草稿仍校验当前来源。
  */
 export function mergeMarketReportDraftLines(
   summaryLines: MarketReportLine[],
-  draftItems: ReadonlyArray<{ skuId: string; skuName: string; specName: string | null; quantity: number }>,
+  draftItems: ReadonlyArray<{ skuId: string; skuName: string; specName: string | null; quantity: number; requestQuantity?: number | null }>,
 ): MarketReportLine[] {
   const draftBySku = new Map(draftItems.map((item) => [item.skuId, item]))
   const merged = summaryLines.map((line) => {
     const draft = draftBySku.get(line.skuId)
     return draft
-      ? { ...line, selected: true, purchaseQuantity: String(draft.quantity) }
+      ? {
+          ...line,
+          independent: draft.requestQuantity === 0,
+          requestItemIds: draft.requestQuantity === 0 ? [] : line.requestItemIds,
+          requestQuantity: draft.requestQuantity === 0 ? 0 : line.requestQuantity,
+          storeQuantities: draft.requestQuantity === 0 ? [] : line.storeQuantities,
+          selected: true,
+          purchaseQuantity: String(draft.quantity),
+        }
       : { ...line, selected: false, purchaseQuantity: '' }
   })
   const summarized = new Set(summaryLines.map((line) => line.skuId))
   for (const item of draftItems) {
     if (summarized.has(item.skuId)) continue
     merged.push({
+      independent: item.requestQuantity === 0,
       skuId: item.skuId,
       skuName: item.skuName,
       specName: item.specName,
@@ -2392,12 +2402,28 @@ function MarketReportForm({
       })
       if (epoch !== epochRef.current) return
       const summaryLines = summaryToMarketReportLines(summary)
-      // 编辑草稿时重新汇总：保留当前已勾选的明细与数量，别把草稿整片冲掉
-      setLines(draftId
-        ? mergeMarketReportDraftLines(summaryLines, lines
-            .filter((line) => line.selected && positiveNumber(line.purchaseQuantity) !== null)
-            .map((line) => ({ ...line, quantity: positiveNumber(line.purchaseQuantity)! })))
-        : summaryLines)
+      // 独立行保留原始输入（含暂未填写/未勾选行），重新汇总不能删除用户已选商品。
+      setLines((previous) => {
+        const independentLines = previous.filter((line) => line.independent)
+        const independentSkus = new Set(independentLines.map((line) => line.skuId))
+        const extractedSummary = summaryLines.filter((line) => !independentSkus.has(line.skuId))
+        const merged = previous.length > 0
+          ? mergeMarketReportDraftLines(extractedSummary, previous
+              .filter((line) => !line.independent && line.selected && positiveNumber(line.purchaseQuantity) !== null)
+              .map((line) => ({
+                ...line,
+                quantity: positiveNumber(line.purchaseQuantity)!,
+                // 当前汇总的待配零值可能仅是被在途覆盖，不能当成持久化草稿的独立标记。
+                requestQuantity: null,
+              })))
+          : extractedSummary
+        const previousSkus = new Set(previous.map((line) => line.skuId))
+        // 新建单中新出现的提取行沿用汇总默认选择；草稿只勾原草稿内容。
+        const selectedMerged = merged.map((line) => !draftId && !previousSkus.has(line.skuId)
+          ? extractedSummary.find((item) => item.skuId === line.skuId)!
+          : line)
+        return [...selectedMerged, ...independentLines]
+      })
       if (summary.items.length === 0) toast.info('当前没有待汇总的门店报货明细')
     } catch (error) {
       if (epoch === epochRef.current) toast.error(actionErrorMessage(error, '汇总门店报货失败'))
@@ -2541,6 +2567,7 @@ function MarketReportForm({
     const items = lines.filter((line) => line.selected).map((line) => ({
       skuId: line.skuId,
       purchaseQuantity: positiveNumber(line.purchaseQuantity),
+      ...(line.independent ? { independent: true } : {}),
     }))
     if (items.length === 0 || items.some((item) => item.purchaseQuantity === null)) {
       toast.error('请选择至少一条明细并填写实际采购数量')
@@ -2583,8 +2610,12 @@ function MarketReportForm({
       toast.error('请选择市场和供应链库存主体')
       return
     }
+    if (lines.some((line) => line.selected && !validStoreRequestQuantity(line.purchaseQuantity))) {
+      toast.error('实际采购数量须为 0.01 至 9999999999.99，且最多两位小数')
+      return
+    }
     const selectedLines = lines.filter((line) => line.selected)
-    const noDemand = selectedLines.find((line) => line.requestItemIds.length === 0)
+    const noDemand = selectedLines.find((line) => line.requestItemIds.length === 0 && !line.independent)
     if (noDemand) {
       toast.error(`${noDemand.skuName} 当前已无待汇总的门店报货，请取消勾选后再提交`)
       return
@@ -2668,9 +2699,32 @@ function MarketReportForm({
         <DatePicker value={docDate} onValueChange={setDocDate} />
       </FormField>
 
+      <FormField label="独立报货商品" className="max-w-lg" group>
+        <InventorySkuSearchSelect
+          value=""
+          disabled={!marketId || saving || loadingSummary}
+          filters={{ reportable: true, availableToMarketId: marketId }}
+          ariaLabel="添加独立报货商品"
+          onChange={(skuId, sku) => {
+            if (!skuId || !sku) return
+            if (lines.some((line) => line.skuId === skuId)) {
+              toast.info('该商品已在明细中，请修改现有行数量')
+              return
+            }
+            setLines((previous) => [...previous, {
+              skuId, skuName: sku.productName, specName: sku.specName,
+              independent: true, requestItemIds: [], storeQuantities: [], requestQuantity: 0,
+              availableQuantity: 0, inTransitQuantity: 0, inTransitCoveredQuantity: 0,
+              suggestedPurchaseQuantity: 0, selected: true, purchaseQuantity: '1',
+            }])
+          }}
+        />
+      </FormField>
+
       {lines.length > 0 && (
         <div className="space-y-3">
           <h3 className="text-sm font-medium">市场报货明细</h3>
+          <p className="text-xs text-[#888888]">独立报货不提取门店需求。同一商品已独立报货时，汇总不会改写其来源；如需提取该商品，请先移除独立行再重新汇总。</p>
           <div className="overflow-x-auto rounded-[var(--radius)] border border-[var(--border)]">
             <table className="w-full min-w-[860px] text-sm">
               <thead className="bg-[var(--muted)] text-left text-xs text-[var(--muted-foreground)]">
@@ -2690,6 +2744,7 @@ function MarketReportForm({
                     <th className="px-3 py-2 font-medium">门店单价（参考）</th>
                     <th className="px-3 py-2 font-medium">报货福利</th>
                   </>}
+                  <th className="px-3 py-2 font-medium">操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -2714,6 +2769,7 @@ function MarketReportForm({
                       <td className="px-3 py-2"><input aria-label={`选择 ${rowName}`} type="checkbox" checked={line.selected} onChange={(event) => updateLine(index, { selected: event.target.checked })} /></td>
                       <td className="px-3 py-2">
                         <div className="font-medium">{line.skuName}</div>
+                        {line.independent && <div className="text-xs text-[var(--primary)]">独立报货</div>}
                         <div className="text-xs text-[#888888]">{line.specName || line.skuId}</div>
                         <details className="mt-2 text-xs">
                           <summary className="cursor-pointer text-[var(--primary)]" aria-label={`门店分量 ${rowName}`}>门店分量（参考）</summary>
@@ -2730,13 +2786,13 @@ function MarketReportForm({
                         </details>
                       </td>
                       <td className="px-3 py-2">
-                        {line.requestQuantity}
+                        {line.independent ? '—' : line.requestQuantity}
                         {/* 待配已被在途封顶时亮出扣了多少：在途挂着不到货（短收 / 总部不发）时人能看出来，不至于整行静默漏报 */}
                         {line.inTransitCoveredQuantity > 0 && <div className="text-xs text-[#888888]">在途已覆盖 {line.inTransitCoveredQuantity}</div>}
                       </td>
-                      <td className="px-3 py-2">{line.availableQuantity}</td>
-                      <td className="px-3 py-2">{line.inTransitQuantity}</td>
-                      <td className="px-3 py-2">{line.suggestedPurchaseQuantity}</td>
+                      <td className="px-3 py-2">{line.independent ? '—' : line.availableQuantity}</td>
+                      <td className="px-3 py-2">{line.independent ? '—' : line.inTransitQuantity}</td>
+                      <td className="px-3 py-2">{line.independent ? '—' : line.suggestedPurchaseQuantity}</td>
                       <td className="px-3 py-2"><InventoryNumberInput className="w-24" aria-label={`实际采购 ${rowName}`} type="number" min="0" step="0.01" max="9999999999.99" value={line.purchaseQuantity} onChange={(event) => updateLine(index, { purchaseQuantity: event.target.value })} disabled={!line.selected} /></td>
                       {canQuoteMarketPrice && <>
                         <td className="px-3 py-2">{currentQuote?.marketStandardUnitPrice ?? '—'}</td>
@@ -2785,6 +2841,14 @@ function MarketReportForm({
                           )}
                         </td>
                       </>}
+                      <td className="px-3 py-2">
+                        {line.independent && <Button
+                          type="button" variant="ghost" size="sm"
+                          aria-label={`移除独立报货 ${rowName}`}
+                          disabled={saving || loadingSummary}
+                          onClick={() => setLines((previous) => previous.filter((item) => item.skuId !== line.skuId))}
+                        >移除</Button>}
+                      </td>
                     </tr>
                   )
                 })}
