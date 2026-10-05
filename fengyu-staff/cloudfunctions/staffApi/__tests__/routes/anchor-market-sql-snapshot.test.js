@@ -18,7 +18,7 @@
  *      ├── fengyu-admin/src/lib/service-staff-skills.ts
  *      └── miniprogram/packageService/service-create/service-create.ts（SERVICE_ROLES）
  *
- *   C. 服务单候选/校验的触发点 — 两端必须用 marketSupport + 四项白名单，
+ *   C. 服务单候选/校验的触发点 — 两端必须用 allocationSupport + 显式技能过滤和四项白名单，
  *      且开单 / 顾客端口径不得被波及
  *
  * 归一化策略：别名差异（staff 用 so / admin 用 store_node）归一为 <STORE_NODE>，
@@ -168,17 +168,19 @@ describe('B. 服务指派技能白名单两端同序', () => {
   })
 })
 
-describe('C. 服务单创建两端均走 marketSupport + 四项白名单', () => {
-  test('staff service.create 校验用 marketSupport', () => {
+describe('C. 服务单创建两端均走 allocationSupport + 四项白名单', () => {
+  test('staff service.create 校验用 allocationSupport', () => {
     const src = read(FILES.staffServiceRoute)
-    expect(src).toMatch(/assignmentScope: 'marketSupport'/)
+    expect(src).toMatch(/assignmentScope: 'allocationSupport'/)
     expect(src).toMatch(/skills: SERVICE_ORDER_ASSIGNABLE_SKILLS/)
+    expect(src).toMatch(/requireServiceSkills: true/)
   })
 
-  test('admin createServiceOrder 校验用 marketSupport', () => {
+  test('admin createServiceOrder 校验用 allocationSupport', () => {
     const src = read(FILES.adminServices)
-    expect(src).toMatch(/assignmentScope: 'marketSupport'/)
+    expect(src).toMatch(/assignmentScope: 'allocationSupport'/)
     expect(src).toMatch(/skills: SERVICE_ORDER_ASSIGNABLE_SKILLS/)
+    expect(src).toMatch(/requireServiceSkills: true/)
   })
 
   test('service 场景仅店长放宽（普通员工只能把服务单指派给自己，无需全市场候选）', () => {

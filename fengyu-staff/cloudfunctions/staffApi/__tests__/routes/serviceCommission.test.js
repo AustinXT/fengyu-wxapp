@@ -216,6 +216,28 @@ describe('serviceCommission.save', () => {
     })
   })
 
+  test.each(['店经理', '美容师', '养生师', '品项老师'])('%s 保存按所选技能验证全系统支援资格', async (roleType) => {
+    const ctx = createManagerCtx({ serviceOrderId: 'SO-1', commissions: [
+      { serviceItemId: 'si-1', employeeId: 'emp-1', roleType, allocationRatio: 1 },
+    ] })
+    mockOrderAndItems(COMPLETED_ORDER, [{ service_item_id: 'si-1', session_used: 1, unit_real_price: '100', sales_category: '自销自耗', service_fee: '0' }])
+    mockTxnCapture('0.2')
+    await routes.save(ctx)
+    const [sql, params] = pg.query.mock.calls.find(([sql]) => sql.includes('WHERE u.employee_id = ANY'))
+    expect(sql).toContain('(u.store_id = $2 OR u.is_on_business_trip = true)')
+    expect(params.slice(2)).toEqual([true, [roleType]])
+  })
+
+  test('不具备所选角色技能时在事务前拒绝', async () => {
+    const ctx = createManagerCtx({ serviceOrderId: 'SO-1', commissions: [
+      { serviceItemId: 'si-1', employeeId: 'teacher', roleType: '美容师', allocationRatio: 1 },
+    ] })
+    mockOrderAndItems(COMPLETED_ORDER, [{ service_item_id: 'si-1', session_used: 1, unit_real_price: '100' }])
+    pg.query.mockResolvedValueOnce([])
+    await expect(routes.save(ctx)).rejects.toThrow(/INVALID_PARAMS/)
+    expect(pg.transaction).not.toHaveBeenCalled()
+  })
+
   test('保存成功 — recompute consumeBase=unit_real_price×session_used', async () => {
     const ctx = createManagerCtx({
       serviceOrderId: 'SO-1',

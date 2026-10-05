@@ -10,7 +10,7 @@ import { StatusBadge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
 import { batchSaveAllocations } from "@/actions/allocations"
 import type { SaleOrder, SaleItem, SaleAllocation, AllocationEmployeeCandidate, CommissionRate, SkillTag } from "@/lib/types"
-import { getAllocationEmployeesForSkill, sortAllocationEmployeeCandidates } from "@/lib/allocation-employee"
+import { deriveAllocationSkillTag, getAllocationEmployeesForSkill, sortAllocationEmployeeCandidates } from "@/lib/allocation-employee"
 import { ReturnContextLink, useReturnContext } from "@/components/return-context"
 
 // --------------- 常量 ---------------
@@ -22,7 +22,7 @@ const MAX_PER_GROUP = 3
 
 interface AllocationEntry {
   id: number
-  skillTag: string        // 先选：'美容师' | '养生师' | '推广师'
+  skillTag: string        // 先选技能标签
   employeeId: string      // 后选：按 skillTag 筛选后的员工
   ratioPercent: string    // '10' | '20' | ... | '100' | ''
   amount: string          // 自动 = ratioPercent/100 × received
@@ -90,14 +90,7 @@ function initAllocations(
     const received = item ? Number(item.received) : 0
 
     const emp = employees.find((e) => e.employeeId === alloc.employeeId)
-    let skillTag = alloc.roleType || ''
-    if (!skillTag && emp) {
-      const skills = emp.skills || []
-      if (skills.includes('推广师')) skillTag = '推广师'
-      else if (skills.includes('养生师')) skillTag = '养生师'
-      else skillTag = '美容师'
-    }
-    skillTag = skillTag || '美容师'
+    const skillTag = alloc.roleType || deriveAllocationSkillTag(emp?.skills || [])
 
     const ratioPercent = String(Number((Number(alloc.allocationRatio) * 100).toFixed(1)))
     const amount = alloc.totalAmount

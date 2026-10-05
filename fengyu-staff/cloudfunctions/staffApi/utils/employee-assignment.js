@@ -1,9 +1,9 @@
 /**
  * 员工指派资格分为三个显式场景：
  * - localOnly（默认）：仅本门店员工，用于开单等普通指派；
- * - allocationSupport：本门店员工或任意已开启出差支援的员工，仅用于营业额/服务提成分配；
+ * - allocationSupport：本门店员工或任意已开启出差支援的员工，用于营业额/服务提成分配及服务单创建（服务单显式传四技能）；
  * - marketSupport：本门店员工，或「锚定市场 = 目标门店所属市场」且已开启出差支援的员工，
- *   用于服务单创建（issue #210：出差支援的养生师/品项老师也能接服务单）。
+ *   旧的同市场支援场景（issue #210：出差支援的养生师/品项老师也能接服务单）。
  *
  * 技能白名单按场景区分（不要就地改 DEFAULT）：
  * - 开单指定美容师仍限 DEFAULT_ASSIGNABLE_SKILLS 两项；
@@ -135,7 +135,7 @@ async function isEmployeeAssignableToStore(queryable, employeeId, targetStoreId,
 // 否则技能不符的人被拒时会得到「未开启出差支援」这种指向错误的提示
 const SCOPE_ERROR_MESSAGE = {
   localOnly: '所选员工不属于本门店',
-  allocationSupport: '所选员工不属于本门店且未开启出差支援',
+  allocationSupport: '所选员工不可指派：须是本店或已开启支援的在职人员，并具备要求的技能标签',
   marketSupport: '所选员工不可指派：须是本店人员或本门店所属市场内的出差支援人员，且具备服务技能标签',
 }
 

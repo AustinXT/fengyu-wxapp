@@ -42,3 +42,9 @@ describe('formatServiceStaffOption', () => {
     })).toBe('FY-4（未分组）（外援）')
   })
 })
+
+it('品项公司无门店外援显示来源与技能', () => {
+  expect(formatServiceStaffOption({ employeeId: 'teacher', name: '老师', skills: ['品项老师'],
+    departmentName: '品项部', assignmentScope: 'cross_market_trip', marketName: '品项公司', storeName: '',
+  })).toBe('老师（品项老师·品项部）（外援·品项公司）')
+})

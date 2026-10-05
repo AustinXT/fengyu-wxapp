@@ -137,12 +137,19 @@ export const batchSaveServiceCommissions = withPermission(
   if (svcOrder.remark === DEPOSIT_REFUND_REMARK) {
     return { success: false, message: '寄存单退款专用服务单不参与提成分配' }
   }
-  if (await getInvalidEmployeeAssignmentId(
-    commissions.map((commission) => commission.employeeId),
-    svcOrder.storeId,
-    { assignmentScope: 'allocationSupport' },
-  )) {
-    return { success: false, message: '所选员工不属于本门店且未开启出差支援' }
+  // 每个角色按实际技能校验，与候选按技能筛选一致；范围仍为本店或全系统支援。
+  const employeesByRole = new Map<string, string[]>()
+  for (const commission of commissions) {
+    const ids = employeesByRole.get(commission.roleType) || []
+    ids.push(commission.employeeId)
+    employeesByRole.set(commission.roleType, ids)
+  }
+  for (const [roleType, employeeIds] of employeesByRole) {
+    if (!roleType || await getInvalidEmployeeAssignmentId(employeeIds, svcOrder.storeId, {
+      assignmentScope: 'allocationSupport', requireServiceSkills: true, skills: [roleType],
+    })) {
+      return { success: false, message: '所选员工不可分配：须是本店或已开启支援的在职人员，且具备所选技能标签' }
+    }
   }
 
   // 校验所有 serviceItemId 属于该服务单

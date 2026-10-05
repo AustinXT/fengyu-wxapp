@@ -36,3 +36,12 @@ export function getAllocationEmployeesForSkill(
     employees.filter((employee) => employee.skills?.includes(skillTag)),
   )
 }
+
+/** 旧记录缺角色时按实际技能推导，保存的 roleType 优先由调用方保留。 */
+export function deriveAllocationSkillTag(skills: string[] = []): string {
+  if (skills.includes('推广师')) return '推广师'
+  if (skills.includes('养生师')) return '养生师'
+  if (skills.includes('店经理')) return '店经理'
+  if (skills.includes('品项老师')) return '品项老师'
+  return '美容师'
+}

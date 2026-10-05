@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AllocationEmployeeCandidate, AssignmentScope } from './types'
-import { getAllocationEmployeesForSkill } from './allocation-employee'
+import { deriveAllocationSkillTag, getAllocationEmployeesForSkill } from './allocation-employee'
 
 function candidate(
   employeeId: string,
@@ -40,5 +40,18 @@ describe('getAllocationEmployeesForSkill', () => {
 
     expect(result).toHaveLength(1)
     expect(result[0].assignmentScope).toBe('cross_market_trip')
+  })
+})
+
+describe('分配角色身份', () => {
+  it.each(['店经理', '美容师', '养生师', '品项老师', '推广师'])('%s 缺历史角色时按实际技能恢复', (role) => {
+    expect(deriveAllocationSkillTag([role])).toBe(role)
+  })
+  it.each(['店经理', '美容师', '养生师', '品项老师', '推广师'])('%s 多技能员工同池不重复，支援排后', (role) => {
+    const result = getAllocationEmployeesForSkill([
+      candidate('支援', 'cross_market_trip', role, { skills: [role, '养生师'] }),
+      candidate('本店', 'local', role),
+    ], role)
+    expect(result.map(e => e.employeeId)).toEqual(['本店', '支援'])
   })
 })

@@ -24,7 +24,6 @@ const {
   SERVICE_ORDER_ASSIGNABLE_SKILLS,
   EMPLOYEE_ANCHOR_MARKET_JOIN,
   targetMarketJoin,
-  marketSupportCondition,
 } = require('../utils/employee-assignment')
 
 // 跨 env 转上传相关 env vars：
@@ -97,12 +96,12 @@ async function list(ctx) {
     throw new Error('PERMISSION_DENIED: 不在权限范围内的门店')
   }
 
-  // 服务单场景（issue #210）：候选放宽为「本店员工 ∪ 本门店所属市场内开启出差支援的员工」，
+  // 服务单场景（issue #210）：候选放宽为「本店员工 ∪ 全系统开启出差支援的员工」，
   // 技能扩至四项。其余调用方（开单、顾客列表、顾客详情、员工绩效）不传 scene，走下方原口径。
   //
   // 仅店长放宽：service.create 里非店长只能把服务单指派给自己
   // （`!isCurrentStoreManager(ctx.auth) && resolvedStaffWfId !== ctx.auth.staffWfId` 直接拒），
-  // 候选列表对普通员工没有用途，没必要让任意在职员工借此枚举同市场跨店人员。
+  // 候选列表对普通员工没有用途，没必要让任意在职员工借此枚举跨店支援人员。
   // 非店长传了 scene 也不报错，静默退回本店口径（与放宽前一致）。
   const isServiceScene = scene === 'service' && isCurrentStoreManager(ctx.auth)
 
@@ -124,12 +123,14 @@ async function list(ctx) {
         d.name AS department,
         s.store_name,
         employee_market.name AS market_name,
-        CASE WHEN u.store_id = $1 THEN 'local' ELSE 'same_market_trip' END AS assignment_scope
+        CASE WHEN u.store_id = $1 THEN 'local'
+          WHEN employee_market.id = target_market.id THEN 'same_market_trip'
+          ELSE 'cross_market_trip' END AS assignment_scope
       FROM staff_wechat_users u${EMPLOYEE_ANCHOR_MARKET_JOIN}${targetMarketJoin('$1')}
       WHERE u.is_resigned = false
         AND u.employee_id IS NOT NULL
         AND u.skills && $2::text[]
-        AND ${marketSupportCondition('$1')}
+        AND (u.store_id = $1 OR u.is_on_business_trip = true)
       ORDER BY
         CASE WHEN u.store_id = $1 THEN 0 ELSE 1 END,
         (SELECT MIN(array_position($2::text[], sk))

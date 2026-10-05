@@ -394,8 +394,8 @@ async function suggestPayment(ctx) {
           ELSE NULL
         END
       ) AND employee_market.type = '市场'
-      JOIN stores target_store ON target_store.store_id = $1
-      JOIN org_nodes target_store_node ON target_store_node.id = target_store.org_node_id
+      LEFT JOIN stores target_store ON target_store.store_id = $1
+      LEFT JOIN org_nodes target_store_node ON target_store_node.id = target_store.org_node_id
       LEFT JOIN org_nodes target_market ON target_market.id = target_store_node.parent_id
       WHERE u.is_resigned = false
         AND (u.store_id = $1 OR u.is_on_business_trip = true)
