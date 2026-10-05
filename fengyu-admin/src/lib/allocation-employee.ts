@@ -36,3 +36,20 @@ export function getAllocationEmployeesForSkill(
     employees.filter((employee) => employee.skills?.includes(skillTag)),
   )
 }
+
+/** 旧记录缺角色时按实际技能推导，保存的 roleType 优先由调用方保留。 */
+export function deriveAllocationSkillTag(skills: string[] = []): string {
+  if (skills.includes('推广师')) return '推广师'
+  if (skills.includes('养生师')) return '养生师'
+  if (skills.includes('店经理')) return '店经理'
+  if (skills.includes('品项老师')) return '品项老师'
+  return '美容师'
+}
+
+/** 分配选择器显示实际来源；缺来源时明确提示，不把技术分类显示为市场事实。 */
+export function formatAllocationEmployeeOption(employee: AllocationEmployeeCandidate): string {
+  const name = employee.name?.trim() || employee.employeeId
+  if (!employee.assignmentScope || employee.assignmentScope === 'local') return `${name}（本店）`
+  const source = [employee.marketName, employee.storeName, employee.departmentName].filter(Boolean).join('·') || '来源未设置'
+  return `${name}（外援·${source}）`
+}

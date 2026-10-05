@@ -11,9 +11,9 @@ import {
 /**
  * 员工指派资格分为三个显式场景（与 staffApi utils/employee-assignment.js 同源）：
  * - localOnly（默认）：仅本门店员工，用于开单等普通指派；
- * - allocationSupport：本门店员工或任意已开启出差支援的员工，仅用于营业额/服务提成分配；
+ * - allocationSupport：本门店员工或任意已开启出差支援的员工，用于营业额/服务提成分配及服务单创建（服务单显式传四技能）；
  * - marketSupport：本门店员工，或「锚定市场 = 目标门店所属市场」且已开启出差支援的员工，
- *   用于服务单创建（issue #210）。
+ *   旧的同市场支援场景（issue #210）。
  *
  * 技能白名单由 options.skills 传入（默认仅美容师/养生师），服务单场景须显式传四项白名单。
  */

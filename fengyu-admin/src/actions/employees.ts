@@ -34,7 +34,6 @@ import { maskPhone } from '@/lib/pii'
 import {
   EMPLOYEE_ANCHOR_MARKET_JOIN,
   SERVICE_ORDER_ASSIGNABLE_SKILLS,
-  marketSupportCondition,
   targetMarketJoin,
 } from '@/lib/employee-anchor-market-sql'
 import { resolvePaging } from '@/lib/paging'
@@ -181,8 +180,8 @@ export const getAllocationEmployeeCandidates = withPermission(
           ELSE NULL
         END
       ) AND employee_market.type = '市场'
-      JOIN stores target_store ON target_store.store_id = ${targetStoreId}
-      JOIN org_nodes target_store_node ON target_store_node.id = target_store.org_node_id
+      LEFT JOIN stores target_store ON target_store.store_id = ${targetStoreId}
+      LEFT JOIN org_nodes target_store_node ON target_store_node.id = target_store.org_node_id
       LEFT JOIN org_nodes target_market ON target_market.id = target_store_node.parent_id
       WHERE u.is_resigned = false
         AND u.employee_id IS NOT NULL
@@ -205,7 +204,7 @@ export const getAllocationEmployeeCandidates = withPermission(
 )
 
 /**
- * 服务单创建的服务人员候选（issue #210）：本门店员工 ∪ 本门店所属市场内已开启出差支援的员工，
+ * 服务单创建的服务人员候选（issue #210）：本门店员工 ∪ 全系统已开启出差支援的员工，
  * 技能须命中 SERVICE_ORDER_ASSIGNABLE_SKILLS 四项之一。
  *
  * 不复用 `getEmployees()` 客户端过滤的老写法，原因有二：
@@ -214,7 +213,7 @@ export const getAllocationEmployeeCandidates = withPermission(
  * 与 getAllocationEmployeeCandidates 同范式：目标门店级、最小字段，不外泄员工档案 PII。
  *
  * 排序：本店整体置顶 → 块内按技能白名单数组顺序（店经理→美容师→养生师→品项老师）→ 姓名。
- * 返回的 assignmentScope 只会是 'local' / 'same_market_trip'（跨市场出差不进服务单候选）。
+ * 返回的 assignmentScope 区分本店、同市场支援、跨市场支援；组织缺失不影响支援资格。
  */
 export const getServiceStaffCandidates = withPermission(
   'service:create',
@@ -235,12 +234,14 @@ export const getServiceStaffCandidates = withPermission(
         s.store_name,
         d.name AS department_name,
         employee_market.name AS market_name,
-        CASE WHEN u.store_id = ${targetStoreId} THEN 'local' ELSE 'same_market_trip' END AS assignment_scope
+        CASE WHEN u.store_id = ${targetStoreId} THEN 'local'
+          WHEN employee_market.id = target_market.id THEN 'same_market_trip'
+          ELSE 'cross_market_trip' END AS assignment_scope
       FROM staff_wechat_users u${EMPLOYEE_ANCHOR_MARKET_JOIN}${targetMarketJoin(targetStoreId)}
       WHERE u.is_resigned = false
         AND u.employee_id IS NOT NULL
         AND u.skills && ${sql.param(skills)}::text[]
-        AND ${marketSupportCondition(targetStoreId)}
+        AND (u.store_id = ${targetStoreId} OR u.is_on_business_trip = true)
       ORDER BY
         CASE WHEN u.store_id = ${targetStoreId} THEN 0 ELSE 1 END,
         (SELECT MIN(array_position(${sql.param(skills)}::text[], sk))

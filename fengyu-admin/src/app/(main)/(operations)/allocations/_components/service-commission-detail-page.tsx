@@ -11,7 +11,7 @@ import { Separator } from "@/components/ui/separator"
 import { batchSaveServiceCommissions } from "@/actions/service-commissions"
 import type { ServiceOrder, ServiceCommission, AllocationEmployeeCandidate, CommissionRate, SkillTag } from "@/lib/types"
 import type { ServiceItemDetail } from "@/actions/services"
-import { getAllocationEmployeesForSkill, sortAllocationEmployeeCandidates } from "@/lib/allocation-employee"
+import { formatAllocationEmployeeOption, deriveAllocationSkillTag, getAllocationEmployeesForSkill, sortAllocationEmployeeCandidates } from "@/lib/allocation-employee"
 import { ReturnContextLink, useReturnContext } from "@/components/return-context"
 
 // --------------- 常量 ---------------
@@ -106,14 +106,6 @@ function formatServiceItemName(item: Pick<ServiceItemDetail, 'productName' | 'sk
 
 // --------------- 初始化 ---------------
 
-/** 按员工 skills 推导技能标签（推广师 > 养生师 > 美容师 兜底）；无员工时回退美容师 */
-function deriveSkillTag(emp: AllocationEmployeeCandidate | undefined): string {
-  const skills = emp?.skills || []
-  if (skills.includes('推广师')) return '推广师'
-  if (skills.includes('养生师')) return '养生师'
-  return '美容师'
-}
-
 /** 按服务明细 + 比例计算一行提成条目（已分配回填 / 默认预填共用同一套算法） */
 function buildEntry(
   item: ServiceItemDetail | undefined,
@@ -157,7 +149,7 @@ export function initCommissions(
     const item = serviceItems.find((i) => i.serviceItemId === comm.serviceItemId)
 
     const emp = employees.find((e) => e.employeeId === comm.employeeId)
-    const skillTag = comm.roleType || deriveSkillTag(emp)
+    const skillTag = comm.roleType || deriveAllocationSkillTag(emp?.skills || [])
 
     const ratioPercent = String(Number((Number(comm.allocationRatio) * 100).toFixed(1)))
     result[comm.serviceItemId].push({
@@ -166,14 +158,14 @@ export function initCommissions(
     })
   }
 
-  // 未分配的服务明细默认预填 1 行：指派美容师 + 100% + 按费率算的单人提成
+  // 未分配的服务明细默认预填 1 行：指派人员的实际技能 + 100% + 按费率算的单人提成
   // （用户可改/可加行；提交仍走 batchSaveServiceCommissions）
   if (assignedEmployeeId) {
     const assignedEmp = employees.find((e) => e.employeeId === assignedEmployeeId)
     if (!assignedEmp) {
       return result
     }
-    const assignedSkillTag = deriveSkillTag(assignedEmp)
+    const assignedSkillTag = deriveAllocationSkillTag(assignedEmp.skills || [])
     for (const item of serviceItems) {
       if (result[item.serviceItemId].length === 0) {
         result[item.serviceItemId].push(
@@ -469,7 +461,7 @@ function ServiceItemCard({
                     )}
                     {filteredEmployees.map((emp) => (
                       <option key={emp.employeeId} value={emp.employeeId}>
-                        {emp.name}
+                        {formatAllocationEmployeeOption(emp)}
                       </option>
                     ))}
                   </Select>

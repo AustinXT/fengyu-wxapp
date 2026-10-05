@@ -61,7 +61,8 @@ async function create(ctx) {
   }
 
   // 权限：店长可为任何员工创建，美容师只能指定自己
-  if (!isCurrentStoreManager(ctx.auth) && resolvedStaffWfId !== ctx.auth.staffWfId) {
+  if (!isCurrentStoreManager(ctx.auth) && (resolvedStaffWfId !== ctx.auth.staffWfId
+    || normalizedItems.some(item => item.employeeId && item.employeeId !== ctx.auth.staffWfId))) {
     throw new Error('PERMISSION_DENIED: 美容师只能创建分配给自己的服务单')
   }
   // 验证关联预约
@@ -228,7 +229,7 @@ async function create(ctx) {
     }
   }
 
-  // 服务单可指派「本店员工 ∪ 本门店所属市场内开启出差支援的员工」，技能扩至四项（issue #210）；
+  // 服务单可指派「本店员工 ∪ 全系统开启出差支援的员工」，技能扩至四项（issue #210）；
   // 与 staff.list({ scene: 'service' }) 的候选口径同源，否则前端选得到、提交被拦。
   await assertEmployeesAssignableToStore(
     pg,
@@ -237,7 +238,7 @@ async function create(ctx) {
     {
       requireServiceSkills: true,
       skills: SERVICE_ORDER_ASSIGNABLE_SKILLS,
-      assignmentScope: 'marketSupport',
+      assignmentScope: 'allocationSupport',
     },
   )
 
@@ -1151,7 +1152,7 @@ async function detail(ctx) {
 
   // 分层可见性（与 order.detail 一致）：
   //  0) 服务单指派给本人 → 放行，**不要求门店在 scope 内**（跨店支援单，#224）。
-  //     指派关系本身就是授权凭据（建单时已过 marketSupport 校验），此处不重算「锚定市场 + 出差标记」：
+  //     指派关系本身就是授权凭据（建单时已过支援资格与技能校验），此处不重算「锚定市场 + 出差标记」：
   //     重算会让出差标记一关掉，在途支援单立刻变不可见，且引入第 6 份锚定市场 SQL 副本。
   //  1) 服务单在本 scope 内 + 店长 → 门店操作权限放行（护理 Tab / 操作场景，行为不变）
   //  2) 管理层模式 + 服务单门店在本 scope 内 → 监管只读放行

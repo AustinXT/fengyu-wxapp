@@ -558,12 +558,19 @@ export const savePaymentAllocations = withPermission(
     if (await hasSettledRefundForPayment(db, salePaymentId)) {
       return { success: false, message: '该订单已退款，营业额分配已锁定，不可再修改' }
     }
-    if (await getInvalidEmployeeAssignmentId(
-      allocations.map((allocation) => allocation.employeeId),
-      pay.store_id as string,
-      { assignmentScope: 'allocationSupport' },
-    )) {
-      return { success: false, message: '所选员工不属于本门店且未开启出差支援' }
+    // 每个技能独立校验，与前端动态技能候选和服务提成保存保持一致。
+    const employeesByRole = new Map<string, string[]>()
+    for (const allocation of allocations) {
+      const ids = employeesByRole.get(allocation.roleType) || []
+      ids.push(allocation.employeeId)
+      employeesByRole.set(allocation.roleType, ids)
+    }
+    for (const [roleType, employeeIds] of employeesByRole) {
+      if (!roleType || await getInvalidEmployeeAssignmentId(employeeIds, pay.store_id as string, {
+        assignmentScope: 'allocationSupport', requireServiceSkills: true, skills: [roleType],
+      })) {
+        return { success: false, message: '所选员工不可分配：须是本店或已开启支援的在职人员，且具备所选技能标签' }
+      }
     }
 
     // 可分配额快照（基数 amount + 销售类别）

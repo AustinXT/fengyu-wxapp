@@ -115,6 +115,6 @@ describe('employee-assignment 场景隔离', () => {
       ['emp-local', 'emp-other'],
       'store-a',
       { assignmentScope: 'allocationSupport' },
-    )).rejects.toThrow(/INVALID_PARAMS.*未开启出差支援/)
+    )).rejects.toThrow(/INVALID_PARAMS.*所选员工不可指派/)
   })
 })

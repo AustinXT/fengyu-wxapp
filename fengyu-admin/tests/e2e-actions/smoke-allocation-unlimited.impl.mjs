@@ -32,6 +32,7 @@ try {
   await createTestClient()
   for (const employeeId of employeeIds) {
     await createTestStaff({ employeeId, openid: `${employeeId}_OPENID`, phone: null, name: employeeId, isManager: false })
+    await pgQuery('UPDATE staff_wechat_users SET skills = $2::text[] WHERE employee_id = $1', [employeeId, ['养生师', '美容师']])
   }
   await pgQuery(
     `INSERT INTO product_categories (category_id, category_name, product_kind, sales_category, sort_order, is_valid)

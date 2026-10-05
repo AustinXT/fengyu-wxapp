@@ -249,6 +249,16 @@ describe('service.create', () => {
     expect(detail.remark).toBeUndefined()
   })
 
+  test('普通员工自指派服务单不能在明细里指派其他员工', async () => {
+    const ctx = createBeauticianCtx({ assignedStaffWfId: 'emp-002', items: [
+      { saleItemId: 'card', employeeId: 'other', sessionUsed: 1 },
+    ] })
+    ctx.event.payload.assignedStaffWfId = ctx.auth.staffWfId
+    await expect(serviceRoutes.create(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
+    expect(pg.query).not.toHaveBeenCalled()
+    expect(pg.transaction).not.toHaveBeenCalled()
+  })
+
   test('美容师为自己创建服务单（权限 happy path）', async () => {
     const ctx = createBeauticianCtx({
       items: [{ saleItemId: 'item-001', sessionUsed: 1 }],

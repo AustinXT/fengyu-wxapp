@@ -157,8 +157,8 @@ module.exports.pct = function(rate) {
         data-name="{{member.name}}"
         bindtap="onEmployeeSelect"
       >
-        <text class="picker-member-name">{{member.name}}</text>
-        <text wx:if="{{member.storeName || member.marketName}}" class="picker-member-store">{{member.storeName || member.marketName}}</text>
+        <text class="picker-member-name">{{member.name}}{{member.assignmentScope && member.assignmentScope !== 'local' ? '（外援）' : ''}}</text>
+        <text class="picker-member-store">{{member.marketName || ''}}{{member.marketName && member.storeName ? '·' : ''}}{{member.storeName || ''}}{{!member.marketName && !member.storeName ? (member.department || '来源未设置') : ''}}</text>
       </view>
     </scroll-view>
   </van-popup>

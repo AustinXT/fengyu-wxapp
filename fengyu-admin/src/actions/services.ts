@@ -1670,7 +1670,7 @@ export const createServiceOrder = withPermission(
   if (!isInScope(session, data.storeId)) {
     return { success: false, message: '无权在该门店创建服务单' }
   }
-  // 服务单可指派「本店员工 ∪ 本门店所属市场内开启出差支援的员工」，技能扩至四项（issue #210）；
+  // 服务单可指派「本店员工 ∪ 全系统开启出差支援的员工」，技能扩至四项（issue #210）；
   // 与 getServiceStaffCandidates 的候选口径同源，否则前端选得到、提交被拦。
   if (await getInvalidEmployeeAssignmentId(
     [data.assignedEmployeeId],
@@ -1678,12 +1678,12 @@ export const createServiceOrder = withPermission(
     {
       requireServiceSkills: true,
       skills: SERVICE_ORDER_ASSIGNABLE_SKILLS,
-      assignmentScope: 'marketSupport',
+      assignmentScope: 'allocationSupport',
     },
   )) {
     // 两种拒因（归属不符 / 技能不在四项白名单）查询无法区分，文案同时覆盖，
-    // 与 staffApi utils/employee-assignment.js 的 SCOPE_ERROR_MESSAGE.marketSupport 同义
-    return { success: false, message: '所选服务人员不可指派：须是本店人员或本门店所属市场内的出差支援人员，且具备服务技能标签' }
+    // 与 staffApi utils/employee-assignment.js 的 SCOPE_ERROR_MESSAGE.allocationSupport 同义
+    return { success: false, message: '所选服务人员不可指派：须是本店人员或全系统已开启出差支援的在职人员，且具备服务技能标签' }
   }
 
   // 根据顾客成为会员客的时间戳判定服务单类型：
