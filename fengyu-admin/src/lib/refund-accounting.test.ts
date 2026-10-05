@@ -1,3 +1,5 @@
+import { createRequire } from 'node:module'
+import { retainedRefundFeeSql } from './refund-fee-sql'
 import { describe, expect, it } from 'vitest'
 import { allocateRefundAccounting } from './refund-accounting'
 
@@ -29,4 +31,24 @@ describe('退款手续费按实付分摊', () => {
     expect(() => allocateRefundAccounting(items, new Map([['A', 10]]), 11)).toThrow('超过')
     expect(() => allocateRefundAccounting(items, new Map([['A', 10]]), Infinity)).toThrow('不合法')
   })
+})
+
+const require = createRequire(import.meta.url)
+it('独立跨端副本保持分摊和手续费SQL一致', () => {
+  const staff = require('../../../fengyu-staff/cloudfunctions/staffApi/utils/refund-accounting.js')
+  const items = [{ refSaleItemId: 'A', refundAmount: 0.01 }, { refSaleItemId: 'B', refundAmount: 10 }]
+  const paid = new Map([['A', 1000], ['B', 10]])
+  expect(staff.allocateRefundAccounting(items, paid, 1, 2)).toEqual(allocateRefundAccounting(items, paid, 1, 2))
+  for (const path of ['../../../fengyu-staff/cloudfunctions/staffApi/utils/refund-fee-sql.js',
+    '../../../fengyu-client/cloudfunctions/clientApi/utils/refund-fee-sql.js',
+    '../../../fengyu-client/cloudfunctions/payNotify/refund-fee-sql.js']) {
+    const sibling = require(path).retainedRefundFeeSql
+    for (const item of [null, 'si.sale_item_id']) {
+      for (const deduction of [false, true]) {
+        expect(sibling('si.sale_order_id', item, deduction, 'current_refund.id'))
+          .toBe(retainedRefundFeeSql('si.sale_order_id', item, deduction, 'current_refund.id'))
+      }
+    }
+    expect(() => sibling('si.sale_order_id;SELECT')).toThrow('非法')
+  }
 })

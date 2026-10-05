@@ -1315,7 +1315,7 @@ export const approveRefund = withPermission(
         // #154：已提货件数直读持锁行的 picked_up_quantity（EvalPlanQual 会刷新它），
         // 本查询只剩**金额**——折抵金额含余数，不能由件数 × 单价推算。
         const consumedRows = (await tx.execute(sql`
-          SELECT si.sale_item_id,
+          SELECT si.sale_item_id, ${sql.raw(retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true, 'current_refund.id'))} AS retained_refund_amount,
                  COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric))
                              FROM sale_items out_item
                              JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
@@ -1330,7 +1330,7 @@ export const approveRefund = withPermission(
                             WHERE out_item.ref_sale_item_id = si.sale_item_id
                               AND out_item.item_direction = '转出'
                               AND conv_order.status <> '已关闭'), 0)::int AS converted_quantity
-            FROM sale_items si
+            FROM sale_items si CROSS JOIN (SELECT ${idNum}::bigint AS id) current_refund
            WHERE si.sale_order_id = ${refSaleOrderId}
              AND si.item_direction = '购买'
         `)) as unknown as Array<Record<string, unknown>>
@@ -1360,7 +1360,7 @@ export const approveRefund = withPermission(
             unit_price: 0,
             quantity: Number(r.quantity ?? 0),
             unit_real_price: r.unit_real_price as string,
-            received: r.received as string,
+            received: String(Math.max(0, Number(r.received) - Number(c?.retained_refund_amount ?? 0))),
             picked_up_quantity: Number(r.picked_up_quantity ?? 0),
             refunded_quantity: Number(r.refunded_quantity ?? 0),
             picked_quantity: Number(r.picked_up_quantity ?? 0),

@@ -1,5 +1,5 @@
-function retainedRefundFeeSql(orderExpression, itemExpression = null, includeDeduction = false) {
-  for (const expr of [orderExpression, itemExpression].filter(Boolean)) {
+function retainedRefundFeeSql(orderExpression, itemExpression = null, includeDeduction = false, excludePaymentExpression = null) {
+  for (const expr of [orderExpression, itemExpression, excludePaymentExpression].filter(Boolean)) {
     if (!/^[a-zA-Z_][a-zA-Z0-9_.]*$/.test(expr)) throw new Error('INVALID_PARAMS: 非法退款余额引用')
   }
   return `COALESCE((SELECT SUM(GREATEST(0, COALESCE(public.try_numeric(rfi ->> 'handlingFee'), 0))
@@ -9,6 +9,7 @@ function retainedRefundFeeSql(orderExpression, itemExpression = null, includeDed
       THEN public.try_jsonb(rfp.note) -> 'items' ELSE '[]'::jsonb END) rfi
     WHERE rfp.sale_order_id = ${orderExpression} AND rfp.status = '已支付' AND rfp.change_type = '退款'
       AND public.try_numeric(public.try_jsonb(rfp.note) ->> 'refundAccountingVersion') = 2
+      ${excludePaymentExpression ? `AND rfp.id <> ${excludePaymentExpression}` : ''}
       ${itemExpression ? `AND rfi ->> 'refSaleItemId' = ${itemExpression}` : ''}), 0)`
 }
 

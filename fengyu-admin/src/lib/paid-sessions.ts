@@ -80,6 +80,11 @@ UPDATE sale_items
 SET paid_sessions = CASE
   WHEN sale_items.session_count IS NULL THEN NULL
   WHEN rights.full_refund THEN 0
+  WHEN sale_items.remaining_sessions = 0 AND EXISTS (
+    SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_order ON conv_order.sale_order_id = conv_out.sale_order_id
+    WHERE conv_out.ref_sale_item_id = sale_items.sale_item_id AND conv_out.item_direction = '转出'
+      AND conv_order.status <> '已关闭'
+  ) THEN sale_items.session_count
   WHEN op.total_amount <= 0 THEN sale_items.session_count
   WHEN sale_items.sale_amount <= 0 THEN sale_items.session_count
   ELSE GREATEST(0, LEAST(sale_items.session_count - rights.refunded_sessions,
@@ -503,6 +508,11 @@ UPDATE sale_items
 SET paid_sessions = CASE
   WHEN sale_items.session_count IS NULL THEN NULL
   WHEN rights.full_refund THEN 0
+  WHEN sale_items.remaining_sessions = 0 AND EXISTS (
+    SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_order ON conv_order.sale_order_id = conv_out.sale_order_id
+    WHERE conv_out.ref_sale_item_id = sale_items.sale_item_id AND conv_out.item_direction = '转出'
+      AND conv_order.status <> '已关闭'
+  ) THEN sale_items.session_count
   WHEN op.total_amount <= 0 THEN sale_items.session_count
   WHEN sale_items.sale_amount <= 0 THEN sale_items.session_count
   ELSE GREATEST(0, LEAST(sale_items.session_count - rights.refunded_sessions,

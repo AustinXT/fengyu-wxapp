@@ -27,10 +27,16 @@ async function seed(id, { total = 1000, sessions = 10, consumed = 0, legacy = fa
   const payment = await createPaidPayment(id, { amount: total, items: legacy ? [] : [{ saleItemId: item, amount: total }] })
   return { item, payment }
 }
-async function approve(id, items, fee) {
+async function approve(id, items, fee, legacyNote = false) {
   const res = await invoke('order.createRefund', { refSaleOrderId: id, items, handlingFee: fee, refundReason: '#529隔离回归' })
   const pending = (await pgQuery("SELECT id FROM sale_order_payments WHERE sale_order_id=$1 AND change_type='退款' AND status='待审批'", [id]))[0]
   assert.ok(pending)
+  if (legacyNote) {
+    const oldNote = JSON.parse((await pgQuery('SELECT note FROM sale_order_payments WHERE id=$1', [pending.id]))[0].note)
+    delete oldNote.refundAccountingVersion
+    for (const item of oldNote.items) for (const field of ['grossRefundAmount','paidAmount','handlingFee','overdraftDeduction','netRefundAmount']) delete item[field]
+    await pgQuery('UPDATE sale_order_payments SET note=$2 WHERE id=$1', [pending.id, JSON.stringify(oldNote)])
+  }
   await invoke('order.approveRefund', { paymentId: Number(pending.id) })
   return Number(pending.id)
 }
@@ -43,7 +49,7 @@ try {
   const legacy = `${NS}_F529_LEG`
   const { item: legacyItem } = await seed(legacy, { total: 3000, sessions: 7, consumed: 7, legacy: true, unit: 398 })
   assert.equal((await pgQuery('SELECT count(*) AS n FROM sale_payment_item_receipts WHERE sale_order_id=$1', [legacy]))[0].n, '0')
-  const paymentId = await approve(legacy, [{ saleItemId: legacyItem, refundQuantity: 0, includeOverpay: true }], 100)
+  const paymentId = await approve(legacy, [{ saleItemId: legacyItem, refundQuantity: 0, includeOverpay: true }], 100, true)
   let rows = await money(legacy)
   assert.equal(Number(rows[0].received), 2886); assert.equal(Number(rows[0].refunded_amount), 114)
   assert.equal(rows[0].paid_sessions, 7); assert.equal(rows[0].status, '已支付')
@@ -54,13 +60,22 @@ try {
   assert.notEqual(retry.code, 0)
   const again = await invokeStaffApi('order.createRefund', { refSaleOrderId: legacy, items: [{ saleItemId: legacyItem, refundQuantity: 0, includeOverpay: true }], handlingFee: 0, refundReason: '重复', _testOpenid: TEST_MANAGER_OPENID })
   assert.notEqual(again.code, 0) // 手续费不能作为多收余数再退走
+  // 模拟首次审批前已经提交的旧申请：审批锁内不能把保留手续费当余数重复退走。
+  const stale = (await pgQuery(`INSERT INTO sale_order_payments
+    (sale_order_id,change_type,amount,payment_method,status,source_end,note)
+    SELECT sale_order_id,change_type,amount,payment_method,'待审批',source_end,note
+    FROM sale_order_payments WHERE id=$1 RETURNING id`, [paymentId]))[0]
+  const staleResult = await invokeStaffApi('order.approveRefund', { paymentId: Number(stale.id), _testOpenid: TEST_MANAGER_OPENID })
+  assert.notEqual(staleResult.code, 0)
+  assert.equal((await pgQuery('SELECT status FROM sale_order_payments WHERE id=$1', [stale.id]))[0].status, '待审批')
+  assert.equal(Number((await money(legacy))[0].received), 2886)
   const client = await getPool().connect()
   try { await client.query('BEGIN'); await recalcPaidSessionsForOrder(client, legacy); await settlePointsForOrder(client, legacy); await client.query('COMMIT') }
   finally { client.release() }
   rows = await money(legacy); assert.equal(rows[0].paid_sessions, 7); assert.equal(Number(rows[0].received), 2886)
   const zero = `${NS}_F529_ZERO`
   const { item: zeroItem } = await seed(zero, { total: 3000, sessions: 7, consumed: 7, legacy: true, unit: 398 })
-  await approve(zero, [{ saleItemId: zeroItem, refundQuantity: 0, includeOverpay: true }], 0)
+  await approve(zero, [{ saleItemId: zeroItem, refundQuantity: 0, includeOverpay: true }], 0, true)
   const z = (await money(zero))[0]; assert.equal(Number(z.received), 2786); assert.equal(z.paid_sessions, 7)
   // 全退手续费保留收入，员工角色池/销售提成净额归零，权益不随回款重算恢复。
   const full = `${NS}_F529_FULL`; const { item } = await seed(full)
@@ -88,6 +103,21 @@ try {
   assert.deepEqual(m.items.map(it => it.handlingFee), [15, 5])
   assert.equal(Number((await pgQuery('SELECT SUM(amount) AS n FROM sale_payment_item_receipts WHERE sale_payment_id=$1', [mId]))[0].n), -180)
   assert.equal(Number((await pgQuery('SELECT SUM(performance_amount) AS n FROM sale_reportable_item_events WHERE sale_order_id=$1', [multi]))[0].n), 215) // 普通项200已消费+手续费15；拓客项手续费5不计业绩
+  // 折抵注销行的 paid_sessions 是既有 D3 记账值；remaining=0 不释放实际可用权益。
+  const conversion = `${NS}_F529_CONV`
+  await createTestSaleOrder({ saleOrderId: conversion, clientUserId: TEST_CLIENT_USER_ID, totalAmount: 0, status: '已支付', salesCategory: '他销自耗' })
+  await pgQuery("UPDATE sale_items SET item_direction='转出',ref_sale_item_id=$2,received=0,quantity=1 WHERE sale_order_id=$1", [conversion, a])
+  await pgQuery('UPDATE sale_items SET remaining_sessions=0,sale_amount=200 WHERE sale_item_id=$1', [a])
+  const conversionTx = await getPool().connect()
+  try { await conversionTx.query('BEGIN'); await recalcPaidSessionsForOrder(conversionTx, multi); await conversionTx.query('COMMIT') }
+  finally { conversionTx.release() }
+  assert.equal((await pgQuery('SELECT paid_sessions FROM sale_items WHERE sale_item_id=$1', [a]))[0].paid_sessions, 3)
+  await pgQuery("UPDATE sale_orders SET status='已关闭' WHERE sale_order_id=$1", [conversion])
+  await pgQuery('UPDATE sale_items SET remaining_sessions=1,sale_amount=300 WHERE sale_item_id=$1', [a])
+  const restoredTx = await getPool().connect()
+  try { await restoredTx.query('BEGIN'); await recalcPaidSessionsForOrder(restoredTx, multi); await restoredTx.query('COMMIT') }
+  finally { restoredTx.release() }
+  assert.equal((await pgQuery('SELECT paid_sessions FROM sale_items WHERE sale_item_id=$1', [a]))[0].paid_sessions, 2)
   // 家居分两次退完：历史手续费不能污染角色池覆盖率，也不能留下员工收益。
   const home = `${NS}_F529_HOME`
   await createTestSaleOrder({ saleOrderId: home, clientUserId: TEST_CLIENT_USER_ID, productType: '家居产品', quantity: 4, totalAmount: 400, status: '已支付', salesCategory: '他销自耗' })

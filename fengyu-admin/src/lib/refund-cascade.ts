@@ -453,8 +453,10 @@ export async function cascadeRefund(
   const note = payment?.note ? JSON.parse(payment.note) : null
   if (note && Array.isArray(note.items)) {
     const paidRows = (await tx.execute(sql`
-      SELECT sale_item_id, received FROM sale_items
-       WHERE sale_order_id = ${saleOrderId} AND item_direction = '购买' ORDER BY sale_item_id
+      SELECT si.sale_item_id, GREATEST(0, si.received::numeric
+        - ${sql.raw(retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true, 'current_refund.id'))}) AS received
+        FROM sale_items si CROSS JOIN (SELECT ${refundPaymentId}::bigint AS id) current_refund
+       WHERE si.sale_order_id = ${saleOrderId} AND si.item_direction = '购买' ORDER BY si.sale_item_id
     `)) as unknown as Array<{ sale_item_id: string; received: string }>
     const accounted = allocateRefundAccounting(note.items,
       new Map(paidRows.map(r => [r.sale_item_id, Number(note.refundAccountingVersion === 2

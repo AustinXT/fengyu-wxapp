@@ -4127,7 +4127,7 @@ async function approveRefund(ctx) {
       // EvalPlanQual 会刷新）。两个来源并存会在不变量破裂时让提货闸门与折抵闸门无声分歧。
       // 本查询现在只为**金额**而存在：折抵金额含余数，不能由件数 × 单价推算。
       const consumedRes = await client.query(
-        `SELECT si.sale_item_id,
+        `SELECT si.sale_item_id, ${retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true, 'current_refund.id')} AS retained_refund_amount,
                 COALESCE((
                   SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item
                     JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
@@ -4144,10 +4144,10 @@ async function approveRefund(ctx) {
                      AND out_item.item_direction = '转出'
                      AND conv_order.status <> '已关闭'
                 ), 0)::int AS converted_quantity
-           FROM sale_items si
+           FROM sale_items si CROSS JOIN (SELECT $2::bigint AS id) current_refund
           WHERE si.sale_order_id = $1
             AND si.item_direction = '购买'`,
-        [refSaleOrderId],
+        [refSaleOrderId, paymentId],
       )
       const consumedById = new Map(consumedRes.rows.map((c) => [c.sale_item_id, c]))
       for (const r of lockedRows.rows) {
@@ -4176,7 +4176,7 @@ async function approveRefund(ctx) {
           // 疗程卡行恒 0；下面 converted_quantity 取的是锁后复算的**聚合**（覆盖两类、
           // 且不限 product_type），是 refund helper 唯一正确的来源。
           unit_real_price: r.unit_real_price,
-          received: r.received,
+          received: Math.max(0, Number(r.received) - Number(c?.retained_refund_amount ?? 0)),
           picked_quantity: Number(r.picked_up_quantity || 0),
           converted_amount: c ? c.converted_amount : null,
           converted_quantity: c ? c.converted_quantity : null,
