@@ -7,6 +7,10 @@ const url = process.env.COVER_WINDOW_PG_TEST_URL
 test('私有完整schema：真实体验卡路由遍历200条，无重复遗漏且每页有界', { skip: !url }, async () => {
   const fixture = await startCoverWindowPgFixture(url)
   try {
+    const legacy = await fixture.invoke({ _appVersion: 'legacy' })
+    assert.equal(legacy.result.data.skuList.length, 200)
+    assert.equal(legacy.result.data.hasMore, false)
+    assert.equal(legacy.result.data.nextCursor, null)
     const ids = []
     let cursor = null
     for (let page = 0; page < 10; page++) {

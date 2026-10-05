@@ -806,6 +806,24 @@ describe('product.shopInit', () => {
 })
 
 describe('product.experienceCardList', () => {
+  test('旧版无分页参数仍返回全部200条，第21条不丢失', async () => {
+    pg.query.mockResolvedValueOnce(Array.from({ length: 200 }, (_, i) => ({ sku_id: `legacy${i}`, sort_order: i })))
+    const ctx = createBoundCtx({ _appVersion: 'legacy' })
+    await routes.experienceCardList(ctx)
+    expect(ctx.result.skuList).toHaveLength(200)
+    expect(ctx.result.skuList[20].sku_id).toBe('legacy20')
+    expect(ctx.result.hasMore).toBe(false)
+    expect(ctx.result.nextCursor).toBeNull()
+    expect(pg.query.mock.calls[0][0]).not.toMatch(/\n    LIMIT /)
+  })
+  test('显式空cursor选择分页协议，默认20条', async () => {
+    pg.query.mockResolvedValueOnce(Array.from({ length: 21 }, (_, i) => ({ sku_id: `s${i}`, sort_order: i })))
+    const ctx = createBoundCtx({ cursor: null })
+    await routes.experienceCardList(ctx)
+    expect(ctx.result.skuList).toHaveLength(20)
+    expect(ctx.result.hasMore).toBe(true)
+    expect(pg.query.mock.calls[0][1].at(-1)).toBe(21)
+  })
   test('分页硬上限、多取一行与复合SKU游标', async () => {
     pg.query.mockResolvedValueOnce(Array.from({ length: 51 }, (_, i) => ({ sku_id: `s${i}`, sort_order: 1 })))
     const ctx = createBoundCtx({ limit: 999 })
@@ -862,7 +880,7 @@ describe('product.experienceCardList', () => {
     expect(calledSql).toContain('sk.market_scope')
     expect(calledSql).toContain('JOIN org_nodes pm')
     expect(calledSql).toContain('pm.id = ANY')
-    expect(params).toEqual([['store-jiujiang'], 21])
+    expect(params).toEqual([['store-jiujiang']])
   })
 
   test('未绑定门店时只返回全局可见体验卡', async () => {
@@ -875,7 +893,7 @@ describe('product.experienceCardList', () => {
     expect(calledSql).toContain('sk.market_scope IS NULL')
     expect(calledSql).not.toContain('btrim(sk.market_scope) =')
     expect(calledSql).not.toContain('FROM stores s')
-    expect(params).toEqual([21])
+    expect(params).toEqual([])
   })
 
   test('SQL 不能用 SKU_VALID_FILTER（会反向过滤掉所有体验卡）', async () => {

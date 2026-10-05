@@ -721,7 +721,10 @@ async function spuDetail(ctx) {
  */
 async function experienceCardList(ctx) {
   const { limit, cursor } = ctx.event.payload || {}
-  const pageSize = normalizeProductPageSize(limit)
+  // 已发布旧版不传分页参数；保留完整结果，不能因后端先部署而静默漏卡。
+  // 新版显式传 limit，走有界分页；携带 cursor 的请求也必须按分页校验。
+  const paginated = limit !== undefined || cursor !== undefined
+  const pageSize = paginated ? normalizeProductPageSize(limit) : null
   const decoded = decodeProductCursor(cursor)
   const params = []
   const marketScopeFilter = buildMarketScopeFilter(ctx.auth, params, 'sk')
@@ -731,7 +734,7 @@ async function experienceCardList(ctx) {
     params.push(decoded.sortOrder, decoded.productId)
     cursorFilter = `AND (sk.sort_order, sk.sku_id) > ($${params.length - 1}::int, $${params.length}::text)`
   }
-  params.push(pageSize + 1)
+  if (paginated) params.push(pageSize + 1)
   const probedRows = await pg.query(`
     SELECT
       sk.sku_id, sk.product_type, sk.spec_name,
@@ -751,11 +754,11 @@ async function experienceCardList(ctx) {
       ${marketScopeFilter}
       ${cursorFilter}
     ORDER BY sk.sort_order ASC, sk.sku_id ASC
-    LIMIT $${params.length}
+    ${paginated ? `LIMIT $${params.length}` : ''}
   `, params)
 
-  const hasMore = probedRows.length > pageSize
-  const rows = probedRows.slice(0, pageSize)
+  const hasMore = paginated && probedRows.length > pageSize
+  const rows = paginated ? probedRows.slice(0, pageSize) : probedRows
   const last = rows[rows.length - 1]
   const nextCursor = hasMore ? encodeProductCursor({ sort_order: last.sort_order, product_id: last.sku_id }) : null
 

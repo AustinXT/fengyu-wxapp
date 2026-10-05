@@ -12,6 +12,8 @@ const Launcher=require('miniprogram-automator/out/Launcher.js').default
 const root=fileURLToPath(new URL('../../../',import.meta.url));
 const source=join(root,'fengyu-client/miniprogram');
 const output=join(root,'_tmp/issue-273/compiled-client');
+// 仅关闭本验收生成的项目，避免重编译触发旧自动化会话重复回包。
+try { execFileSync('/Applications/wechatwebdevtools.app/Contents/MacOS/cli',['close','--project',output],{timeout:15000,stdio:'pipe'}); } catch {}
 mkdirSync(output,{recursive:true});
 cpSync(source,output,{recursive:true,filter:path=>!/(?:^|\/)(node_modules|__tests__)(?:\/|$)/.test(path) && !path.endsWith('.ts') && !path.endsWith('project.private.config.json')});
 execFileSync(join(source,'node_modules/.bin/tsc'),['-p',join(source,'tsconfig.json'),'--outDir',output],{stdio:'pipe'});
@@ -21,11 +23,28 @@ writeFileSync(join(output,'project.config.json'),JSON.stringify(config));
 writeFileSync(join(output,'project.private.config.json'),JSON.stringify({libVersion:'3.14.3',setting:{urlCheck:true}}));
 // 产品源码订单入口保持关闭；仅编译测试产物开启，验证既有隐藏页的窗口。
 const flag=join(output,'utils/feature-flags.js');writeFileSync(flag,readFileSync(flag,'utf8').replace('exports.ORDERS_ENTRY_ENABLED = false','exports.ORDERS_ENTRY_ENABLED = true'));
+// 在App启动前封住真实云请求；后续再注入合成业务数据，不访问共享dev/prod。
+const appFile=join(output,'app.js');
+writeFileSync(appFile,"wx.cloud.init=()=>{};wx.cloud.callFunction=async()=>({result:{code:0,message:'success',data:{}}});\n"+readFileSync(appFile,'utf8'));
+// 故障仅注入被测窗口工厂，不覆写整个wx能力（自动化协议也可能依赖它）。
+const coverFile=join(output,'utils/cover-window.js');
+writeFileSync(coverFile,readFileSync(coverFile,'utf8').replace('created = wx.createIntersectionObserver',"created = ((...args) => { if(getApp().globalData.__coverDisableObserver) throw new Error('synthetic unavailable'); return wx.createIntersectionObserver(...args); })"));
+console.log('L3 编译完成，启动隔离项目');
 const port=Number(process.env.COVER_WINDOW_AUTO_PORT||9432);
 execFileSync('/Applications/wechatwebdevtools.app/Contents/MacOS/cli',['auto','--project',output,'--auto-port',String(port),'--trust-project'],{timeout:60000,stdio:'pipe'});
 // RC工具缺失版本握手字段，包的checkVersion会报错；直接连接同一协议并核验真实SDK。
+console.log('L3 自动化端口已启动',port);
 let mp;let lastError;
-for(let attempt=0;attempt<20;attempt++){try{const candidate=await new Launcher().connectTool({wsEndpoint:`ws://127.0.0.1:${port}`});const info=await candidate.systemInfo();if(info.SDKVersion!=='3.14.3'){candidate.disconnect();throw new Error('模拟器尚未完成编译')}assert.equal(info.platform,'devtools');mp=candidate;break;}catch(error){lastError=error;await new Promise(r=>setTimeout(r,1000));}}
+for(let attempt=0;attempt<6;attempt++){
+ let candidate;
+ try{
+  console.log('L3 连接/SDK探测',attempt);
+  candidate=await new Launcher().connectTool({wsEndpoint:`ws://127.0.0.1:${port}`});
+  const info=await candidate.systemInfo();
+  if(info.SDKVersion!=='3.14.3')throw new Error('模拟器尚未完成编译');
+  assert.equal(info.platform,'devtools');mp=candidate;console.log('L3 SDK通过');break;
+ }catch(error){candidate?.disconnect();lastError=error;console.log('L3 SDK探测失败',error.message);await new Promise(r=>setTimeout(r,1000));}
+}
 if(!mp)throw lastError;
 let pgServer=null;
 mp.on('console',event=>{if(event.level==='error')console.log('微信页面错误',event.args)});
@@ -53,11 +72,17 @@ try {
     const offset=Number(payload.cursor||0); const end=Math.min(200,offset+20);
     data={skuList:Array.from({length:end-offset},(_,i)=>({sku_id:'S'+(i+offset),product_name:'合成卡'+(i+offset),spec_name:'测试',cover_image:'/images/icons/tab-home-active.png',price:100,session_count:1,unit:'次'})),hasMore:end<200,nextCursor:end<200?String(end):null}
    }
+   if(action==='product.shopInit' || action==='product.spuList') {
+    const offset=action==='product.shopInit'?0:Number(payload.cursor||0),end=Math.min(200,offset+20);
+    data={categories:[{category_id:'C-test',category_name:'合成分类',category_order:0,category_group:null}],groups:[],spuCategoryId:'C-test',spuList:Array.from({length:end-offset},(_,i)=>({product_id:'P'+(offset+i),name:'合成商品'+(offset+i),cover_image:'/images/icons/tab-home-active.png',priceFrom:'100',listPriceFrom:'100',skuList:[]})),hasMore:end<200,nextCursor:end<200?String(end):null};
+   }
+   if(action==='config.get') data={images:[]};
    if(action==='order.list') data={orders:[{sale_order_id:'O-test',status:'已支付',sale_order_type:'销售单',total_amount:200,received:200,sale_order_datetime:'2026-10-01',items:Array.from({length:200},(_,i)=>({sale_item_id:'I'+i,product_name:'合成明细'+i,cover_image:'/images/icons/tab-home-active.png',quantity:1,sale_amount:1,product_type:'家居产品',remaining_sessions:null}))}],hasMore:false};
    return {result:{code:0,message:'success',data}}
   };
  },Boolean(pgServer));
 
+ console.log('L3 合成API安装完成');
  let page=await mp.navigateTo('/pagesExperience/list/list');await wait(1000);
  console.log('experience-first', (await page.data()).skuList.length);
  async function waitData(predicate,label){for(let i=0;i<40;i++){const data=await page.data();if(predicate(data))return data;await wait(100)}throw new Error(label+'超时')}
@@ -73,17 +98,19 @@ try {
  for(let end=60;end<=200;end+=20){await (await page.$('.load-more-btn')).tap();await waitData(data=>data.skuList.length===end && !data.loadingMore,'按钮翻页')}
  assert.equal(await page.$('.load-more-btn'),null);
  assert.equal((await page.data()).skuList.length,200);
- async function snapshot(label,key,selector) {
+ async function snapshot(label,key,selector,scrollSelector='') {
   // 在同一次原生测量回包中读取几何和cover标记，避免两次协议往返之间渲染已更新。
   let state;
   for(let attempt=0;attempt<30;attempt++) {
-   state=await mp.evaluate((key,selector)=>new Promise(resolve=>{
+   state=await mp.evaluate((key,selector,scrollSelector)=>new Promise(resolve=>{
     const p=getCurrentPages().slice(-1)[0];
-    wx.createSelectorQuery().in(p).selectAll(selector).fields({rect:true,dataset:true}).selectViewport().fields({size:true}).exec(([slots,view])=>{
+    const query=wx.createSelectorQuery().in(p);query.selectAll(selector).fields({rect:true,dataset:true});
+    if(scrollSelector)query.select(scrollSelector).boundingClientRect();else query.selectViewport().fields({size:true});
+    query.exec(([slots,view])=>{
      const rows=p.data[key];
-     resolve({rows:rows.length,visible:rows.flatMap((r,i)=>r.coverVisible?[i]:[]),missing:slots.filter(r=>r.top<view.height && r.bottom>0 && !rows[Number(r.dataset.idx)].coverVisible).map(r=>r.dataset.idx),height:view.height});
+     resolve({rows:rows.length,visible:rows.flatMap((r,i)=>r.coverVisible?[i]:[]),missing:slots.filter(r=>r.top<(view.bottom??view.height) && r.bottom>(view.top??0) && !rows[Number(r.dataset.idx)].coverVisible).map(r=>r.dataset.idx),height:view.height});
     });
-   }),key,selector);
+   }),key,selector,scrollSelector);
    assert(state.height>0,label+'必须获得实际视口尺寸');
    if(state.missing.length===0)break;
    await wait(100);
@@ -108,10 +135,28 @@ try {
  assert.equal((await page.data()).skuList.length,200);
  assert.equal((await page.data()).hasMore,false);
  await snapshot('experience-navigate-back','skuList','.experience-cover-slot');
- await mp.evaluate(()=>{wx.__originalObserver=wx.createIntersectionObserver;wx.createIntersectionObserver=()=>{throw new Error('synthetic unavailable')};});
- page=await mp.navigateTo('/pagesExperience/list/list');await wait(1000);for(let i=0;i<9;i++){await page.callMethod('loadList',true);await wait(150)}
+ console.log('L3 开始测量回退');
+ await mp.evaluate(()=>{getApp().globalData.__coverDisableObserver=true;});
+ page=await mp.navigateTo('/pagesExperience/list/list');console.log('L3 回退页面已打开');await wait(1000);for(let i=0;i<9;i++){await page.callMethod('loadList',true);await wait(150)}
  await mp.pageScrollTo(999999);const fb=await snapshot('fallback-bottom','skuList','.experience-cover-slot');assert(fb.includes(199));assert(!fb.includes(0));
  await mp.pageScrollTo(0);const ft=await snapshot('fallback-return','skuList','.experience-cover-slot');assert(ft.includes(0));assert(!ft.includes(199));
  page=await mp.navigateTo('/pagesOrder/orders/orders');await wait(1000);await mp.pageScrollTo(6000);await snapshot('orders-fallback-middle','coverRows','.order-cover-slot');await mp.pageScrollTo(999999);await snapshot('orders-fallback-bottom','coverRows','.order-cover-slot');
+ // 共享窗口另外两个调用方：实际scroll-view、完整20条分页到200、故障回退与返回。
+ for(const fallback of [false,true]) {
+  await mp.evaluate(f=>{getApp().globalData.__coverDisableObserver=f},fallback);
+  for(const [name,path] of [['home','/pages/home/home'],['shop','/pagesShop/shop/shop']]) {
+   page=name==='home'?await mp.switchTab(path):await mp.navigateTo(path);
+   await waitData(d=>d.spuList.length>=20 && !d.isLoading,name+'首屏');
+   for(let end=40;end<=200;end+=20){await page.callMethod('onScrollToLower');await waitData(d=>d.spuList.length===end && !d.isLoading,name+'分页')}
+   await snapshot(name+'-top-'+fallback,'spuList','.spu-cover-slot','.product-scroll');
+   const scroll=await page.$('.product-scroll');await scroll.scrollTo(0,999999);
+   const bottom=await snapshot(name+'-bottom-'+fallback,'spuList','.spu-cover-slot','.product-scroll');assert(bottom.includes(199));assert(!bottom.includes(0));
+   await scroll.scrollTo(0,0);
+   const top=await snapshot(name+'-return-'+fallback,'spuList','.spu-cover-slot','.product-scroll');assert(top.includes(0));assert(!top.includes(199));
+   await mp.navigateTo('/pagesExperience/list/list');page=await mp.navigateBack();
+   assert.equal((await page.data()).spuList.length,200);
+   await snapshot(name+'-navigate-back-'+fallback,'spuList','.spu-cover-slot','.product-scroll');
+  }
+ }
  console.log('PASS 200实际视图槽位/有界image节点/往返滚动/原生测量回退')
-}finally{await mp.evaluate(()=>{if(wx.__originalCallFunction){wx.cloud.callFunction=wx.__originalCallFunction;delete wx.__originalCallFunction;}delete wx.__coverFailNext;if(wx.__originalObserver){wx.createIntersectionObserver=wx.__originalObserver;delete wx.__originalObserver}}).catch(()=>{});mp.disconnect();if(pgServer)await pgServer.close()}
+}finally{await mp.evaluate(()=>{if(wx.__originalCallFunction){wx.cloud.callFunction=wx.__originalCallFunction;delete wx.__originalCallFunction;}delete wx.__coverFailNext;delete getApp().globalData.__coverDisableObserver}).catch(()=>{});mp.disconnect();if(pgServer)await pgServer.close()}

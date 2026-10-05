@@ -1,4 +1,4 @@
-name: Experience pagination deployment guard
+name: Experience pagination compatibility
 on:
   pull_request:
     paths:
@@ -7,11 +7,11 @@ on:
       - 'db/package.json'
       - 'db/package-lock.json'
       - 'db/schema/product.ts'
-      - 'scripts/check-experience-pagination-compat.cjs'
-      - 'scripts/__tests__/experience-pagination-compat.test.cjs'
       - 'fengyu-client/cloudfunctions/clientApi/routes/product.js'
       - 'fengyu-client/miniprogram/pagesExperience/list/**'
       - 'fengyu-client/miniprogram/pagesOrder/orders/**'
+      - 'fengyu-client/miniprogram/pages/home/**'
+      - 'fengyu-client/miniprogram/pagesShop/shop/**'
       - 'fengyu-client/miniprogram/utils/cover-window.ts'
       - 'fengyu-client/tests/e2e-miniprogram/cover-window*'
       - 'db/migrations/**'
@@ -27,7 +27,10 @@ jobs:
       - run: npm ci
         working-directory: db
       - run: bash -n scripts/deploy-cloudfunctions.sh
-      - run: node --test scripts/__tests__/experience-pagination-compat.test.cjs
+      - run: npm ci
+        working-directory: fengyu-client/cloudfunctions/clientApi
+      - run: npx vitest run __tests__/routes/product.test.js
+        working-directory: fengyu-client/cloudfunctions/clientApi
 
   private-pg-pagination:
     runs-on: ubuntu-latest
