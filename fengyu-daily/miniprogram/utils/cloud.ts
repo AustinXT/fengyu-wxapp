@@ -7,6 +7,7 @@ export interface Employee {
   positionName?: string;
   orgName?: string;
   managerStores: { store_id: string; store_name: string }[];
+  managerWorkspaceStores?: { store_id: string; store_name: string }[];
   scopedStores: { store_id: string; store_name: string }[];
   availableWorkspaces: Workspace[];
   staffLevel: string | null;

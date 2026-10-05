@@ -50,7 +50,8 @@ Page({
       const { user, workspace } = await login();
       const isStoreManager = (user?.managerStores || []).length > 0;
       this.setData({ user, workspace,
-        showGoalEntry: workspace === 'manager' || (workspace === 'employee' && !isStoreManager),
+        showGoalEntry: (workspace === 'manager' && isStoreManager) ||
+          (workspace === 'employee' && !isStoreManager && user?.staffLevel === 'store_staff'),
       });
       syncTabs(this, workspace, 0);
       if (user) {

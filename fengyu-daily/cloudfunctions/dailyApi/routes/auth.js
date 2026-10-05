@@ -3,9 +3,8 @@ const {
   expandScopeStoreIds,
   expandScopeOrgNodeIds,
   deriveStaffLevel,
-  deriveAvailableLoginLevels,
 } = require("../utils/scope");
-const { hasDataCenterDashboard } = require("../utils/permission-matrix");
+const { resolveWorkspaces, managerViewStores } = require("../utils/daily-workspaces");
 const { resolvePhone } = require("../utils/phone-auth");
 async function identity(wxContext) {
   const { APPID, OPENID } = wxContext || {};
@@ -44,10 +43,9 @@ async function loadEmployee(user) {
     scopeName: r.scope_name,
   }));
   const staffLevel = deriveStaffLevel(roleBindings);
-  const [scopeStoreIds, scopeOrgNodeIds, hasDashboard] = await Promise.all([
+  const [scopeStoreIds, scopeOrgNodeIds] = await Promise.all([
     expandScopeStoreIds(roleBindings, pg),
     expandScopeOrgNodeIds(roleBindings, pg),
-    hasDataCenterDashboard(roleBindings),
   ]);
   const storeIds = await expandScopeStoreIds(
     roleBindings.filter((r) => r.isStoreManager),
@@ -65,16 +63,12 @@ async function loadEmployee(user) {
         [scopeStoreIds],
       )
     : [];
-  const availableLoginLevels = deriveAvailableLoginLevels(
-    staffLevel,
-    scopeStoreIds,
-    hasDashboard,
-    roleBindings,
+  const workspaces = resolveWorkspaces(managerStores, roleBindings);
+  const managerWorkspaceStores = managerViewStores(
+    managerStores,
+    scopedStores,
+    workspaces.management,
   );
-  const availableWorkspaces = ["employee"];
-  if (managerStores.length) availableWorkspaces.push("manager");
-  if (availableLoginLevels.includes("management"))
-    availableWorkspaces.push("management");
   return {
     employeeId: user.employee_id,
     name: user.name || user.employee_id,
@@ -83,9 +77,10 @@ async function loadEmployee(user) {
     positionName: user.position_name || "",
     orgName: user.org_name || "",
     managerStores,
+    managerWorkspaceStores,
     roleBindings,
     staffLevel,
-    availableWorkspaces,
+    availableWorkspaces: workspaces.availableWorkspaces,
     scopedStores,
     scopeOrgNodeIds,
   };

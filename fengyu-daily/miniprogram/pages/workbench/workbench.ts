@@ -23,6 +23,7 @@ Page({
     personalSummary: null as Management['summary'] | null,
     overview: null as Management | null,
     storeIndex: 0,
+    managerStores: [] as Employee["managerWorkspaceStores"],
     search: "",
     peopleStores: [{ store_id: '', store_name: '全部门店' }], peopleStoreIndex: 0,
     peopleMarkets: [{ id: '', name: '全部市场' }], peopleMarketIndex: 0,
@@ -63,9 +64,11 @@ Page({
           { periodId: this.data.periods[this.data.periodIndex]?.id });
         this.setData({ reports, personalSummary: summary });
       } else if (workspace === "manager") {
+        const managerStores = user.managerWorkspaceStores || user.managerStores;
+        if (!managerStores.length) throw new Error("当前授权范围没有可查看的门店");
         const index = Math.min(
           this.data.storeIndex,
-          user.managerStores.length - 1,
+          managerStores.length - 1,
         );
         const data = await callApi<{
           employees: Management["employees"];
@@ -75,10 +78,11 @@ Page({
         }>("manager.list", {
           date: this.data.date,
           period: this.data.period,
-          storeId: user.managerStores[index].store_id,
+          storeId: managerStores[index].store_id,
         });
         this.setData({
           storeIndex: index,
+          managerStores,
           storeReports: data.reports, storePeople: data.employees,
           unsubmitted: data.unsubmitted,
           summary: data.summary, range: data.range,
