@@ -14,6 +14,7 @@
 
  */
 
+import { auditRoleMigrations } from './steps/audit-role-migrations'
 import { db } from '@/db'
 import type { CronContext } from './lib/cron-context'
 import { refreshCustomerTypes } from './steps/refresh-customer-types'
@@ -75,6 +76,7 @@ const STEPS: ReadonlyArray<readonly [string, StepFn]> = [
   ['paymentInvariants', auditPaymentInvariants as StepFn],
   ['refundCascadeCoverage', auditRefundCascadeCoverage as StepFn],
   ['storeUnbindOrphans', auditStoreUnbindOrphans as StepFn],
+  ['roleMigrations', auditRoleMigrations as StepFn],
   ['activeAdminCount', auditActiveAdminCount as StepFn],
 ] as const
 

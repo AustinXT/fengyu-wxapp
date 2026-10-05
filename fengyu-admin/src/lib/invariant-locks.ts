@@ -16,8 +16,8 @@ import { db } from '@/db'
  *
  * | 锁 | 守的是什么 | 谁必须取 |
  * |---|---|---|
- * | ① `org_nodes:reparent` | **组织树形态**，以及一切按树形态做的判断：员工归属自洽（#259）、节点是否在操作者 scope 内、「节点类型 × 角色白名单 × 存量绑定」三元关系、门店↔节点映射 | `org.createOrgNode` / `updateOrgNode`（改父或改类型）/ `deleteOrgNode`、`employees.createEmployee` / `updateEmployee`（动归属或复职）、`permissions.assignRole` / `revokeRole`、`role-definitions.updateRoleDefinition`（白名单变更）、`stores.createStore` |
- * | ② `admin:active_count` | **「谁是活跃超管」这个集合** —— 由角色**绑定**与角色定义的**超管位**共同决定，所以两类写入都要取 | `employees.updateEmployee`（标离职）/ `deleteEmployee`、`permissions.assignRole` / `revokeRole`、`role-definitions.updateRoleDefinition`（capability 或白名单变更）/ `deleteRoleDefinition`、`org.updateOrgNode`（改 type） |
+ * | ① `org_nodes:reparent` | **组织树形态**，以及一切按树形态做的判断：员工归属自洽（#259）、节点是否在操作者 scope 内、「节点类型 × 角色白名单 × 存量绑定」三元关系、门店↔节点映射 | `org.createOrgNode` / `updateOrgNode`（改父或改类型）/ `deleteOrgNode`、`employees.createEmployee` / `updateEmployee`（动归属或复职）、`permissions.assignRole` / `revokeRole` / `role-migrations.reviewEmployeeRoleMigration`、`role-definitions.updateRoleDefinition`（白名单变更）、`stores.createStore` |
+ * | ② `admin:active_count` | **「谁是活跃超管」这个集合** —— 由角色**绑定**与角色定义的**超管位**共同决定，所以两类写入都要取 | `employees.updateEmployee`（标离职）/ `deleteEmployee`、`permissions.assignRole` / `revokeRole` / `role-migrations.reviewEmployeeRoleMigration`、`role-definitions.updateRoleDefinition`（capability 或白名单变更）/ `deleteRoleDefinition`、`org.updateOrgNode`（改 type） |
  *
  * ⚠️ 这张表会随功能增长，而**它不是靠自觉维护的**：
  * `invariant-locks.test.ts` 有一张逐 action 的期望清单（`EXPECTATIONS`），既断言每个 action

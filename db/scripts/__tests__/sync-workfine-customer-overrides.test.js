@@ -21,8 +21,8 @@ test('顾客同步三条更新路径都保留人工覆盖字段', () => {
     const guard = new RegExp(`'${field}' = ANY\\(c\\.workfine_override_fields\\)`, 'g')
     assert.equal(
       (source.match(guard) || []).length,
-      3,
-      `${field} 应在 customer_id 预更新、phone UPSERT、无 phone 更新三条路径中受保护`,
+      6,
+      `${field} 应在 customer_id 预更新、phone UPSERT、无 phone 更新三条路径的赋值与差异比较中都受保护`,
     )
   }
 })
