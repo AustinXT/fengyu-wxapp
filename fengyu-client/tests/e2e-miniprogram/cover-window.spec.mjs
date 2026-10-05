@@ -18,6 +18,7 @@ mkdirSync(output,{recursive:true});
 cpSync(source,output,{recursive:true,filter:path=>!/(?:^|\/)(node_modules|__tests__)(?:\/|$)/.test(path) && !path.endsWith('.ts') && !path.endsWith('project.private.config.json')});
 execFileSync(join(source,'node_modules/.bin/tsc'),['-p',join(source,'tsconfig.json'),'--outDir',output],{stdio:'pipe'});
 const config=JSON.parse(readFileSync(join(source,'project.config.json'),'utf8'));
+config.appid='touristappid';
 config.setting.useCompilerPlugins=[];config.setting.packNpmManually=false;config.libVersion='3.14.3';config.condition={};
 writeFileSync(join(output,'project.config.json'),JSON.stringify(config));
 writeFileSync(join(output,'project.private.config.json'),JSON.stringify({libVersion:'3.14.3',setting:{urlCheck:true}}));
@@ -25,7 +26,7 @@ writeFileSync(join(output,'project.private.config.json'),JSON.stringify({libVers
 const flag=join(output,'utils/feature-flags.js');writeFileSync(flag,readFileSync(flag,'utf8').replace('exports.ORDERS_ENTRY_ENABLED = false','exports.ORDERS_ENTRY_ENABLED = true'));
 // 在App启动前封住真实云请求；后续再注入合成业务数据，不访问共享dev/prod。
 const appFile=join(output,'app.js');
-writeFileSync(appFile,"wx.cloud.init=()=>{};wx.cloud.callFunction=async()=>({result:{code:0,message:'success',data:{}}});\n"+readFileSync(appFile,'utf8'));
+writeFileSync(appFile,"wx.cloud=wx.cloud||{};wx.cloud.init=()=>{};wx.cloud.callFunction=async()=>({result:{code:0,message:'success',data:{}}});\n"+readFileSync(appFile,'utf8'));
 // 故障仅注入被测窗口工厂，不覆写整个wx能力（自动化协议也可能依赖它）。
 const coverFile=join(output,'utils/cover-window.js');
 writeFileSync(coverFile,readFileSync(coverFile,'utf8').replace('created = wx.createIntersectionObserver',"created = ((...args) => { if(getApp().globalData.__coverDisableObserver) throw new Error('synthetic unavailable'); return wx.createIntersectionObserver(...args); })"));
@@ -60,12 +61,11 @@ async function route(method,url) {
   },method,url);
  }
  await invoke();
- await wait(1000);
+ // 与automator内置changeRoute一样等待原生导航完成，避免就绪轮询挤占RC路由队列。
+ await wait(3000);
  for(let i=0;i<60;i++){
   const p=await mp.currentPage();
   if(p && (!url || p.path===url.slice(1)))return p;
-  // RC偶发忽略自动化发出的导航；只在实际路由没有变化时重发两次。
-  if(url && (i===15 || i===30))await invoke();
   await wait(200);
  }
  throw new Error('实际页面路由未就绪：'+url);
@@ -153,7 +153,7 @@ try {
  await page.callMethod('onTabChange',{detail:{name:'已支付'}});
  await waitData(data=>data.activeTab==='已支付' && !data.isLoading && data.coverRows.length===200,'切Tab');
  await mp.pageScrollTo(999999);await snapshot('orders-tab-bottom','coverRows','.order-cover-slot');
- page=await route('navigateBack');
+ page=await route('navigateBack','/pagesExperience/list/list');
  assert.equal((await page.data()).skuList.length,200);
  assert.equal((await page.data()).hasMore,false);
  await snapshot('experience-navigate-back','skuList','.experience-cover-slot');
@@ -177,7 +177,7 @@ try {
    const bottom=await snapshot(name+'-bottom-'+fallback,'spuList','.spu-cover-slot','.product-scroll',199);assert(bottom.includes(199));assert(!bottom.includes(0));
    await scroll.scrollTo(0,0);
    const top=await snapshot(name+'-return-'+fallback,'spuList','.spu-cover-slot','.product-scroll',0);assert(top.includes(0));assert(!top.includes(199));
-   await route('navigateTo','/pagesExperience/list/list');page=await route('navigateBack');
+   await route('navigateTo','/pagesExperience/list/list');page=await route('navigateBack',path);
    assert.equal((await page.data()).spuList.length,200);
    await snapshot(name+'-navigate-back-'+fallback,'spuList','.spu-cover-slot','.product-scroll');
   }
