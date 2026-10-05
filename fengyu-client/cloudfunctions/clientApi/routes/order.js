@@ -273,7 +273,7 @@ async function refreshSpendingTier(client, clientUserId) {
      END::spending_tier,
      updated_at = NOW()
      FROM (
-       SELECT COALESCE(SUM(GREATEST((received::numeric) - (refunded_amount::numeric), 0)), 0) AS total
+       SELECT COALESCE(SUM(GREATEST((received::numeric) - (refunded_amount::numeric) - ${retainedRefundFeeSql('sale_orders.sale_order_id')}, 0)), 0) AS total
        FROM sale_orders
        WHERE client_user_id = $1
          AND status IN ('已支付', '已完成')

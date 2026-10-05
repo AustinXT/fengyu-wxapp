@@ -90,6 +90,20 @@ try {
   finally { pointsClient.release() }
   assert.equal((await money(full))[0].paid_sessions, 0)
   assert.equal(Number((await pgQuery(`SELECT SUM(GREATEST(so.received-so.refunded_amount-${retainedRefundFeeSql('so.sale_order_id')},0)) AS n FROM sale_orders so WHERE so.sale_order_id=$1`, [full]))[0].n), 0)
+  // 超额扣除使现金净额为0时，仍需零元receipt承载完整退项的员工冲销。
+  const noCash = `${NS}_F529_NO_CASH`; const { item: noCashItem } = await seed(noCash)
+  const noCashReceipt = (await pgQuery('SELECT id FROM sale_payment_item_receipts WHERE sale_item_id=$1', [noCashItem]))[0]
+  await pgQuery("INSERT INTO sale_payment_item_allocations (sale_payment_item_receipt_id,employee_id,role_type,allocation_ratio,allocated_amount,commission_rate,commission_amount) VALUES ($1,$2,'美容师',1,1000,0.06,60)", [noCashReceipt.id, TEST_MANAGER_EMP_ID])
+  await invoke('order.createRefund', { refSaleOrderId: noCash, items: [{ saleItemId: noCashItem }], handlingFee: 50, refundReason: '超额扣除净额0兼容' })
+  const noCashPending = (await pgQuery("SELECT id,note FROM sale_order_payments WHERE sale_order_id=$1 AND status='待审批'", [noCash]))[0]
+  const noCashNote = JSON.parse(noCashPending.note); noCashNote.overdraftDeduction = 950
+  noCashNote.items[0].overdraftDeduction = 950; noCashNote.items[0].netRefundAmount = 0
+  await pgQuery('UPDATE sale_order_payments SET amount=0,note=$2 WHERE id=$1', [noCashPending.id, JSON.stringify(noCashNote)])
+  await invoke('order.approveRefund', { paymentId: Number(noCashPending.id) })
+  assert.equal(Number((await pgQuery('SELECT amount FROM sale_payment_item_receipts WHERE sale_payment_id=$1', [noCashPending.id]))[0].amount), 0)
+  const noCashPool = (await pgQuery('SELECT SUM(a.allocated_amount) AS amt,SUM(a.commission_amount) AS comm FROM sale_payment_item_allocations a JOIN sale_payment_item_receipts r ON r.id=a.sale_payment_item_receipt_id WHERE r.sale_item_id=$1 AND NOT a.is_void', [noCashItem]))[0]
+  assert.equal(Number(noCashPool.amt), 0); assert.equal(Number(noCashPool.comm), 0)
+  assert.equal((await money(noCash))[0].paid_sessions, 0)
   // 两项实付不同而退款毛额相等：按实付3:1分摊，不按退款额1:1。
   const multi = `${NS}_F529_MIX`; const { item: a } = await seed(multi, { total: 300, sessions: 3, consumed: 2, unit: 100 })
   const b = `${multi}_ITEM_2`
@@ -141,6 +155,26 @@ try {
   finally { pointTx.release() }
   await approve(threshold, [{ saleItemId: thresholdItem, refundQuantity: 0, includeOverpay: true }], 41)
   assert.equal(Number((await pgQuery("SELECT SUM(amount) AS n FROM point_transactions WHERE ref_order_id=$1 AND type IN ('消费赠送','消费冲销')", [threshold]))[0].n), 0)
+  // 早期纯文本note沿用既有单项兜底，不因JSON格式新增内部错误。
+  const textOrder = `${NS}_F529_TEXT`; const { item: textItem } = await seed(textOrder)
+  await invoke('order.createRefund', { refSaleOrderId: textOrder, items: [{ saleItemId: textItem }], handlingFee: 0, refundReason: '旧文本note' })
+  const textPayment = (await pgQuery("SELECT id FROM sale_order_payments WHERE sale_order_id=$1 AND status='待审批'", [textOrder]))[0]
+  await pgQuery("UPDATE sale_order_payments SET note='旧系统退款备注' WHERE id=$1", [textPayment.id])
+  await invoke('order.approveRefund', { paymentId: Number(textPayment.id) })
+  assert.equal(Number((await money(textOrder))[0].received), 0)
+  assert.equal((await money(textOrder))[0].paid_sessions, 0)
+  // 已审批旧退款：原代码receipt按毛额冲销，权益侧不能再扣费；消费按主流水净额另排明确手续费。
+  const historical = `${NS}_F529_OLD_PAID`
+  const { item: historicalItem } = await seed(historical, { total: 500, sessions: 5, unit: 100 })
+  const oldPayment = await createPaidPayment(historical, { changeType: '退款', amount: -450, items: [{ saleItemId: historicalItem, amount: -500 }] })
+  await pgQuery('UPDATE sale_order_payments SET note=$2 WHERE id=$1', [oldPayment, JSON.stringify({ handlingFee: 50, items: [{ refSaleItemId: historicalItem, quantity: 5, refundAmount: 500, isFullItemRefund: true }] })])
+  await pgQuery("UPDATE sale_orders SET refunded_amount=450,status='已退款' WHERE sale_order_id=$1", [historical])
+  await pgQuery('UPDATE sale_items SET received=0,paid_sessions=0 WHERE sale_item_id=$1', [historicalItem])
+  assert.equal(Number((await pgQuery(`SELECT ${retainedRefundFeeSql('so.sale_order_id')} AS fee FROM sale_orders so WHERE so.sale_order_id=$1`, [historical]))[0].fee), 50)
+  assert.equal(Number((await pgQuery(`SELECT ${retainedRefundFeeSql('si.sale_order_id','si.sale_item_id',true)} AS fee FROM sale_items si WHERE si.sale_item_id=$1`, [historicalItem]))[0].fee), 0)
+  const historicalTx = await getPool().connect()
+  try { await historicalTx.query('BEGIN'); assert.equal((await settlePointsForOrder(historicalTx, historical)).expected, 0); await historicalTx.query('COMMIT') }
+  finally { historicalTx.release() }
   // 真实缺口：已有不完整受领不可偷偷补齐，也不能留下审批/冲销残留。
   const broken = `${NS}_F529_BAD`; const { item: bad } = await seed(broken)
   await pgQuery('UPDATE sale_payment_item_receipts SET amount=10 WHERE sale_item_id=$1', [bad])
@@ -151,4 +185,4 @@ try {
   assert.equal((await pgQuery('SELECT status FROM sale_order_payments WHERE id=$1', [bp.id]))[0].status, '待审批')
   assert.equal(Number((await money(broken))[0].refunded_amount), 0)
   console.log('PASS #529: 历史余数、手续费净额、禁止再退、次数幂等、员工归零、积分/档位排除、实付分摊、真实缺口回滚')
-} finally { await cleanupTestData(NS); await closePool() }
+} finally { await cleanupTestData(NS); await closePool(); await require(`${REPO_ROOT}/fengyu-staff/cloudfunctions/staffApi/db/pg.js`).getPool().end() }

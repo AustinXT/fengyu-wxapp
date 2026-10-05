@@ -152,7 +152,9 @@ async function buildReceiptRefundItems(client, saleOrderId, refundPaymentId, eff
 
   const requestedTotalCents = overpayCents
     + Array.from(requestedCentsByItem.values()).reduce((sum, cents) => sum + cents, 0)
-  if (requestedTotalCents <= 0) return []
+  if (requestedTotalCents <= 0) return effItems
+    .filter(it => !isLegacyOverpaySentinel(it) && Number(it.refundAmount ?? 0) > 0)
+    .map(it => ({ saleItemId: it.saleItemId, refundAmount: 0 }))
 
   const residualRows = await client.query(
       `SELECT si.sale_item_id,
@@ -285,7 +287,9 @@ async function cascadeRefund(client, params) {
      WHERE id = $1 AND sale_order_id = $2 AND change_type = '退款'
   `, [refundPaymentId, saleOrderId])).rows
   const payment = paymentRows[0]
-  const note = payment?.note ? JSON.parse(payment.note) : null
+  let note
+  try { note = payment?.note ? JSON.parse(payment.note) : null }
+  catch { note = null } // 沿用旧文本note的既有级联兜底，不将格式异常升级为未知错误。
   if (note && Array.isArray(note.items)) {
     const paidRows = (await client.query(`
       SELECT si.sale_item_id, GREATEST(0, si.received::numeric

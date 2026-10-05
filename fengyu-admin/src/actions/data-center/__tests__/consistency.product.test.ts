@@ -393,7 +393,7 @@ describe('品项板块两端口径一致性守护', () => {
           'WHERE so.client_user_id = c.user_id ' +
           'AND si.paid_sessions > 0 ' +
           "AND so.sale_order_type IN ('销售单', '转换单', '寄存单') " +
-          "AND so.status <> '已关闭' " +
+          "AND so.status = '已支付' " +
           'AND ${filter} )'
 
         // ① 全局：分子 = 分母 + EXISTS

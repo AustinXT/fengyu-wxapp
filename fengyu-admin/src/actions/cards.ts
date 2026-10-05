@@ -1,5 +1,7 @@
 'use server'
 
+import { retainedRefundFeeSql } from '@/lib/refund-fee-sql'
+
 import { db } from '@/db'
 import { saleItems, saleOrders } from '@db/order'
 import { productSkus, productCategories } from '@db/product'
@@ -834,7 +836,7 @@ export const getCustomerHeldCards = withPermission(
       unitPrice: saleItems.unitPrice,
       unitRealPrice: saleItems.unitRealPrice,
       saleAmount: saleItems.saleAmount,
-      received: saleItems.received,
+      received: sql<string>`GREATEST(0, ${saleItems.received}::numeric - ${sql.raw(retainedRefundFeeSql('sale_items.sale_order_id', 'sale_items.sale_item_id', true))})`,
       pendingReceived: saleItems.pendingReceived,
       expireDate: saleItems.expireDate,
       remark: saleItems.remark,
@@ -880,7 +882,7 @@ export const getCustomerHeldCards = withPermission(
                       ELSE GREATEST(0, ${saleItems.quantity} - (COALESCE(${saleItems.pickedUpQuantity}, 0) + COALESCE(${saleItems.refundedQuantity}, 0) + COALESCE(${saleItems.convertedQuantity}, 0)))
                  END
                )
-               ELSE GREATEST(0, ${saleItems.received}::numeric
+               ELSE GREATEST(0, ${saleItems.received}::numeric - ${sql.raw(retainedRefundFeeSql('sale_items.sale_order_id', 'sale_items.sale_item_id', true))}
                  - CASE WHEN ${saleItems.productType} = '疗程卡'
                         THEN GREATEST(0, COALESCE(${saleItems.sessionCount}, 0) - COALESCE(${saleItems.remainingSessions}, 0))::numeric * ${saleItems.unitRealPrice}::numeric
                         ELSE COALESCE(${saleItems.pickedUpQuantity}, 0) * ${saleItems.unitRealPrice}::numeric

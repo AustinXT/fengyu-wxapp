@@ -4026,3 +4026,23 @@ describe('#182 已退出判据所有站点同源', () => {
     }
   })
 })
+
+// #529：消费档位实时/旧单审核重算不能被某端回款重新计入手续费。
+describe('#529 消费档位与折抵候选传播守卫', () => {
+  const sources = [FILES.staffOrderJs, FILES.clientOrderJs, FILES.payNotifyIndexJs, FILES.adminRefundsTs,
+    path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/recompute-customer-tags.ts')]
+  test.each(sources)('消费档位实际SQL排手续费：%s', file => {
+    const src = readFile(file)
+    const matches = src.match(/SELECT COALESCE\(SUM\(GREATEST\(\(received::numeric\)[^\n]+ AS total/g)
+    expect(matches).not.toBeNull()
+    for (const query of matches) {
+      expect(query).toContain("retainedRefundFeeSql('sale_orders.sale_order_id')")
+      expect(normalizeSql(query)).toBe('SELECT COALESCE(SUM(GREATEST((received::numeric) - (refunded_amount::numeric) - ?, 0)), 0) AS total')
+    }
+  })
+  test('admin折抵候选展示与准入同时扣手续费', () => {
+    const src = readFile(path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/cards.ts'))
+      .split('export const getCustomerHeldCards')[1]
+    expect(src.match(/retainedRefundFeeSql\('sale_items.sale_order_id', 'sale_items.sale_item_id', true\)/g)).toHaveLength(2)
+  })
+})
