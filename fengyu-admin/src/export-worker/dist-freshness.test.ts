@@ -132,6 +132,13 @@ function moduleSegments(dist: string, file: string, keepIndent = false): string[
 
 const PROBES: Probe[] = [
   {
+    label: '#529 手续费分摊版本：卡项/顾客导出必须携带新版留存手续费SQL',
+    file: 'src/lib/refund-fee-sql.ts',
+    pattern: /AND (?:COALESCE\()?public\.try_numeric\(public\.try_jsonb\(rfp\.note\) ->> 'refundAccountingVersion'\)/,
+    minLines: 2,
+    exactCountsInModule: true,
+  },
+  {
     label: '拓客款项视图 · 按款项关联 receipt（#494）',
     file: '../db/schema/order.ts',
     pattern: /^(LEFT JOIN LATERAL \(|WHERE spir\.sale_payment_id = spe\.sale_payment_id)$/,

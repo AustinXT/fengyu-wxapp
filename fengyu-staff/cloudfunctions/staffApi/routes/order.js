@@ -3364,6 +3364,7 @@ async function detail(ctx) {
       si.sale_item_id, si.sale_order_id, si.sku_id, si.session_count, si.remaining_sessions,
       si.paid_sessions,
       si.unit_price, si.quantity, si.unit_real_price, si.sale_amount, si.received,
+      ${retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true)} AS retained_refund_amount,
       si.prepaid_card_received, si.cash_received, si.pending_received,
       si.expire_date, si.remark, si.sales_category, si.ref_sale_item_id,
       si.product_name, si.product_type, si.picked_up_quantity,
@@ -3470,13 +3471,15 @@ async function detail(ctx) {
   // 多收余数（overpay）：按 sale_item 行级 received 归属，汇总字段只供老前端展示。
   // 仅销售单/转换单非历史单有意义（与可退口径一致）。
   const purchaseItems = items.filter((it) => it.item_direction === '购买')
-  const itemOverpayById = computeItemOverpayRemainders(purchaseItems)
+  const refundableItems = purchaseItems.map(it => ({ ...it,
+    received: Math.max(0, Number(it.received ?? 0) - Number(it.retained_refund_amount ?? 0)) }))
+  const itemOverpayById = computeItemOverpayRemainders(refundableItems)
   for (const it of purchaseItems) {
     it.overpay_refundable = Math.max(0, Number(itemOverpayById.get(it.sale_item_id) || 0))
   }
   const overpayRefundable =
     ['销售单', '转换单'].includes(order.sale_order_type) && order.legacy_source !== 'workfine'
-      ? computeOverpayRemainder(order, purchaseItems)
+      ? computeOverpayRemainder(order, refundableItems)
       : 0
 
   // #214：这里是 `SELECT o.*` 原样展开，新增的 lakala_payment_intent 里含 paySign /

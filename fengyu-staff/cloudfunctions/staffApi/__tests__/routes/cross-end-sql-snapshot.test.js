@@ -4046,3 +4046,21 @@ describe('#529 消费档位与折抵候选传播守卫', () => {
     expect(src.match(/retainedRefundFeeSql\('sale_items.sale_order_id', 'sale_items.sale_item_id', true\)/g)).toHaveLength(2)
   })
 })
+
+describe('#529 消费累计/cron/运维及可退零头传播守卫', () => {
+  test.each([
+    ['db/scripts/calc-spending-tier.js', 'o.'],
+    ['fengyu-admin/src/cron/steps/refresh-spending-tier.ts', 'o.'],
+    ['fengyu-admin/src/actions/customers.ts', ''],
+    ['fengyu-admin/src/actions/refunds.ts', ''],
+  ])('%s 实际累计消费查询排手续费', (file, prefix) => {
+    const src = readFile(path.resolve(__dirname, '../../../../..', file))
+    const expected = `SUM(GREATEST((${prefix}received::numeric) - (${prefix}refunded_amount::numeric) - ?, 0))`
+    expect(normalizeSql(src).includes(expected)).toBe(true)
+  })
+  test('admin卡包及导出可退零头扣fee但资金展示仍读真实received', () => {
+    const src = readFile(path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/cards.ts'))
+    expect(src.match(/retainedRefundAmount: sql<string>/g)).toHaveLength(2)
+    expect(src.match(/Number\(r.received \?\? 0\) - Number\(r.retainedRefundAmount \?\? 0\)/g)).toHaveLength(2)
+  })
+})

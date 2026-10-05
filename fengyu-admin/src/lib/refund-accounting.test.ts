@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { runInNewContext } from 'node:vm'
 import { createRequire } from 'node:module'
 import { retainedRefundFeeSql } from './refund-fee-sql'
 import { describe, expect, it } from 'vitest'
@@ -50,5 +52,15 @@ it('独立跨端副本保持分摊和手续费SQL一致', () => {
       }
     }
     expect(() => sibling('si.sale_order_id;SELECT')).toThrow('非法')
+  }
+})
+
+it('运维第五份手续费SQL独立副本与在线端逐字一致', () => {
+  const script = readFileSync(require.resolve('../../../db/scripts/calc-spending-tier.js'), 'utf8')
+  const helperSource = script.slice(script.indexOf('function retainedRefundFeeSql'), script.indexOf("const { Pool }"))
+  const sibling = runInNewContext(`(${helperSource})`)
+  for (const item of [null, 'si.sale_item_id']) for (const deduction of [false, true]) {
+    expect(sibling('si.sale_order_id', item, deduction, 'current_refund.id'))
+      .toBe(retainedRefundFeeSql('si.sale_order_id', item, deduction, 'current_refund.id'))
   }
 })

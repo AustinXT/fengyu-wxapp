@@ -56,6 +56,10 @@ try {
   const note = JSON.parse((await pgQuery('SELECT note FROM sale_order_payments WHERE id=$1', [paymentId]))[0].note)
   assert.equal(note.items[0].handlingFee, 100); assert.equal(note.items[0].netRefundAmount, 114)
   assert.equal(Number((await pgQuery('SELECT SUM(amount) AS n FROM sale_payment_item_receipts WHERE sale_payment_id=$1', [paymentId]))[0].n), -114)
+  const legacyDetail = await invoke('order.detail', { saleOrderId: legacy })
+  assert.equal(legacyDetail.overpayRefundable, 0)
+  assert.equal(legacyDetail.items[0].overpay_refundable, 0)
+  assert.equal(Number(legacyDetail.items[0].received), 2886) // 资金展示仍是现金净额
   const retry = await invokeStaffApi('order.approveRefund', { paymentId, _testOpenid: TEST_MANAGER_OPENID })
   assert.notEqual(retry.code, 0)
   const again = await invokeStaffApi('order.createRefund', { refSaleOrderId: legacy, items: [{ saleItemId: legacyItem, refundQuantity: 0, includeOverpay: true }], handlingFee: 0, refundReason: '重复', _testOpenid: TEST_MANAGER_OPENID })
