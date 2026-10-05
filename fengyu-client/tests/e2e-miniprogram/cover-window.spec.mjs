@@ -12,6 +12,9 @@ const Launcher=require('miniprogram-automator/out/Launcher.js').default
 const root=fileURLToPath(new URL('../../../',import.meta.url));
 const source=join(root,'fengyu-client/miniprogram');
 const output=join(root,'_tmp/issue-273/compiled-client');
+const scope=process.env.COVER_WINDOW_SCOPE||'full';
+assert(['full','experience'].includes(scope),'COVER_WINDOW_SCOPE只能是full或experience');
+if(scope==='experience')assert(process.env.COVER_WINDOW_PG_TEST_URL,'聚焦体验卡链路必须显式指定私有PG');
 // 仅关闭本验收生成的项目，避免重编译触发旧自动化会话重复回包。
 try { execFileSync('/Applications/wechatwebdevtools.app/Contents/MacOS/cli',['close','--project',output],{timeout:15000,stdio:'pipe'}); } catch {}
 mkdirSync(output,{recursive:true});
@@ -23,13 +26,19 @@ config.setting.useCompilerPlugins=[];config.setting.packNpmManually=false;config
 writeFileSync(join(output,'project.config.json'),JSON.stringify(config));
 writeFileSync(join(output,'project.private.config.json'),JSON.stringify({libVersion:'3.14.3',setting:{urlCheck:true}}));
 // 产品源码订单入口保持关闭；仅编译测试产物开启，验证既有隐藏页的窗口。
-const flag=join(output,'utils/feature-flags.js');writeFileSync(flag,readFileSync(flag,'utf8').replace('exports.ORDERS_ENTRY_ENABLED = false','exports.ORDERS_ENTRY_ENABLED = true'));
+const flag=join(output,'utils/feature-flags.js');const flags=readFileSync(flag,'utf8');
+assert(flags.includes('exports.ORDERS_ENTRY_ENABLED = false'),'测试订单入口开关注入必须命中');
+writeFileSync(flag,flags.replace('exports.ORDERS_ENTRY_ENABLED = false','exports.ORDERS_ENTRY_ENABLED = true'));
 // 在App启动前封住真实云请求；后续再注入合成业务数据，不访问共享dev/prod。
 const appFile=join(output,'app.js');
 writeFileSync(appFile,"wx.cloud=wx.cloud||{};wx.cloud.init=()=>{};wx.cloud.callFunction=async()=>({result:{code:0,message:'success',data:{}}});\n"+readFileSync(appFile,'utf8'));
 // 故障仅注入被测窗口工厂，不覆写整个wx能力（自动化协议也可能依赖它）。
 const coverFile=join(output,'utils/cover-window.js');
-writeFileSync(coverFile,readFileSync(coverFile,'utf8').replace('created = wx.createIntersectionObserver',"created = ((...args) => { if(getApp().globalData.__coverDisableObserver) throw new Error('synthetic unavailable'); return wx.createIntersectionObserver(...args); })"));
+const coverSource=readFileSync(coverFile,'utf8');
+assert.equal(coverSource.split('created = wx.createIntersectionObserver').length,2,'观察器故障注入必须且只能命中一次');
+const injected=coverSource.replace('created = wx.createIntersectionObserver',"created = ((...args) => { if(getApp().globalData.__coverDisableObserver) throw new Error('synthetic unavailable'); return wx.createIntersectionObserver(...args); })");
+assert(injected.includes('__coverDisableObserver'),'观察器故障注入标记必须存在');
+writeFileSync(coverFile,injected);
 console.log('L3 编译完成，启动隔离项目');
 const port=Number(process.env.COVER_WINDOW_AUTO_PORT||9432);
 execFileSync('/Applications/wechatwebdevtools.app/Contents/MacOS/cli',['auto','--project',output,'--auto-port',String(port),'--trust-project'],{timeout:60000,stdio:'pipe'});
@@ -157,6 +166,7 @@ try {
  page=await route('navigateTo','/pagesExperience/list/list');console.log('L3 回退页面已打开');await wait(1000);for(let i=0;i<9;i++){await page.callMethod('loadList',true);await wait(150)}
  await mp.pageScrollTo(999999);const fb=await snapshot('fallback-bottom','skuList','.experience-cover-slot');assert(fb.includes(199));assert(!fb.includes(0));
  await mp.pageScrollTo(0);const ft=await snapshot('fallback-return','skuList','.experience-cover-slot');assert(ft.includes(0));assert(!ft.includes(199));
+ if(scope==='full') {
  page=await route('navigateTo','/pagesOrder/orders/orders');await wait(1000);await mp.pageScrollTo(6000);await snapshot('orders-fallback-middle','coverRows','.order-cover-slot');await mp.pageScrollTo(999999);await snapshot('orders-fallback-bottom','coverRows','.order-cover-slot');
  // 共享窗口另外两个调用方：实际scroll-view、完整20条分页到200、故障回退与返回。
  for(const fallback of [false,true]) {
@@ -177,5 +187,6 @@ try {
    await snapshot(name+'-navigate-back-'+fallback,'spuList','.spu-cover-slot','.product-scroll');
   }
  }
- console.log('PASS 200实际视图槽位/有界image节点/往返滚动/原生测量回退')
+ }
+ console.log(scope==='full'?'PASS 四页200实际视图槽位/有界image节点/往返滚动/原生测量回退':'PASS 真实产品路由+私有PG+原生体验卡200条/重试/页面返回/故障回退（首页商城由full专项覆盖）')
 }finally{await mp.evaluate(()=>{if(wx.__originalCallFunction){wx.cloud.callFunction=wx.__originalCallFunction;delete wx.__originalCallFunction;}delete wx.__coverFailNext;delete getApp().globalData.__coverDisableObserver}).catch(()=>{});mp.disconnect();if(pgServer)await pgServer.close()}

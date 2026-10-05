@@ -96,3 +96,5 @@ CI `experience-pagination-guard.yml` 的 `private-pg-pagination` 在独立合成
 新前端源代码与云函数同在PR #516；云函数可先发布，旧版协议仍完整可见。新小程序通过审核发布后启用分页与封面窗口；旧版仍有其原有的全量加载内存开销，待自然升级后可另行退役兼容协议。
 
 窗口在可见期间每200ms按原生槽位位置校准，覆盖观察器首屏正常、后续静默的情况；测量回包800ms超时后重试，迟到回包由请求号与世代隔离。隐藏/卸载停止测量与观察器。
+
+两条独立判据：默认`full`专项验证四页正常/故障与返回；另执行`COVER_WINDOW_SCOPE=experience COVER_WINDOW_PG_TEST_URL=postgresql://postgres:test@127.0.0.1:54416/issue256cireplay node fengyu-client/tests/e2e-miniprogram/cover-window.spec.mjs`，聚焦真实product路由+私有PG+原生体验卡200条的同一链路（订单作为导航返回目标仍用合成回包）。聚焦通道不替代四页完整回归，日志分别声明范围。测试产物故障注入必须且只能命中一次，否则断言失败。
