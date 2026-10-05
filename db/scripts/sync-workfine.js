@@ -21,6 +21,7 @@
 const mssql = require('mssql')
 const { Pool } = require('pg')
 const crypto = require('crypto')
+const { recalcCustomerTypesInTransaction } = require('./recalc-all-customer-types')
 
 // ─── 配置 ────────────────────────────────────────────────
 
@@ -37,7 +38,7 @@ const MSSQL_CONFIG = {
 // DATABASE_URL 必填且必须精确指向业务库（db/CLAUDE.md 硬规则：显式传值 + 断言 host/port/dbname）。
 // 实现见 _lib/assert-db-target.js —— 它同时挡住 `?host=` 与 `?%68ost=`（百分号编码）两层 query 覆盖绕过。
 // 仅在直接执行时校验——本目录部分脚本的导出函数被 __tests__ require，顶层 exit 会打断测试进程。
-const { assertDbTargetOrExit, isProdDbTarget } = require('./_lib/assert-db-target')
+const { assertDbTargetOrExit, isProdDbTarget, isAllowedDbTarget } = require('./_lib/assert-db-target')
 if (require.main === module) assertDbTargetOrExit(process.env.DATABASE_URL)
 
 /**
@@ -545,6 +546,19 @@ async function syncPermissionRoles(pgPool, dryRun) {
 // ─── 4. 同步顾客档案（批量优化版） ───────────────────────────────
 
 async function syncCustomers(mssqlPool, pgPool, dryRun) {
+  // 导出入口同样fail-closed；目标由实际注入的Pool配置取得，不能只检查进程环境变量。
+  if (!dryRun) {
+    const raw = pgPool?.options?.connectionString;
+    let privateTest = false;
+    try {
+      const url = new URL(raw);
+      privateTest = ['postgres:', 'postgresql:'].includes(url.protocol) && url.hostname === '127.0.0.1' && url.port === '54416'
+        && url.pathname === '/issue256schema' && !url.search && !url.hash;
+    } catch (_) { /* 下面统一拒绝无法确认的目标。 */ }
+    if (isProdDbTarget(raw) || (!isAllowedDbTarget(raw) && !privateTest)) {
+      throw new Error('拒绝顾客同步：生产库或无法确认的数据库目标');
+    }
+  }
   log('CUSTOMERS', '开始同步...')
 
   const { recordset: rows } = await mssqlPool.request().query(`
@@ -556,7 +570,6 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
       RTRIM(UDF_S_6444) AS bound_employee_id,
       RTRIM(UDF_S_1477) AS member_level,
       RTRIM(UDF_S_6446) AS customer_source,
-      RTRIM(UDF_S_1712) AS category,
       UDF_S_1479        AS birthday,
       RTRIM(UDF_S_1481) AS occupation,
       RTRIM(UDF_S_1482) AS is_married_raw,
@@ -595,7 +608,6 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
         bound_employee_id text,
         member_level text,
         customer_source text,
-        category text,
         birthday date,
         occupation text,
         is_married boolean,
@@ -627,7 +639,7 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
         trim(row.name),
         storeName ? (storeMap[storeName] || null) : null,
         trim(row.bound_employee_id), trim(row.member_level),
-        normalizeCustomerSource(row.customer_source), trim(row.category),
+        normalizeCustomerSource(row.customer_source),
         toDateStr(row.birthday), trim(row.occupation),
         toBool(row.is_married_raw), trim(row.wechat_name),
         trim(row.skin_type),
@@ -654,7 +666,7 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
 
       await client.query(`
         INSERT INTO _cust_staging (user_id, customer_id, phone, name, bound_store_id,
-          bound_employee_id, member_level, customer_source, category,
+          bound_employee_id, member_level, customer_source,
           birthday, occupation, is_married, wechat_name,
           skin_type, improvement_focus, skin_issue, wellness_preference)
         VALUES ${placeholders.join(',')}
@@ -664,6 +676,12 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
         log('CUSTOMERS', `staging 进度: ${Math.min(i + BATCH, staged.length)}/${staged.length}`)
       }
     }
+
+    await client.query("SET LOCAL lock_timeout = '3s'")
+    await client.query('CREATE TEMP TABLE _cust_sync_scope ON COMMIT DROP AS SELECT customer_id, phone FROM _cust_staging')
+    await client.query(`SELECT c.user_id FROM client_wechat_users c
+      WHERE EXISTS (SELECT 1 FROM _cust_sync_scope s WHERE c.customer_id = s.customer_id OR c.phone = s.phone)
+      ORDER BY c.user_id FOR NO KEY UPDATE OF c NOWAIT`)
 
     // 3-pre. 先按 customer_id 更新已有行（处理 PG 中无 phone 但 WorkFine 新增 phone 的场景）
     // 避免 step 3a INSERT 时触发 customer_id 唯一约束冲突
@@ -676,8 +694,7 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
           ELSE c.phone
         END,
         name = s.name, bound_store_id = s.bound_store_id, bound_employee_id = s.bound_employee_id,
-        customer_source = CASE WHEN 'customer_source' = ANY(c.workfine_override_fields) THEN c.customer_source ELSE s.customer_source END,
-        category = s.category,
+        customer_source = CASE WHEN 'customer_source' = ANY(c.workfine_override_fields) THEN c.customer_source ELSE s.customer_source::customer_source END,
         birthday = CASE WHEN 'birthday' = ANY(c.workfine_override_fields) THEN c.birthday ELSE s.birthday END,
         occupation = CASE WHEN 'occupation' = ANY(c.workfine_override_fields) THEN c.occupation ELSE s.occupation END,
         is_married = CASE WHEN 'is_married' = ANY(c.workfine_override_fields) THEN c.is_married ELSE s.is_married END,
@@ -693,6 +710,12 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
         ORDER BY customer_id, phone NULLS LAST
       ) s
       WHERE c.customer_id = s.customer_id
+        AND ROW(c.phone, c.name, c.bound_store_id, c.bound_employee_id, c.customer_source, c.birthday, c.occupation, c.is_married, c.wechat_name, c.skin_type, c.improvement_focus, c.skin_issue, c.wellness_preference) IS DISTINCT FROM ROW(CASE
+          WHEN s.phone IS NOT NULL AND NOT EXISTS (
+            SELECT 1 FROM client_wechat_users o WHERE o.phone = s.phone AND o.user_id != c.user_id
+          ) THEN s.phone
+          ELSE c.phone
+        END, s.name, s.bound_store_id, s.bound_employee_id, CASE WHEN 'customer_source' = ANY(c.workfine_override_fields) THEN c.customer_source ELSE s.customer_source::customer_source END, CASE WHEN 'birthday' = ANY(c.workfine_override_fields) THEN c.birthday ELSE s.birthday END, CASE WHEN 'occupation' = ANY(c.workfine_override_fields) THEN c.occupation ELSE s.occupation END, CASE WHEN 'is_married' = ANY(c.workfine_override_fields) THEN c.is_married ELSE s.is_married END, s.wechat_name, s.skin_type, s.improvement_focus, CASE WHEN 'skin_issue' = ANY(c.workfine_override_fields) THEN c.skin_issue ELSE s.skin_issue END, CASE WHEN 'wellness_preference' = ANY(c.workfine_override_fields) THEN c.wellness_preference ELSE s.wellness_preference END)
     `)
     log('CUSTOMERS', `PRE-UPDATE by customer_id: ${preUpdate.rowCount} 条`)
 
@@ -707,11 +730,11 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
     const upsertByPhone = await client.query(`
       INSERT INTO client_wechat_users AS c (
         user_id, phone, customer_id, name, bound_store_id, bound_employee_id,
-        member_level, customer_source, category, birthday, occupation, is_married,
+        member_level, customer_source, birthday, occupation, is_married,
         wechat_name, skin_type, improvement_focus, skin_issue, wellness_preference
       )
       SELECT user_id, phone, customer_id, name, bound_store_id, bound_employee_id,
-        member_level, customer_source, category, birthday, occupation, is_married,
+        member_level::member_level, customer_source::customer_source, birthday, occupation, is_married,
         wechat_name, skin_type, improvement_focus, skin_issue, wellness_preference
       FROM (
         SELECT DISTINCT ON (phone) *
@@ -726,7 +749,6 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
         bound_store_id = EXCLUDED.bound_store_id,
         bound_employee_id = EXCLUDED.bound_employee_id,
         customer_source = CASE WHEN 'customer_source' = ANY(c.workfine_override_fields) THEN c.customer_source ELSE EXCLUDED.customer_source END,
-        category = EXCLUDED.category,
         birthday = CASE WHEN 'birthday' = ANY(c.workfine_override_fields) THEN c.birthday ELSE EXCLUDED.birthday END,
         occupation = CASE WHEN 'occupation' = ANY(c.workfine_override_fields) THEN c.occupation ELSE EXCLUDED.occupation END,
         is_married = CASE WHEN 'is_married' = ANY(c.workfine_override_fields) THEN c.is_married ELSE EXCLUDED.is_married END,
@@ -736,6 +758,7 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
         skin_issue = CASE WHEN 'skin_issue' = ANY(c.workfine_override_fields) THEN c.skin_issue ELSE EXCLUDED.skin_issue END,
         wellness_preference = CASE WHEN 'wellness_preference' = ANY(c.workfine_override_fields) THEN c.wellness_preference ELSE EXCLUDED.wellness_preference END,
         updated_at = now()
+      WHERE ROW(c.customer_id, c.name, c.bound_store_id, c.bound_employee_id, c.customer_source, c.birthday, c.occupation, c.is_married, c.wechat_name, c.skin_type, c.improvement_focus, c.skin_issue, c.wellness_preference) IS DISTINCT FROM ROW(EXCLUDED.customer_id, EXCLUDED.name, EXCLUDED.bound_store_id, EXCLUDED.bound_employee_id, CASE WHEN 'customer_source' = ANY(c.workfine_override_fields) THEN c.customer_source ELSE EXCLUDED.customer_source END, CASE WHEN 'birthday' = ANY(c.workfine_override_fields) THEN c.birthday ELSE EXCLUDED.birthday END, CASE WHEN 'occupation' = ANY(c.workfine_override_fields) THEN c.occupation ELSE EXCLUDED.occupation END, CASE WHEN 'is_married' = ANY(c.workfine_override_fields) THEN c.is_married ELSE EXCLUDED.is_married END, EXCLUDED.wechat_name, EXCLUDED.skin_type, EXCLUDED.improvement_focus, CASE WHEN 'skin_issue' = ANY(c.workfine_override_fields) THEN c.skin_issue ELSE EXCLUDED.skin_issue END, CASE WHEN 'wellness_preference' = ANY(c.workfine_override_fields) THEN c.wellness_preference ELSE EXCLUDED.wellness_preference END)
     `)
     log('CUSTOMERS', `UPSERT by phone: ${upsertByPhone.rowCount} 条`)
 
@@ -743,8 +766,7 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
     const updateByCustId = await client.query(`
       UPDATE client_wechat_users c SET
         name = s.name, bound_store_id = s.bound_store_id, bound_employee_id = s.bound_employee_id,
-        customer_source = CASE WHEN 'customer_source' = ANY(c.workfine_override_fields) THEN c.customer_source ELSE s.customer_source END,
-        category = s.category,
+        customer_source = CASE WHEN 'customer_source' = ANY(c.workfine_override_fields) THEN c.customer_source ELSE s.customer_source::customer_source END,
         birthday = CASE WHEN 'birthday' = ANY(c.workfine_override_fields) THEN c.birthday ELSE s.birthday END,
         occupation = CASE WHEN 'occupation' = ANY(c.workfine_override_fields) THEN c.occupation ELSE s.occupation END,
         is_married = CASE WHEN 'is_married' = ANY(c.workfine_override_fields) THEN c.is_married ELSE s.is_married END,
@@ -760,6 +782,7 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
         ORDER BY customer_id
       ) s
       WHERE c.customer_id = s.customer_id
+        AND ROW(c.name, c.bound_store_id, c.bound_employee_id, c.customer_source, c.birthday, c.occupation, c.is_married, c.wechat_name, c.skin_type, c.improvement_focus, c.skin_issue, c.wellness_preference) IS DISTINCT FROM ROW(s.name, s.bound_store_id, s.bound_employee_id, CASE WHEN 'customer_source' = ANY(c.workfine_override_fields) THEN c.customer_source ELSE s.customer_source::customer_source END, CASE WHEN 'birthday' = ANY(c.workfine_override_fields) THEN c.birthday ELSE s.birthday END, CASE WHEN 'occupation' = ANY(c.workfine_override_fields) THEN c.occupation ELSE s.occupation END, CASE WHEN 'is_married' = ANY(c.workfine_override_fields) THEN c.is_married ELSE s.is_married END, s.wechat_name, s.skin_type, s.improvement_focus, CASE WHEN 'skin_issue' = ANY(c.workfine_override_fields) THEN c.skin_issue ELSE s.skin_issue END, CASE WHEN 'wellness_preference' = ANY(c.workfine_override_fields) THEN c.wellness_preference ELSE s.wellness_preference END)
     `)
     log('CUSTOMERS', `UPDATE by customer_id (无手机号): ${updateByCustId.rowCount} 条`)
 
@@ -767,11 +790,11 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
     const insertNew = await client.query(`
       INSERT INTO client_wechat_users (
         user_id, customer_id, name, bound_store_id, bound_employee_id,
-        member_level, customer_source, category, birthday, occupation, is_married,
+        member_level, customer_source, birthday, occupation, is_married,
         wechat_name, skin_type, improvement_focus, skin_issue, wellness_preference
       )
       SELECT s.user_id, s.customer_id, s.name, s.bound_store_id, s.bound_employee_id,
-        s.member_level, s.customer_source, s.category, s.birthday, s.occupation, s.is_married,
+        s.member_level::member_level, s.customer_source::customer_source, s.birthday, s.occupation, s.is_married,
         s.wechat_name, s.skin_type, s.improvement_focus, s.skin_issue, s.wellness_preference
       FROM (
         SELECT DISTINCT ON (customer_id) *
@@ -783,7 +806,16 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
     `)
     log('CUSTOMERS', `INSERT 新顾客 (无手机号): ${insertNew.rowCount} 条`)
 
+    const synced = await client.query(`SELECT DISTINCT COALESCE(by_customer.user_id, by_phone.user_id) AS user_id
+      FROM _cust_sync_scope s
+      LEFT JOIN client_wechat_users by_customer ON by_customer.customer_id = s.customer_id
+      LEFT JOIN client_wechat_users by_phone ON by_phone.phone = s.phone
+      WHERE COALESCE(by_customer.user_id, by_phone.user_id) IS NOT NULL`)
     await client.query('DROP TABLE _cust_staging')
+    // 分类/等级/历史入会时间与顾客同步同事务；异常回滚，不发权益。
+    const recalc = await recalcCustomerTypesInTransaction(client, synced.rows.map(row => row.user_id))
+    log('CUSTOMERS', `自动补算：分类 ${recalc.typeCount}、等级 ${recalc.levelCount}、入会时间 ${recalc.becameCount} 条`)
+    log('CUSTOMERS', `补算诊断：会员缺入会时间 ${recalc.selfCheck.member_no_became}、非会员有等级 ${recalc.selfCheck.nonmember_with_level} 条（保留既有人工覆盖，请核查）`)
     await client.query('COMMIT')
     log('CUSTOMERS', `完成：共处理 ${upsertByPhone.rowCount + updateByCustId.rowCount + insertNew.rowCount} 条，跳过 ${skipped} 条`)
   } catch (err) {
@@ -1268,4 +1300,4 @@ async function main() {
 // 仅在直接执行时运行：被 require 时不得有副作用（顶层校验同理，见文件头部）
 if (require.main === module) main()
 
-module.exports = { STORE_UPSERT_SQL }
+module.exports = { STORE_UPSERT_SQL, syncCustomers }

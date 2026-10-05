@@ -14,6 +14,7 @@ on:
   pull_request:
     paths:
       - 'db/scripts/**'
+      - 'fengyu-admin/src/cron/lib/member-level.ts'
       # payment-migrations-regression.test.js 对迁移 SQL 与 journal 做字面量断言
       - 'db/migrations/**'
       # #365 候选迁移与私有库验证源，集中集成前也要触发脚本回归。
@@ -149,3 +150,33 @@ jobs:
         env:
           TUOKE_PG_TEST_URL: postgresql://postgres:test@localhost:5432/test
         run: NODE_PATH="$PWD/db/node_modules" node --test db/scripts/__tests__/tuoke-performance.pg.test.js
+
+  historical-customer-types:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: issue256schema
+        ports:
+          - 54416:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+        working-directory: db
+      - name: Replay complete migration history into private test database
+        working-directory: db
+        env:
+          DATABASE_URL: postgresql://postgres:test@127.0.0.1:54416/issue256schema
+        run: npx drizzle-kit migrate
+      - name: Test historical classification and real WorkFine customer transaction
+        env:
+          CUSTOMER_TYPE_PG_TEST_URL: postgresql://postgres:test@127.0.0.1:54416/postgres
+          CUSTOMER_TYPE_SCHEMA_PG_TEST_URL: postgresql://postgres:test@127.0.0.1:54416/issue256schema
+        run: node --test db/scripts/__tests__/recalc-customer-types.pg.test.js db/scripts/__tests__/sync-workfine-customer-type-schema.pg.test.js
