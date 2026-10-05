@@ -5,13 +5,14 @@
  * ★ 口径红线（consistency.daily-overview.test.ts 整段等值守护）：
  *   - 业绩合计 = 销售板「总业绩」：款项过滤条件与 sales.ts runStoreRevenue **逐条相同**，
  *     只是把单据类型拆成「销售单 + 转换单」（按子项拆分）与「充值单」（单列）两段。
- *     不带「父订单已结清」（so.status）过滤——与 #300 同方向；staff 端销售数据页同名汇总带该过滤，口径不同。
+ *     排除已关闭父单，不要求父订单已结清——与 #300 同方向；staff 端销售数据页同名汇总带该过滤，口径不同。
  *   - 拆分：receipt.amount × 款项金额 ÷ 该款项全部 receipts 之和；分母为 0 / 无 receipts 的款项整笔进未分类。
  *     sale_items / product_skus 一律 LEFT JOIN，任何一环缺失都只是落进未分类，不会被 INNER JOIN 静默丢钱。
  *   - 服务合计 = 销售板「总实耗」：SQL 与 sales.ts 实耗逐条相同，只多按 sit.sales_category 分组。
  *   - 不加任何 >0 / HAVING 过滤（#290/#288）：负数（退款冲销）原样显示。
  *   - 日界：所有日期条件都是 date 列 BETWEEN 'YYYY-MM-DD'，不依赖会话时区（#291）。
  */
+import { excludeLegacyPrepaidInflowSql } from './prepaid-performance-filter'
 import { sql, type SQL } from 'drizzle-orm'
 import type { AuthSession } from '@/lib/types'
 import { scopeFilterSql, scopeStoreSkeletonSql } from './scope-sql'
@@ -23,10 +24,13 @@ export function performanceTotalSql(session: AuthSession, scope: DataCenterScope
   return sql`
     SELECT COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
     FROM sale_reportable_payment_events spe
+    JOIN sale_orders so ON so.sale_order_id = spe.sale_order_id
+      AND so.status <> '已关闭'
     WHERE ${scopeFilterSql(session, scope, 'spe.store_id')}
       AND spe.status = '已支付'
       AND spe.change_type IN ('首次支付', '回款', '退款')
       AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
+      AND ${excludeLegacyPrepaidInflowSql('spe')}
       AND spe.legacy_source IS DISTINCT FROM 'workfine'
       AND spe.performance_date BETWEEN ${range.start} AND ${range.end}
   `
@@ -68,6 +72,8 @@ export function dailyOverviewQueries(session: AuthSession, scope: DataCenterScop
       WITH pay AS (
         SELECT spe.sale_payment_id, spe.store_id, spe.performance_amount::numeric AS amount
         FROM sale_reportable_payment_events spe
+        JOIN sale_orders so ON so.sale_order_id = spe.sale_order_id
+          AND so.status <> '已关闭'
         WHERE ${scopeFilterSql(session, scope, 'spe.store_id')}
           AND spe.status = '已支付'
           AND spe.change_type IN ('首次支付', '回款', '退款')
@@ -111,10 +117,13 @@ export function dailyOverviewQueries(session: AuthSession, scope: DataCenterScop
     recharge: sql`
       SELECT spe.store_id, SUM(spe.performance_amount::numeric)::text AS amount
       FROM sale_reportable_payment_events spe
+      JOIN sale_orders so ON so.sale_order_id = spe.sale_order_id
+        AND so.status <> '已关闭'
       WHERE ${scopeFilterSql(session, scope, 'spe.store_id')}
         AND spe.status = '已支付'
         AND spe.change_type IN ('首次支付', '回款', '退款')
         AND spe.sale_order_type = '充值单'
+        AND ${excludeLegacyPrepaidInflowSql('spe')}
         AND spe.legacy_source IS DISTINCT FROM 'workfine'
         AND spe.performance_date BETWEEN ${range.start} AND ${range.end}
       GROUP BY spe.store_id

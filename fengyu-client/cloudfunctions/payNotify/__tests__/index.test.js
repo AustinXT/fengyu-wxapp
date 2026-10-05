@@ -287,7 +287,7 @@ describe('payNotify index.js', () => {
     expect(mockClientQuery.mock.calls.some(([q])=>q==='COMMIT')).toBe(true)
   })
 
-  test('1. 无 prepaid 的普通订单 → 充值分支无记录 + 业绩分配正常 + 状态翻 已支付', async () => {
+  test.each(['体验客', '会员客'])('成功回调即使缺绑定也正常入账（分类 %s），业绩分配与已支付提交正常', async (computedType) => {
     const { main } = loadFreshIndex()
     mockPoolQuery.mockResolvedValueOnce({
       rows: [makeOrder({
@@ -316,7 +316,7 @@ describe('payNotify index.js', () => {
       },
       // sale_items 查询（业绩分配）——补齐 capturePaymentAllocatables 所需字段，走正常比例分摊而非兜底
       {
-        match: /SELECT sale_item_id, sale_amount::numeric AS sale_amount, pending_received::numeric AS pending_received,\s+waived_amount::numeric AS waived_amount, sales_category[\s\S]*FROM sale_items/,
+        match: /SELECT si\.sale_item_id, si\.sale_amount::numeric AS sale_amount, si\.pending_received::numeric AS pending_received,[\s\S]*AS converted_out, si\.sales_category[\s\S]*FROM sale_items si/,
         result: {
           rows: [
             {
@@ -350,7 +350,7 @@ describe('payNotify index.js', () => {
       // customer_type 查询
       { match: 'SELECT customer_type', result: { rows: [{ customer_type: '流量客' }], rowCount: 1 } },
       // computed_type
-      { match: 'AS computed_type', result: { rows: [{ computed_type: '体验客' }], rowCount: 1 } },
+      { match: 'AS computed_type', result: { rows: [{ computed_type: computedType }], rowCount: 1 } },
     ])
 
     const res = await main({ orderNo: 'FY-XSD-WX-2604240001', transactionId: 'wx-txn-001' })

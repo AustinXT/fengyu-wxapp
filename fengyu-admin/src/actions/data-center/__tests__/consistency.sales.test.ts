@@ -139,9 +139,8 @@ function shengmeiFragments(admin: string, staff: string): string[] {
 const SHENGMEI_SQL = "SELECT COALESCE(SUM(sipe.performance_amount::numeric), 0) AS v " +
   "FROM sale_reportable_item_events sipe " +
   "JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id " +
-  "JOIN sale_orders so ON so.sale_order_id = sipe.sale_order_id " +
+  "JOIN sale_orders so ON so.sale_order_id = sipe.sale_order_id AND so.status <> '已关闭' " +
   "WHERE __SCOPE__ AND so.sale_order_type IN ('销售单', '转换单') " +
-  "AND (NOT sipe.is_legacy_residual OR so.status <> '已关闭') " +
   "AND si.is_shengmei = TRUE AND __DATE__"
 
 function expectShengmeiEqual(admin: string, staff: string) {
@@ -210,7 +209,7 @@ describe('数据中心销售板块两端口径一致性守护', () => {
         ['JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id','JOIN sale_items si ON si.sale_order_id = sipe.sale_order_id'],
         ['SUM(sipe.performance_amount::numeric)','SUM(ABS(sipe.performance_amount::numeric))'],
         ["so.status <> '已关闭'", "so.status <> '已退款'"],
-      ]) expect(() => expectShengmeiEqual(adminSrc.replace(from,to),staffSrc)).toThrow()
+      ]) expect(() => expectShengmeiEqual(adminSrc.replaceAll(from,to),staffSrc)).toThrow()
     })
   })
 

@@ -1,4 +1,5 @@
 import { Suspense } from 'react'
+import { getEmployees } from '@/actions/employees'
 import { getCustomersPaginated } from '@/actions/customers'
 import { parseCustomerFilters } from '@/lib/list-filters'
 import { getMarketStoreFilterOptions, getStores } from '@/actions/stores'
@@ -27,6 +28,10 @@ export default async function Page({
     ? await getStores()
     : []
 
+  const employees = canCreate && !!session && hasPermission(session, 'employee:list')
+    ? await getEmployees()
+    : []
+
   return (
     <Suspense>
       <CustomersPageClient
@@ -35,6 +40,7 @@ export default async function Page({
         filterOptions={filterOptions}
         total={total}
         canCreate={canCreate}
+        employees={employees}
       />
     </Suspense>
   )

@@ -92,8 +92,9 @@
             <van-cell wx:if="{{customer.gender}}" title="客户性别" value="{{customer.gender}}" />
             <van-cell wx:if="{{customer.storeName}}" title="注册门店" value="{{customer.storeName}}" />
             <van-cell
-              title="指定美容师"
-              value="{{customer.preferredStaffName || '未指定'}}"
+              title="所属员工（店长指定）"
+              label="首次入会付款前须完成分配"
+              value="{{customer.preferredStaffName || '未分配'}}"
               is-link="{{isManager}}"
               clickable="{{isManager && !profileSaving}}"
               bind:click="onEditPreferredStaff"
@@ -458,7 +459,7 @@
     show="{{showAssignSheet}}"
     actions="{{staffActions}}"
     cancel-text="取消"
-    description="选择指定美容师"
+    description="请选择顾客所属员工，开单员工不代表长期归属"
     bind:close="onAssignClose"
     bind:cancel="onAssignClose"
     bind:select="onAssignSelect"

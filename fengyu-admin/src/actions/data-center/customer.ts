@@ -330,6 +330,7 @@ async function queryOperatedMembers(
              SUM(spe.performance_amount::numeric) AS spend
       FROM sale_reportable_payment_events spe
       JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
+        AND o.status <> '已关闭'
       JOIN client_wechat_users c ON c.user_id = o.client_user_id
       WHERE ${sc}
         AND spe.sale_order_type IN ('销售单', '转换单')
@@ -359,6 +360,7 @@ async function queryMemberAvgTicket(
              SUM(spe.performance_amount::numeric) AS spend
       FROM sale_reportable_payment_events spe
       JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
+        AND o.status <> '已关闭'
       JOIN client_wechat_users c ON c.user_id = o.client_user_id
       WHERE ${sc}
         AND spe.sale_order_type IN ('销售单', '转换单')
@@ -419,6 +421,7 @@ async function queryNewMemberSpend(
     SELECT COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
     FROM sale_reportable_payment_events spe
     JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
+      AND o.status <> '已关闭'
     JOIN client_wechat_users c ON c.user_id = o.client_user_id
     WHERE ${sc}
       AND c.became_member_at IS NOT NULL
@@ -784,6 +787,7 @@ async function queryOpsBreakdown(
              SUM(spe.performance_amount::numeric) AS spend
       FROM sale_reportable_payment_events spe
       JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
+        AND o.status <> '已关闭'
       JOIN skel sk ON sk.store_id = o.store_id
       JOIN client_wechat_users c ON c.user_id = o.client_user_id
       WHERE spe.sale_order_type IN ('销售单', '转换单')
@@ -830,6 +834,7 @@ async function queryOpsBreakdown(
              COALESCE(SUM(spe.performance_amount::numeric), 0) AS new_spend
       FROM sale_reportable_payment_events spe
       JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
+        AND o.status <> '已关闭'
       JOIN client_wechat_users c ON c.user_id = o.client_user_id
       JOIN skel sk ON sk.store_id = c.bound_store_id
       WHERE c.became_member_at IS NOT NULL

@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import { PreserveListContextLink } from "@/components/return-context"
-import type { Customer, Store } from "@/lib/types"
+import type { Customer, Store, Employee } from "@/lib/types"
 import type { MarketStoreFilterOptions } from "@/lib/market-store-filter-types"
 import MarketStoreFilter from "@/components/market-store-filter"
 import { Button } from "@/components/ui/button"
@@ -59,12 +59,14 @@ export default function CustomersPage({
   filterOptions,
   total,
   canCreate,
+  employees = [],
 }: {
   customers: Customer[]
   stores: Store[]
   filterOptions: MarketStoreFilterOptions
   total: number
   canCreate: boolean
+  employees?: Employee[]
 }) {
   const router = useRouter()
   const { get, set, setMany, searchParams } = useUrlFilters()
@@ -99,6 +101,8 @@ export default function CustomersPage({
   const [newName, setNewName] = useState("")
   const [newBoundStoreId, setNewBoundStoreId] = useState("")
 
+  const [newBoundEmployeeId, setNewBoundEmployeeId] = useState("")
+
   async function handleCreate() {
     if (!canCreate) return
     if (!newPhone.trim()) {
@@ -116,6 +120,7 @@ export default function CustomersPage({
         phone: newPhone.trim(),
         name: newName.trim(),
         boundStoreId: newBoundStoreId || null,
+        boundEmployeeId: newBoundEmployeeId || null,
       })
       if (!result.success) {
         toast.error(result.message)
@@ -126,6 +131,7 @@ export default function CustomersPage({
       setNewPhone("")
       setNewName("")
       setNewBoundStoreId("")
+      setNewBoundEmployeeId("")
       router.refresh()
     } catch (err) {
       toast.error(actionErrorMessage(err, "创建失败，请稍后重试"))
@@ -195,7 +201,7 @@ export default function CustomersPage({
     {
       key: "employeeName",
       header: "所属美容师",
-      cell: (row) => <span>{row.employeeName ?? "—"}</span>,
+      cell: (row) => <span>{row.employeeName || "未分配（入会前由店长指定）"}</span>,
     },
     {
       key: "actions",
@@ -365,6 +371,18 @@ export default function CustomersPage({
                 </option>
               ))}
             </Select>
+          </div>
+          <div>
+            <label className="text-sm text-[#999999]">所属员工（店长明确指定）</label>
+            <Select className="mt-1" value={newBoundEmployeeId} onChange={(e) => setNewBoundEmployeeId(e.target.value)}>
+              <option value="">暂未分配，首次入会付款前须分配</option>
+              {employees.filter((employee) => !employee.isResigned && employee.storeId).map((employee) => (
+                <option key={employee.employeeId} value={employee.employeeId}>
+                  {employee.name} · {employee.storeName}
+                </option>
+              ))}
+            </Select>
+            <p className="mt-1 text-xs text-[#999999]">顾客建档后也可在详情页编辑所属员工；开单员工不代表顾客归属。</p>
           </div>
         </div>
         <DialogFooter>
