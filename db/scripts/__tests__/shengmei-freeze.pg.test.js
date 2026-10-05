@@ -145,12 +145,13 @@ else {
       assert.equal(await month('07'),before); assert.equal(await month('08'),august)
     })
   }
-  test('已关闭残差排除，但已落账 receipt 不受父单关闭影响', async () => {
+  test('已关闭订单排除历史残差和已落账 receipt（2026-10-05 关闭订单口径）', async () => {
     await order('转换单'); await item('T300_IN','转入',2000,1400,true)
     await db.query("UPDATE sale_orders SET status='已关闭' WHERE sale_order_id='T300_SO'")
     assert.equal(await month('07'),'0')
     const id = await payment('首次支付',400,'07')
     await db.query("INSERT INTO sale_payment_item_receipts(sale_payment_id,sale_order_id,sale_item_id,amount) VALUES ($1,'T300_SO','T300_IN',400)", [id])
-    assert.equal(await month('07'),'400.00')
+    // notes/references/metrics.md：关闭订单是历史冻结的明确例外，全部款项排除。
+    assert.equal(await month('07'),'0')
   })
 }
