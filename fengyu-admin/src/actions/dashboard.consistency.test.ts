@@ -145,7 +145,7 @@ const EXPECTED_ORDER_STATS_SQL = [
     "COALESCE(SUM(CASE WHEN spe.performance_date = (SELECT today FROM bounds) AND spe.status = '已支付' AND spe.change_type = '退款' AND spe.sale_order_type IN ('销售单', '转换单', '充值单') THEN ABS(spe.amount::numeric) END), 0) AS today_refunded_amount,",
     "COALESCE(SUM(CASE WHEN spe.performance_date = (SELECT yesterday FROM bounds) AND spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款', '退款') AND spe.sale_order_type IN ('销售单', '转换单', '充值单') THEN spe.performance_amount::numeric END), 0) AS yesterday_revenue,",
     "COALESCE(SUM(CASE WHEN spe.performance_date = (SELECT yesterday FROM bounds) AND spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款') AND spe.amount::numeric > 0 AND spe.sale_order_type IN ('销售单', '转换单', '充值单') THEN spe.amount::numeric END), 0) AS yesterday_paid_amount,",
-    "COALESCE(SUM(CASE WHEN spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款') AND spe.amount::numeric > 0 AND spe.sale_order_type IN ('销售单', '转换单', '充值单') THEN spe.amount::numeric END), 0) AS total_paid_amount FROM sale_reportable_payment_events spe WHERE spe.store_id IN (${sql.join(scopeIds.map(id => sql`${id}`), sql`, `)}) AND spe.legacy_source IS DISTINCT FROM 'workfine' ),",
+    "COALESCE(SUM(CASE WHEN spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款') AND spe.amount::numeric > 0 AND spe.sale_order_type IN ('销售单', '转换单', '充值单') THEN spe.amount::numeric END), 0) AS total_paid_amount FROM sale_reportable_payment_events spe WHERE spe.store_id IN (${sql.join(scopeIds.map(id => sql`${id}`), sql`, `)}) AND spe.legacy_source IS DISTINCT FROM 'workfine' AND ${excludeLegacyPrepaidInflowSql('spe')} ),",
     "order_metrics AS ( SELECT COUNT(DISTINCT CASE WHEN so.sale_order_datetime::date = (SELECT today FROM bounds) AND so.status NOT IN ('已关闭', '支付失败', '未审核', '已作废') AND so.sale_order_type IN ('销售单', '转换单') THEN so.client_user_id END) AS today_opened_customers,",
     "COUNT(CASE WHEN so.status = '待支付' THEN 1 END) AS pending_orders,",
     "COUNT(CASE WHEN so.status IN ('已支付') AND so.allocation_status = '待分配' AND so.sale_order_type IN ('销售单', '转换单') THEN 1 END) AS pending_allocations FROM sale_orders so WHERE so.store_id IN (${sql.join(scopeIds.map(id => sql`${id}`), sql`, `)}) AND so.legacy_source IS DISTINCT FROM 'workfine' ) SELECT payment_metrics.*, order_metrics.* FROM payment_metrics CROSS JOIN order_metrics",
@@ -382,18 +382,19 @@ describe('dashboard 组织层级现金流业绩一致性守护', () => {
        * `AND spe.created_at::date = statement_timestamp()::date` 就绕过了当时的清单，
        * 继续补只会留下下一种等价写法。
        *
-       * 正向快照直接声明：这个 CTE 只允许门店范围 + legacy_source 两项过滤。
+       * 正向快照直接声明：这个 CTE 只允许门店范围 + legacy_source + 旧储值转入排除三项过滤。
        * 任何新增过滤（不管用什么函数、什么列）都会红。
        */
       const cteTail = paymentMetrics.slice(paymentMetrics.indexOf('FROM sale_reportable_payment_events'))
       expect(cteTail, '未能定位 payment_metrics 的 FROM/WHERE 尾部').toContain('WHERE')
       expect(
         cteTail.replace(/\s*\),?\s*$/, ''),
-        'payment_metrics 的 FROM/WHERE 过滤条件漂移（只允许门店范围 + legacy_source）',
+        'payment_metrics 的 FROM/WHERE 过滤条件漂移（只允许门店范围 + legacy_source + 旧储值转入排除）',
       ).toBe(
         'FROM sale_reportable_payment_events spe'
         + ' WHERE spe.store_id IN (${sql.join(scopeIds.map(id => sql`${id}`), sql`, `)})'
-        + " AND spe.legacy_source IS DISTINCT FROM 'workfine'",
+        + " AND spe.legacy_source IS DISTINCT FROM 'workfine'"
+        + " AND ${excludeLegacyPrepaidInflowSql('spe')}",
       )
     })
 

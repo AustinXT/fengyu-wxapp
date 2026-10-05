@@ -25,6 +25,7 @@
  *   - 日期一律按 DATE 列与 'YYYY-MM-DD' 字符串比较，不依赖会话时区（#291）；各查询都不加 >0 过滤（#290）。
  */
 
+import { excludeLegacyPrepaidInflowSql } from '@/lib/data-center/prepaid-performance-filter'
 import { db } from '@/db'
 import { sql, type SQL } from 'drizzle-orm'
 import { withPermission } from '@/lib/with-permission'
@@ -69,10 +70,13 @@ function revenueByStoreSql(session: AuthSession, scope: DataCenterScope, range: 
   return sql`
         SELECT spe.store_id, COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
         FROM sale_reportable_payment_events spe
+        JOIN sale_orders so ON so.sale_order_id = spe.sale_order_id
+          AND so.status <> '已关闭'
         WHERE ${scopeFilterSql(session, scope, 'spe.store_id')}
           AND spe.status = '已支付'
           AND spe.change_type IN ('首次支付', '回款', '退款')
           AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
+          AND ${excludeLegacyPrepaidInflowSql('spe')}
           AND spe.legacy_source IS DISTINCT FROM 'workfine'
           AND spe.performance_date BETWEEN ${range.start} AND ${range.end}
         GROUP BY spe.store_id
@@ -101,6 +105,7 @@ function managedByStoreSql(
                  SUM(spe.performance_amount::numeric) FILTER (WHERE spe.performance_date >= ${month.start}) AS month_amount
           FROM sale_reportable_payment_events spe
           JOIN sale_orders so ON so.sale_order_id = spe.sale_order_id
+            AND so.status <> '已关闭'
           WHERE ${scopeFilterSql(session, scope, 'spe.store_id')}
             AND spe.status = '已支付'
             AND spe.change_type IN ('首次支付', '回款', '退款')

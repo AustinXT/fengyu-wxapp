@@ -12,6 +12,7 @@
  *   - 当日消耗：实耗 SUM(unit_real_price × session_used)，与销售板「总实耗」同源，剔除寄存单退款专用单
  *   - 交易跟着顾客走：顾客在别的门店（含已停用门店）的到店、消费、消耗都算进来，所以事件侧不加门店 scope
  */
+import { excludeLegacyPrepaidInflowSql } from './prepaid-performance-filter'
 import { sql } from 'drizzle-orm'
 import { db } from '@/db'
 import type { AuthSession } from '@/lib/types'
@@ -73,10 +74,12 @@ export async function loadCustomerFrequencySource(
              array_agg(DISTINCT st.store_name) AS stores
       FROM sale_reportable_payment_events spe
       JOIN sale_orders so ON so.sale_order_id = spe.sale_order_id
+        AND so.status <> '已关闭'
       LEFT JOIN stores st ON st.store_id = spe.store_id
       WHERE spe.status = '已支付'
         AND spe.change_type IN ('首次支付', '回款', '退款')
         AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
+        AND ${excludeLegacyPrepaidInflowSql('spe')}
         AND spe.legacy_source IS DISTINCT FROM 'workfine'
         AND spe.performance_date BETWEEN ${range.start} AND ${range.end}
         AND so.client_user_id IN (SELECT user_id FROM cust)

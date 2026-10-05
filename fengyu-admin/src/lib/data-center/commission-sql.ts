@@ -39,6 +39,7 @@ const SALE_FROM = sql`
       JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
       JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
       JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+        AND so.status <> '已关闭'
       JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id`
 
 function saleWhere(session: AuthSession, scope: DataCenterScope, filters: CommissionLineFilters): SQL {
@@ -199,6 +200,7 @@ export function pendingAllocationSql(session: AuthSession, scope: DataCenterScop
     SELECT COUNT(*)::int AS count, COALESCE(SUM(sop.amount::numeric), 0) AS amount
     FROM sale_order_payments sop
     JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
+      AND so.status <> '已关闭'
     WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
       AND sop.allocation_status = '待分配'
       AND so.sale_order_type IN ('销售单', '转换单')
