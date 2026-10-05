@@ -17,6 +17,7 @@ const SERVICE_PART =
   "WHERE TRUE AND so.status = '已完成' AND so.client_user_id IS NOT NULL AND so.service_date BETWEEN $1 AND $2"
 const PAYMENT_SOURCE =
   'FROM sale_order_payments sop JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id ' +
+  "AND so.status <> '已关闭' " +
   "WHERE TRUE AND sop.status = '已支付' AND sop.change_type IN ('首次支付', '回款', '储值卡抵扣') " +
   "AND so.sale_order_type IN ('销售单', '转换单', '充值单') AND so.client_user_id IS NOT NULL " +
   "AND (sop.paid_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN $3 AND $4"

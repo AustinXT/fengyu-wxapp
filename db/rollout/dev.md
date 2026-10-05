@@ -58,6 +58,22 @@
 - 证据 `_tmp/release-dev-v1.17.8/`：`cloud-deploy.log`、`cloud-verify.json`/`.log`、各smoke JSON、两站部署日志和remote终检，以及专项修复与迁移前后证据。运行依赖在发布工作树按锁文件npm ci安装；初次依赖预检中止时未上传函数。
 - 主仓版本文件已由另一个提交保存；本次不commit/push。主仓未提交文件为本台账；发布工作树仍有两端version.ts生成改动，保留用于复现指纹。小程序需手工上传client/staff开发版，新APP_VERSION仅上传后生效。prod没有迁移、修复或部署。
 
+## 2026-10-02 v1.17.12 dev 发版迁移核验（Codex）
+
+- 执行时间 2026-10-02T03:58:04.176Z；发布 SHA `0245129a063506fe939d2f562d397de8e0f19c2f`，沿用用户确认的 tag `v1.17.12`。
+- 显式断言目标 `101.34.242.103:5433/fengyu_wxapp`；执行前后全部 journal 的 when/SQL SHA-256 历史匹配，无 pending、额外历史或必要专项脚本。最新迁移 `0060_summary_void_store_settlement` / `4a542e22fed9c9bb1d307fa0606a429d5a88cda68a06d22e7ba6053a975d0d9b`。
+- `PGOPTIONS=-c lock_timeout=3s` 下真实 `npm --prefix db run db:migrate` 退出0；无新增迁移。脱敏证据 `_tmp/release-dev-v1.17.12/migration-gate.json`、`migrate.log`。仅登记 dev，prod 未操作。
+
+### 本次 dev 全量发布完成
+
+- 完成时间 2026-10-02T04:08:30.319Z；执行人 Codex。两站实际发布 revision `0245129a0635-dirty.c9cb3fca4682`，包含两端 version.ts 与本台账在构建时的未提交改动；未 commit/push。
+- admin release：`dev-0245129a0635-dirty.c9cb3fca4682-53eb6861f4d8-20261002T035808Z-24524`；部署脚本退出0/RELEASE_OK。
+- analyst release：`dev-0245129a0635-dirty.c9cb3fca4682-53eb6861f4d8-20261002T040419Z-36893`；部署脚本退出0/RELEASE_OK。
+- 线上两容器 running、HTTP 均307、DB 均 `172.18.0.1:5433/fengyu_wxapp`，宿主公网101.34.242.103/5433监听通过；Analyst origin `https://analyst.meiyayabeauty.com/` 与配置一致。
+- 显式 dev 通道串行更新 staffApiDev/clientApiDev/payNotifyDev，3行 deployed、脚本退出0。config pull 与 fn detail 只读回读通过：三个影子函数 PG 均101.34.242.103:5433/fengyu_wxapp、DEPLOY_CHANNEL=shadow，staff true/develop、CLIENT_SECRET/CLIENT_APPSECRET非空且目标密钥一致，client TMAP密钥校验、两端HMAC一致、PAYNOTIFY_FN_NAME=payNotifyDev。envId均prod前缀。
+- 空staff冒烟-1，staff/client auth.login及client store.list无身份请求-401，鉴权冒烟通过；不代表已登录业务流程验证。
+- 脱敏证据 `_tmp/release-dev-v1.17.12/`：两站与云函数部署日志、remote-verify.json、cloud-verify.json及smoke JSON。版本已核对v1.17.12，.active=prod；prod未迁移或部署。小程序两端须手工上传开发版才能生效。
+
 
 ## 2026-10-02 daily 分支合并
 

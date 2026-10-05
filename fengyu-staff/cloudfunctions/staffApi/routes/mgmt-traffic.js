@@ -438,6 +438,7 @@ async function queryMemberOps(scopeType, scopeId, period) {
               SUM(spe.performance_amount::numeric) AS spend
          FROM sale_reportable_payment_events spe
          JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
+           AND o.status <> '已关闭'
          JOIN client_wechat_users c ON c.user_id = o.client_user_id
         WHERE ${sc.sql}
           AND spe.sale_order_type IN ('销售单', '转换单')
@@ -514,6 +515,7 @@ async function queryNewMemberSpend(scopeType, scopeId, period) {
     `SELECT COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
        FROM sale_reportable_payment_events spe
        JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
+         AND o.status <> '已关闭'
        JOIN client_wechat_users c ON c.user_id = o.client_user_id
       WHERE ${sc.sql}
         AND c.became_member_at IS NOT NULL

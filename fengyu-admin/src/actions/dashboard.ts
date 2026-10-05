@@ -1,6 +1,7 @@
 'use server'
 
 import { db } from '@/db'
+import { excludeLegacyPrepaidInflowSql } from '@/lib/data-center/prepaid-performance-filter'
 import { sql } from 'drizzle-orm'
 import type { DashboardStats } from '@/lib/types'
 import { hasRole } from '@/lib/auth'
@@ -153,6 +154,7 @@ export const getDashboardStats = withPermission('dashboard:view', async (session
           -- 历史订单（WorkFine 核对补登）不计入经营营收（仅供会员体系重算）
           -- WorkFine 历史单业务排除；展示口径见 @/lib/workfine-legacy
           AND spe.legacy_source IS DISTINCT FROM 'workfine'
+          AND ${excludeLegacyPrepaidInflowSql('spe')}
       ),
       order_metrics AS (
         SELECT

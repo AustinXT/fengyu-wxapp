@@ -52,6 +52,7 @@ function paymentVisitSource(scope: SQL, range: ResolvedRange): SQL {
   return sql`
     FROM sale_order_payments sop
     JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
+      AND so.status <> '已关闭'
     WHERE ${scope}
       AND sop.status = '已支付'
       AND sop.change_type IN ('首次支付', '回款', '储值卡抵扣')

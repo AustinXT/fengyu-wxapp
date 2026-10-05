@@ -142,7 +142,9 @@ describe('经营数据主表 × 销售板门店明细 口径同源（#372）', (
 
   it('K / L 款项 WHERE = P 的 WHERE，只把类型收窄为销售单 + 转换单、再要求挂了顾客', () => {
     const p = whereClause(master.revenue)
-    const expected = p.replace("spe.sale_order_type IN ('销售单', '转换单', '充值单')", "spe.sale_order_type IN ('销售单', '转换单')")
+    expect(p).toContain("AND ${excludeLegacyPrepaidInflowSql('spe')}")
+    // K / L 不接受充值单，故旧余额过滤在该集合中恒真。
+    const expected = p.replace(" AND ${excludeLegacyPrepaidInflowSql('spe')}", '').replace("spe.sale_order_type IN ('销售单', '转换单', '充值单')", "spe.sale_order_type IN ('销售单', '转换单')")
       + ' AND so.client_user_id IS NOT NULL'
     expect(expected).not.toBe(p + ' AND so.client_user_id IS NOT NULL')
     expect(whereClause(managed)).toBe(expected)

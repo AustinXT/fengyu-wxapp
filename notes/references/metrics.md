@@ -10,7 +10,7 @@
 > `sale_reportable_item_events.performance_amount`，员工业绩按后者与 receipt 原金额之比缩放既有分配额。
 > `sale_items.product_kind_at_sale='拓客引流卡'` 的款项不计业绩；正负混合款按款项实收封顶，
 > 一笔 5000 元、普通子项 5168 元、拓客子项 −168 元的转换款计 5000 元，子项尾差吸收后逐分勾稽。
-> 无 receipt / receipt 净额为零的款项保留本笔组织业绩并归未分类；充值单保留原业绩。
+> 无 receipt / receipt 净额为零的款项保留本笔组织业绩并归未分类；真实充值单保留原业绩，旧余额转入按下文规则排除。
 > 储值卡抵扣不计组织现金业绩，但普通品项的卡抵扣价值仍计子项/生美业绩；拓客品项卡抵扣为 0。
 > 原始实付、退款、储值卡余额和**提成金额**不因此变化。老单的商品品项按迁移时分类回填一次，
 > 新单在下单时冻结；因此迁移会重算历史月份一次，未来商品改类不回溯已售订单。
@@ -20,14 +20,18 @@
 
 ## 业绩 / 实耗
 
+> **2026-10-05 关闭订单口径（用户拍板）**：数据中心及员工端同名管理指标排除父销售订单 `sale_orders.status='已关闭'` 的全部款项与商品明细，包括首次支付、回款、退款和历史残差；销售提成报表、支付到店事件及业绩数据起点同样排除。正常的部分支付、已支付、已退款订单仍按既有款项规则统计。关闭订单不再贡献历史区间统计，是历史冻结规则的明确例外。门店排行榜在 LEFT JOIN 的 ON 内过滤，保留零业绩门店。
+
 | 指标 | 公式 | 数据源 | 筛选条件 |
 |------|------|--------|----------|
 | 业绩（门店 / 市场 / 总部） | `SUM(spe.performance_amount)` | `sale_reportable_payment_events spe` | `spe.status='已支付'` ∩ `spe.change_type IN ('首次支付','回款','退款')` ∩ `spe.sale_order_type IN ('销售单','转换单','充值单')` ∩ `spe.legacy_source IS DISTINCT FROM 'workfine'` ∩ `[spe.performance_date]` |
-| 生美业绩 | `SUM(sipe.performance_amount)` | `sale_reportable_item_events sipe` | JOIN sale_items + sale_orders；`sale_order_type IN ('销售单','转换单')` ∩ `is_shengmei=TRUE` ∩ `[sipe.performance_date]`；款项行不筛父单状态，残差行排除父单 `已关闭` |
+| 生美业绩 | `SUM(sipe.performance_amount)` | `sale_reportable_item_events sipe` | JOIN sale_items + sale_orders；`sale_order_type IN ('销售单','转换单')` ∩ `is_shengmei=TRUE` ∩ `[sipe.performance_date]`；数据中心及同名管理指标的全部事件均排除父单 `已关闭` |
 | 实耗 | `SUM(unit_real_price * session_used)` | `service_items.unit_real_price` × `service_items.session_used` | JOIN service_orders；`status='已完成'` ∩ `[service_date]` |
 | 生美实耗 | `SUM(unit_real_price * session_used)` | 同上 | 加 `service_items.is_shengmei=TRUE` |
 
 > **组织层级业绩的归属规则**：只统计状态为“已支付”的首次支付、回款和退款；`储值卡抵扣`不属于组织现金业绩，必须排除。
+>
+> **储值新旧口径（2026-10-05 用户确认）**：旧储值余额及「旧系统充值金转入」不计业绩；当月实际新充值按款项归属日期计入，老卡当月追加充值也计入；用卡消费不重复计组织业绩。旧余额转入虽写成已支付充值单，但不是新收款，须连同该转入单的后续退款一起排除。识别依据是同单首次支付流水 `note = '旧系统充值金转入'` 或以 `旧系统充值金转入｜` 开头，不能依赖可编辑的订单备注或只检查当前退款流水的备注。真实充值的退款仍按退款归属日扣减。该规则覆盖后台/员工端组织业绩、分客型业绩、门店排名、工作台收退款金额、日常一览表充值列、经营主表、顾客频率表消费金额及业绩数据起点；余额与原始资金流水保留。
 >
 > `spe.performance_date` **直读** `sale_order_payments.performance_attribution_date`，**查询侧不存在任何回退分支**（迁移 0040，2026-09-14 收口）。该列的取值规则全部下沉到写入侧的两个 trigger：
 >
@@ -45,14 +49,14 @@
 > 因此 `performance_date` 恒有值。
 > ⚠ 列本身**不是** `NOT NULL`（Drizzle schema 里仍是 nullable `date(...)`），
 > 非空是靠 CHECK 保证的——判断「是否已迁库」要查约束，不要查列的 nullability。
-> 退款 `amount` 为负数，按**退款自身**的归属日期入账，不回溯原订单归属日。不得用父订单 `status` 过滤，因此部分支付订单已到账的付款也计入。
+> 退款 `amount` 为负数，按**退款自身**的归属日期入账，不回溯原订单归属日。数据中心及同名管理指标排除父订单 `已关闭`；不要求父单已结清，部分支付订单已到账的付款仍计入。
 >
 > ⚠ **每一笔款项都有自己的归属日期**。2026-09-14 之前文档写的「回款/退款取自身 `paid_at` 的上海自然日」已失效——
 > 迁移 0039 起首次支付行也回填了该列，0040 起视图直读且无回退，`paid_at` 只作为**写入侧** trigger 的兜底来源之一。
 >
 > **订单日期与归属日期**：`performance_attribution_date` 默认等于原始订单的上海自然日。原始 `sale_order_datetime` 始终保留。有权人员可不受操作时间限制地调整一次，但新日期必须在原始订单日前后 7 天内（含）。
 >
-> **组织层级业绩 vs 生美 / 品项 / 员工归属为何不同**：充值现金只进入组织层级总业绩和分客型业绩，
+> **组织层级业绩 vs 生美 / 品项 / 员工归属为何不同**：真实新充值现金（排除旧余额转入）只进入组织层级总业绩和分客型业绩，
 > **不进入**生美或品项分类（充值时尚未确定买什么）。
 > ⚠ **2026-09-14 订正**：原文「现金流无法可靠拆到 SKU 或员工」已失效——
 > `sale_item_performance_events` 经 `sale_payment_item_receipts` 把每笔款项拆到 `sale_item`，
@@ -60,7 +64,7 @@
 > 都已走各自的**款项级**事件视图，而不是订单快照。
 > ⚠ 但三者**并非只差统计粒度**，至少还有这些实打实的差异：
 > 组织业绩排除 `储值卡抵扣` 与 WorkFine legacy；子项事件包含储值卡收款拆分及历史 residual，
-> 生美业绩不按父单结清过滤（仅残差排除已关闭），staff 销售数据页 SQL 5–8 仍保留父单已支付闸门，待 #369 确认后另单对齐；员工销售指标只计 `spia.is_void=FALSE` 且已分配到员工的销售单/转换单款项；
+> 生美业绩不按父单结清过滤（全部事件排除已关闭父单），staff 销售数据页 SQL 5–8 仍保留父单已支付闸门，待 #369 确认后另单对齐；员工销售指标只计 `spia.is_void=FALSE` 且已分配到员工的销售单/转换单款项；
 > **服务提成根本不走款项事件**，走 `service_commissions` + `[service_date]`。
 
 > **生美历史月份冻结（#300）**：款项按 `sale_order_payments.performance_attribution_date` 计入，

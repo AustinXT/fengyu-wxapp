@@ -30,6 +30,7 @@
  *   （仅纯流量客，不含体验客/小美客）。已登记 metrics.md §「销售数据页 — 分客型业绩」。
  */
 
+import { excludeLegacyPrepaidInflowSql } from '@/lib/data-center/prepaid-performance-filter'
 import { db } from '@/db'
 import { sql } from 'drizzle-orm'
 import { withPermission } from '@/lib/with-permission'
@@ -75,10 +76,13 @@ export const getSalesBoard = withPermission(
         await db.execute(sql`
           SELECT COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
           FROM sale_reportable_payment_events spe
+          JOIN sale_orders so ON so.sale_order_id = spe.sale_order_id
+            AND so.status <> '已关闭'
           WHERE ${scopeFilterSql(session, scope, 'spe.store_id')}
             AND spe.status = '已支付'
             AND spe.change_type IN ('首次支付', '回款', '退款')
             AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
+            AND ${excludeLegacyPrepaidInflowSql('spe')}
             AND spe.legacy_source IS DISTINCT FROM 'workfine'
             AND spe.performance_date BETWEEN ${range.start} AND ${range.end}
         `),
@@ -92,9 +96,9 @@ export const getSalesBoard = withPermission(
           FROM sale_reportable_item_events sipe
           JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id
           JOIN sale_orders so ON so.sale_order_id = sipe.sale_order_id
+            AND so.status <> '已关闭'
           WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
             AND so.sale_order_type IN ('销售单', '转换单')
-            AND (NOT sipe.is_legacy_residual OR so.status <> '已关闭')
             AND si.is_shengmei = TRUE
             AND sipe.performance_date BETWEEN ${range.start} AND ${range.end}
         `),
@@ -142,11 +146,13 @@ export const getSalesBoard = withPermission(
           SELECT COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
           FROM sale_reportable_payment_events spe
           JOIN sale_orders so ON so.sale_order_id = spe.sale_order_id
+            AND so.status <> '已关闭'
           JOIN client_wechat_users c ON c.user_id = so.client_user_id
           WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
             AND spe.status = '已支付'
             AND spe.change_type IN ('首次支付', '回款', '退款')
             AND so.sale_order_type IN ('销售单', '转换单', '充值单')
+            AND ${excludeLegacyPrepaidInflowSql('so')}
             AND so.legacy_source IS DISTINCT FROM 'workfine'
             AND c.customer_type = '会员客'
             AND c.became_member_at::date >= ${range.start}
@@ -163,11 +169,13 @@ export const getSalesBoard = withPermission(
           SELECT COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
           FROM sale_reportable_payment_events spe
           JOIN sale_orders so ON so.sale_order_id = spe.sale_order_id
+            AND so.status <> '已关闭'
           JOIN client_wechat_users c ON c.user_id = so.client_user_id
           WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
             AND spe.status = '已支付'
             AND spe.change_type IN ('首次支付', '回款', '退款')
             AND so.sale_order_type IN ('销售单', '转换单', '充值单')
+            AND ${excludeLegacyPrepaidInflowSql('so')}
             AND so.legacy_source IS DISTINCT FROM 'workfine'
             AND c.customer_type = '流量客'
             AND spe.performance_date BETWEEN ${range.start} AND ${range.end}
@@ -310,10 +318,13 @@ export const getSalesBoard = withPermission(
       db.execute(sql`
         SELECT spe.store_id, COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
         FROM sale_reportable_payment_events spe
+        JOIN sale_orders so ON so.sale_order_id = spe.sale_order_id
+          AND so.status <> '已关闭'
         WHERE ${scopeFilterSql(session, scope, 'spe.store_id')}
           AND spe.status = '已支付'
           AND spe.change_type IN ('首次支付', '回款', '退款')
           AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
+          AND ${excludeLegacyPrepaidInflowSql('spe')}
           AND spe.legacy_source IS DISTINCT FROM 'workfine'
           AND spe.performance_date BETWEEN ${cur.start} AND ${cur.end}
         GROUP BY spe.store_id
@@ -324,9 +335,9 @@ export const getSalesBoard = withPermission(
         FROM sale_reportable_item_events sipe
         JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id
         JOIN sale_orders so ON so.sale_order_id = sipe.sale_order_id
+          AND so.status <> '已关闭'
         WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
           AND so.sale_order_type IN ('销售单', '转换单')
-          AND (NOT sipe.is_legacy_residual OR so.status <> '已关闭')
           AND si.is_shengmei = TRUE
           AND sipe.performance_date BETWEEN ${cur.start} AND ${cur.end}
         GROUP BY so.store_id
@@ -336,11 +347,13 @@ export const getSalesBoard = withPermission(
         SELECT so.store_id, COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
         FROM sale_reportable_payment_events spe
         JOIN sale_orders so ON so.sale_order_id = spe.sale_order_id
+          AND so.status <> '已关闭'
         JOIN client_wechat_users c ON c.user_id = so.client_user_id
         WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
           AND spe.status = '已支付'
           AND spe.change_type IN ('首次支付', '回款', '退款')
           AND so.sale_order_type IN ('销售单', '转换单', '充值单')
+          AND ${excludeLegacyPrepaidInflowSql('so')}
           AND so.legacy_source IS DISTINCT FROM 'workfine'
           AND c.customer_type = '会员客'
           AND c.became_member_at::date >= ${cur.start}
@@ -352,11 +365,13 @@ export const getSalesBoard = withPermission(
         SELECT so.store_id, COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
         FROM sale_reportable_payment_events spe
         JOIN sale_orders so ON so.sale_order_id = spe.sale_order_id
+          AND so.status <> '已关闭'
         JOIN client_wechat_users c ON c.user_id = so.client_user_id
         WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
           AND spe.status = '已支付'
           AND spe.change_type IN ('首次支付', '回款', '退款')
           AND so.sale_order_type IN ('销售单', '转换单', '充值单')
+          AND ${excludeLegacyPrepaidInflowSql('so')}
           AND so.legacy_source IS DISTINCT FROM 'workfine'
           AND c.customer_type = '流量客'
           AND spe.performance_date BETWEEN ${cur.start} AND ${cur.end}

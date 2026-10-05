@@ -193,12 +193,16 @@ function assertEverySpeRefClassified(segment: string, label: string): void {
   const total = (expanded.match(/\bspe\.\w+/g) ?? []).length
   const inAggregate = (expanded.match(/SUM\(\s*spe\.performance_amount/g) ?? []).length
   const storeIdRefs = (expanded.match(/\bspe\.store_id\b/g) ?? []).length
+  // sale_orders 主键关联 / 排行榜 EXISTS 各引用一次，不产生聚合扇出。
+  const orderIdRefs = (expanded.match(/so\.sale_order_id = spe\.sale_order_id/g) ?? []).length
+  expect(orderIdRefs, `${label} 必须关联父单并排除已关闭`).toBe(1)
+  expect(expanded).toContain("AND so.status <> '已关闭'")
   const classified = spePredicatesRaw(segment).length
   expect(
     total,
     `${label} 存在无法归类的 spe.* 引用（聚合 ${inAggregate} + store_id ${storeIdRefs} + 谓词 ${classified} ≠ 总计 ${total}）。` +
       '把 spe.* 包进函数（如 COALESCE(spe.performance_amount,0) > 0）就能骗过谓词正则，故此处 fail-closed。',
-  ).toBe(inAggregate + storeIdRefs + classified)
+  ).toBe(inAggregate + storeIdRefs + orderIdRefs + classified)
 }
 
 /**
@@ -237,6 +241,12 @@ function assertTableSkeleton(segment: string, expected: string[], label: string)
  *     `${scopeFilterSql(..., 's.store_id')}` 一项，业务过滤全在 JOIN ON 里
  */
 function assertWhereShape(segment: string, kind: 'spe-table' | 'store-table', label: string): void {
+  if (kind === 'store-table') {
+    // 只移除已核验的父单 EXISTS；外层 WHERE 与门店侧引用仍由原守护完整检查。
+    const gate = "AND EXISTS ( SELECT 1 FROM sale_orders so WHERE so.sale_order_id = spe.sale_order_id AND so.status <> '已关闭' )"
+    expect(segment.split(gate), `${label} 必须在 LEFT JOIN ON 内过滤关闭订单`).toHaveLength(2)
+    segment = segment.replace(gate, '')
+  }
   const from = segment.indexOf('WHERE ')
   expect(from, `${label} 找不到 WHERE`).toBeGreaterThan(-1)
   const tail = segment.slice(from + 'WHERE '.length)
@@ -274,7 +284,8 @@ function assertWhereShape(segment: string, kind: 'spe-table' | 'store-table', la
   )
   for (const t of terms.slice(1)) {
     expect(
-      /^spe\.\w+/.test(t) || t.startsWith('${performanceEventDateBetween('),
+      /^spe\.\w+/.test(t) || t.startsWith('${performanceEventDateBetween(')
+        || t === "${excludeLegacyPrepaidInflowSql('spe')}",
       `${label} 的 WHERE 里混入了非 spe 过滤项：${t}`,
     ).toBe(true)
   }
@@ -962,21 +973,21 @@ describe('数据中心人效板块两端口径一致性守护', () => {
     })
 
     it('⭐ 三处的表骨架被钉死（防新增 JOIN 引入聚合扇出）', () => {
-      // Part A/B 是 spe 单表，一个 JOIN 都不该有
+      // Part A/B 只增加 sale_orders 主键的一对一关联，验证父单状态。
       assertTableSkeleton(
         sliceOrFail(adminSrc, 'const qRevenueTotal', 'const qConsumeTotal'),
-        ['sale_reportable_payment_events'],
+        ['sale_reportable_payment_events', 'sale_orders'],
         'Part A',
       )
       assertTableSkeleton(
         sliceOrFail(adminSrc, 'const qRevenueByStore', 'const qConsumeByStore'),
-        ['sale_reportable_payment_events'],
+        ['sale_reportable_payment_events', 'sale_orders'],
         'Part B',
       )
       // Part C：stores 驱动 → 两级 org_nodes 拿市场名 → LEFT JOIN spe
       assertTableSkeleton(
         sliceOrFail(adminSrc, 'const qStoreRankRevenue', 'const qStoreRankConsume'),
-        ['stores', 'org_nodes', 'org_nodes', 'sale_reportable_payment_events'],
+        ['stores', 'org_nodes', 'org_nodes', 'sale_reportable_payment_events', 'sale_orders'],
         'Part C',
       )
     })

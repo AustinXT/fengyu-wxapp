@@ -81,6 +81,7 @@
  *     而非 metrics.md 的双口径 day/month（本板块只有单一 TimeRange，取区间末快照最自洽）。
  */
 
+import { excludeLegacyPrepaidInflowSql } from '@/lib/data-center/prepaid-performance-filter'
 import { safeDiv } from '@/lib/data-center/format'
 import { db } from '@/db'
 import { sql } from 'drizzle-orm'
@@ -175,9 +176,12 @@ export const getEfficiencyBoard = withPermission(
     const qRevenueTotal = db.execute(sql`
       SELECT COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
       FROM sale_reportable_payment_events spe
+      JOIN sale_orders so ON so.sale_order_id = spe.sale_order_id
+        AND so.status <> '已关闭'
       WHERE ${scopeFilterSql(session, scope, 'spe.store_id')}
         AND spe.change_type IN ('首次支付', '回款', '退款')
         AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
+        AND ${excludeLegacyPrepaidInflowSql('spe')}
         AND spe.legacy_source IS DISTINCT FROM 'workfine'
         AND ${performanceEventDateBetween('spe', cur.start, cur.end)}
     `)
@@ -200,6 +204,7 @@ export const getEfficiencyBoard = withPermission(
       JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
       JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
       JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+        AND so.status <> '已关闭'
       JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id
       WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
         AND spia.is_void = FALSE
@@ -312,9 +317,12 @@ export const getEfficiencyBoard = withPermission(
     const qRevenueByStore = db.execute(sql`
       SELECT spe.store_id, COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
       FROM sale_reportable_payment_events spe
+      JOIN sale_orders so ON so.sale_order_id = spe.sale_order_id
+        AND so.status <> '已关闭'
       WHERE ${scopeFilterSql(session, scope, 'spe.store_id')}
         AND spe.change_type IN ('首次支付', '回款', '退款')
         AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
+        AND ${excludeLegacyPrepaidInflowSql('spe')}
         AND spe.legacy_source IS DISTINCT FROM 'workfine'
         AND ${performanceEventDateBetween('spe', cur.start, cur.end)}
       GROUP BY spe.store_id
@@ -352,6 +360,7 @@ export const getEfficiencyBoard = withPermission(
       JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
       JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
       JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+        AND so.status <> '已关闭'
       JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id
       WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
         AND spia.is_void = FALSE
@@ -416,7 +425,12 @@ export const getEfficiencyBoard = withPermission(
       JOIN org_nodes o ON o_store.parent_id = o.id
       LEFT JOIN sale_reportable_payment_events spe
         ON spe.store_id = s.store_id
+        AND EXISTS (
+          SELECT 1 FROM sale_orders so
+          WHERE so.sale_order_id = spe.sale_order_id AND so.status <> '已关闭'
+        )
         AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
+        AND ${excludeLegacyPrepaidInflowSql('spe')}
         AND spe.legacy_source IS DISTINCT FROM 'workfine'
         AND spe.status = '已支付'
         AND spe.change_type IN ('首次支付', '回款', '退款')
@@ -584,6 +598,7 @@ export const getEfficiencyBoard = withPermission(
         JOIN sale_reportable_item_events sipe ON sipe.receipt_id = spir.id
         JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
         JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+          AND so.status <> '已关闭'
         JOIN sale_reportable_payment_events spe ON spe.sale_payment_id = spir.sale_payment_id
         WHERE spia.is_void = FALSE
           AND so.sale_order_type IN ('销售单', '转换单')
@@ -682,6 +697,7 @@ export const getEfficiencyBoard = withPermission(
         JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
         JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
         JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+          AND so.status <> '已关闭'
         JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id
         WHERE spia.is_void = FALSE
           AND so.sale_order_type IN ('销售单', '转换单')
@@ -733,6 +749,7 @@ export const getEfficiencyBoard = withPermission(
         JOIN sale_reportable_item_events sipe ON sipe.receipt_id = spir.id
         JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
         JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+          AND so.status <> '已关闭'
         JOIN sale_reportable_payment_events spe ON spe.sale_payment_id = spir.sale_payment_id
         WHERE spia.is_void = FALSE
           AND so.sale_order_type IN ('销售单', '转换单')
