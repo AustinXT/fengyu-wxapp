@@ -84,3 +84,12 @@ bun --preload ./tests/e2e-actions/_admin-preload.mjs ./tests/e2e-actions/verify-
 守护限定本次结算订单自身的单笔非体验毛实收达标，不因另一张历史达标单而阻挡本次体验/小额/部分付款；历史已达标但分类未更新属于阶段2异常档案，原分类更新规则继续执行。三端独立 helper 查询/参数/客户行锁行为一致性已测试，机器原因 `MEMBERSHIP_BINDING_REQUIRED` 放在 data，顾客提示无内部子标签。后台与员工开单页补前往顾客详情人工分配入口。
 
 只读 receipt 规划同步到三个 JS 独立副本，既有 capture 字面快照继续守护，同时新加 preview 全文相等快照；admin 的既有 TS 分摊算法保持同义。私有 PG 退款案例实际命中完整 receipt 分支（SQL trace 明确包含 jsonb_to_recordset），另例命中不完整 receipt 瀑布分支，均有断言。线上临时状态 UPDATE 也携带 pending/partial CAS 并检查影响行数，finally 回滚后再做真实绑定检查。
+
+
+### 补齐完整收款 Action 的私有 PG 验证
+
+新增 `fengyu-admin/tests/e2e-actions/verify-membership-payment-actions.mjs`：独立临时 PostgreSQL 16 按当前 journal 逐条、逐事务重放 63 条实际迁移，随后运行真实 admin.confirmOfflinePayment / recordPayment、staff.confirmOffline、client.confirmPrepaidFull。云函数明确 PG_CONNECTION_STRING 注入同一 localhost 临时库，用各自真实 pg 池；handler 接构造的已认证上下文，真实 requireManager/requirePhone 继续执行；Next 会话/权限/审计/cache仍用既有preload替身，不冒充登录/渠道联调。
+
+三端均验证缺绑定负例让现金、卡交易、receipt、积分和订单整体回滚，真实 assignCustomer 分配后原动作放行；会员 customer_type / became_member_at / bound_employee_id / 升级单标记由真实结算代码落库，不再由夹具手写标签。后台另外覆盖首次部分收款成功、最终录入回款被拒绝且首笔实收保留。所有例通过，PG池/容器已清理。
+
+该测试补齐本地规则与结算链验证，但仍不替代真实渠道/OPENID登录/真机/生产运营覆盖率实效；不因此修改原issue整体验收状态。早先最小夹具的验证限制仍如实保留，完整Action证据是本次新增的独立结果。
