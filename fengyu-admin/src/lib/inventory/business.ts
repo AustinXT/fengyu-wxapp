@@ -2884,7 +2884,7 @@ export async function createMarketReplenishment(
         }
         sourceItems.push({ ...item, quantity: outstandingQuantity })
       }
-      const sku = await loadSku(tx, skuId, true)
+      const sku = await loadSku(tx, skuId, true, true)
       assertSkuAvailableToMarket(sku, marketId)
       const [stock] = rows<{ quantity: string | number | null }>(await tx.execute(sql`
         SELECT COALESCE(SUM(quantity_on_hand), 0) AS quantity
@@ -3052,7 +3052,7 @@ export async function saveMarketReplenishmentDraft(
     const docDate = dateOrToday(input.docDate)
     const skus = new Map<string, SkuSnapshot>()
     for (const line of lines) {
-      const sku = await loadSku(tx, line.skuId, true)
+      const sku = await loadSku(tx, line.skuId, true, true)
       assertSkuAvailableToMarket(sku, market.orgNodeId)
       skus.set(line.skuId, sku)
     }

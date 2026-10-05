@@ -2224,7 +2224,15 @@ export function mergeMarketReportDraftLines(
   const merged = summaryLines.map((line) => {
     const draft = draftBySku.get(line.skuId)
     return draft
-      ? { ...line, independent: draft.requestQuantity === 0, requestItemIds: draft.requestQuantity === 0 ? [] : line.requestItemIds, selected: true, purchaseQuantity: String(draft.quantity) }
+      ? {
+          ...line,
+          independent: draft.requestQuantity === 0,
+          requestItemIds: draft.requestQuantity === 0 ? [] : line.requestItemIds,
+          requestQuantity: draft.requestQuantity === 0 ? 0 : line.requestQuantity,
+          storeQuantities: draft.requestQuantity === 0 ? [] : line.storeQuantities,
+          selected: true,
+          purchaseQuantity: String(draft.quantity),
+        }
       : { ...line, selected: false, purchaseQuantity: '' }
   })
   const summarized = new Set(summaryLines.map((line) => line.skuId))
@@ -2670,11 +2678,11 @@ function MarketReportForm({
         <DatePicker value={docDate} onValueChange={setDocDate} />
       </FormField>
 
-      <FormField label="独立报货商品" className="max-w-lg">
+      <FormField label="独立报货商品" className="max-w-lg" group>
         <InventorySkuSearchSelect
           value=""
           disabled={!marketId || saving || loadingSummary}
-          filters={{ marketId }}
+          filters={{ reportable: true, availableToMarketId: marketId }}
           ariaLabel="添加独立报货商品"
           onChange={(skuId, sku) => {
             if (!skuId || !sku) return
