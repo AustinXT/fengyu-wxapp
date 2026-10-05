@@ -110,7 +110,7 @@ try {
  for(let end=60;end<=200;end+=20){await (await page.$('.load-more-btn')).tap();await waitData(data=>data.skuList.length===end && !data.loadingMore,'按钮翻页')}
  assert.equal(await page.$('.load-more-btn'),null);
  assert.equal((await page.data()).skuList.length,200);
- async function snapshot(label,key,selector,scrollSelector='') {
+ async function snapshot(label,key,selector,scrollSelector='',requiredIndex=null) {
   // 在同一次原生测量回包中读取几何和cover标记，避免两次协议往返之间渲染已更新。
   let state;
   for(let attempt=0;attempt<30;attempt++) {
@@ -124,13 +124,14 @@ try {
     });
    }),key,selector,scrollSelector);
    assert(state.height>0,label+'必须获得实际视口尺寸');
-   if(state.missing.length===0)break;
+   if(state.missing.length===0 && (requiredIndex===null || state.visible.includes(requiredIndex)))break;
    await wait(100);
   }
   const images=await page.$$(selector+' image');
   console.log(label,{...state,images:images.length,scroll:await page.scrollTop()});
   assert(state.visible.length<=24);assert(images.length<=24);
   assert.deepEqual(state.missing,[],label+'可视封面不能被上限裁掉');
+  if(requiredIndex!==null)assert(state.visible.includes(requiredIndex),label+'必须实际滚动到目标槽位');
   return state.visible;
  }
  await snapshot('experience-top','skuList','.experience-cover-slot');
@@ -164,9 +165,9 @@ try {
    for(let end=40;end<=200;end+=20){await page.callMethod('onScrollToLower');await waitData(d=>d.spuList.length===end && !d.isLoading,name+'分页')}
    await snapshot(name+'-top-'+fallback,'spuList','.spu-cover-slot','.product-scroll');
    const scroll=await page.$('.product-scroll');await scroll.scrollTo(0,999999);
-   const bottom=await snapshot(name+'-bottom-'+fallback,'spuList','.spu-cover-slot','.product-scroll');assert(bottom.includes(199));assert(!bottom.includes(0));
+   const bottom=await snapshot(name+'-bottom-'+fallback,'spuList','.spu-cover-slot','.product-scroll',199);assert(bottom.includes(199));assert(!bottom.includes(0));
    await scroll.scrollTo(0,0);
-   const top=await snapshot(name+'-return-'+fallback,'spuList','.spu-cover-slot','.product-scroll');assert(top.includes(0));assert(!top.includes(199));
+   const top=await snapshot(name+'-return-'+fallback,'spuList','.spu-cover-slot','.product-scroll',0);assert(top.includes(0));assert(!top.includes(199));
    await route('navigateTo','/pagesExperience/list/list');page=await route('navigateBack');
    assert.equal((await page.data()).spuList.length,200);
    await snapshot(name+'-navigate-back-'+fallback,'spuList','.spu-cover-slot','.product-scroll');
