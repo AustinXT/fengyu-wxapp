@@ -97,6 +97,10 @@ export async function runSystemSupport(admin = null) {
       VALUES ($1, $2, $3, 3000, '自销自耗')`, [salePaymentId, saleOrderId, saleItemId])
     const suggest = await invoke('allocation.suggestPayment', { salePaymentId })
     for (const person of expected) assert(suggest.candidateEmployees.some(p => p.staffWfId === person.id))
+    const spoofRevenue = [{ saleItemId, employeeId: teacherId, roleType: '美容师', allocationRatio: 1 }]
+    const spoofRevenueResponse = await invokeStaffApi('allocation.savePayment', { _testOpenid: TEST_MANAGER_OPENID, salePaymentId, allocations: spoofRevenue })
+    assert.equal(spoofRevenueResponse.code, -400, '营业额分配也不得伪造角色技能')
+    if (admin) await admin.rejectRevenueSkill(Number(salePaymentId), spoofRevenue)
     const allocations = people.filter(p => p.storeId === TEST_STORE_ID || (p.storeId === null && p.orgNodeId === TEST_MARKET_ORG_ID))
       .map(p => ({ saleItemId, employeeId: p.id, roleType: p.role, allocationRatio: 0.5 }))
     if (admin) await admin.saveRevenue(Number(salePaymentId), allocations)

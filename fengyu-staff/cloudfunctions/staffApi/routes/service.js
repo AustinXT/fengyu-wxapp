@@ -61,7 +61,8 @@ async function create(ctx) {
   }
 
   // 权限：店长可为任何员工创建，美容师只能指定自己
-  if (!isCurrentStoreManager(ctx.auth) && resolvedStaffWfId !== ctx.auth.staffWfId) {
+  if (!isCurrentStoreManager(ctx.auth) && (resolvedStaffWfId !== ctx.auth.staffWfId
+    || normalizedItems.some(item => item.employeeId && item.employeeId !== ctx.auth.staffWfId))) {
     throw new Error('PERMISSION_DENIED: 美容师只能创建分配给自己的服务单')
   }
   // 验证关联预约

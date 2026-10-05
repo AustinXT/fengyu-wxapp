@@ -529,12 +529,19 @@ async function savePayment(ctx) {
   // 退款后重分配守卫（2026-06-24）：本回款的可分配 item 中存在「已支付退款」冲销时禁止重分配——退款已记负数冲销行（挂退款流水 id），
   // 重保存会作废原回款正数行 + 写新正数行，与退款负数行脱节 → 净额错乱。回款级守卫：同单其它无关 item 的回款不受影响。两端镜像 admin savePaymentAllocations。
   await assertNoSettledRefundForPayment(pg, salePaymentId)
-  await assertEmployeesAssignableToStore(
-    pg,
-    allocations.map((allocation) => allocation.employeeId),
-    pay.store_id,
-    { assignmentScope: 'allocationSupport' },
-  )
+  // 所选角色须属于员工实际技能；各角色独立分池，推广仍沿用动态技能字典。
+  const employeesByRole = new Map()
+  for (const allocation of allocations) {
+    const ids = employeesByRole.get(allocation.roleType) || []
+    ids.push(allocation.employeeId)
+    employeesByRole.set(allocation.roleType, ids)
+  }
+  for (const [roleType, employeeIds] of employeesByRole) {
+    if (!roleType) throw new Error('INVALID_PARAMS: 分配记录缺少 roleType')
+    await assertEmployeesAssignableToStore(pg, employeeIds, pay.store_id, {
+      assignmentScope: 'allocationSupport', requireServiceSkills: true, skills: [roleType],
+    })
+  }
 
   const allocItems = await pg.query(
     'SELECT id AS receipt_id, sale_item_id, amount::numeric AS amount, sales_category FROM sale_payment_item_receipts WHERE sale_payment_id = $1',

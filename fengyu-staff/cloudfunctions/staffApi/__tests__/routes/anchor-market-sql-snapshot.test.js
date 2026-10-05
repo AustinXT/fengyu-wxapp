@@ -98,6 +98,9 @@ describe('A. 锚定市场 CASE 表达式五端字节同义', () => {
     for (const { name, file } of [
       { name: 'staffApi/utils/employee-assignment.js', file: FILES.staffAssignmentUtil },
       { name: 'admin/src/lib/employee-anchor-market-sql.ts', file: FILES.adminAnchorLib },
+      { name: 'staffApi/routes/allocation.js', file: FILES.staffAllocation },
+      { name: 'staffApi/routes/serviceCommission.js', file: FILES.staffServiceCommission },
+      { name: 'admin/src/actions/employees.ts', file: FILES.adminEmployees },
     ]) {
       const src = read(file)
       expect(src, name).toMatch(/LEFT JOIN stores target_store ON target_store\.store_id = /)

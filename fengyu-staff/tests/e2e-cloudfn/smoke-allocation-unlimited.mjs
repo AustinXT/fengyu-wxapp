@@ -28,7 +28,7 @@ try {
       phone: testPhone(index + 3),
       name: `${NS}_分配员工${index + 1}`,
       isManager: false,
-      skills: ['养生师'],
+      skills: ['养生师', '美容师'],
     })
   }
 

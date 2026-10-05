@@ -24,6 +24,9 @@ await runSystemSupport({
     assert.equal((await batchSaveServiceCommissions(serviceOrderId, [{ serviceItemId, employeeId, roleType: '推广师', allocationRatio: 1 }])).success, false)
     assert.equal((await savePaymentAllocations(salePaymentId, [{ saleItemId, employeeId, roleType: '推广师', allocationRatio: 1 }])).success, false)
   },
+  async rejectRevenueSkill(id, allocations) {
+    assert.equal((await savePaymentAllocations(id, allocations)).success, false)
+  },
   async rejectSkill(id, commissions) {
     assert.equal((await batchSaveServiceCommissions(id, commissions)).success, false)
   },
@@ -45,3 +48,5 @@ await runSystemSupport({
     assert.equal(result.success, true, result.message)
   },
 })
+
+process.exit(0)
