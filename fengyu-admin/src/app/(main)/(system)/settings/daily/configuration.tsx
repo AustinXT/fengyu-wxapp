@@ -2,6 +2,7 @@
 import { useState } from 'react'
 import { getDailyConfiguration, previewDailyPeriod, saveDailyPeriod, saveDailyPk } from '@/actions/daily-config'
 import { type DailyPeriodInput } from '@/lib/daily-config'
+import { DatePicker } from '@/components/ui/date-picker'
 import { actionErrorMessage } from '@/lib/action-error'
 
 type Configuration = Awaited<ReturnType<typeof getDailyConfiguration>>
@@ -62,9 +63,9 @@ export default function DailyConfiguration({ initial: initialConfiguration }: { 
     <fieldset disabled={busy} className="space-y-5">
       <div className="flex items-center gap-4"><label>经营月份<select className={field} value={selected} onChange={(e) => change(e.target.value)}><option value="">新增经营月</option>{initial.periods.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>{tab === 'period' && <button onClick={() => change('')} className={button}>新增经营月</button>}</div>
       {tab === 'period' ? <section className="space-y-5 rounded-xl border bg-white p-5"><h2 className="text-lg font-semibold">{period.version ? '编辑经营周期' : '新建经营周期'}</h2>
-        <div className="grid gap-4 md:grid-cols-3"><label>月份名称<input className={field} value={period.name} onChange={(e) => edit({ name: e.target.value })} maxLength={60}/></label><label>开始日期<input type="date" className={field} value={period.start} onChange={(e) => edit({ start: e.target.value })}/></label><label>结束日期<input type="date" className={field} value={period.end} onChange={(e) => edit({ end: e.target.value })}/></label></div>
+        <div className="grid gap-4 md:grid-cols-3"><label>月份名称<input className={field} value={period.name} onChange={(e) => edit({ name: e.target.value })} maxLength={60}/></label><label>开始日期<DatePicker className={field} value={period.start} onValueChange={(value) => edit({ start: value })}/></label><label>结束日期<DatePicker className={field} value={period.end} onValueChange={(value) => edit({ end: value })}/></label></div>
         <p className="text-sm text-gray-500">配置四个连续经营周，可使用不同天数；四周必须完整覆盖经营月。</p>
-        {period.weeks.map((w, i) => <div key={w.id} className="grid gap-4 md:grid-cols-3"><label>第 {i + 1} 周名称<input className={field} value={w.name} onChange={(e) => edit({ weeks: period.weeks.map((v, n) => n === i ? { ...v, name: e.target.value } : v) })}/></label><label>开始日期<input type="date" className={field} value={w.start} onChange={(e) => edit({ weeks: period.weeks.map((v, n) => n === i ? { ...v, start: e.target.value } : v) })}/></label><label>结束日期<input type="date" className={field} value={w.end} onChange={(e) => edit({ weeks: period.weeks.map((v, n) => n === i ? { ...v, end: e.target.value } : v) })}/></label></div>)}
+        {period.weeks.map((w, i) => <div key={w.id} className="grid gap-4 md:grid-cols-3"><label>第 {i + 1} 周名称<input className={field} value={w.name} onChange={(e) => edit({ weeks: period.weeks.map((v, n) => n === i ? { ...v, name: e.target.value } : v) })}/></label><label>开始日期<DatePicker className={field} value={w.start} onValueChange={(value) => edit({ weeks: period.weeks.map((v, n) => n === i ? { ...v, start: value } : v) })}/></label><label>结束日期<DatePicker className={field} value={w.end} onValueChange={(value) => edit({ weeks: period.weeks.map((v, n) => n === i ? { ...v, end: value } : v) })}/></label></div>)}
         <button className={button} onClick={() => void preview()}>预览影响</button>
         {impact && <div className="space-y-3 rounded bg-amber-50 p-4"><p>日期范围内涉及 {impact.reports} 份日报、{impact.targets} 项目标、{impact.classes} 个 PK 班级。</p><p>实时统计按新周期计算；已提交日报的原始快照保留。</p>{impact.changes.map((change) => <p key={change.name}>{change.name}：{change.before} → {change.after}</p>)}<button className={button} onClick={() => void save()}>确认并保存配置</button></div>}
       </section> : <section className="space-y-4 rounded-xl border bg-white p-5"><h2 className="text-lg font-semibold">班级与门店分配</h2>
