@@ -2405,9 +2405,19 @@ function MarketReportForm({
         const merged = previous.length > 0
           ? mergeMarketReportDraftLines(extractedSummary, previous
               .filter((line) => !line.independent && line.selected && positiveNumber(line.purchaseQuantity) !== null)
-              .map((line) => ({ ...line, quantity: positiveNumber(line.purchaseQuantity)! })))
+              .map((line) => ({
+                ...line,
+                quantity: positiveNumber(line.purchaseQuantity)!,
+                // 当前汇总的待配零值可能仅是被在途覆盖，不能当成持久化草稿的独立标记。
+                requestQuantity: null,
+              })))
           : extractedSummary
-        return [...merged, ...independentLines]
+        const previousSkus = new Set(previous.map((line) => line.skuId))
+        // 新建单中新出现的提取行沿用汇总默认选择；草稿只勾原草稿内容。
+        const selectedMerged = merged.map((line) => !draftId && !previousSkus.has(line.skuId)
+          ? extractedSummary.find((item) => item.skuId === line.skuId)!
+          : line)
+        return [...selectedMerged, ...independentLines]
       })
       if (summary.items.length === 0) toast.info('当前没有待汇总的门店报货明细')
     } catch (error) {
@@ -2709,7 +2719,7 @@ function MarketReportForm({
       {lines.length > 0 && (
         <div className="space-y-3">
           <h3 className="text-sm font-medium">市场报货明细</h3>
-          <p className="text-xs text-[#888888]">独立报货不提取门店需求。同一商品已独立报货时，汇总不会改写其来源；如需提取该商品，请退出编辑后重新汇总。</p>
+          <p className="text-xs text-[#888888]">独立报货不提取门店需求。同一商品已独立报货时，汇总不会改写其来源；如需提取该商品，请先移除独立行再重新汇总。</p>
           <div className="overflow-x-auto rounded-[var(--radius)] border border-[var(--border)]">
             <table className="w-full min-w-[860px] text-sm">
               <thead className="bg-[var(--muted)] text-left text-xs text-[var(--muted-foreground)]">
@@ -2729,6 +2739,7 @@ function MarketReportForm({
                     <th className="px-3 py-2 font-medium">门店单价（参考）</th>
                     <th className="px-3 py-2 font-medium">报货福利</th>
                   </>}
+                  <th className="px-3 py-2 font-medium">操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -2770,7 +2781,7 @@ function MarketReportForm({
                         </details>
                       </td>
                       <td className="px-3 py-2">
-                        {line.requestQuantity}
+                        {line.independent ? '—' : line.requestQuantity}
                         {/* 待配已被在途封顶时亮出扣了多少：在途挂着不到货（短收 / 总部不发）时人能看出来，不至于整行静默漏报 */}
                         {line.inTransitCoveredQuantity > 0 && <div className="text-xs text-[#888888]">在途已覆盖 {line.inTransitCoveredQuantity}</div>}
                       </td>
@@ -2825,6 +2836,14 @@ function MarketReportForm({
                           )}
                         </td>
                       </>}
+                      <td className="px-3 py-2">
+                        {line.independent && <Button
+                          type="button" variant="ghost" size="sm"
+                          aria-label={`移除独立报货 ${rowName}`}
+                          disabled={saving || loadingSummary}
+                          onClick={() => setLines((previous) => previous.filter((item) => item.skuId !== line.skuId))}
+                        >移除</Button>}
+                      </td>
                     </tr>
                   )
                 })}
