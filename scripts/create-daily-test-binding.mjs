@@ -9,9 +9,9 @@ const {
 } = require("../fengyu-daily/cloudfunctions/dailyApi/node_modules/pg");
 const targetArg = process.argv[2];
 if (!targetArg) throw Error("需要指定测试员工编号或手机号");
-const byEmployeeId = /^DLYTEST_[A-Z0-9_]+$/.test(targetArg);
+const byEmployeeId = /^DLYTEST_[A-Z0-9_]+$/.test(targetArg) || targetArg === "FY-260914002";
 if (!byEmployeeId && !/^1\d{10}$/.test(targetArg))
-  throw Error("测试员工编号必须为 DLYTEST_*，或提供员工手机号");
+  throw Error("仅支持 DLYTEST_* 测试员工、周智慧测试身份 FY-260914002，或员工手机号");
 const client = new Client({ connectionString: devConnection() });
 try {
   await client.connect();
@@ -31,7 +31,7 @@ try {
   const entry = {
     hash: crypto.createHash("sha256").update(code).digest("hex"),
     employeeId: rows[0].employee_id,
-    expiresAt: Date.now() + 4 * 3600000,
+    expiresAt: null,
   };
   const target = path.join(
     ROOT,
@@ -41,7 +41,7 @@ try {
   try {
     const existing = JSON.parse(fs.readFileSync(target, "utf8"));
     entries = (Array.isArray(existing) ? existing : [existing])
-      .filter((item) => item?.expiresAt > Date.now() && item.employeeId !== entry.employeeId);
+      .filter((item) => (item?.expiresAt === null || item?.expiresAt > Date.now()) && item.employeeId !== entry.employeeId);
   } catch (_) {}
   entries.push(entry);
   fs.writeFileSync(target, JSON.stringify(entries), { mode: 0o600 });
@@ -50,7 +50,7 @@ try {
   fs.mkdirSync(path.dirname(output), { recursive: true });
   fs.writeFileSync(output, code, { mode: 0o600 });
   console.log(
-    `已生成4小时有效的测试绑定码（${rows[0].employee_id}）；仅写入本地忽略文件，未修改数据库。`,
+    `已生成长期有效的日报开发测试码（${rows[0].employee_id}）；仅写入本地忽略文件，未修改微信绑定或数据库。`,
   );
 } finally {
   await client.end();

@@ -24,10 +24,10 @@ function verifyTestCode(payload, config, env = process.env, now = Date.now()) {
     if (
       !/^[a-f0-9]{64}$/.test(entry?.hash || "") ||
       typeof entry.employeeId !== "string" ||
-      !Number.isFinite(entry.expiresAt)
+      (entry.expiresAt !== null && !Number.isFinite(entry.expiresAt))
     ) continue;
     if (crypto.timingSafeEqual(hash, Buffer.from(entry.hash, "hex"))) {
-      if (entry.expiresAt <= now)
+      if (entry.expiresAt !== null && entry.expiresAt <= now)
         throw Error("INVALID_STATE: 测试绑定码未配置或已过期，请联系管理员");
       return entry.employeeId;
     }

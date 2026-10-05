@@ -33,6 +33,23 @@ test("绑定码可并存，临时选择目标员工且不改变真实微信身�
   assert.deepEqual(first.identity, real);
   assert.deepEqual(second.identity, real);
 });
+test("长期测试绑定码不会过期，且仍只临时切换服务端测试身份", () => {
+  const permanentCode = "fedcba9876543210fedcba98";
+  const permanent = {
+    hash: crypto.createHash("sha256").update(permanentCode).digest("hex"),
+    employeeId: "FY-260914002",
+    expiresAt: null,
+  };
+  const real = { appid: "wx4da3e1e9ad861396", openid: "REAL-WX-ID" };
+  assert.equal(
+    verifyTestCode({ code: permanentCode }, permanent, env, Number.MAX_SAFE_INTEGER),
+    "FY-260914002",
+  );
+  const switched = testIdentity(real, { code: permanentCode }, permanent, env, Number.MAX_SAFE_INTEGER);
+  assert.equal(switched.employeeId, "FY-260914002");
+  assert.deepEqual(switched.identity, real);
+  assert.throws(() => verifyTestCode({ code: permanentCode }, { ...permanent, expiresAt: undefined }, env), /PERMISSION_DENIED/);
+});
 test("拒绝错误、过期、未配置绑定码和直接手机号", () => {
   assert.throws(
     () => verifyTestCode({ code: "0".repeat(24) }, config, env, 1000),
