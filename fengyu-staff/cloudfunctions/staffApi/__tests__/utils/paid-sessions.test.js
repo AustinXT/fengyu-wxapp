@@ -189,10 +189,10 @@ describe('PAID_SESSIONS_RECALC_SQL 模板字面量守护', () => {
     expect(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL).not.toContain('provisional_received')
   })
 
-  test('行级公式必须为 received × session_count / sale_amount（session_count 参与，先乘后除保整数精度）', () => {
-    // received 已由 STEP1（receipt/瀑布）+ STEP1.5（逐项退款净额）前置算好，
-    // 本 SQL 不再下分订单级 refund，直接用净 received × session_count / sale_amount。
-    expect(PAID_SESSIONS_RECALC_SQL).toMatch(/LEAST\(sale_items\.session_count,\s*FLOOR\(sale_items\.received::numeric\s*\*\s*sale_items\.session_count\s*\/\s*sale_items\.sale_amount::numeric\)/)
+  test('行级次数本金排手续费并还原余数退款，乘次数后除应付取整', () => {
+    expect(PAID_SESSIONS_RECALC_SQL).toMatch(/FLOOR\(GREATEST\(0, sale_items\.received::numeric - rights\.retained \+ rights\.overpay\)\s*\*\s*sale_items\.session_count\s*\/\s*sale_items\.sale_amount::numeric\)/)
+    expect(PAID_SESSIONS_RECALC_SQL).toContain('WHEN rights.full_refund THEN 0')
+    expect(PAID_SESSIONS_RECALC_SQL).toContain("sop.status = '已支付'")
   })
 
   test('必须用 FLOOR 取整（D1=A）', () => {
@@ -201,8 +201,8 @@ describe('PAID_SESSIONS_RECALC_SQL 模板字面量守护', () => {
     expect(PAID_SESSIONS_RECALC_SQL).not.toMatch(/\bCEIL\(/i)
   })
 
-  test('必须用 LEAST(session_count, ...) 防越界（D4=A）', () => {
-    expect(PAID_SESSIONS_RECALC_SQL).toMatch(/LEAST\(sale_items\.session_count,/i)
+  test('必须用 LEAST(session_count - 已退次数, ...) 防已退权益复活（D4=A）', () => {
+    expect(PAID_SESSIONS_RECALC_SQL).toMatch(/LEAST\(sale_items\.session_count - rights\.refunded_sessions,/i)
   })
 
   test('必须有 sale_items.sale_amount <= 0 → session_count 兜底（免单/寄存行）', () => {
