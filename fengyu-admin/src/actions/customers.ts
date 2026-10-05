@@ -1567,7 +1567,10 @@ export const createCustomer = withPermission(
     throw err
   }
 
-  await logOperation(session, 'customer.create', 'customer', userId, { name: data.name, phone: data.phone })
+  await logOperation(session, 'customer.create', 'customer', userId, {
+    name: data.name, phone: data.phone, boundStoreId: nextBoundStoreId,
+    boundEmployeeId: nextBoundEmployeeId, boundEmployeeName,
+  })
 
   const { revalidatePath } = await import('next/cache')
   revalidatePath('/customers')
@@ -1844,6 +1847,7 @@ export const mergeClientProfile = withPermission(
     )`
   }
 
+  let bindingTransfer: { beforeId: string | null; beforeName: string | null; afterId: unknown; afterName: unknown } | null = null
   let ordersReassigned = 0
   try {
     await db.transaction(async (tx) => {
@@ -1855,6 +1859,36 @@ export const mergeClientProfile = withPermission(
       const { messages } = await import('@db/message')
       const { serviceOrders } = await import('@db/service')
       const { pickupRecords } = await import('@db/pickup')
+
+      // #301：事务外读到「缺绑定」后可能已有合法分配。保持原客户行→引用表
+      // 锁顺序，以原 UPDATE 同等强度在写客户行位置锁定复核，不能把新绑定回滚成孤儿旧值。
+      if (Object.hasOwn(patch, 'boundEmployeeId') || Object.hasOwn(patch, 'boundEmployeeName')) {
+        const [bindingNow] = await tx.select({
+          boundEmployeeId: clientWechatUsers.boundEmployeeId,
+          boundEmployeeName: clientWechatUsers.boundEmployeeName,
+        }).from(clientWechatUsers)
+          .where(eq(clientWechatUsers.userId, sourceUserId))
+          .for('no key update')
+        if (!bindingNow) throw new Error('NOT_FOUND: 活跃顾客已不存在')
+        if (bindingNow.boundEmployeeId !== sourceRow.boundEmployeeId
+          || bindingNow.boundEmployeeName !== sourceRow.boundEmployeeName) {
+          delete patch.boundEmployeeId
+          delete patch.boundEmployeeName
+          for (let i = fieldsMigrated.length - 1; i >= 0; i--) {
+            if (fieldsMigrated[i] === 'boundEmployeeId' || fieldsMigrated[i] === 'boundEmployeeName') {
+              fieldsMigrated.splice(i, 1)
+            }
+          }
+        }
+      }
+
+      if (Object.hasOwn(patch, 'boundEmployeeId') || Object.hasOwn(patch, 'boundEmployeeName')) {
+        bindingTransfer = {
+          beforeId: sourceRow.boundEmployeeId, beforeName: sourceRow.boundEmployeeName,
+          afterId: patch.boundEmployeeId ?? sourceRow.boundEmployeeId,
+          afterName: patch.boundEmployeeName ?? sourceRow.boundEmployeeName,
+        }
+      }
 
       // 1. 档案字段回填（仅缺失项）
       if (Object.keys(patch).length > 0) {
@@ -1907,6 +1941,7 @@ export const mergeClientProfile = withPermission(
     orphanUserId,
     fieldsMigrated,
     ordersReassigned,
+    bindingTransfer,
   })
 
   const { revalidatePath } = await import('next/cache')

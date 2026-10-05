@@ -775,6 +775,12 @@ Page({
     });
   },
 
+  onAssignMembershipEmployee() {
+    const customer = this.data.customerInfo;
+    if (!isManager() || !customer?.clientUserId) return;
+    wx.navigateTo({ url: `/packageCustomer/customer-detail/customer-detail?clientUserId=${encodeURIComponent(customer.clientUserId)}` });
+  },
+
   onBigCategoryChange(e: WechatMiniprogram.CustomEvent) {
     const index = typeof e.detail === 'number' ? e.detail : (e.detail as { index?: number })?.index;
     if (typeof index !== 'number' || index === this.data.productKindChoiceIndex) return;

@@ -1503,7 +1503,8 @@ Page({
       this.setData({
         customer: { ...customer, preferredStaffName: result.employeeName },
       });
-      wx.showToast({ title: `已指定${result.employeeName}`, icon: 'success' });
+      await this.loadCustomer();
+      wx.showToast({ title: `已分配${result.employeeName}`, icon: 'success' });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '修改失败';
       wx.showToast({ title: msg, icon: 'none' });
