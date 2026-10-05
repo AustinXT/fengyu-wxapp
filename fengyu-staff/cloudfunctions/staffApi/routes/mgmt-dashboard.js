@@ -24,6 +24,7 @@
  */
 
 const pg = require('../db/pg')
+const { excludeLegacyPrepaidInflowSql } = require('../utils/prepaid-performance-filter')
 const { loadClosedStoreIds } = require('../utils/store-closed-label')
 const { requireManagementLevel } = require('../middleware/auth')
 const {
@@ -253,10 +254,13 @@ async function queryStoreRevenue(scopeType, scopeId, date, mode) {
   const rows = await pg.query(
     `SELECT COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
        FROM sale_reportable_payment_events spe
+       JOIN sale_orders so ON so.sale_order_id = spe.sale_order_id
+         AND so.status <> '已关闭'
       WHERE ${sc.sql}
         AND spe.status = '已支付'
         AND spe.change_type IN ('首次支付', '回款', '退款')
         AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
+        AND ${excludeLegacyPrepaidInflowSql('spe')}
         AND spe.legacy_source IS DISTINCT FROM 'workfine'
         AND ${timeWindow('spe.performance_date', mode, 1, true)}`,
     [date, ...sc.params],
@@ -271,9 +275,9 @@ async function queryShengmeiRevenue(scopeType, scopeId, date, mode) {
        FROM sale_reportable_item_events sipe
        JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id
        JOIN sale_orders so ON so.sale_order_id = sipe.sale_order_id
+         AND so.status <> '已关闭'
       WHERE ${sc.sql}
         AND so.sale_order_type IN ('销售单', '转换单')
-        AND (NOT sipe.is_legacy_residual OR so.status <> '已关闭')
         AND si.is_shengmei = TRUE
         AND ${timeWindow('sipe.performance_date', mode, 1, true)}`,
     [date, ...sc.params],
@@ -371,6 +375,7 @@ async function querySalesCommissionIncome(scopeType, scopeId, date, mode) {
        JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
        JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
        JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+         AND so.status <> '已关闭'
        JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id
       WHERE ${sc.sql}
         AND spia.is_void = FALSE
@@ -918,7 +923,12 @@ async function rankingRevenue(period, storeFilter) {
      JOIN org_nodes o ON o_store.parent_id = o.id
      LEFT JOIN sale_reportable_payment_events spe
        ON spe.store_id = s.store_id
+       AND EXISTS (
+         SELECT 1 FROM sale_orders so
+         WHERE so.sale_order_id = spe.sale_order_id AND so.status <> '已关闭'
+       )
        AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
+       AND ${excludeLegacyPrepaidInflowSql('spe')}
        AND spe.legacy_source IS DISTINCT FROM 'workfine'
        AND spe.status = '已支付'
        AND spe.change_type IN ('首次支付', '回款', '退款')
@@ -1248,6 +1258,7 @@ revenue_by_emp AS (
   JOIN sale_reportable_item_events sipe ON sipe.receipt_id = spir.id
   JOIN sale_items si  ON si.sale_item_id  = spir.sale_item_id
   JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+    AND so.status <> '已关闭'
   JOIN sale_reportable_payment_events spe ON spe.sale_payment_id = spir.sale_payment_id
   WHERE spia.is_void = FALSE
     AND so.sale_order_type IN ('销售单','转换单')
@@ -1443,6 +1454,7 @@ sales_comm AS (
   JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
   JOIN sale_items si  ON si.sale_item_id  = spir.sale_item_id
   JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+    AND so.status <> '已关闭'
   JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id
   WHERE spia.is_void = FALSE
     AND so.sale_order_type IN ('销售单','转换单')
@@ -1591,10 +1603,12 @@ async function salesData(ctx) {
         `SELECT COALESCE(SUM(spe.performance_amount::numeric), 0) AS v
            FROM sale_reportable_payment_events spe
            JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
+             AND o.status <> '已关闭'
           WHERE ${scSale.sql}
             AND spe.status = '已支付'
             AND spe.change_type IN ('首次支付', '回款', '退款')
             AND o.sale_order_type IN ('销售单', '转换单', '充值单')
+            AND ${excludeLegacyPrepaidInflowSql('o')}
             AND o.legacy_source IS DISTINCT FROM 'workfine'
             AND spe.performance_date BETWEEN $1 AND $2`,
         saleP,
@@ -1617,11 +1631,13 @@ async function salesData(ctx) {
             ), 0) AS old_member
            FROM sale_reportable_payment_events spe
            JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
+             AND o.status <> '已关闭'
            JOIN client_wechat_users c ON c.user_id = o.client_user_id
           WHERE ${scSale.sql}
             AND spe.status = '已支付'
             AND spe.change_type IN ('首次支付', '回款', '退款')
             AND o.sale_order_type IN ('销售单', '转换单', '充值单')
+            AND ${excludeLegacyPrepaidInflowSql('o')}
             AND o.legacy_source IS DISTINCT FROM 'workfine'
             AND spe.performance_date BETWEEN $1 AND $2`,
         saleP,

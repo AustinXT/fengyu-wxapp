@@ -182,7 +182,7 @@ async function recharge(ctx) {
  * 与 card.recharge 的区别：
  *   - 旧系统已收过钱 → 1:1 等额、不打折、不限额、不走 matchTier 档位；
  *   - 直接建 status='已支付' 的充值单（不经待支付 → confirmOffline），即时入账 balance += amount；
- *   - remark / 流水 note 打专用标记「旧系统充值金转入」，便于查账识别（充值单本就不计营收）。
+ *   - remark / 流水 note 打专用标记「旧系统充值金转入」，便于查账识别；业绩查询按首次支付标记排除整张转入单及其退款。
  *
  * 转入单本质是普通充值单：将来退款天然走 card.createRefund/approveRefund（与任何充值单一致）。
  * received=amount（非 0）+ 配一条「首次支付」流水，维护资金不变量 received=Σ流水，

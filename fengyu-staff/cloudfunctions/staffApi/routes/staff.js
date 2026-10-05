@@ -10,6 +10,7 @@ const https = require('https')
 const crypto = require('crypto')
 const { URL } = require('url')
 const pg = require('../db/pg')
+const { excludeLegacyPrepaidInflowSql } = require('../utils/prepaid-performance-filter')
 const { requireStaffBound, invalidateAuthCache, isCurrentStoreManager } = require('../middleware/auth')
 const { assertEmployeeInScope, isStoreInScope, buildStoreScopeCondition } = require('../utils/scope')
 const { shanghaiDateStr } = require('../utils/datetime')
@@ -423,6 +424,7 @@ async function todayCommission(ctx) {
       FROM sale_reportable_payment_events spe
       WHERE ${sc.sql}
         AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
+        AND ${excludeLegacyPrepaidInflowSql('spe')}
         AND spe.status = '已支付'
         AND spe.change_type IN ('首次支付', '回款', '退款')
         AND spe.legacy_source IS DISTINCT FROM 'workfine'
@@ -468,6 +470,7 @@ async function monthlyCalendar(ctx) {
     FROM sale_reportable_payment_events spe
     WHERE ${sc.sql}
       AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
+      AND ${excludeLegacyPrepaidInflowSql('spe')}
       AND spe.status = '已支付'
       AND spe.change_type IN ('首次支付', '回款', '退款')
       AND spe.legacy_source IS DISTINCT FROM 'workfine'
@@ -485,6 +488,7 @@ async function monthlyCalendar(ctx) {
     FROM sale_reportable_payment_events spe
     WHERE ${sc.sql}
       AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
+      AND ${excludeLegacyPrepaidInflowSql('spe')}
       AND spe.status = '已支付'
       AND spe.change_type IN ('首次支付', '回款', '退款')
       AND spe.legacy_source IS DISTINCT FROM 'workfine'
