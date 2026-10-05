@@ -201,6 +201,11 @@ describe('办理台表单一致性（#135）', () => {
     expect(numberInputs.length).toBe(23)
     for (const attrs of numberInputs) {
       expect(attrs).toMatch(/min="0(\.01)?"/)
+      if (attrs.includes('step="1"')) {
+        expect(attrs).toMatch(/min="0"/)
+        expect(attrs).toMatch(/max="9999999999"/)
+        continue
+      }
       expect(attrs).toMatch(/step="0\.01"/)
       // numeric(12,2) 的上界：再大 PG 会抛 22003 numeric field overflow
       expect(attrs).toMatch(/max="9999999999\.99"/)
@@ -216,17 +221,17 @@ describe('办理台表单一致性（#135）', () => {
     const strict = source.match(/min="0\.01"/g) ?? []
     const loose = source.match(/min="0"/g) ?? []
     // 9 → 10（#336b：发货行数量走 positiveNumber —— 不发的行要删掉，不是填 0）
-    expect(strict.length).toBe(10)
+    expect(strict.length).toBe(9)
     // #337 +3：分院配货自选行的正常 / 赠送 / 优惠都走 nonnegativeNumber（正常与赠送二选一）
     // 15 → 13（#336a：品项公司发货表单暂为占位；#336b 新表单逐行显式校验，不再有 nonnegative 字段）
     // 13 → 14（#344：转换目标「单价」允许 0（赠送转换 / 自填 0 价），走 nonnegativeNumber → min="0"）
     // 14 → 15（#346：入库「单价优惠」允许 0 / 留空，走 nonnegativeNumber → min="0"）
     // 15 → 14（#358：收货「本次实收」只读，不再是可填的数值框）
-    expect(loose.length).toBe(13)
+    expect(loose.length).toBe(14)
 
     // 抽样两个方向，防止整体计数对了但分配错了
     const store = block('function StoreRequestForm(', 'function ItemCompanyReplenishmentForm(')
-    expect(store).toMatch(/min="0\.01"/)          // 数量走 positiveNumber
+    expect(store).toMatch(/min="0" step="1"/) // #532 门店非负整数
     // #194 把「供应链采购订单」并入「采购订单」，原右锚 SupplyChainPurchaseOrderForm 已不存在，
     // 改用紧随其后的 interface 作右锚。
     const purchase = block('function PurchaseOrderForm(', 'function CompanyShipmentForm(')
@@ -3180,6 +3185,50 @@ describe('门店报货草稿（#348 · 348a）', () => {
     expect(screen.getByRole('button', { name: '提交门店报货单' })).toBeInTheDocument()
   })
 
+  it.each(['1.06', '-1', '', '10000000000'])('旧草稿数量 %s 禁止存草稿和提交（#532）', async (quantity) => {
+    mockDocs({ inbox: segment([draftRow()]) })
+    const detail = draftDetail()
+    detail.items[0].quantity = Number(quantity)
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue(detail)
+    renderPage({ level: 'store', operation: 'store-request', locations: [M1, S1] })
+    await openDocsTab()
+    fireEvent.click(screen.getByRole('button', { name: '继续编辑 DBH-D1' }))
+    await screen.findByText('DBH-D1', { selector: 'span.font-mono' })
+    const field = screen.getByRole('spinbutton')
+    expect(field).toHaveAttribute('min', '0')
+    expect(field).toHaveAttribute('step', '1')
+    fireEvent.change(field, { target: { value: quantity } })
+    fireEvent.blur(field)
+    if (quantity) expect(screen.getByRole('alert')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '存草稿' }))
+    fireEvent.submit(screen.getByRole('button', { name: '提交门店报货单' }).closest('form')!)
+    expect(saveStoreReplenishmentDraft).not.toHaveBeenCalled()
+    expect(createStoreReplenishmentRequest).not.toHaveBeenCalled()
+    expect(toast.error).toHaveBeenCalledWith('报货数量须为 0 至 9999999999 的非负整数')
+  })
+
+  it('全零提示无需求；零行和整数混合仅提交有效需求（#532）', async () => {
+    mockDocs({ inbox: segment([draftRow()]) })
+    const detail = draftDetail()
+    detail.items = [
+      { ...detail.items[0], quantity: 0 },
+      { ...detail.items[0], id: 2, skuId: 'SKU-2', quantity: 0, remark: null },
+    ]
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue(detail)
+    renderPage({ level: 'store', operation: 'store-request', locations: [M1, S1] })
+    await openDocsTab()
+    fireEvent.click(screen.getByRole('button', { name: '继续编辑 DBH-D1' }))
+    await screen.findByText('DBH-D1', { selector: 'span.font-mono' })
+    fireEvent.click(screen.getByRole('button', { name: '存草稿' }))
+    expect(toast.error).toHaveBeenCalledWith('门店报货至少需要一条数量大于 0 的明细')
+    expect(saveStoreReplenishmentDraft).not.toHaveBeenCalled()
+    fireEvent.change(screen.getAllByRole('spinbutton')[1], { target: { value: '2' } })
+    fireEvent.click(screen.getByRole('button', { name: '存草稿' }))
+    await waitFor(() => expect(saveStoreReplenishmentDraft).toHaveBeenCalledWith(expect.objectContaining({
+      items: [{ skuId: 'SKU-2', quantity: 2, remark: null }],
+    })))
+  })
+
   it('门店报货草稿的非法数量不能绕过提交约束', async () => {
     mockDocs({ inbox: segment([draftRow()]) })
     vi.mocked(getInventoryCoreDocById).mockResolvedValue(draftDetail())
@@ -3190,7 +3239,7 @@ describe('门店报货草稿（#348 · 348a）', () => {
     fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '-1' } })
     fireEvent.click(screen.getByRole('button', { name: '存草稿' }))
     expect(saveStoreReplenishmentDraft).not.toHaveBeenCalled()
-    expect(toast.error).toHaveBeenCalledWith('报货数量须为 0.01 至 9999999999.99，且最多两位小数')
+    expect(toast.error).toHaveBeenCalledWith('报货数量须为 0 至 9999999999 的非负整数')
   })
 
   it('删除草稿按业务分派到门店报货的 action，不串到市场报货', async () => {

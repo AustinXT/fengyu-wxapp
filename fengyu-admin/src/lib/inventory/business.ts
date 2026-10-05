@@ -18,6 +18,7 @@ import type { AuthSession } from '@/lib/types'
 import { revalidatePath } from 'next/cache'
 import { sql } from 'drizzle-orm'
 import { assertInventoryBusinessWritable } from './cutover'
+import { validNonnegativeStoreRequestQuantity, STORE_REQUEST_QUANTITY_ERROR, STORE_REQUEST_EMPTY_ERROR } from './store-request-quantity'
 import { cancelledMarketReportRetainedSql } from './retained-sql'
 import { allocateConversionLinks, formatConversionAmount, summarizeConversion, uncoveredConversionTargets } from './conversion-plan'
 import { pgRaiseMessage } from '@/lib/pg-error'
@@ -2150,7 +2151,7 @@ function refreshInventoryPaths(): void {
  * 门店只能为自身市场创建需求，报货本身不产生库存流水。
  *
  * 门店报货：新建 / 存草稿 / 提交草稿共用一条写路径（#348），校验只有一份 ——
- * 草稿与正式单的明细口径（可报货 SKU、归属本市场、数量为正、同 SKU 合并）完全一致，
+ * 草稿与正式单的明细口径（可报货 SKU、归属本市场、数量为非负整数（零行不产生需求）、同 SKU 合并）完全一致，
  * 差别只在单头状态：草稿不确认、不进任何下游（汇总 / 在途 / 市场报货引用 / 分院配货都只认「已完成」）。
  */
 export async function createStoreReplenishmentRequest(
@@ -2188,12 +2189,18 @@ export async function createStoreReplenishmentRequest(
       skuIds.add(skuId)
       const sku = await loadSku(tx, skuId, true)
       assertSkuAvailableToMarket(sku, marketId)
+      if (!validNonnegativeStoreRequestQuantity(item.quantity)) {
+        throw new ApiError('INVALID_PARAMS', STORE_REQUEST_QUANTITY_ERROR)
+      }
+      const quantity = Number(item.quantity)
+      if (quantity === 0) continue
       prepared.push({
         sku,
-        quantity: positive(item.quantity, '报货数量'),
+        quantity,
         remark: text(item.remark),
       })
     }
+    if (prepared.length === 0) throw new ApiError('INVALID_PARAMS', STORE_REQUEST_EMPTY_ERROR)
     const total = prepared.reduce((sum, item) => sum + item.quantity, 0)
     let docId: string
     if (draftId) {

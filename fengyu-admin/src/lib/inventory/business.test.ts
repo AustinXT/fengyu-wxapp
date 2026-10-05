@@ -4532,6 +4532,36 @@ describe('门店报货草稿（#348）', () => {
     vi.resetAllMocks()
   })
 
+  it.each([1.06, -1, NaN, Infinity, 10000000000, '', null, true])('非法数量 %s 在新建/存草稿/覆盖/提交均拒绝且不写库（#532）', async (quantity) => {
+    for (const action of [createStoreReplenishmentRequest, saveStoreReplenishmentDraft]) {
+      for (const draftId of [undefined, 'DBH-D1']) {
+        const mock = mockStoreDraftTx(STORE_DRAFT)
+        await expect(action(SESSION, {
+          ...input, draftId, expectedUpdatedAt: DRAFT_VERSION,
+          items: [{ skuId: 'SKU-1', quantity: quantity as number }],
+        })).rejects.toThrow('报货数量须为 0 至 9999999999 的非负整数')
+        expect(mock.rendered().some((sql) => /INSERT INTO inventory_doc|DELETE FROM inventory_doc_items|UPDATE inventory_docs/.test(sql))).toBe(false)
+      }
+    }
+  })
+
+  it('零数量不入需求明细；全零草稿/正式单拒绝且保留原草稿（#532）', async () => {
+    for (const action of [createStoreReplenishmentRequest, saveStoreReplenishmentDraft]) {
+      const mock = mockStoreDraftTx(STORE_DRAFT)
+      await action(SESSION, { ...input, draftId: 'DBH-D1', expectedUpdatedAt: DRAFT_VERSION,
+        items: [{ skuId: 'SKU-ZERO', quantity: 0 }, { skuId: 'SKU-1', quantity: 1 }, { skuId: 'SKU-2', quantity: 2 }],
+      })
+      const writes = mock.calls.filter((q) => renderSql(q).includes('INSERT INTO inventory_doc_items'))
+      expect(writes).toHaveLength(2)
+      expect(writes.flatMap(sqlParams)).not.toContain('SKU-ZERO')
+      const zero = mockStoreDraftTx(STORE_DRAFT)
+      await expect(action(SESSION, { ...input, draftId: 'DBH-D1', expectedUpdatedAt: DRAFT_VERSION,
+        items: [{ skuId: 'SKU-1', quantity: 0 }],
+      })).rejects.toThrow('门店报货至少需要一条数量大于 0 的明细')
+      expect(zero.rendered().some((sql) => sql.includes('DELETE FROM inventory_doc_items'))).toBe(false)
+    }
+  })
+
   it('新建草稿：单头状态草稿、不确认；与正式单同一套明细校验', async () => {
     const { calls } = mockStoreDraftTx(null)
     const result = await saveStoreReplenishmentDraft(SESSION, input)

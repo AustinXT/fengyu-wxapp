@@ -3,6 +3,21 @@ import { describe, expect, it, vi } from 'vitest'
 import { InventoryNumberInput } from './inventory-number-input'
 
 describe('库存数值输入', () => {
+  it('门店整数步进为 1、下限为 0，小数失焦提示（#532）', () => {
+    render(<InventoryNumberInput min="0" max="9999999999" step="1" defaultValue="1" />)
+    const input = screen.getByRole('spinbutton') as HTMLInputElement
+    input.stepUp()
+    expect(input.value).toBe('2')
+    input.stepDown()
+    input.stepDown()
+    expect(input.value).toBe('0')
+    input.stepDown()
+    expect(input.value).toBe('0')
+    fireEvent.change(input, { target: { value: '1.06' } })
+    fireEvent.blur(input)
+    expect(screen.getByRole('alert')).toHaveTextContent('请按 1 的步长输入')
+  })
+
   it('失焦显示中文边界错误，修正后清除，非法值不能通过表单校验', () => {
     const onSubmit = vi.fn((event: React.FormEvent) => event.preventDefault())
     const { container } = render(
