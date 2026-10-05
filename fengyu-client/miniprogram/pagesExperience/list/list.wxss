@@ -175,3 +175,11 @@
   color: var(--color-text-hint);
   line-height: 1.6;
 }
+
+.load-more-btn {
+  background: transparent;
+  color: var(--color-primary);
+  font-size: 26rpx;
+  line-height: 2;
+}
+.load-more-btn::after { border: none; }

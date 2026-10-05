@@ -47,6 +47,7 @@ try {
   wx.cloud.callFunction=async function(options) {
    const {action,payload}=options.data;
    let data={};
+   if(action==='product.experienceCardList' && wx.__coverFailNext) { wx.__coverFailNext=false; throw new Error('合成翻页网络故障'); }
    if(action==='product.experienceCardList' && realPg) return await new Promise(resolve=>{const key=String(++requestId);wx.__coverPgResolvers[key]=resolve;__coverPgRequest(key,payload)});
    if(action==='product.experienceCardList') {
     const offset=Number(payload.cursor||0); const end=Math.min(200,offset+20);
@@ -59,9 +60,40 @@ try {
 
  let page=await mp.navigateTo('/pagesExperience/list/list');await wait(1000);
  console.log('experience-first', (await page.data()).skuList.length);
- for(let i=0;i<9;i++){await page.callMethod('loadList',true); await wait(150)}
+ async function waitData(predicate,label){for(let i=0;i<40;i++){const data=await page.data();if(predicate(data))return data;await wait(100)}throw new Error(label+'超时')}
+ // 从真实按钮触发翻页，先让第二页失败，再点击同一按钮恢复原游标。
+ await mp.evaluate(()=>{wx.__coverFailNext=true});
+ await (await page.$('.load-more-btn')).tap();
+ await waitData(data=>data.loadMoreError && !data.loadingMore,'翻页错误态');
+ assert.equal((await page.data()).skuList.length,20);
+ assert.match(await (await page.$('.load-more-btn')).text(),/点击重试/);
+ await (await page.$('.load-more-btn')).tap();
+ await waitData(data=>data.skuList.length===40 && !data.loadingMore,'翻页重试');
+ assert.equal((await page.data()).loadMoreError,false);
+ for(let end=60;end<=200;end+=20){await (await page.$('.load-more-btn')).tap();await waitData(data=>data.skuList.length===end && !data.loadingMore,'按钮翻页')}
+ assert.equal(await page.$('.load-more-btn'),null);
  assert.equal((await page.data()).skuList.length,200);
- async function snapshot(label,key,selector){await wait(1000);const data=await page.data();const rows=data[key]; const visible=rows.map((r,i)=>r.coverVisible?i:null).filter(i=>i!==null);const images=await page.$$(selector+' image');console.log(label,{rows:rows.length,visible,images:images.length,scroll:await page.scrollTop()});assert(visible.length<=24);assert(images.length<=24);const missing=await mp.evaluate((key,selector)=>new Promise(resolve=>{const p=getCurrentPages().slice(-1)[0];wx.createSelectorQuery().in(p).selectAll(selector).fields({rect:true,dataset:true}).selectViewport().fields({size:true}).exec(([slots,view])=>resolve(slots.filter(r=>r.top<view.height && r.bottom>0 && !p.data[key][Number(r.dataset.idx)].coverVisible).map(r=>r.dataset.idx)))}),key,selector);assert.deepEqual(missing,[],label+'可视封面不能被上限裁掉');return visible;}
+ async function snapshot(label,key,selector) {
+  // 在同一次原生测量回包中读取几何和cover标记，避免两次协议往返之间渲染已更新。
+  let state;
+  for(let attempt=0;attempt<30;attempt++) {
+   state=await mp.evaluate((key,selector)=>new Promise(resolve=>{
+    const p=getCurrentPages().slice(-1)[0];
+    wx.createSelectorQuery().in(p).selectAll(selector).fields({rect:true,dataset:true}).selectViewport().fields({size:true}).exec(([slots,view])=>{
+     const rows=p.data[key];
+     resolve({rows:rows.length,visible:rows.flatMap((r,i)=>r.coverVisible?[i]:[]),missing:slots.filter(r=>r.top<view.height && r.bottom>0 && !rows[Number(r.dataset.idx)].coverVisible).map(r=>r.dataset.idx),height:view.height});
+    });
+   }),key,selector);
+   assert(state.height>0,label+'必须获得实际视口尺寸');
+   if(state.missing.length===0)break;
+   await wait(100);
+  }
+  const images=await page.$$(selector+' image');
+  console.log(label,{...state,images:images.length,scroll:await page.scrollTop()});
+  assert(state.visible.length<=24);assert(images.length<=24);
+  assert.deepEqual(state.missing,[],label+'可视封面不能被上限裁掉');
+  return state.visible;
+ }
  await snapshot('experience-top','skuList','.experience-cover-slot');
  await mp.pageScrollTo(999999);const bottom=await snapshot('experience-bottom','skuList','.experience-cover-slot');assert(bottom.includes(199));assert(!bottom.includes(0));
  await mp.pageScrollTo(0);const top=await snapshot('experience-return','skuList','.experience-cover-slot');assert(top.includes(0));assert(!top.includes(199));
@@ -69,10 +101,17 @@ try {
  await snapshot('orders-top','coverRows','.order-cover-slot');await mp.pageScrollTo(999999);const ob=await snapshot('orders-bottom','coverRows','.order-cover-slot');assert(ob.includes(199));assert(!ob.includes(0));
  await mp.pageScrollTo(6000);await snapshot('orders-middle','coverRows','.order-cover-slot');
  await mp.pageScrollTo(0);const ot=await snapshot('orders-return','coverRows','.order-cover-slot');assert(ot.includes(0));assert(!ot.includes(199));
+ await page.callMethod('onTabChange',{detail:{name:'已支付'}});
+ await waitData(data=>data.activeTab==='已支付' && !data.isLoading && data.coverRows.length===200,'切Tab');
+ await mp.pageScrollTo(999999);await snapshot('orders-tab-bottom','coverRows','.order-cover-slot');
+ page=await mp.navigateBack();
+ assert.equal((await page.data()).skuList.length,200);
+ assert.equal((await page.data()).hasMore,false);
+ await snapshot('experience-navigate-back','skuList','.experience-cover-slot');
  await mp.evaluate(()=>{wx.__originalObserver=wx.createIntersectionObserver;wx.createIntersectionObserver=()=>{throw new Error('synthetic unavailable')};});
  page=await mp.navigateTo('/pagesExperience/list/list');await wait(1000);for(let i=0;i<9;i++){await page.callMethod('loadList',true);await wait(150)}
  await mp.pageScrollTo(999999);const fb=await snapshot('fallback-bottom','skuList','.experience-cover-slot');assert(fb.includes(199));assert(!fb.includes(0));
  await mp.pageScrollTo(0);const ft=await snapshot('fallback-return','skuList','.experience-cover-slot');assert(ft.includes(0));assert(!ft.includes(199));
  page=await mp.navigateTo('/pagesOrder/orders/orders');await wait(1000);await mp.pageScrollTo(6000);await snapshot('orders-fallback-middle','coverRows','.order-cover-slot');await mp.pageScrollTo(999999);await snapshot('orders-fallback-bottom','coverRows','.order-cover-slot');
  console.log('PASS 200实际视图槽位/有界image节点/往返滚动/原生测量回退')
-}finally{await mp.evaluate(()=>{if(wx.__originalCallFunction){wx.cloud.callFunction=wx.__originalCallFunction;delete wx.__originalCallFunction;}if(wx.__originalObserver){wx.createIntersectionObserver=wx.__originalObserver;delete wx.__originalObserver}}).catch(()=>{});mp.disconnect();if(pgServer)await pgServer.close()}
+}finally{await mp.evaluate(()=>{if(wx.__originalCallFunction){wx.cloud.callFunction=wx.__originalCallFunction;delete wx.__originalCallFunction;}delete wx.__coverFailNext;if(wx.__originalObserver){wx.createIntersectionObserver=wx.__originalObserver;delete wx.__originalObserver}}).catch(()=>{});mp.disconnect();if(pgServer)await pgServer.close()}

@@ -28,6 +28,7 @@ Page({
     isLoading: true,
     loadError: false,
     loadingMore: false,
+    loadMoreError: false,
     hasMore: true,
   },
 
@@ -43,7 +44,8 @@ Page({
   onShow() { this._visible = true; this._refreshCovers(); },
   onHide() { this._visible = false; this._coverWindow?.setVisible(false); },
   onUnload() { this._epoch++; this._coverWindow?.dispose(); },
-  onReachBottom() { if (this.data.hasMore && !this.data.isLoading && !this.data.loadingMore) this.loadList(true); },
+  onReachBottom() { this.onLoadMore(); },
+  onLoadMore() { return this.loadList(true); },
   _refreshCovers() {
     this._coverWindow?.setVisible(this._visible && !this.data.loadError && this.data.skuList.length > 0);
     this._coverWindow?.refresh();
@@ -60,7 +62,7 @@ Page({
       this._coverWindow?.invalidate();
       this._coverWindow?.setVisible(false);
     }
-    this.setData(append ? { loadingMore: true } : { isLoading: true, loadingMore: false, loadError: false });
+    this.setData(append ? { loadingMore: true, loadMoreError: false } : { isLoading: true, loadingMore: false, loadError: false });
     try {
       const data = await callClientApi<{ skuList: ExperienceCardSku[]; hasMore?: boolean; nextCursor?: string | null }>(
         'product.experienceCardList',
@@ -99,13 +101,13 @@ Page({
       this.setData({
         ...(append ? buildAppendPatch('skuList', from, [...this.data.skuList, ...next]) : { skuList: next }),
         hasMore: Boolean(data.hasMore && this._cursor),
-        isLoading: false, loadingMore: false, loadError: false,
+        isLoading: false, loadingMore: false, loadMoreError: false, loadError: false,
       }, () => { if (epoch === this._epoch) this._refreshCovers(); });
     } catch (err: any) {
       if (epoch !== this._epoch) return;
       console.error('loadList error:', err);
       Toast.fail(err?.message || '加载失败');
-      this.setData({ loadError: !append && this.data.skuList.length === 0 });
+      this.setData(append ? { loadMoreError: true } : { loadError: this.data.skuList.length === 0 });
     } finally {
       if (epoch === this._epoch) this.setData({ isLoading: false, loadingMore: false }, () => this._refreshCovers());
     }

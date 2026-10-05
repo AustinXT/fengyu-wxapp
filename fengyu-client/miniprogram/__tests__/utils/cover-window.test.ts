@@ -60,6 +60,10 @@ beforeEach(() => {
   ;(wx as any).createSelectorQuery = () => {
     let page: any;
     const query: any = { in(p: any) { page = p; return query }, selectAll() { return query }, select() { return query }, selectViewport() { return query }, fields() { return query }, boundingClientRect() { return query }, exec(cb: any) {
+      // observer单测只驱动相交回调；不模拟正常观察器的节点位置。
+      // 断开/能力缺失后的测量兜底仍提供完整位置，重建校准由下方独立几何用例验证。
+      const observer = (wx as any).__lastObserver();
+      if (observer && !observer.disconnected && observer.observeSelector) { cb([null, null]); return; }
       const list = page.data.spuList ?? [];
       cb([list.map((_: any, idx: number) => ({ dataset: { idx }, top: 0, bottom: 100 })), { top: 0, bottom: 600, height: 600 }]);
     } };
@@ -528,4 +532,52 @@ describe('数量上限优先可视槽位', () => {
     expect(page.data.spuList.filter((row: any) => row.coverVisible)).toHaveLength(24);
     window.dispose();
   });
+});
+
+
+test('重建后旧首屏预置必须按实际位置清除，平台只回调新相交槽位也不缺图', () => {
+  const page = makePage('spuList', 200);
+  page.data.spuList = withInitialCoverVisible(page.data.spuList);
+  ;(wx as any).createSelectorQuery = () => {
+    const query: any = {
+      in() { return query }, selectAll() { return query }, selectViewport() { return query },
+      fields() { return query }, exec(callback: any) {
+        callback([page.data.spuList.map((_: any, idx: number) => ({ dataset: { idx }, top: idx * 60 - 11500, bottom: (idx + 1) * 60 - 11500 })), { height: 600 }]);
+      },
+    };
+    return query;
+  };
+  const window = createCoverWindow(page as any, { scrollSelector: '', slotSelector: '.slot', listKey: 'spuList' });
+  window.refresh();
+  for (let idx = 180; idx < 200; idx++) (wx as any).__lastObserver().callback({ dataset: { idx }, intersectionRatio: 1 });
+  vi.advanceTimersByTime(50);
+  expect(page.data.spuList.slice(0, 6).every((r: any) => !r.coverVisible)).toBe(true);
+  expect(page.data.spuList[198].coverVisible).toBe(true);
+  expect(page.data.spuList[199].coverVisible).toBe(true);
+  expect(page.data.spuList.filter((r: any) => r.coverVisible).length).toBeLessThanOrEqual(24);
+  window.dispose();
+});
+
+
+test('已作废的节点测量回包不能改写新列表，卸载后也不更新', () => {
+  const page = makePage('spuList', 4);
+  const callbacks: ((results: any) => void)[] = [];
+  ;(wx as any).createSelectorQuery = () => {
+    const query: any = { in() { return query }, selectAll() { return query }, selectViewport() { return query }, fields() { return query }, exec(cb: any) { callbacks.push(cb) } };
+    return query;
+  };
+  const window = createCoverWindow(page as any, { scrollSelector: '', slotSelector: '.slot', listKey: 'spuList' });
+  window.refresh();
+  window.invalidate();
+  window.refresh();
+  const snapshot = [[{ dataset: { idx: 0 }, top: 0, bottom: 100 }], { height: 600 }];
+  callbacks[0](snapshot);
+  expect(page.setDataCalls).toHaveLength(0);
+  callbacks[1](snapshot);
+  expect(page.data.spuList[0].coverVisible).toBe(true);
+  window.refresh();
+  const calls = page.setDataCalls.length;
+  window.dispose();
+  callbacks[2](snapshot);
+  expect(page.setDataCalls).toHaveLength(calls);
 });

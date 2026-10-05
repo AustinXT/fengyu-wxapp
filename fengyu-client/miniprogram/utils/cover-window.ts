@@ -172,6 +172,40 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
     if (Object.keys(patch).length) page.setData(patch);
   }
 
+  function measureWindow(gen: number) {
+    if (disposed || !visible || gen !== generation || measuring) return;
+    measuring = true;
+    try {
+      const query = wx.createSelectorQuery().in(page as any);
+      query.selectAll(options.slotSelector).fields({ rect: true, dataset: true });
+      if (options.scrollSelector) query.select(options.scrollSelector).boundingClientRect();
+      else query.selectViewport().fields({ size: true });
+      query.exec((results) => {
+        if (disposed || !visible || gen !== generation) return;
+        measuring = false;
+        const slots = results?.[0], view = results?.[1];
+        if (!Array.isArray(slots) || !view) return;
+        const top = Number(view.top ?? 0), bottom = Number(view.bottom ?? view.height);
+        if (!Number.isFinite(top) || !Number.isFinite(bottom) || bottom <= top) return;
+        const values: Record<number, boolean> = {};
+        const list = getList() ?? [];
+        list.forEach((_, idx) => { values[idx] = false; });
+        distances = {};
+        slots.forEach((slot: any) => {
+          const idx = Number(slot.dataset?.idx);
+          if (slot.dataset?.idx === undefined || slot.dataset?.idx === '' || !Number.isInteger(idx) || idx < 0 || idx >= list.length) return;
+          distances[idx] = Math.max(0, top - slot.bottom, slot.top - bottom);
+          values[idx] = Number.isFinite(slot.top) && Number.isFinite(slot.bottom)
+            && slot.bottom > top - margin && slot.top < bottom + margin;
+        });
+        applyWindow(values);
+      });
+    } catch (_) {
+      measuring = false;
+      // 两种原生能力都不可用时保留有界占位，下一次测量继续重试。
+    }
+  }
+
   /** observer失效后用原生视图测量持续追踪窗口，不放开整列。 */
   function startMeasuredFallback() {
     const gen = generation;
@@ -180,37 +214,7 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
     function measure() {
       if (disposed || !visible || gen !== generation) return;
       measureTimer = setTimeout(measure, MEASURE_INTERVAL_MS);
-      if (measuring) return;
-      measuring = true;
-      try {
-        const query = wx.createSelectorQuery().in(page as any);
-        query.selectAll(options.slotSelector).fields({ rect: true, dataset: true });
-        if (options.scrollSelector) query.select(options.scrollSelector).boundingClientRect();
-        else query.selectViewport().fields({ size: true });
-        query.exec((results) => {
-          if (disposed || !visible || gen !== generation) return;
-          measuring = false;
-          const slots = results?.[0], view = results?.[1];
-          if (!Array.isArray(slots) || !view) return;
-          const top = Number(view.top ?? 0), bottom = Number(view.bottom ?? view.height);
-          if (!Number.isFinite(top) || !Number.isFinite(bottom) || bottom <= top) return;
-          const values: Record<number, boolean> = {};
-          const list = getList() ?? [];
-          list.forEach((_, idx) => { values[idx] = false; });
-          distances = {};
-          slots.forEach((slot: any) => {
-            const idx = Number(slot.dataset?.idx);
-            if (slot.dataset?.idx === undefined || slot.dataset?.idx === '' || !Number.isInteger(idx) || idx < 0 || idx >= list.length) return;
-            distances[idx] = Math.max(0, top - slot.bottom, slot.top - bottom);
-            values[idx] = Number.isFinite(slot.top) && Number.isFinite(slot.bottom)
-              && slot.bottom > top - margin && slot.top < bottom + margin;
-          });
-          applyWindow(values);
-        });
-      } catch (_) {
-        measuring = false;
-        // 两种原生能力都不可用时保留有界占位，下一次测量继续重试。
-      }
+      measureWindow(gen);
     }
     if (measureTimer !== null) clearTimeout(measureTimer);
     measure();
@@ -247,6 +251,7 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
   function refresh() {
     if (disposed || !visible) return;
     if (unsupported) {
+      teardown();
       startMeasuredFallback();
       return;
     }
@@ -316,6 +321,9 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
       return;
     }
 
+    // 重建后先按实际位置校准全部槽位；平台可能复用节点，只报告新相交项，
+    // 不能让首屏预置的可见标记挤占返回/切Tab后当前视口的图片名额。
+    measureWindow(gen);
     fallbackTimer = setTimeout(() => {
       if (gen !== generation) return;
       fallbackTimer = null;

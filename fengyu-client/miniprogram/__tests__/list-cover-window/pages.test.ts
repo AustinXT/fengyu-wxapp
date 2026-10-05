@@ -119,3 +119,38 @@ test('首屏失败后追加恢复清错误态并启用图片窗口', async () =>
   api.mockResolvedValueOnce({ skuList: Array.from({ length: 20 }, (_, i) => ({ sku_id: String(i) })), hasMore: false }); await page.loadList(true);
   expect(page.data.loadError).toBe(false); expect((wx as any).__lastObserver()).toBeTruthy(); page.onUnload();
 });
+
+
+test('体验卡翻页失败显示重试，点击沿原游标恢复且不丢已有卡片', async () => {
+  const page = instance(experience);
+  api.mockResolvedValueOnce({ skuList: [{ sku_id: 'first' }], hasMore: true, nextCursor: 'c1' });
+  await page.loadList();
+  api.mockRejectedValueOnce(new Error('offline'));
+  await page.onLoadMore();
+  expect(page.data.loadMoreError).toBe(true);
+  expect(page.data.skuList.map((r: any) => r.sku_id)).toEqual(['first']);
+  expect(page.data.hasMore).toBe(true);
+  api.mockResolvedValueOnce({ skuList: [{ sku_id: 'second' }], hasMore: false });
+  await page.onLoadMore();
+  expect(api.mock.calls.at(-1)[1]).toEqual({ limit: 20, cursor: 'c1' });
+  expect(page.data.loadMoreError).toBe(false);
+  expect(page.data.skuList.map((r: any) => r.sku_id)).toEqual(['first', 'second']);
+  page.onUnload();
+});
+
+test('手动加载和触底同时触发只发一笔，末页停止请求', async () => {
+  const page = instance(experience);
+  api.mockResolvedValueOnce({ skuList: [{ sku_id: 'first' }], hasMore: true, nextCursor: 'c1' });
+  await page.loadList();
+  let resolve: any;
+  api.mockImplementationOnce(() => new Promise(r => { resolve = r; }));
+  const more = page.onLoadMore();
+  page.onReachBottom();
+  await page.onLoadMore();
+  expect(api).toHaveBeenCalledTimes(2);
+  resolve({ skuList: [{ sku_id: 'last' }], hasMore: false });
+  await more;
+  await page.onLoadMore();
+  expect(api).toHaveBeenCalledTimes(2);
+  page.onUnload();
+});

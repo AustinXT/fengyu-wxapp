@@ -90,3 +90,7 @@ cd fengyu-client && printf '\n' | tcb fn config update clientApi
 如需真实体验卡分页链路，先在127.0.0.1:54416的专用`issue256cireplay`库重放全部迁移，再显式设置`COVER_WINDOW_PG_TEST_URL`运行同一命令。它通过自动化协议调用真实product路由与真实SQL，测试200条分页、市场过滤和缩略URL；所有合成夹具在事务中，结束ROLLBACK。订单明细仍为合成API回包，不声称验证真实订单后端或CloudBase认证。无需关闭真实项目的域名校验，也不部署云函数。
 
 兼容发布期间，`scripts/deploy-cloudfunctions.sh prod client`上传前会只读核验生产有效体验SKU数量不超过20；数量超限、目标不符或无法核验均拒绝。云函数先于新小程序发布，旧版退出兼容期后再统一调整此临时门禁。
+
+2026-10-05 补充：体验卡支持触底与“加载更多”按钮；翻页失败保留已有卡片与游标，可点击重试。专项原生视图测试覆盖真实按钮失败/重试到200条、从订单返回体验列表保留200条，以及订单切Tab后的图片窗口。
+CI `experience-pagination-guard.yml` 的 `private-pg-pagination` 在独立合成PG16重放迁移后运行 `cover-window.pg.test.mjs`，验证真实路由10页200条无重复/遗漏及单次50条上限；不连接共享业务库。此CI不替代真机前端发布验收。
+新前端源代码与云函数同在PR #516；发布前仍需确认小程序审核/发布可同步，代码PR不代表旧已发布小程序已更新。用户明确不设运营数量上限，临时只读部署检查不能作为运行期兼容保证。
