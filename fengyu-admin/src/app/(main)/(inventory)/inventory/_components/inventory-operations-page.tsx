@@ -709,8 +709,9 @@ export default function InventoryOperationsPage({
   locations: InventoryLocationRow[]
   /** 市场间调货出库的接收主体候选（#340），只喂给通用建单表单，见其同名 prop */
   marketTransferTargets?: readonly InventoryMarketTransferTarget[]
-  /** 品项公司发货的收货市场候选（#336b，不按 scope 的全部启用市场），只喂给发货表单 */
+  /** 市场报货的接收总部（#533），仅用于报货，不并入库存操作主体。 */
   marketReplenishmentTargets?: readonly Pick<InventoryLocationRow, 'locationId' | 'orgNodeId' | 'name'>[]
+  /** 品项公司发货的收货市场（#336b），只用于发货。 */
   shipmentMarketTargets?: readonly InventoryMarketTransferTarget[]
   suppliers: InventorySupplierRow[]
   /** 所有业务卡片待办数由服务端一次聚合返回，口径与 inbox 段相同。 */
@@ -1017,6 +1018,7 @@ function OperationWorkspace({
   locations: InventoryLocationRow[]
   marketTransferTargets?: readonly InventoryMarketTransferTarget[]
   marketReplenishmentTargets?: readonly Pick<InventoryLocationRow, 'locationId' | 'orgNodeId' | 'name'>[]
+  /** 品项公司发货的收货市场（#336b），只用于发货。 */
   shipmentMarketTargets?: readonly InventoryMarketTransferTarget[]
   suppliers: InventorySupplierRow[]
   canViewPrice: boolean
@@ -2654,7 +2656,7 @@ function MarketReportForm({
             onChange={setSupplyChainLocationId}
             placeholder="请选择总部"
           />
-          {headquarters.length === 0 && <p role="status" className="text-sm text-muted-foreground">暂无启用的供应链接收主体，请联系管理员检查总部库存主体配置</p>}
+          {headquarters.length === 0 && <p role="status" className="text-sm text-[var(--muted-foreground)]">暂无启用的供应链接收主体，请联系管理员检查总部库存主体配置</p>}
         </FormField>
         <FormField label="汇总开始日期">
           <DatePicker value={startDate} onValueChange={setStartDate} />
