@@ -112,6 +112,8 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
 
   let measureTimer: ReturnType<typeof setTimeout> | null = null;
   let measuring = false;
+  let measureDeadline: ReturnType<typeof setTimeout> | null = null;
+  let measureRequest = 0;
   let observer: WechatMiniprogram.IntersectionObserver | null = null;
   let pending: Record<number, boolean> = {};
   let distances: Record<number, number> = {};
@@ -175,14 +177,24 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
   function measureWindow(gen: number) {
     if (disposed || !visible || gen !== generation || measuring) return;
     measuring = true;
+    const request = ++measureRequest;
+    // 原生测量偶发丢回包不能冻结整场轮询；迟到的旧请求也不能覆盖新位置。
+    measureDeadline = setTimeout(() => {
+      measureDeadline = null;
+      if (request === measureRequest) { measureRequest++; measuring = false; }
+    }, 800);
+    function finish() {
+      if (measureDeadline !== null) { clearTimeout(measureDeadline); measureDeadline = null; }
+      measuring = false;
+    }
     try {
       const query = wx.createSelectorQuery().in(page as any);
       query.selectAll(options.slotSelector).fields({ rect: true, dataset: true });
       if (options.scrollSelector) query.select(options.scrollSelector).boundingClientRect();
       else query.selectViewport().fields({ size: true });
       query.exec((results) => {
-        if (disposed || !visible || gen !== generation) return;
-        measuring = false;
+        if (disposed || !visible || gen !== generation || request !== measureRequest) return;
+        finish();
         const slots = results?.[0], view = results?.[1];
         if (!Array.isArray(slots) || !view) return;
         const top = Number(view.top ?? 0), bottom = Number(view.bottom ?? view.height);
@@ -201,7 +213,7 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
         applyWindow(values);
       });
     } catch (_) {
-      measuring = false;
+      finish();
       // 两种原生能力都不可用时保留有界占位，下一次测量继续重试。
     }
   }
@@ -214,7 +226,7 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
     function measure() {
       if (disposed || !visible || gen !== generation) return;
       measureTimer = setTimeout(measure, MEASURE_INTERVAL_MS);
-      measureWindow(gen);
+      if ((getList()?.length ?? 0) > 0) measureWindow(gen);
     }
     if (measureTimer !== null) clearTimeout(measureTimer);
     measure();
@@ -222,6 +234,8 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
 
   function clearTimers() {
     if (measureTimer !== null) { clearTimeout(measureTimer); measureTimer = null; }
+    measureRequest++;
+    if (measureDeadline !== null) { clearTimeout(measureDeadline); measureDeadline = null; }
     measuring = false;
     if (flushTimer !== null) {
       clearTimeout(flushTimer);
@@ -323,7 +337,9 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
 
     // 重建后先按实际位置校准全部槽位；平台可能复用节点，只报告新相交项，
     // 不能让首屏预置的可见标记挤占返回/切Tab后当前视口的图片名额。
-    measureWindow(gen);
+    // 某些原生视图收到过首屏回调后，后续滚动仍可能静默；持续校准位置，
+    // 不把“首个回调正常”当作整场观察器一定可靠。隐藏/卸载仍会清掉轮询。
+    startMeasuredFallback();
     fallbackTimer = setTimeout(() => {
       if (gen !== generation) return;
       fallbackTimer = null;

@@ -49,6 +49,18 @@ if(!mp)throw lastError;
 let pgServer=null;
 mp.on('console',event=>{if(event.level==='error')console.log('微信页面错误',event.args)});
 const wait=ms=>new Promise(r=>setTimeout(r,ms));
+// RC模拟器个别导航已完成却不回callWxMethod的Promise；调用真实导航API，
+// 以实际路由与后续数据/几何判据等待就绪，不依赖那条丢失的协议回执。
+async function route(method,url) {
+ await mp.evaluate((method,url)=>{wx[method](url?{url}:{})},method,url);
+ await wait(1000);
+ for(let i=0;i<30;i++){
+  const p=await mp.currentPage();
+  if(p && (!url || p.path===url.slice(1)))return p;
+  await wait(100);
+ }
+ throw new Error('实际页面路由未就绪：'+url);
+}
 try {
  if(process.env.COVER_WINDOW_PG_TEST_URL) {
   pgServer=await startCoverWindowPgFixture(process.env.COVER_WINDOW_PG_TEST_URL);
@@ -83,7 +95,7 @@ try {
  },Boolean(pgServer));
 
  console.log('L3 合成API安装完成');
- let page=await mp.navigateTo('/pagesExperience/list/list');await wait(1000);
+ let page=await route('navigateTo','/pagesExperience/list/list');await wait(1000);
  console.log('experience-first', (await page.data()).skuList.length);
  async function waitData(predicate,label){for(let i=0;i<40;i++){const data=await page.data();if(predicate(data))return data;await wait(100)}throw new Error(label+'超时')}
  // 从真实按钮触发翻页，先让第二页失败，再点击同一按钮恢复原游标。
@@ -124,28 +136,30 @@ try {
  await snapshot('experience-top','skuList','.experience-cover-slot');
  await mp.pageScrollTo(999999);const bottom=await snapshot('experience-bottom','skuList','.experience-cover-slot');assert(bottom.includes(199));assert(!bottom.includes(0));
  await mp.pageScrollTo(0);const top=await snapshot('experience-return','skuList','.experience-cover-slot');assert(top.includes(0));assert(!top.includes(199));
- page=await mp.navigateTo('/pagesOrder/orders/orders');await wait(1000);assert.equal((await page.data()).coverRows.length,200);
+ page=await route('navigateTo','/pagesOrder/orders/orders');await wait(1000);assert.equal((await page.data()).coverRows.length,200);
  await snapshot('orders-top','coverRows','.order-cover-slot');await mp.pageScrollTo(999999);const ob=await snapshot('orders-bottom','coverRows','.order-cover-slot');assert(ob.includes(199));assert(!ob.includes(0));
  await mp.pageScrollTo(6000);await snapshot('orders-middle','coverRows','.order-cover-slot');
  await mp.pageScrollTo(0);const ot=await snapshot('orders-return','coverRows','.order-cover-slot');assert(ot.includes(0));assert(!ot.includes(199));
  await page.callMethod('onTabChange',{detail:{name:'已支付'}});
  await waitData(data=>data.activeTab==='已支付' && !data.isLoading && data.coverRows.length===200,'切Tab');
  await mp.pageScrollTo(999999);await snapshot('orders-tab-bottom','coverRows','.order-cover-slot');
- page=await mp.navigateBack();
+ page=await route('navigateBack');
  assert.equal((await page.data()).skuList.length,200);
  assert.equal((await page.data()).hasMore,false);
  await snapshot('experience-navigate-back','skuList','.experience-cover-slot');
  console.log('L3 开始测量回退');
  await mp.evaluate(()=>{getApp().globalData.__coverDisableObserver=true;});
- page=await mp.navigateTo('/pagesExperience/list/list');console.log('L3 回退页面已打开');await wait(1000);for(let i=0;i<9;i++){await page.callMethod('loadList',true);await wait(150)}
+ page=await route('navigateTo','/pagesExperience/list/list');console.log('L3 回退页面已打开');await wait(1000);for(let i=0;i<9;i++){await page.callMethod('loadList',true);await wait(150)}
  await mp.pageScrollTo(999999);const fb=await snapshot('fallback-bottom','skuList','.experience-cover-slot');assert(fb.includes(199));assert(!fb.includes(0));
  await mp.pageScrollTo(0);const ft=await snapshot('fallback-return','skuList','.experience-cover-slot');assert(ft.includes(0));assert(!ft.includes(199));
- page=await mp.navigateTo('/pagesOrder/orders/orders');await wait(1000);await mp.pageScrollTo(6000);await snapshot('orders-fallback-middle','coverRows','.order-cover-slot');await mp.pageScrollTo(999999);await snapshot('orders-fallback-bottom','coverRows','.order-cover-slot');
+ page=await route('navigateTo','/pagesOrder/orders/orders');await wait(1000);await mp.pageScrollTo(6000);await snapshot('orders-fallback-middle','coverRows','.order-cover-slot');await mp.pageScrollTo(999999);await snapshot('orders-fallback-bottom','coverRows','.order-cover-slot');
  // 共享窗口另外两个调用方：实际scroll-view、完整20条分页到200、故障回退与返回。
  for(const fallback of [false,true]) {
   await mp.evaluate(f=>{getApp().globalData.__coverDisableObserver=f},fallback);
   for(const [name,path] of [['home','/pages/home/home'],['shop','/pagesShop/shop/shop']]) {
-   page=name==='home'?await mp.switchTab(path):await mp.navigateTo(path);
+   page=name==='home'?await route('switchTab',path):await route('navigateTo',path);
+   // 首页在App启动时先使用隔离空回包；业务夹具安装后通过真实加载方法刷新。
+   if(name==='home')await page.callMethod('loadShopInit');
    await waitData(d=>d.spuList.length>=20 && !d.isLoading,name+'首屏');
    for(let end=40;end<=200;end+=20){await page.callMethod('onScrollToLower');await waitData(d=>d.spuList.length===end && !d.isLoading,name+'分页')}
    await snapshot(name+'-top-'+fallback,'spuList','.spu-cover-slot','.product-scroll');
@@ -153,7 +167,7 @@ try {
    const bottom=await snapshot(name+'-bottom-'+fallback,'spuList','.spu-cover-slot','.product-scroll');assert(bottom.includes(199));assert(!bottom.includes(0));
    await scroll.scrollTo(0,0);
    const top=await snapshot(name+'-return-'+fallback,'spuList','.spu-cover-slot','.product-scroll');assert(top.includes(0));assert(!top.includes(199));
-   await mp.navigateTo('/pagesExperience/list/list');page=await mp.navigateBack();
+   await route('navigateTo','/pagesExperience/list/list');page=await route('navigateBack');
    assert.equal((await page.data()).spuList.length,200);
    await snapshot(name+'-navigate-back-'+fallback,'spuList','.spu-cover-slot','.product-scroll');
   }

@@ -581,3 +581,35 @@ test('已作废的节点测量回包不能改写新列表，卸载后也不更�
   callbacks[2](snapshot);
   expect(page.setDataCalls).toHaveLength(calls);
 });
+
+
+test('首屏观察器回调正常但后续滚动静默时，原生测量仍跟踪到尾部', () => {
+  const page = makePage('spuList', 200); let scroll = 0;
+  ;(wx as any).createSelectorQuery = () => {
+    const q: any = { in() { return q }, selectAll() { return q }, selectViewport() { return q }, fields() { return q }, exec(cb: any) {
+      cb([page.data.spuList.map((_: any, idx: number) => ({ dataset: { idx }, top: idx*100-scroll, bottom: (idx+1)*100-scroll })), { height: 600 }]);
+    } }; return q;
+  };
+  const w = createCoverWindow(page as any, { scrollSelector: '', slotSelector: '.slot', listKey: 'spuList' });
+  w.refresh(); emit(0, true); vi.advanceTimersByTime(50);
+  scroll = 19400; vi.advanceTimersByTime(200);
+  expect(page.data.spuList[199].coverVisible).toBe(true);
+  expect(page.data.spuList[0].coverVisible).toBe(false);
+  w.dispose(); expect(vi.getTimerCount()).toBe(0);
+});
+
+test('测量丢回包会超时重试，迟到旧回包不覆盖新位置', () => {
+  const page = makePage('spuList', 200); const callbacks: any[] = [];
+  ;(wx as any).__setObserverFactoryThrows(true);
+  ;(wx as any).createSelectorQuery = () => {
+    const q: any = { in() { return q }, selectAll() { return q }, selectViewport() { return q }, fields() { return q }, exec(cb: any) { callbacks.push(cb); } }; return q;
+  };
+  const w = createCoverWindow(page as any, { scrollSelector: '', slotSelector: '.slot', listKey: 'spuList' });
+  w.refresh(); vi.advanceTimersByTime(1000); expect(callbacks.length).toBeGreaterThan(1);
+  callbacks[1]([[{ dataset: { idx: 199 }, top: 0, bottom: 100 }], { height: 600 }]);
+  expect(page.data.spuList[199].coverVisible).toBe(true);
+  callbacks[0]([[{ dataset: { idx: 0 }, top: 0, bottom: 100 }], { height: 600 }]);
+  expect(page.data.spuList[199].coverVisible).toBe(true);
+  expect(page.data.spuList[0].coverVisible).toBe(false);
+  w.dispose(); expect(vi.getTimerCount()).toBe(0);
+});
