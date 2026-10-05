@@ -126,6 +126,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { DataTable, type Column } from '@/components/ui/data-table'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Input } from '@/components/ui/input'
+import { validNonnegativeStoreRequestQuantity, STORE_REQUEST_QUANTITY_ERROR, STORE_REQUEST_EMPTY_ERROR } from '@/lib/inventory/store-request-quantity'
 import { InventoryNumberInput } from './inventory-number-input'
 import { Pagination } from '@/components/ui/pagination'
 import { Select } from '@/components/ui/select'
@@ -1967,8 +1968,8 @@ function StoreRequestForm({
     // 回填在途时按回车也会触发 form submit：别把半截表单当新单建出去
     if (saving || loadingDraft) return
     // 存草稿是 type=button，不经浏览器的 submit 约束闸；两条路径都核对数值值域。
-    if (lines.some((line) => !validStoreRequestQuantity(line.quantity))) {
-      toast.error('报货数量须为 0.01 至 9999999999.99，且最多两位小数')
+    if (lines.some((line) => !validNonnegativeStoreRequestQuantity(line.quantity))) {
+      toast.error(STORE_REQUEST_QUANTITY_ERROR)
       return
     }
     if (!storeId || !marketId) {
@@ -1977,11 +1978,15 @@ function StoreRequestForm({
     }
     const items = lines.map((line) => ({
       skuId: line.skuId,
-      quantity: positiveNumber(line.quantity),
+      quantity: Number(line.quantity),
       remark: optionalText(line.remark),
     }))
-    if (items.some((item) => !item.skuId || item.quantity === null)) {
+    if (items.some((item) => !item.skuId)) {
       toast.error('请完整填写商品和报货数量')
+      return
+    }
+    if (!items.some((item) => item.quantity > 0)) {
+      toast.error(STORE_REQUEST_EMPTY_ERROR)
       return
     }
     const epoch = epochRef.current
@@ -1992,7 +1997,7 @@ function StoreRequestForm({
         marketId,
         docDate: optionalText(docDate),
         remark: optionalText(remark),
-        items: items.map((item) => ({ ...item, quantity: item.quantity! })),
+        items: items.filter((item) => item.quantity > 0),
         draftId,
         expectedUpdatedAt: draftVersion,
       }
@@ -2072,7 +2077,7 @@ function StoreRequestForm({
               <SkuPicker value={line.skuId} onChange={(skuId) => updateLine(index, { skuId })} filters={{ reportable: true, availableToMarketId: marketId }} disabled={!marketId} disabledHint={storeId ? '所选门店未关联市场' : '请先选择报货门店'} />
             </FormField>
             <FormField label="数量" required>
-              <InventoryNumberInput type="number" min="0.01" step="0.01" max="9999999999.99" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} />
+              <InventoryNumberInput type="number" min="0" step="1" max="9999999999" required value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} />
             </FormField>
             <FormField label="明细备注">
               <Input value={line.remark} onChange={(event) => updateLine(index, { remark: event.target.value })} />
