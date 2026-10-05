@@ -54,10 +54,10 @@ const wait=ms=>new Promise(r=>setTimeout(r,ms));
 async function route(method,url) {
  await mp.evaluate((method,url)=>{wx[method](url?{url}:{})},method,url);
  await wait(1000);
- for(let i=0;i<30;i++){
+ for(let i=0;i<60;i++){
   const p=await mp.currentPage();
   if(p && (!url || p.path===url.slice(1)))return p;
-  await wait(100);
+  await wait(200);
  }
  throw new Error('实际页面路由未就绪：'+url);
 }
