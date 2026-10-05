@@ -55,7 +55,9 @@
         </view>
         <view class="item-right">
           <text class="item-qty">×{{item.quantity}} {{item.unit}}</text>
-          <text class="item-amount">-¥{{item.amount_abs}}</text>
+          <text class="item-amount">实际退 ¥{{item.net_display}}</text>
+          <text class="item-qty">毛额 ¥{{item.amount_abs}} · 手续费 ¥{{item.fee_display}}</text>
+          <text class="item-qty" wx:if="{{item.deduction_display !== '0.00'}}">透支扣除 ¥{{item.deduction_display}}</text>
         </view>
       </view>
     </view>

@@ -1,5 +1,7 @@
 'use server'
 
+import { retainedRefundFeeSql } from '@/lib/refund-fee-sql'
+
 import { db } from '@/db'
 import { pgErrorCode, pgErrorConstraint } from '@/lib/pg-error'
 import { pickupRecords } from '@db/pickup'
@@ -743,7 +745,7 @@ export const getAvailablePickupItems = withPermission(
                  THEN GREATEST(0, si.quantity - LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0))))
                ELSE LEAST(
                  GREATEST(0, si.quantity - LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))),
-                 GREATEST(0, FLOOR((GREATEST(0, si.received::numeric)
+                 GREATEST(0, FLOOR((GREATEST(0, si.received::numeric - ${sql.raw(retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true))})
                    - GREATEST(0, COALESCE(si.picked_up_quantity, 0)) * si.unit_real_price::numeric
                    - COALESCE(ct.converted_amount, 0)) / NULLIF(si.unit_real_price::numeric, 0)))::int
                )
@@ -756,7 +758,7 @@ export const getAvailablePickupItems = withPermission(
                WHEN si.sale_amount <= 0 THEN si.quantity
                ELSE LEAST(
                  si.quantity,
-                 FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int
+                 FLOOR(GREATEST(0, si.received::numeric - ${sql.raw(retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true))}) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int
                )
              END AS paid_quantity,
              si.unit_real_price,
@@ -965,7 +967,7 @@ async function createGroupedPickupRecord(
                WHEN si.sale_amount <= 0 THEN si.quantity
                ELSE LEAST(
                  si.quantity,
-                 FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int
+                 FLOOR(GREATEST(0, si.received::numeric - ${sql.raw(retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true))}) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int
                )
              END AS paid_quantity,
              si.product_type, si.item_direction, o.sale_order_type,
@@ -1225,7 +1227,7 @@ export const createPickupRecord = withPermission(
                  WHEN si.sale_amount <= 0 THEN si.quantity
                  ELSE LEAST(
                    si.quantity,
-                   FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int
+                   FLOOR(GREATEST(0, si.received::numeric - ${sql.raw(retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true))}) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int
                  )
                END AS paid_quantity,
                o.sale_order_type,

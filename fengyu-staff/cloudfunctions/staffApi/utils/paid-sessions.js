@@ -154,7 +154,7 @@ const SALE_ITEMS_RECEIVED_ALLOC_SQL = `WITH tg AS (
  */
 const RECEIVED_REFUNDED_DEDUCT_SQL = `WITH refund_items AS (
       SELECT elem ->> 'refSaleItemId' AS sale_item_id,
-             COALESCE(public.try_numeric(elem ->> 'refundAmount'), 0) AS refund_amount
+             COALESCE(public.try_numeric(elem ->> 'netRefundAmount'), public.try_numeric(elem ->> 'refundAmount'), 0) AS refund_amount
       FROM sale_order_payments sop
       CROSS JOIN LATERAL jsonb_array_elements(
         CASE WHEN jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'
@@ -323,16 +323,45 @@ const SALE_ITEMS_PAYMENT_CHANNEL_ALLOC_SQL = `WITH order_amounts AS (
     FROM targets
     WHERE si.sale_item_id = targets.sale_item_id`
 
-const PAID_SESSIONS_RECALC_SQL = `UPDATE sale_items
+const PAID_SESSIONS_RECALC_SQL = `WITH refund_rights AS (
+  SELECT elem ->> 'refSaleItemId' AS sale_item_id,
+         SUM(GREATEST(0, COALESCE(public.try_numeric(elem ->> 'handlingFee'), 0))
+           + GREATEST(0, COALESCE(public.try_numeric(elem ->> 'overdraftDeduction'), 0))) AS retained,
+         SUM(GREATEST(0, COALESCE(public.try_numeric(elem ->> 'overpayAmount'), 0))) AS overpay,
+         SUM(GREATEST(0, COALESCE(public.try_numeric(elem ->> 'quantity'), 0))) AS refunded_sessions,
+         BOOL_OR(LOWER(COALESCE(elem ->> 'isFullItemRefund', 'false')) = 'true') AS full_refund
+    FROM sale_order_payments sop
+    CROSS JOIN LATERAL jsonb_array_elements(
+      CASE WHEN jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'
+           THEN public.try_jsonb(sop.note) -> 'items' ELSE '[]'::jsonb END
+    ) elem
+   WHERE sop.sale_order_id = $1 AND sop.change_type = '退款' AND sop.status = '已支付'
+     AND public.try_numeric(public.try_jsonb(sop.note) ->> 'refundAccountingVersion') = 2
+   GROUP BY elem ->> 'refSaleItemId'
+), rights AS (
+  SELECT si.sale_item_id, COALESCE(rr.retained, 0) AS retained, COALESCE(rr.overpay, 0) AS overpay,
+         COALESCE(rr.refunded_sessions, 0) AS refunded_sessions, COALESCE(rr.full_refund, false) AS full_refund
+    FROM sale_items si LEFT JOIN refund_rights rr ON rr.sale_item_id = si.sale_item_id
+   WHERE si.sale_order_id = $1
+)
+UPDATE sale_items
 SET paid_sessions = CASE
   WHEN sale_items.session_count IS NULL THEN NULL
+  WHEN rights.full_refund THEN 0
+  WHEN sale_items.remaining_sessions = 0 AND EXISTS (
+    SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_order ON conv_order.sale_order_id = conv_out.sale_order_id
+    WHERE conv_out.ref_sale_item_id = sale_items.sale_item_id AND conv_out.item_direction = '转出'
+      AND conv_order.status <> '已关闭'
+  ) THEN sale_items.session_count
   WHEN op.total_amount <= 0 THEN sale_items.session_count
   WHEN sale_items.sale_amount <= 0 THEN sale_items.session_count
-  ELSE LEAST(sale_items.session_count, FLOOR(sale_items.received::numeric * sale_items.session_count / sale_items.sale_amount::numeric)::integer)
+  ELSE GREATEST(0, LEAST(sale_items.session_count - rights.refunded_sessions,
+    FLOOR(GREATEST(0, sale_items.received::numeric - rights.retained + rights.overpay)
+      * sale_items.session_count / sale_items.sale_amount::numeric)::integer))
 END,
 updated_at = NOW()
-FROM (SELECT total_amount FROM sale_orders WHERE sale_order_id = $1) op
-WHERE sale_items.sale_order_id = $1`
+FROM (SELECT total_amount FROM sale_orders WHERE sale_order_id = $1) op, rights
+WHERE sale_items.sale_order_id = $1 AND rights.sale_item_id = sale_items.sale_item_id`
 
 /**
  * STEP 2.5 0 元卡项全退覆盖（pg 风格 $1 = saleOrderId）：0 元赠送/寄存 item 的公式兜底会给满 paid_sessions；

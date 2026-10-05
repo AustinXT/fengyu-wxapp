@@ -1,3 +1,4 @@
+import { retainedRefundFeeSql } from './refund-fee-sql'
 /**
  * 单顾客标签重算 helper（legacy 历史订单审核通过时使用）
  *
@@ -312,7 +313,7 @@ async function recomputeSpendingTierForUser(tx: Tx, clientUserId: string): Promi
        END::spending_tier,
        updated_at = NOW()
        FROM (
-         SELECT COALESCE(SUM(GREATEST((received::numeric) - (refunded_amount::numeric), 0)), 0) AS total
+         SELECT COALESCE(SUM(GREATEST((received::numeric) - (refunded_amount::numeric) - ${sql.raw(retainedRefundFeeSql('sale_orders.sale_order_id'))}, 0)), 0) AS total
          FROM sale_orders
          WHERE client_user_id = ${clientUserId}
            AND status IN ('已支付', '已完成')

@@ -179,6 +179,13 @@ describe('getCardsPaginated — 服务端分页', () => {
     ;(getSession as any).mockResolvedValue(mockCardsPaginatedSession)
   })
 
+  it('#529 已退余数的手续费不展示为可退零头', async () => {
+    mockPaginatedChain(1, [{ ...mockCardRow, sessionCount: 7, remainingSessions: 0,
+      paidSessions: 7, paidUnusedSessions: 0, unitRealPrice: '398', received: '2886', retainedRefundAmount: '100' }])
+    const result = await getCardsPaginated({})
+    expect(result.data[0].remainingRemainder).toBe(0)
+  })
+
   it('无筛选 → 应用基础条件：权益方向 + 有效订单状态 + 疗程卡 + 余次不为空', async () => {
     mockPaginatedChain(1, [mockCardRow])
 

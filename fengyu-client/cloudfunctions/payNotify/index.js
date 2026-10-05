@@ -12,6 +12,7 @@ process.env.TZ = 'Asia/Shanghai'
 const cloud = require('wx-server-sdk')
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
 
+const { retainedRefundFeeSql } = require('./refund-fee-sql')
 const { getMemberThreshold } = require('./config')
 const { settlePointsSafe } = require('./points')
 const { recalcMemberLevel } = require('./member-level')
@@ -1500,7 +1501,7 @@ exports.main = async (event) => {
            END::spending_tier,
            updated_at = NOW()
            FROM (
-             SELECT COALESCE(SUM(GREATEST((received::numeric) - (refunded_amount::numeric), 0)), 0) AS total
+             SELECT COALESCE(SUM(GREATEST((received::numeric) - (refunded_amount::numeric) - ${retainedRefundFeeSql('sale_orders.sale_order_id')}, 0)), 0) AS total
              FROM sale_orders
              WHERE client_user_id = $1
                AND status IN ('已支付', '已完成')

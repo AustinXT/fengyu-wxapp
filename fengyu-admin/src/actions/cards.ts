@@ -1,5 +1,7 @@
 'use server'
 
+import { retainedRefundFeeSql } from '@/lib/refund-fee-sql'
+
 import { db } from '@/db'
 import { saleItems, saleOrders } from '@db/order'
 import { productSkus, productCategories } from '@db/product'
@@ -336,6 +338,7 @@ export const getCardsPaginated = withPermission(
       paidUnusedSessions: paidUnusedSessionsExpr,
       unitRealPrice: saleItems.unitRealPrice,
       received: saleItems.received,
+      retainedRefundAmount: sql<string>`${sql.raw(retainedRefundFeeSql('sale_items.sale_order_id', 'sale_items.sale_item_id', true))}`,
       // #182：折抵会带走 overpay 余数，「剩余零头」列必须扣掉已转走金额与次数，
       // 否则展示的是已被折走的钱（次数不先扣会与 (sc − rem) 双计）
       convertedQuantity: sql<number>`COALESCE((SELECT SUM(out_item.quantity) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)::int`,
@@ -378,7 +381,7 @@ export const getCardsPaginated = withPermission(
       remainingSessions: r.remainingSessions ?? null,
       paidSessions: r.paidSessions ?? null,
       paidUnusedSessions: r.paidUnusedSessions ?? null,
-      remainingRemainder: computeCardRemainingRemainder({ ...r, convertedQuantity: Number(r.convertedQuantity ?? 0) }),
+      remainingRemainder: computeCardRemainingRemainder({ ...r, received: Math.max(0, Number(r.received ?? 0) - Number(r.retainedRefundAmount ?? 0)), convertedQuantity: Number(r.convertedQuantity ?? 0) }),
       quantity: r.quantity ?? 1,
       expireDate: r.expireDate ?? null,
       paidAt: r.paidAt?.toISOString() ?? null,
@@ -487,6 +490,7 @@ export const exportCards = withPermission(
         unitRealPrice: saleItems.unitRealPrice,
         saleAmount: saleItems.saleAmount,
         received: saleItems.received,
+      retainedRefundAmount: sql<string>`${sql.raw(retainedRefundFeeSql('sale_items.sale_order_id', 'sale_items.sale_item_id', true))}`,
         // #182：折抵会带走 overpay 余数，「剩余零头」列必须扣掉已转走金额，否则展示的是已被折走的钱
         // #182：次数也要，先按次数扣减再加金额，否则与 (sc − rem) 双计
         convertedQuantity: sql<number>`COALESCE((SELECT SUM(out_item.quantity) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)::int`,
@@ -531,7 +535,7 @@ export const exportCards = withPermission(
         remaining: r.paidUnusedSessions ?? 0,
         paidSessions: r.paidSessions ?? 0,
         totalSessions: sessionCount,
-        remainingRemainder: computeCardRemainingRemainder({ ...r, convertedQuantity: Number(r.convertedQuantity ?? 0) }),
+        remainingRemainder: computeCardRemainingRemainder({ ...r, received: Math.max(0, Number(r.received ?? 0) - Number(r.retainedRefundAmount ?? 0)), convertedQuantity: Number(r.convertedQuantity ?? 0) }),
         unitPrice: numOrNull(r.unitPrice),
         unitRealPrice: numOrNull(r.unitRealPrice),
         saleAmount: numOrNull(r.saleAmount),
@@ -834,7 +838,7 @@ export const getCustomerHeldCards = withPermission(
       unitPrice: saleItems.unitPrice,
       unitRealPrice: saleItems.unitRealPrice,
       saleAmount: saleItems.saleAmount,
-      received: saleItems.received,
+      received: sql<string>`GREATEST(0, ${saleItems.received}::numeric - ${sql.raw(retainedRefundFeeSql('sale_items.sale_order_id', 'sale_items.sale_item_id', true))})`,
       pendingReceived: saleItems.pendingReceived,
       expireDate: saleItems.expireDate,
       remark: saleItems.remark,
@@ -880,7 +884,7 @@ export const getCustomerHeldCards = withPermission(
                       ELSE GREATEST(0, ${saleItems.quantity} - (COALESCE(${saleItems.pickedUpQuantity}, 0) + COALESCE(${saleItems.refundedQuantity}, 0) + COALESCE(${saleItems.convertedQuantity}, 0)))
                  END
                )
-               ELSE GREATEST(0, ${saleItems.received}::numeric
+               ELSE GREATEST(0, ${saleItems.received}::numeric - ${sql.raw(retainedRefundFeeSql('sale_items.sale_order_id', 'sale_items.sale_item_id', true))}
                  - CASE WHEN ${saleItems.productType} = '疗程卡'
                         THEN GREATEST(0, COALESCE(${saleItems.sessionCount}, 0) - COALESCE(${saleItems.remainingSessions}, 0))::numeric * ${saleItems.unitRealPrice}::numeric
                         ELSE COALESCE(${saleItems.pickedUpQuantity}, 0) * ${saleItems.unitRealPrice}::numeric

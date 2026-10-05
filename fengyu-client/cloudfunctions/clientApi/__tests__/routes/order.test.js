@@ -3554,7 +3554,9 @@ describe('order.homeProducts', () => {
       + " OR (o.sale_order_type = '转换单' AND si.item_direction = '转入') )"
       + " AND si.product_type = '家居产品'",
     )
-    expect(sqlCode).toMatch(/FLOOR\(GREATEST\(0, si\.received::numeric\) \* si\.quantity \/ NULLIF\(si\.sale_amount::numeric, 0\)\)/)
+    expect(sqlCode).toContain("'handlingFee'")
+    expect(sqlCode).toContain("'refundAccountingVersion'")
+    expect(sqlCode).toMatch(/FLOOR\(GREATEST\(0, si\.received::numeric - [\s\S]+?\) \* si\.quantity \/ NULLIF\(si\.sale_amount::numeric, 0\)\)/)
     // issue #120：放行口径改为按物理剩余份额，旧的 pending 过滤会吞掉未付清的行。
     // 注意不能只断言 'pending_pickup_quantity > 0'——那串在 ORDER BY 里也有，测不出过滤口径。
     //

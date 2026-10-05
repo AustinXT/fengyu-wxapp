@@ -3682,7 +3682,7 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     await createConversionOrder(homeConvData)
 
     // 扣减走 drizzle update（不在 executeSql 里），这里断言没有误用疗程卡的 remaining_sessions 路径
-    expect(executeSql.some((t) => t.includes('remaining_sessions ='))).toBe(false)
+    expect(executeSql.some((t) => /(?:SET|,)\s*remaining_sessions\s*=/i.test(t))).toBe(false)
   })
 
   it('#125 部分支付订单的家居行可折抵（订单级状态已放开）', async () => {

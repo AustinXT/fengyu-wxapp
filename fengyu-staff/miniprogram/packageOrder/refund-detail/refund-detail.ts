@@ -53,6 +53,9 @@ interface RawRefundItem {
   unit: string;
   quantity: number;
   refundAmount: number;
+  handlingFee?: number;
+  overdraftDeduction?: number;
+  netRefundAmount?: number;
 }
 
 interface DisplayRefundItem {
@@ -62,6 +65,9 @@ interface DisplayRefundItem {
   quantity: number;
   unit: string;
   amount_abs: string;
+  fee_display: string;
+  deduction_display: string;
+  net_display: string;
 }
 
 interface RawOrigOrder {
@@ -154,6 +160,9 @@ Page({
         quantity: it.quantity,
         unit: it.unit || (it.productType === '家居产品' ? '盒' : '次'),
         amount_abs: Math.abs(Number(it.refundAmount || 0)).toFixed(2),
+        fee_display: Number(it.handlingFee || 0).toFixed(2),
+        deduction_display: Number(it.overdraftDeduction || 0).toFixed(2),
+        net_display: Number(it.netRefundAmount ?? it.refundAmount ?? 0).toFixed(2),
       }));
       const origOrder: DisplayOrigOrder | null = res.origOrder ? {
         status: '',
