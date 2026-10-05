@@ -109,6 +109,22 @@ try {
 
   // ════ 阶段 2：市场汇总（§3.1 日期过滤 + §3.2 实时库存参考）════
   setSession(marketASession())
+  // #533：候选可见不等于总部库存可写。仅本市场的真实 scope 必须仍看不到总部库存。
+  const locations533 = await import(A('src', 'actions', 'inventory', 'locations.ts'))
+  const writable533 = await locations533.listInventoryLocations()
+  const receivers533 = await locations533.listInventoryMarketReplenishmentTargets()
+  check('#533 本市场库存列表不含总部', !writable533.some((row) => row.locationId === HQ_ORG))
+  check('#533 本市场报货候选含总部且只有身份三字段',
+    receivers533.some((row) => row.locationId === HQ_ORG)
+      && receivers533.every((row) => Object.keys(row).sort().join(',') === 'locationId,name,orgNodeId'))
+  const admin533 = marketASession()
+  setSession({ ...admin533, roles: admin533.roles.map((role) => ({ ...role, role: 'admin', isSuperAdmin: true })) })
+  check('#533 超管与市场账号接收候选相同', JSON.stringify(await locations533.listInventoryMarketReplenishmentTargets()) === JSON.stringify(receivers533))
+  setSession(storeA1Session())
+  await expectThrow('#533 门店账号不能读取总部接收候选', /PERMISSION_DENIED/, () => locations533.listInventoryMarketReplenishmentTargets())
+  setSession(supplyChainSession())
+  await expectThrow('#533 仅供应链办理账号不能读取市场报货候选', /PERMISSION_DENIED/, () => locations533.listInventoryMarketReplenishmentTargets())
+  setSession(marketASession())
   const summary = await biz.summarizeStoreReplenishmentRequests({ marketId: MKA_ORG })
   const summaryLine = summary.items.find((line) => line.skuId === SKU_SUPPLY)
   check('市场汇总提取本市场门店报货(§3.1)',
@@ -137,6 +153,21 @@ try {
       && quoteLine?.marketActualUnitPrice === 950 && quoteLine?.promotionPlanId === PROMO_ID,
     JSON.stringify({ std: quoteLine?.marketStandardUnitPrice, disc: quoteLine?.marketUnitDiscount, act: quoteLine?.marketActualUnitPrice }))
 
+  const input533 = { marketId: MKA_ORG, supplyChainLocationId: HQ_ORG,
+    items: [{ skuId: SKU_SUPPLY, sourceRequestItemIds: [dbhItem.id], purchaseQuantity: 6 }] }
+  for (const receiver of ['MISSING-HQ-533', MKA_ORG]) {
+    await expectThrow('#533 伪造或市场型接收主体不能创建', /NOT_FOUND|INVALID_PARAMS/, () => biz.createMarketReplenishment({ ...input533, supplyChainLocationId: receiver }))
+    await expectThrow('#533 伪造或市场型接收主体不能存草稿', /NOT_FOUND|INVALID_PARAMS/, () => biz.saveMarketReplenishmentDraft({ ...input533, supplyChainLocationId: receiver }))
+  }
+  await pgQuery('UPDATE org_nodes SET is_active = false WHERE id = $1', [HQ_ORG])
+  try {
+    check('#533 停用总部不出现在候选', !(await locations533.listInventoryMarketReplenishmentTargets()).some((row) => row.locationId === HQ_ORG))
+    await expectThrow('#533 停用总部不能提交', /NOT_FOUND/, () => biz.createMarketReplenishment(input533))
+    await expectThrow('#533 停用总部不能保存草稿', /NOT_FOUND/, () => biz.saveMarketReplenishmentDraft(input533))
+  } finally {
+    await pgQuery('UPDATE org_nodes SET is_active = true WHERE id = $1', [HQ_ORG])
+  }
+  await expectThrow('#533 候选查询不授予其他市场操作权', /PERMISSION_DENIED/, () => biz.createMarketReplenishment({ ...input533, marketId: MKB_ORG }))
   const { id: mbhId } = await biz.createMarketReplenishment({
     marketId: MKA_ORG,
     supplyChainLocationId: HQ_ORG,
@@ -151,6 +182,7 @@ try {
     num(mbhItem?.standard_unit_price) === 1000 && num(mbhItem?.unit_discount) === 50
       && num(mbhItem?.actual_unit_price) === 950 && num(mbhItem?.supply_chain_unit_cost) === 800,
     JSON.stringify({ std: mbhItem?.standard_unit_price, disc: mbhItem?.unit_discount, act: mbhItem?.actual_unit_price }))
+  check('#533 报货落库及详情正确回显接收总部', mbhHead?.target_org_node_id === HQ_ORG && (await docs.getInventoryCoreDocById(mbhId))?.targetOrgNodeId === HQ_ORG)
   check('市场报货 market_id=本市场(触发器)', mbhHead?.market_id === MKA_ORG, `market_id=${mbhHead?.market_id}`)
 
   const resummary = await biz.summarizeStoreReplenishmentRequests({ marketId: MKA_ORG })
@@ -1199,7 +1231,7 @@ try {
   for (const [label, inboundId] of [['去收货', directMrk1], ['一键收货', directMrk2]]) {
     const inbound = await docs.getInventoryCoreDocById(inboundId)
     check(`市场采购入库（${label}）详情带出原始报货单(#336)`,
-      inbound?.lineage?.some((row) => row.docId === directMbhId && row.relationType === '原始报货单（经品项公司发货）'),
+      inbound?.lineage?.some((row) => row.docId === directMbhId && row.relationType === '市场报货发货' && row.direction === '上游' && row.depth === 2),
       JSON.stringify(inbound?.lineage?.map((row) => [row.relationType, row.docId]) ?? null))
   }
   const directMarketLots = (await locationLots(MKA_ORG, SKU_SUPPLY))

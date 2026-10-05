@@ -9,10 +9,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from '@testing-library/react'
 
 const {
-  captured, mockListDocs, mockInboxTotals, mockListLocations, mockListMarketTargets, mockListShipmentMarkets, mockListSkus, mockListSuppliers,
+  mockReplenishmentTargets, captured, mockListDocs, mockInboxTotals, mockListLocations, mockListMarketTargets, mockListShipmentMarkets, mockListSkus, mockListSuppliers,
   mockGetSession, mockRequireCaps,
 } = vi.hoisted(() => ({
   mockListShipmentMarkets: vi.fn(),
+  mockReplenishmentTargets: vi.fn(),
   mockInboxTotals: vi.fn(),
   captured: { props: null as Record<string, unknown> | null },
   mockListDocs: vi.fn(),
@@ -27,6 +28,7 @@ const {
 vi.mock('@/actions/inventory/docs', () => ({ listInventoryCoreDocs: mockListDocs, listInventoryOperationInboxTotals: mockInboxTotals }))
 vi.mock('@/actions/inventory/locations', () => ({
   listInventoryLocations: mockListLocations,
+  listInventoryMarketReplenishmentTargets: mockReplenishmentTargets,
   listInventoryMarketTransferTargets: mockListMarketTargets,
   listInventoryShipmentMarketTargets: mockListShipmentMarkets,
 }))
@@ -66,6 +68,7 @@ async function renderWith(level: string, scopeType: string, ...actions: string[]
 beforeEach(() => {
   vi.clearAllMocks()
   captured.props = null
+  mockReplenishmentTargets.mockResolvedValue([{ locationId: 'HQ', orgNodeId: 'HQ', name: '总部' }])
   mockListLocations.mockResolvedValue([])
   mockListMarketTargets.mockResolvedValue(TARGETS)
   mockListShipmentMarkets.mockResolvedValue(SHIPMENT_MARKETS)
@@ -129,4 +132,15 @@ describe('办理台 · 品项公司发货收货市场候选（#336b）', () => {
     expect(mockListShipmentMarkets).not.toHaveBeenCalled()
     expect(props.shipmentMarketTargets).toEqual([])
   })
+})
+
+it('#533 仅市场层可建单账号加载报货接收总部', async () => {
+  await renderWith('market', '市场', 'inventory:market_operate')
+  expect(mockReplenishmentTargets).toHaveBeenCalledTimes(1)
+  expect(captured.props?.marketReplenishmentTargets).toEqual([{ locationId: 'HQ', orgNodeId: 'HQ', name: '总部' }])
+})
+it.each([['market', '市场', 'inventory:market_approve'], ['supply-chain', '总部', 'inventory:supply_chain_operate'], ['store', '门店', 'inventory:store_operate']])('#533 %s 无报货表单时不加载总部候选', async (level, scope, action) => {
+  await renderWith(level, scope, action)
+  expect(mockReplenishmentTargets).not.toHaveBeenCalled()
+  expect(captured.props?.marketReplenishmentTargets).toEqual([])
 })

@@ -881,6 +881,7 @@ function renderPage(options: {
   operation?: InventoryAnyOperationId
   candidates?: InventoryDocRow[]
   locations?: InventoryLocationRow[]
+  marketReplenishmentTargets?: Array<Pick<InventoryLocationRow, 'locationId' | 'orgNodeId' | 'name'>>
   shipmentMarketTargets?: Array<{ orgNodeId: string; name: string }>
   canSelfPurchase?: boolean
   canCreatePickupRecord?: boolean
@@ -895,6 +896,7 @@ function renderPage(options: {
       level={options.level}
       locations={options.locations ?? []}
       shipmentMarketTargets={options.shipmentMarketTargets}
+      marketReplenishmentTargets={options.marketReplenishmentTargets ?? options.locations?.filter((row) => row.locationType === '总部' && row.isActive) ?? []}
       suppliers={[]}
       inboxTotals={options.inboxTotals ?? {}}
       canCreate
@@ -2814,7 +2816,7 @@ describe('市场汇总报货显示在途采购（#362）', () => {
         },
       ],
     })
-    renderPage({ level: 'market', operation: 'market-report', locations: [M1, HQ] })
+    renderPage({ level: 'market', operation: 'market-report', locations: [M1], marketReplenishmentTargets: [HQ] })
     // 唯一市场自动选中（InventorySubjectSelect #189），不用再手选
     fireEvent.click(await screen.findByRole('button', { name: '汇总门店报货' }))
     await waitFor(() => expect(summarizeStoreReplenishmentRequests).toHaveBeenCalledWith(
@@ -2885,7 +2887,7 @@ describe('市场报货草稿（#348）', () => {
     vi.mocked(quoteMarketReplenishmentPrices).mockImplementation(async (input) => ({
       ...quoteFor(input.items), items: quoteFor(input.items).items.map((item) => ({ ...item, storeStandardUnitPrice: 150, marketUnitDiscount: 10, marketActualUnitPrice: 90 })),
     }) as never)
-    renderPage({ level: 'market', operation: 'market-report', locations: [M1, HQ] })
+    renderPage({ level: 'market', operation: 'market-report', locations: [M1], marketReplenishmentTargets: [HQ] })
     fireEvent.click(await screen.findByRole('button', { name: '汇总门店报货' }))
     const summary = await screen.findByLabelText('门店分量 商品SKU-1 SKU-1')
     expect(summary.closest('details')?.open).toBe(false)
@@ -2904,7 +2906,7 @@ describe('市场报货草稿（#348）', () => {
   it.each([['仅供应链价格档', true], ['无价格档', false]] as const)('#363 %s 不取市场报价、不显示门店单价', async (_tier, canViewPrice) => {
     mockDocs({})
     vi.mocked(summarizeStoreReplenishmentRequests).mockResolvedValue({ marketId: 'M1', items: [summaryLine('SKU-1', [11], 4)] })
-    renderPage({ level: 'market', operation: 'market-report', locations: [M1, HQ], marketPriceLocationIds: [], canViewPrice })
+    renderPage({ level: 'market', operation: 'market-report', locations: [M1], marketReplenishmentTargets: [HQ], marketPriceLocationIds: [], canViewPrice })
     fireEvent.click(await screen.findByRole('button', { name: '汇总门店报货' }))
     await screen.findByLabelText('实际采购 商品SKU-1 SKU-1')
     for (const name of ['市场单价', '单价优惠', '实际单价', '门店单价（参考）']) {
@@ -3270,5 +3272,31 @@ describe('#356 汇总作废入口', () => {
     expect(source).not.toContain('补全后才能下单')
     expect(source).not.toContain('disabled={loading || lines.length === 0 || missingSupplierNames.length > 0}')
     expect(source).not.toContain('供应商：{group.supplier')
+  })
+})
+
+describe('#533 市场报货接收主体独立于可操作库存主体', () => {
+  const market: InventoryLocationRow = { locationId: 'M533', orgNodeId: 'M533', name: '本市场', locationType: '市场', storeId: null, parentLocationId: 'HQ533', isActive: true }
+  const hq = { locationId: 'HQ533', orgNodeId: 'HQ533', name: '供应链接收总部' }
+  it.each([1, 2])('仅本市场库存 scope，%i 个总部候选可选择并提交', async (count) => {
+    mockDocs({})
+    vi.mocked(summarizeStoreReplenishmentRequests).mockResolvedValue({ marketId: 'M533', items: [{ skuId: 'SKU533', skuName: '测试商品', specName: '', requestItemIds: [533], storeQuantities: [], requestedQuantity: 4, fulfilledQuantity: 0, outstandingQuantity: 4, onHandQuantity: 0, reservedQuantity: 0, availableQuantity: 0, inTransitQuantity: 0, inTransitCoveredQuantity: 0, suggestedPurchaseQuantity: 4 }] })
+    vi.mocked(createMarketReplenishment).mockResolvedValue({ id: 'MBH533' })
+    renderPage({ level: 'market', operation: 'market-report', locations: [market], marketReplenishmentTargets: count === 1 ? [hq] : [hq, { ...hq, locationId: 'HQ-other', orgNodeId: 'HQ-other', name: '另一总部' }], marketPriceLocationIds: [] })
+    if (count === 1) expect(await screen.findByText(hq.name)).toHaveAttribute('data-fixed-subject', hq.locationId)
+    else fireEvent.change(screen.getByRole('combobox', { name: /供应链库存主体/ }), { target: { value: hq.locationId } })
+    fireEvent.click(screen.getByRole('button', { name: '汇总门店报货' }))
+    await screen.findByLabelText(/实际采购 测试商品/)
+    fireEvent.submit(screen.getByRole('button', { name: '创建市场报货单' }).closest('form')!)
+    await waitFor(() => expect(createMarketReplenishment).toHaveBeenCalledWith(expect.objectContaining({ marketId: market.locationId, supplyChainLocationId: hq.locationId })))
+  })
+  it('没有启用总部时说明原因且不填入接收主体', async () => {
+    mockDocs({})
+    renderPage({ level: 'market', operation: 'market-report', locations: [market], marketReplenishmentTargets: [] })
+    expect(await screen.findByText('暂无启用的供应链接收主体，请联系管理员检查总部库存主体配置')).toBeInTheDocument()
+    expect(screen.queryByText(hq.name)).toBeNull()
+    fireEvent.submit(screen.getByRole('button', { name: '创建市场报货单' }).closest('form')!)
+    expect(createMarketReplenishment).not.toHaveBeenCalled()
+    expect(toast.error).toHaveBeenCalledWith('请选择市场和供应链库存主体')
   })
 })

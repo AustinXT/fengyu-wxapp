@@ -691,6 +691,7 @@ export default function InventoryOperationsPage({
   locations,
   marketTransferTargets,
   shipmentMarketTargets,
+  marketReplenishmentTargets,
   suppliers,
   inboxTotals,
   canCreate,
@@ -709,6 +710,7 @@ export default function InventoryOperationsPage({
   /** 市场间调货出库的接收主体候选（#340），只喂给通用建单表单，见其同名 prop */
   marketTransferTargets?: readonly InventoryMarketTransferTarget[]
   /** 品项公司发货的收货市场候选（#336b，不按 scope 的全部启用市场），只喂给发货表单 */
+  marketReplenishmentTargets?: readonly Pick<InventoryLocationRow, 'locationId' | 'orgNodeId' | 'name'>[]
   shipmentMarketTargets?: readonly InventoryMarketTransferTarget[]
   suppliers: InventorySupplierRow[]
   /** 所有业务卡片待办数由服务端一次聚合返回，口径与 inbox 段相同。 */
@@ -965,6 +967,7 @@ export default function InventoryOperationsPage({
               locations={locations}
               marketTransferTargets={marketTransferTargets}
               shipmentMarketTargets={shipmentMarketTargets}
+              marketReplenishmentTargets={marketReplenishmentTargets}
               suppliers={suppliers}
               canViewPrice={canViewPrice}
               marketPriceLocationIds={marketPriceLocationIds}
@@ -989,6 +992,7 @@ function OperationWorkspace({
   locations,
   marketTransferTargets,
   shipmentMarketTargets,
+  marketReplenishmentTargets,
   suppliers,
   canViewPrice,
   marketPriceLocationIds,
@@ -1012,6 +1016,7 @@ function OperationWorkspace({
   onBusyChange: (busy: boolean) => void
   locations: InventoryLocationRow[]
   marketTransferTargets?: readonly InventoryMarketTransferTarget[]
+  marketReplenishmentTargets?: readonly Pick<InventoryLocationRow, 'locationId' | 'orgNodeId' | 'name'>[]
   shipmentMarketTargets?: readonly InventoryMarketTransferTarget[]
   suppliers: InventorySupplierRow[]
   canViewPrice: boolean
@@ -1132,7 +1137,7 @@ function OperationWorkspace({
             />
           )}
           {operation === 'store-request' && <StoreRequestForm locations={locations} prefill={prefill} onSuccess={handleSuccess} onBusyChange={setFormBusy} />}
-          {operation === 'market-report' && <MarketReportForm locations={locations} marketPriceLocationIds={marketPriceLocationIds} prefill={prefill} onSuccess={handleSuccess} onBusyChange={setFormBusy} />}
+          {operation === 'market-report' && <MarketReportForm locations={locations} headquarters={marketReplenishmentTargets ?? []} marketPriceLocationIds={marketPriceLocationIds} prefill={prefill} onSuccess={handleSuccess} onBusyChange={setFormBusy} />}
           {operation === 'item-company-request' && <ItemCompanyReplenishmentForm locations={locations} onSuccess={handleSuccess} />}
           {operation === 'purchase-order' && <PurchaseOrderForm locations={locations} canViewPrice={canViewPrice} onSuccess={handleSuccess} />}
           {operation === 'market-report-summary' && <MarketReportSummaryForm locations={locations} onSuccess={handleSuccess} />}
@@ -2249,12 +2254,14 @@ export function mergeMarketReportDraftLines(
 
 function MarketReportForm({
   locations,
+  headquarters,
   marketPriceLocationIds,
   prefill,
   onSuccess,
   onBusyChange,
 }: {
   locations: InventoryLocationRow[]
+  headquarters: readonly Pick<InventoryLocationRow, 'locationId' | 'orgNodeId' | 'name'>[]
   /** 可取 / 改选市场福利报价的主体（见 InventoryOperationsPage 同名 prop）；null = 不受限 */
   marketPriceLocationIds: string[] | null
   /** 待办区「继续编辑」（#348）：把一张市场报货草稿回填进表单。 */
@@ -2264,7 +2271,6 @@ function MarketReportForm({
   onBusyChange?: (busy: boolean) => void
 }) {
   const markets = locations.filter((location) => location.locationType === '市场' && location.isActive)
-  const headquarters = locations.filter((location) => location.locationType === '总部' && location.isActive)
   const [marketId, setMarketId] = useState('')
   // 本市场能否取 / 改选福利报价（勿与外层「任一价格档可见」的 canViewPrice 混用）。
   // 按当前市场判：价格权只在部分市场的账号，换到没有价格权的市场就按系统推荐取价（与服务端同口径）
@@ -2648,6 +2654,7 @@ function MarketReportForm({
             onChange={setSupplyChainLocationId}
             placeholder="请选择总部"
           />
+          {headquarters.length === 0 && <p role="status" className="text-sm text-muted-foreground">暂无启用的供应链接收主体，请联系管理员检查总部库存主体配置</p>}
         </FormField>
         <FormField label="汇总开始日期">
           <DatePicker value={startDate} onValueChange={setStartDate} />

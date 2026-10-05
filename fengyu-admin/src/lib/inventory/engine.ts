@@ -1567,6 +1567,23 @@ export const listInventoryPromotionMarketOptions = withPermission(
   PROMOTION_READ_SCOPE,
 )
 
+/** #533：报货接收总部越过库存操作 scope，只返回选单所需身份，不授予总部库存权限。 */
+export const listInventoryMarketReplenishmentTargets = withPermission(
+  'inventory:market_operate',
+  async (): Promise<Array<Pick<InventoryLocationRow, 'locationId' | 'orgNodeId' | 'name'>>> => {
+    await syncInventoryLocations()
+    return db.select({
+      locationId: inventoryLocations.locationId,
+      orgNodeId: inventoryLocations.orgNodeId,
+      name: inventoryLocations.name,
+    }).from(inventoryLocations).where(and(
+      eq(inventoryLocations.isActive, true),
+      eq(inventoryLocations.locationType, '总部'),
+      isNotNull(inventoryLocations.orgNodeId),
+    )).orderBy(asc(inventoryLocations.name))
+  },
+)
+
 export const listInventoryLocations = withPermission(
   'inventory:stock_list',
   async (session): Promise<InventoryLocationRow[]> => {

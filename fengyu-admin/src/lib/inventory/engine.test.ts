@@ -44,6 +44,7 @@ import {
   listInventorySkus,
   listInventoryMarketTransferTargets,
   listInventoryShipmentMarketTargets,
+  listInventoryMarketReplenishmentTargets,
   listInventorySuppliers,
   inventorySkuOptionConditions,
   rejectInventoryCoreDoc,
@@ -2023,6 +2024,22 @@ describe('市场间调货接收主体候选（#340）', () => {
     mockDb.execute.mockResolvedValue([])
     vi.mocked(isAdminScope).mockReturnValue(false)
     mockGetSession.mockResolvedValue(SINGLE_MARKET_SESSION)
+  })
+
+  it('#533 市场报货接收候选仅返回启用总部的身份，越过操作 scope', async () => {
+    const sink = captureSelect([{ locationId: 'HQ', orgNodeId: 'HQ', name: '总部' }])
+    expect(await listInventoryMarketReplenishmentTargets()).toEqual([{ locationId: 'HQ', orgNodeId: 'HQ', name: '总部' }])
+    const { text, params } = compile(sink.where)
+    expect(text).toBe('("inventory_locations"."is_active" = $1 and "inventory_locations"."location_type" = $2 and "inventory_locations"."org_node_id" is not null)')
+    expect(params).toEqual(['true', '总部'])
+    expect(Object.keys(sink.fields ?? {}).sort()).toEqual(['locationId', 'name', 'orgNodeId'])
+  })
+
+  it('#533 接收候选必须持市场办理权限', async () => {
+    vi.mocked(requirePermission).mockImplementationOnce(() => { throw new Error('PERMISSION_DENIED') })
+    await expect(listInventoryMarketReplenishmentTargets()).rejects.toThrow('PERMISSION_DENIED')
+    expect(requirePermission).toHaveBeenCalledWith(expect.anything(), 'inventory:market_operate')
+    expect(mockDb.select).not.toHaveBeenCalled()
   })
 
   it('单市场账号也能拿到其他市场：条件里没有任何 scope 收窄', async () => {

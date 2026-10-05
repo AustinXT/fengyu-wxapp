@@ -4,6 +4,7 @@ import {
   listInventoryDocLocationFilterOptions as listInventoryDocLocationFilterOptionsImpl,
   listInventoryLocationFilterOptions as listInventoryLocationFilterOptionsImpl,
   listInventoryMovementLocationFilterOptions as listInventoryMovementLocationFilterOptionsImpl,
+  listInventoryMarketReplenishmentTargets as listInventoryMarketReplenishmentTargetsImpl,
   listInventoryLocations as listInventoryLocationsImpl,
   listInventoryMarketTransferTargets as listInventoryMarketTransferTargetsImpl,
   listInventoryShipmentMarketTargets as listInventoryShipmentMarketTargetsImpl,
@@ -41,4 +42,9 @@ export const listInventoryMovementLocationFilterOptions = withPermission(
 export const listInventoryDocLocationFilterOptions = withPermission(
   'inventory:list',
   async () => listInventoryDocLocationFilterOptionsImpl(),
+)
+
+export const listInventoryMarketReplenishmentTargets = withPermission(
+  'inventory:market_operate',
+  async () => listInventoryMarketReplenishmentTargetsImpl(),
 )

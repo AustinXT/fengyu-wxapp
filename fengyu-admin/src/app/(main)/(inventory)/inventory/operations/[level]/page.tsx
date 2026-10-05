@@ -2,6 +2,7 @@ import { Suspense } from 'react'
 import { notFound, redirect } from 'next/navigation'
 import {
   listInventoryLocations,
+  listInventoryMarketReplenishmentTargets,
   listInventoryMarketTransferTargets,
   listInventoryShipmentMarketTargets,
 } from '@/actions/inventory/locations'
@@ -57,7 +58,7 @@ export default async function Page({
   // 业务过滤（可报货 / 市场归属 / 供应链来源）也在服务端做，见 InventorySkuSearchSelect。
   // 来源单 / 待处理单候选同样不再预加载（#338）：原先这里拉「全类型混排最近 100 张」，
   // 老单在各表单里选不到；现在各表单按用途走服务端检索 + 分页，见 InventoryDocCandidatePicker。
-  const [locations, marketTransferTargets, shipmentMarketTargets, suppliers, inboxTotals] = await Promise.all([
+  const [locations, marketTransferTargets, shipmentMarketTargets, marketReplenishmentTargets, suppliers, inboxTotals] = await Promise.all([
     listInventoryLocations(),
     /*
      * 市场间调货卡的接收主体候选（#340）：不按 scope 的全部启用市场。只在市场层、且能建单时取 ——
@@ -69,6 +70,7 @@ export default async function Page({
      * 只在供应链层、且能建单时取；权限门与发货 action 同为 supply_chain_operate。
      */
     level === 'supply-chain' && canCreate ? listInventoryShipmentMarketTargets() : Promise.resolve([]),
+    level === 'market' && canCreate ? listInventoryMarketReplenishmentTargets() : Promise.resolve([]),
     // 刻意不传 pageSize：办理台的供应商下拉要的是整份名单，
     // 跟着列表页分页走会把靠后的供应商静默漏掉（#135）。
     listInventorySuppliers({ onlyActive: true }),
@@ -102,6 +104,7 @@ export default async function Page({
           locations={locations}
           marketTransferTargets={marketTransferTargets}
           shipmentMarketTargets={shipmentMarketTargets}
+          marketReplenishmentTargets={marketReplenishmentTargets}
           suppliers={suppliers.data}
           inboxTotals={inboxTotals}
           canCreate={canCreate}
