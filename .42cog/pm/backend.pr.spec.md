@@ -900,21 +900,18 @@ login 返回中包含 `permissions` 字段：
 22. **回款/转换/退款仅员工端操作**
 23. **capability 列 SSoT**（2026-04-26 ticket 落地）：体验卡 / 充值卡 等"特殊 SKU 行为"判定一律读 `product_skus.is_experience` / `is_recharge_card`，**禁止**写 `WHERE product_kind = '体验卡'` / `'充值卡'` 字面量。两列互斥（`chk_sku_not_both_capabilities` CHECK 保护）。`product_kind` 仅作组织/分类标签。开单时 `sale_items` 自动快照同名列，行级不可变（admin 后续修改 SKU capability 不影响历史订单）。
 24. **D4 充值卡严格独立**：同一订单 `sale_items.is_recharge_card` 必须全 true 或全 false；混合下单抛 `INVALID_PARAMS: MIXED_RECHARGE_NOT_ALLOWED`。三端应用层（admin / staff / client）已加显式守卫，DB trigger `trg_check_no_mixed_recharge` 在 COMMIT 兜底。
-25. **customer_type 跃迁（event-driven）**：在收款触发点同步重算 — `payNotify`（线上支付回调）/ `clientApi` 支付完成 / `staffApi.order.confirmOffline` + `order.createRepayment` + 全额储值卡抵扣开单 / `admin.confirmOfflinePayment` + `recordPayment` + 零应付开单 + 全额抵扣转换。跃迁 SQL **八处独立副本**：五处运行时（staffApi `routes/order.js`、clientApi `routes/order.js`、payNotify `index.js`、admin `actions/orders.ts`、admin `lib/recompute-customer-tags.ts`）逐字一致 + 三个全库批量脚本（`db/scripts/recalc-all-customer-types.js`、`db/scripts/recalc-became-member-at.js`、`db/scripts/backfill-membership-upgrade-doc-type.js`）结构对齐，由 `staffApi/__tests__/routes/recalc-customer-type-sql.test.js` 守卫一致性。
+25. **customer_type 分类（#187 / #257 / #524）**：每次真实入账后同步重算，包括部分支付；覆盖 payNotify、client 纯卡支付、staff 首次收款/回款、admin 确认收款/回款及历史审核。每日 cron 和 WorkFine 离线补算使用相同定义。九处 SQL 独立副本：五处单客入口、admin `refresh-customer-types`、三个 db 治理脚本，全文 snapshot 与真实 PG 同夹具守护，禁止跨端共享代码。
 
-    判定逻辑（#187，2026-09-18 落地 2026-04-26 Q5.2 决策）——先按**单笔订单**聚合金额，再走三档 CASE：
-    - `non_trial` / `trial` = 该订单非体验 / 体验明细行的**毛实收**合计；毛实收 = `sale_items.received`（净额）+ 该行逐项退款额，即"曾经收到的钱"（退款不扣减）
-    - 聚合范围：`status IN ('已支付','已完成')` 的销售单、`item_direction='购买'` 行；部分支付订单不参与判定
-    - `EXISTS(某单 non_trial ≥ threshold)` → `会员客`
-    - `EXISTS(某单 non_trial > 0)` → `小美客`（充值卡的 `is_experience = false`，自动计入此通道，D1=A 决策）
-    - `EXISTS(某单 trial > 0)` → `体验客`
-    - 否则 `流量客`
-    - **混合订单按非体验部分判**：体验卡 500 + 普通商品 1600（阈值 1980）→ 小美客，不因合计 2100 达标而判会员客
-    - 客户分类**只升不降**（取 max(current, computed)）
-    - `customer_type='会员客'` 早退出，无需重算
-    - `became_member_at` 与 `is_membership_upgrade` 归因同源同序（`non_trial ≥ threshold` 的单里按 `paid_at ASC NULLS LAST, created_at ASC, sale_order_id ASC` 取首笔；末位唯一键是确定性兜底，两键相同时保证两处选同一单）
-    - 毛实收按 `sale_amount` 封顶；无明细行的历史单回退订单级 `received`（全额计入 non_trial）
-    - ⚠️ 全额退款后原单状态变 `'已退款'`，整单退出判定 —— 「退款不扣减」只对**部分退款**成立
+    先按**单笔订单**聚合金额，再分类；同单分次款项累计，不跨订单凑会员门槛：
+    - 有效范围：销售单/转换单，状态为部分支付/已支付/已完成。待支付、关闭、全额退款、内部单、充值单和寄存单不参与。
+    - 销售单 `non_trial` / `trial`：购买行按 `is_experience` 拆分毛实收（行净实收加逐项退款，按行成交额封顶）；无明细历史销售单回退订单 `received`。
+    - 转换单只认已支付首次收款、回款或实际扣卡产生的 receipt 新增实收，按转入行的体验属性拆分。旧版含转出负数/转入资产正数的 signed receipt 先求该次净新增，再按转入权重及累计边界分币分配；新版增量 receipt 直接累计。旧卡资产、零补差、尚未实际扣减的储值卡金额不计入，转换链不得重复计旧资产。异常 receipt 不以转入面额兜底。
+    - `EXISTS(某单 non_trial ≥ system_configs.new_member_threshold)` → 会员客；否则存在非体验正数 → 小美客；否则存在体验正数 → 体验客；否则流量客。
+    - 体验 500 + 非体验 1600、两张各 1000 的单、三张各 1980 的单，在阈值 1990 时均不入会。
+    - 实时收款只升级；每日、历史审核和离线按计算值双向对齐。保留 #257 的历史等级/入会时间与再达标处理，不另行重定义。
+    - 完整 receipt 的订单按实际款项 `paid_at`、唯一 ID 累计，取首次非体验实收跨阈值时间；所有达标单按该时间和订单 ID 确定首笔，入会时间与升级单归因同源。部分支付父单 `paid_at=NULL` 不回退开单时间。无 receipt 的已支付/已完成历史销售单沿用 `COALESCE(paid_at,created_at)`；不完整事实单在只读审计列出，不能伪造时间。
+    - 部分退款沿用毛实收；原单全额退款进入已退款后整单退出计算。
+    - 首次达标仍遵守 #301 人工所属员工门禁；已成功支付回调不因门禁拒绝入账。充值到账、分享礼等结清副作用维持原触发时点。
 
 ---
 

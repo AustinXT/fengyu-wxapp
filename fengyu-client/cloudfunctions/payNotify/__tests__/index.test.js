@@ -218,6 +218,8 @@ function setupClientQueryRouter(routes) {
         return route.result
       }
     }
+    // #524：部分到账也分类；单独注册的会员场景优先匹配上面的具体路由。
+    if (sql.includes('AS computed_type')) return { rows: [{ computed_type: '小美客' }], rowCount: 1 }
     return { rows: [], rowCount: 0 }
   })
 }
@@ -530,6 +532,8 @@ describe('payNotify index.js', () => {
       return { rows: [], rowCount: 0 }
     })
     mockClientQuery.mockImplementation(async (sql, params = []) => {
+      if (sql.includes('AS computed_type')) return { rows: [{ computed_type: '小美客' }], rowCount: 1 }
+      if (sql.includes('RETURNING customer_type')) return { rows: [{ customer_type: '小美客' }], rowCount: 1 }
       if (/FROM sale_orders WHERE sale_order_id = \$1 FOR UPDATE/.test(sql)) {
         return { rows: [{ ...order }], rowCount: 1 }
       }

@@ -27,7 +27,7 @@ const { classifySaleOrderDocumentType } = require('./document-type')
  * 产出每张已结清销售单的 non_trial / trial = 非体验 / 体验行的**毛实收**合计
  * （sale_items.received 净额 + 该行逐项退款额 → 还原"曾经收到的钱"，退款不扣减）。
  * refund_by_item 的 note→jsonb 三重防线逐字对齐 paid-sessions.js
- * RECEIVED_REFUNDED_DEDUCT_SQL，根除 22P02。八处副本逐字一致，由 staffApi
+ * RECEIVED_REFUNDED_DEDUCT_SQL，根除 22P02。九处副本逐字一致，由 staffApi
  * __tests__/routes/recalc-customer-type-sql.test.js 守护。
  */
 const RECALC_CUSTOMER_TYPE_CTE = `WITH membership_settings AS (
@@ -146,6 +146,84 @@ const RECALC_CUSTOMER_TYPE_CTE = `WITH membership_settings AS (
            ) END AS qualified_at
   FROM membership_amounts a CROSS JOIN membership_settings cfg
 )`
+
+/** 每笔已到账款项后的分类；成功回调不执行付款前所属员工门禁。 */
+async function recalcCustomerType(client, clientUserId) {
+  if (!clientUserId) return
+  // 5. 重算顾客类型（只升不降，已是会员客则跳过）
+  const curType = await client.query(
+    'SELECT customer_type FROM client_wechat_users WHERE user_id = $1',
+    [clientUserId]
+  )
+  if (curType.rows[0]?.customer_type !== '会员客') {
+    const threshold = await getMemberThreshold()
+
+    // 九处 SQL 独立副本（staffApi routes/order.js + clientApi routes/order.js + payNotify index.js
+    // + admin actions/orders.ts + admin lib/recompute-customer-tags.ts
+    // + db/scripts/recalc-all-customer-types.js + recalc-became-member-at.js
+    // + backfill-membership-upgrade-doc-type.js + admin cron refresh-customer-types.ts）。
+    // 修改时必须同步其余八处；一致性由 staffApi __tests__/routes/recalc-customer-type-sql.test.js 守护。
+    // #187（2026-09-18）：按单笔订单的非体验部分毛实收判定，落地 Q5.2 决策。
+    const typeResult = await client.query(
+      `${RECALC_CUSTOMER_TYPE_CTE}
+       SELECT CASE
+         WHEN EXISTS (SELECT 1 FROM order_amounts WHERE non_trial >= $2) THEN '会员客'
+         WHEN EXISTS (SELECT 1 FROM order_amounts WHERE non_trial > 0)   THEN '小美客'
+         WHEN EXISTS (SELECT 1 FROM order_amounts WHERE trial > 0)       THEN '体验客'
+         ELSE '流量客'
+       END AS computed_type`,
+      [clientUserId, threshold]
+    )
+
+    const newType = typeResult.rows[0].computed_type
+    // 只升不降；若跃迁为 '会员客'，同步写入 became_member_at
+    const upgradeResult = await client.query(
+      `UPDATE client_wechat_users
+       SET customer_type = $2::customer_type, updated_at = NOW()
+       WHERE user_id = $1
+         AND (CASE customer_type
+                WHEN '流量客' THEN 0 WHEN '体验客' THEN 1
+                WHEN '小美客' THEN 2 WHEN '会员客' THEN 3
+              END)
+           < (CASE $2::customer_type
+                WHEN '流量客' THEN 0 WHEN '体验客' THEN 1
+                WHEN '小美客' THEN 2 WHEN '会员客' THEN 3
+              END)
+       RETURNING customer_type`,
+      [clientUserId, newType]
+    )
+    if (upgradeResult.rowCount > 0 && upgradeResult.rows[0].customer_type === '会员客') {
+      // became_member_at 记为确立会员资格的首笔订单实际跨阈值时间；
+      // 选单子查询与本端下方 is_membership_upgrade 归因同源、选同一单。
+      await client.query(
+        `UPDATE client_wechat_users SET became_member_at = COALESCE((
+           ${RECALC_CUSTOMER_TYPE_CTE}
+           SELECT oa.qualified_at FROM sale_orders o
+           JOIN order_amounts oa ON oa.sale_order_id = o.sale_order_id
+           WHERE oa.non_trial >= $2
+           ORDER BY oa.qualified_at ASC NULLS LAST, o.sale_order_id ASC
+           LIMIT 1
+         ), became_member_at) WHERE user_id = $1`,
+        [clientUserId, threshold]
+      )
+      // 给触发本次首次跃迁的达标订单打会员升级标记。WHERE 与本端会员客判定 CASE 同源
+      // （单笔达标）。paid_at 最早 = 确立会员资格的首笔达标单。
+      await client.query(
+        `UPDATE sale_orders SET is_membership_upgrade = true
+         WHERE sale_order_id = (
+           ${RECALC_CUSTOMER_TYPE_CTE}
+           SELECT o.sale_order_id FROM sale_orders o
+           JOIN order_amounts oa ON oa.sale_order_id = o.sale_order_id
+           WHERE oa.non_trial >= $2
+           ORDER BY oa.qualified_at ASC NULLS LAST, o.sale_order_id ASC
+           LIMIT 1
+         )`,
+        [clientUserId, threshold]
+      )
+    }
+  }
+
+}
 
 /**
  * 线上支付自动逐笔分配：把本次回款（perItem 逐项可分配额）100% 记到开单指定销售员名下，
@@ -1321,6 +1399,7 @@ exports.main = async (event) => {
         // paid_sessions 重算（ticket 2026-05-19）：received 增长 → paid_sessions 单调上升
         // 必须在 capture 之后：新 STEP1 从 receipt 聚合 received
         await recalcPaidSessionsForOrder(client, targetOrderNo)
+        await recalcCustomerType(client, targetOrder.client_user_id)
 
         await client.query('COMMIT')
         console.log('[payNotify] 订单部分支付到账:', orderNo, `received=${newReceived}`)
@@ -1431,79 +1510,7 @@ exports.main = async (event) => {
           [targetOrder.client_user_id]
         )
 
-        // 5. 重算顾客类型（只升不降，已是会员客则跳过）
-        const curType = await client.query(
-          'SELECT customer_type FROM client_wechat_users WHERE user_id = $1',
-          [targetOrder.client_user_id]
-        )
-        if (curType.rows[0]?.customer_type !== '会员客') {
-          const threshold = await getMemberThreshold()
-
-          // 八处 SQL 独立副本（staffApi routes/order.js + clientApi routes/order.js + payNotify index.js
-          // + admin actions/orders.ts + admin lib/recompute-customer-tags.ts
-          // + db/scripts/recalc-all-customer-types.js + recalc-became-member-at.js
-          // + backfill-membership-upgrade-doc-type.js）。
-          // 修改时必须同步其余七处；一致性由 staffApi __tests__/routes/recalc-customer-type-sql.test.js 守护。
-          // #187（2026-09-18）：按单笔订单的非体验部分毛实收判定，落地 Q5.2 决策。
-          const typeResult = await client.query(
-            `${RECALC_CUSTOMER_TYPE_CTE}
-             SELECT CASE
-               WHEN EXISTS (SELECT 1 FROM order_amounts WHERE non_trial >= $2) THEN '会员客'
-               WHEN EXISTS (SELECT 1 FROM order_amounts WHERE non_trial > 0)   THEN '小美客'
-               WHEN EXISTS (SELECT 1 FROM order_amounts WHERE trial > 0)       THEN '体验客'
-               ELSE '流量客'
-             END AS computed_type`,
-            [targetOrder.client_user_id, threshold]
-          )
-
-          const newType = typeResult.rows[0].computed_type
-          // 只升不降；若跃迁为 '会员客'，同步写入 became_member_at
-          // TODO: 将来若开放降级路径，需同步 UPDATE became_member_at = NULL。
-          const upgradeResult = await client.query(
-            `UPDATE client_wechat_users
-             SET customer_type = $2::customer_type, updated_at = NOW()
-             WHERE user_id = $1
-               AND (CASE customer_type
-                      WHEN '流量客' THEN 0 WHEN '体验客' THEN 1
-                      WHEN '小美客' THEN 2 WHEN '会员客' THEN 3
-                    END)
-                 < (CASE $2::customer_type
-                      WHEN '流量客' THEN 0 WHEN '体验客' THEN 1
-                      WHEN '小美客' THEN 2 WHEN '会员客' THEN 3
-                    END)
-             RETURNING customer_type`,
-            [targetOrder.client_user_id, newType]
-          )
-          if (upgradeResult.rowCount > 0 && upgradeResult.rows[0].customer_type === '会员客') {
-            // became_member_at 记为确立会员资格的首笔达标单时间（COALESCE(paid_at, created_at)）；
-            // 选单子查询与本端下方 is_membership_upgrade 归因同源、选同一单。
-            await client.query(
-              `UPDATE client_wechat_users SET became_member_at = COALESCE((
-                 ${RECALC_CUSTOMER_TYPE_CTE}
-                 SELECT oa.qualified_at FROM sale_orders o
-                 JOIN order_amounts oa ON oa.sale_order_id = o.sale_order_id
-                 WHERE oa.non_trial >= $2
-                 ORDER BY oa.qualified_at ASC NULLS LAST, o.sale_order_id ASC
-                 LIMIT 1
-               ), became_member_at) WHERE user_id = $1`,
-              [targetOrder.client_user_id, threshold]
-            )
-            // 给触发本次首次跃迁的达标销售单打会员升级标记。WHERE 与本端会员客判定 CASE 同源
-            // （单笔达标）。paid_at 最早 = 确立会员资格的首笔达标单。
-            await client.query(
-              `UPDATE sale_orders SET is_membership_upgrade = true
-               WHERE sale_order_id = (
-                 ${RECALC_CUSTOMER_TYPE_CTE}
-                 SELECT o.sale_order_id FROM sale_orders o
-                 JOIN order_amounts oa ON oa.sale_order_id = o.sale_order_id
-                 WHERE oa.non_trial >= $2
-                 ORDER BY oa.qualified_at ASC NULLS LAST, o.sale_order_id ASC
-                 LIMIT 1
-               )`,
-              [targetOrder.client_user_id, threshold]
-            )
-          }
-        }
+        await recalcCustomerType(client, targetOrder.client_user_id)
 
         // 会员等级即时重算（只升不降；对所有会员客生效，含已是会员客后继续消费跨档；礼包留给 cron）
         await recalcMemberLevel(client, targetOrder.client_user_id, await getMemberThreshold(), 'payNotify')

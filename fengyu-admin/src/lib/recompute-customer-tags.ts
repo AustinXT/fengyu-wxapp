@@ -82,17 +82,17 @@ async function recomputeCustomerStatusForUser(tx: Tx, clientUserId: string): Pro
 /**
  * 段 2：customer_type 双向对齐（#257 C）。实时四路径仍只升级。
  *
- * 八处 SQL 镜像副本：五处运行时（staffApi order.js + clientApi order.js + payNotify index.js
+ * 九处 SQL 镜像副本：五处单客入口 + cron（staffApi order.js + clientApi order.js + payNotify index.js
  * + admin orders.ts + 本 helper）逐字一致，三个 db/scripts 批量脚本（recalc-all-customer-types.js
- * + recalc-became-member-at.js + backfill-membership-upgrade-doc-type.js）结构对齐。
- * SQL 字面必须与其余七处一致；守护测试：
+ * + recalc-became-member-at.js + backfill-membership-upgrade-doc-type.js + admin cron refresh-customer-types.ts）结构对齐。
+ * SQL 字面必须与其余八处一致；守护测试：
  * fengyu-staff/cloudfunctions/staffApi/__tests__/routes/recalc-customer-type-sql.test.js
  */
 /**
  * 顾客分类跃迁的订单级金额 CTE（#187）。产出每张已结清销售单的
  * non_trial / trial = 非体验 / 体验行的毛实收合计（received 净额 + 该行逐项退款额）。
  * refund_by_item 的 note→jsonb 三重防线逐字对齐 staffApi utils/paid-sessions.js
- * RECEIVED_REFUNDED_DEDUCT_SQL，根除 22P02。八处副本逐字一致，由 recalc-customer-type-sql.test.js 守护。
+ * RECEIVED_REFUNDED_DEDUCT_SQL，根除 22P02。九处副本逐字一致，由 recalc-customer-type-sql.test.js 守护。
  */
 const recalcCustomerTypeCte = (clientUserId: string, threshold: number) => sql`WITH membership_settings AS (
   SELECT ${clientUserId}::text AS client_user_id, ${threshold}::numeric AS threshold
@@ -233,7 +233,7 @@ async function recomputeCustomerTypeForUser(
     return null
   }
 
-  // 八处 SQL 镜像副本，修改时必须同步其余七处（staffApi order.js + clientApi order.js + payNotify index.js
+  // 九处 SQL 镜像副本，修改时必须同步其余八处（staffApi order.js + clientApi order.js + payNotify index.js
   // + admin orders.ts + 本文件 + db/scripts/recalc-all-customer-types.js + db/scripts/recalc-became-member-at.js）；
   // 一致性由 recalc-customer-type-sql.test.js 守护。
   // #187（2026-09-18）：按单笔订单的非体验部分毛实收判定（received 净额 + 逐项退款额），落地 Q5.2 决策。
@@ -263,7 +263,7 @@ async function recomputeCustomerTypeForUser(
   if (updRowCount === 0) return null
 
   if (updRows[0]?.customer_type === '会员客') {
-    // became_member_at 记为确立会员资格的首笔达标单时间（COALESCE(paid_at, created_at)）；
+    // became_member_at 记为确立会员资格的首笔订单实际跨阈值时间；
     // 选单子查询与下方 is_membership_upgrade 归因同源、选同一单。
     await tx.execute(sql`
       UPDATE client_wechat_users SET became_member_at = COALESCE((
@@ -275,7 +275,7 @@ async function recomputeCustomerTypeForUser(
         LIMIT 1
       ), became_member_at) WHERE user_id = ${clientUserId}
     `)
-    // 给现行首笔达标销售单打会员升级标记（再达标归因仍沿用原规则，E另定）（WHERE 与会员客判定 CASE 同源；八处镜像逐字一致）。
+    // 给现行首笔达标订单打会员升级标记（再达标归因仍沿用原规则，E另定）（WHERE 与会员客判定 CASE 同源；九处镜像逐字一致）。
     // 2026-09-18 (#187) 订正：旧注释称「payNotify 端额外含回款单累计分支」已不成立——
     // sale-order-domain-refactor 后该分支即被删除，七处归因段一直是同一口径，现统一为 oa.non_trial >= 阈值。
     await tx.execute(sql`

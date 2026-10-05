@@ -13,7 +13,7 @@
  *
  * 修复策略（"系统补激活"，不发权益）：
  *   等价于把 staffApi recalcCustomerType 的判定逻辑全量回放到所有顾客身上：
- *     1. 存在一张销售单，其**非体验部分毛实收** ≥ new_member_threshold ⇒ 会员客
+ *     1. 存在一张有效销售单/转换单，其**非体验部分毛实收** ≥ new_member_threshold ⇒ 会员客
  *     2. 否则存在一张单其非体验部分毛实收 > 0 ⇒ 小美客
  *     3. 否则存在一张单其体验部分毛实收 > 0 ⇒ 体验客
  *     4. 否则 ⇒ 流量客
@@ -26,8 +26,7 @@
  *   - 会员客升级行：member_level 仅在原值为 NULL 时按滚动 12 个月净消费写入
  *     初始等级（黑/金/粉/星/初钻），与 cron-worker determineMemberLevel 同源。
  *   - became_member_at 仅在原值为 NULL 时写入 first_qualified_at（首笔达标单
- *     COALESCE(paid_at, created_at)；选单口径 DISTINCT ON + ORDER BY paid_at
- *     ASC NULLS LAST，与 recalc-became-member-at.js 同源）。
+ *     实际跨阈值时间；无receipt历史已结清销售单才回退父单时间，与归因脚本同源）。
  *   - 不发消息 / 积分 / 优惠券（与 cron-worker.processUpgrade 区别在此；理由：历史存量发"恭喜
  *     升级"会失真，且优惠券有效期会从今天起算）。
  *
@@ -193,18 +192,13 @@ WITH membership_settings AS (
   FROM membership_amounts a CROSS JOIN membership_settings cfg
 ), threshold AS (SELECT $1::numeric AS v),
 qualified_orders AS (
-  -- 非体验部分毛实收达阈值的订单。保留 paid_at / created_at 原始列供 member_first
-  -- 按 paid_at ASC NULLS LAST 选单（与 recalc-became-member-at.js 同口径）。
+  -- 每单实际首次跨阈值的时间，部分支付不依赖父单 paid_at。
   SELECT client_user_id, sale_order_id, qualified_at
     FROM order_amounts
    WHERE non_trial >= (SELECT v FROM threshold)
 ),
 member_first AS (
-  -- 选单口径与 recalc-became-member-at.js 的 BUILD_TARGET_SQL 同源：
-  -- DISTINCT ON + ORDER BY paid_at ASC NULLS LAST, created_at ASC。
-  -- 不用 MIN(COALESCE(paid_at, created_at))：当某顾客有多张达标单、其中一张
-  -- paid_at IS NULL 但 created_at 早于另一张 paid_at 非空单时，MIN 会选前者、
-  -- ORDER BY paid_at NULLS LAST 选后者，两脚本会给不同的 became_member_at。
+  -- 三个治理脚本统一按 qualified_at、订单ID确定首笔。
   SELECT DISTINCT ON (client_user_id)
          client_user_id AS user_id,
          qualified_at AS first_qualified_at, sale_order_id AS first_qualified_order

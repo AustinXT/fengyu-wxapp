@@ -9,14 +9,14 @@
  *   paid_at 已写成历史销售日，但 became_member_at 仍是 NOW()），导致会员报表的
  *   「本月新会员 / 历史会员数」按审核日计入、历史分布失真。
  *
- *   在线写入口径已改为「确立会员资格的首笔达标单时间」（COALESCE(paid_at, created_at)，
+ *   在线写入口径已改为「确立会员资格的首笔达标单时间」（实际付款跨阈值时间，历史无receipt已结清销售单才回退父单时间；
  *   staffApi/clientApi/payNotify/admin orders.ts/admin recompute-customer-tags 五端镜像）。
  *   本脚本对存量会员客做同样重算，使存量值 == 在线值。
  *
  * 选单口径（与在线 became_member_at 子查询同源；#187 起按非体验部分毛实收达标）：
- *   status IN ('已支付','已完成') AND sale_order_type='销售单' AND non_trial >= threshold
+ *   status IN ('部分支付','已支付','已完成') AND sale_order_type IN ('销售单','转换单') AND non_trial >= threshold
  *   （non_trial = Σ 非体验行的 received 净额 + 该行逐项退款额）
- *   ORDER BY paid_at ASC NULLS LAST, created_at ASC，每会员客取最早一单，取其
+ *   ORDER BY qualified_at ASC NULLS LAST, sale_order_id ASC，每会员客取最早一单，取其
  *   COALESCE(paid_at, created_at)。不用 MIN(COALESCE)：MIN 在「某达标单 paid_at=NULL
  *   且 created_at 早于另一张达标单 paid_at」时会选不同的单，导致存量 ≠ 新单。
  *

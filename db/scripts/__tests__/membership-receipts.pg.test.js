@@ -97,9 +97,17 @@ test('#524 真实迁移私有PG：九处金额、达标时间、特殊单与旧�
     await pay('M524_REFUND',2500,d1,[['M524_REFUND_I',2500]])
     await pay('M524_REFUND',-1000,d2,[['M524_REFUND_I',-1000]],'退款',JSON.stringify({items:[{refSaleItemId:'M524_REFUND_I',refundAmount:1000}]}))
     await pay('M524_REFUND',0,d2,[],'退款','{not valid json')
+    await order('M524_TRIAL',5000);await item('M524_TRIAL','M524_TRIAL_I',5000,5000,true)
+    await pay('M524_TRIAL',5000,d1,[['M524_TRIAL_I',5000]])
+    await order('M524_CENT',0.03,'转换单');await item('M524_CENT','M524_CENT_O',-1.97,-1.97,false,'转出')
+    await item('M524_CENT','M524_CENT_N',1,1,false,'转入');await item('M524_CENT','M524_CENT_T',1,1,true,'转入')
+    await pay('M524_CENT',0.03,d1,[['M524_CENT_O',-1.97],['M524_CENT_N',1],['M524_CENT_T',1]])
+    await order('M524_CONV_REF',2500,'转换单','部分支付');await item('M524_CONV_REF','M524_CONV_REF_I',9000,1500,false,'转入')
+    await pay('M524_CONV_REF',2500,d1,[['M524_CONV_REF_I',2500]])
+    await pay('M524_CONV_REF',-1000,d2,[['M524_CONV_REF_I',-1000]],'退款')
     await order('M524_HISTORY',4000,'销售单','已支付','2025-01-02T00:00:00Z')
     for (const [id,type,status] of [['M524_PENDING','销售单','待支付'],['M524_CLOSED','销售单','已关闭'],['M524_FULL_REF','销售单','已退款'],['M524_INTERNAL','内部单','已支付'],['M524_TOPUP','充值单','已支付'],['M524_DEPOSIT','寄存单','已支付']]) await order(id,5000,type,status,d1)
-    const expected={M524_PART:[1990,0,d2],M524_BIG:[20000,0,d1],M524_MIX:[1600,500,null],M524_SMALL1:[1000,0,null],M524_SMALL2:[1000,0,null],M524_1980A:[1980,0,null],M524_1980B:[1980,0,null],M524_1980C:[1980,0,null],M524_SIGNED:[1000,0,null],M524_NEW:[1990,0,d2],M524_OLD_NEW:[1990,0,d2],M524_ZERO:[0,0,null],M524_CONV_MIX:[1600,500,null],M524_REFUND:[2500,0,d1],M524_HISTORY:[4000,0,'2025-01-02T00:00:00.000Z']}
+    const expected={M524_TRIAL:[0,5000,null],M524_CENT:[0.02,0.01,null],M524_CONV_REF:[2500,0,d1],M524_PART:[1990,0,d2],M524_BIG:[20000,0,d1],M524_MIX:[1600,500,null],M524_SMALL1:[1000,0,null],M524_SMALL2:[1000,0,null],M524_1980A:[1980,0,null],M524_1980B:[1980,0,null],M524_1980C:[1980,0,null],M524_SIGNED:[1000,0,null],M524_NEW:[1990,0,d2],M524_OLD_NEW:[1990,0,d2],M524_ZERO:[0,0,null],M524_CONV_MIX:[1600,500,null],M524_REFUND:[2500,0,d1],M524_HISTORY:[4000,0,'2025-01-02T00:00:00.000Z']}
     for (const file of files) {
       const rows=(await db.query(queryFor(file)+' SELECT * FROM order_amounts',['M524_USER',1990])).rows
       const actual=Object.fromEntries(rows.map(r=>[r.sale_order_id,[Number(r.non_trial),Number(r.trial),r.qualified_at?.toISOString()??null]]))

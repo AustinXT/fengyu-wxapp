@@ -536,7 +536,7 @@ async function refreshSpendingTier(client, clientUserId) {
  * （当前 '转出'/'转入' 只出现在转换单、已被 sale_order_type 过滤，此条为防御性对齐）。
  * FILTER 聚合对全体验/全非体验订单会产生 NULL，COALESCE 归零以免 `NULL > 0` 使分支静默不命中。
  *
- * 八处副本逐字一致（详见 recalcCustomerType 内注释），由
+ * 九处副本逐字一致（详见 recalcCustomerType 内注释），由
  * __tests__/routes/recalc-customer-type-sql.test.js 守护。
  */
 const RECALC_CUSTOMER_TYPE_CTE = `WITH membership_settings AS (
@@ -676,10 +676,10 @@ async function recalcCustomerType(client, clientUserId, saleOrderId) {
 
   const threshold = await getMemberThreshold()
 
-  // 八处 SQL 独立副本（staffApi routes/order.js + clientApi routes/order.js + payNotify index.js
+  // 九处 SQL 独立副本（staffApi routes/order.js + clientApi routes/order.js + payNotify index.js
   // + admin actions/orders.ts + admin lib/recompute-customer-tags.ts + db/scripts/recalc-all-customer-types.js
   // + db/scripts/recalc-became-member-at.js + db/scripts/backfill-membership-upgrade-doc-type.js）。
-  // 修改时必须同步其余七处；一致性由 staffApi
+  // 修改时必须同步其余八处；一致性由 staffApi
   // __tests__/routes/recalc-customer-type-sql.test.js 守护，任一处漂移立即触发测试失败。
   //
   // 2026-09-18 (#187) 口径：按**单笔订单的非体验部分毛实收**判定，落地 2026-04-26 Q5.2 决策
@@ -741,7 +741,7 @@ async function recalcCustomerType(client, clientUserId, saleOrderId) {
        ), became_member_at) WHERE user_id = $1`,
       [clientUserId, threshold]
     )
-    // 给触发本次首次跃迁的达标销售单打会员升级标记（WHERE 与会员客判定 CASE 同源）。
+    // 给触发本次首次跃迁的达标订单打会员升级标记（WHERE 与会员客判定 CASE 同源）。
     // 函数开头“已是会员客即 return”保证只在首次跃迁时执行一次；paid_at 最早 = 确立会员资格的首笔达标单。
     await client.query(
       `UPDATE sale_orders SET is_membership_upgrade = true

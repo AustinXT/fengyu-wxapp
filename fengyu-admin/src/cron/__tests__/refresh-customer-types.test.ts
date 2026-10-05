@@ -16,7 +16,7 @@ describe('#257 C 每日分类重算', () => {
     expect(await refreshCustomerTypes({transaction} as never)).toEqual({updated:3})
     expect(transaction.mock.calls[0][1]).toEqual({isolationLevel:'repeatable read'})
     const q = new PgDialect().sqlToQuery(execute.mock.calls[1][0])
-    expect(q.params).toEqual([1980])
+    expect(q.params).toEqual([1980, 1980])
     expect(q.sql).toContain('u.customer_type IS DISTINCT FROM c.new_type')
     expect(q.sql).not.toContain('SET member_level')
     expect(q.sql).toContain('COALESCE(u.became_member_at, c.first_qualified_at)')
@@ -24,8 +24,8 @@ describe('#257 C 每日分类重算', () => {
   })
   it('金额CTE与离线脚本独立副本逐字对齐', () => {
     const src = readFileSync(resolve(__dirname, '../../../../db/scripts/recalc-all-customer-types.js'),'utf8')
-    const cte = src.slice(src.indexOf('refund_by_item AS ('),src.indexOf(',\nqualified_orders AS ('))
-    expect(CUSTOMER_TYPE_AMOUNTS_SQL.trim()).toBe(('WITH\n'+cte).trim())
+    const cte = src.match(/WITH membership_settings AS \([\s\S]*?FROM membership_amounts a CROSS JOIN membership_settings cfg\s*\)/)![0]
+    expect(CUSTOMER_TYPE_AMOUNTS_SQL.trim().replace('(SELECT v FROM threshold)', '$1')).toBe(cte.trim())
   })
   it('每日分类排在状态、等级、权益之前，且测试账号被保护', () => {
     const run = readFileSync(resolve(__dirname, '../run.ts'),'utf8')

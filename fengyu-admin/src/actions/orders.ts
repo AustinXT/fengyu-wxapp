@@ -826,7 +826,7 @@ async function applyRechargeOnOrderPaid(
 /**
  * customer_type 跃迁（admin recordPayment 触发点）。
  *
- * 八处跃迁 SQL 副本之一（staffApi routes/order.js + clientApi routes/order.js + payNotify index.js
+ * 九处跃迁 SQL 副本之一（staffApi routes/order.js + clientApi routes/order.js + payNotify index.js
  * + admin actions/orders.ts + admin lib/recompute-customer-tags.ts
  * + db/scripts/recalc-all-customer-types.js + db/scripts/recalc-became-member-at.js
  * + db/scripts/backfill-membership-upgrade-doc-type.js）。
@@ -841,7 +841,7 @@ async function applyRechargeOnOrderPaid(
  *
  * 只升不降；跃迁为"会员客"时同步写入 became_member_at = COALESCE(首笔达标单 paid_at, created_at)（非检测时刻 NOW()）。
  *
- * SQL 必须与其余七处字面一致 —— 守卫测试 recalc-customer-type-sql.test.js 跨八个文件比对。
+ * SQL 必须与其余八处字面一致 —— 守卫测试 recalc-customer-type-sql.test.js 跨八个文件比对。
  */
 type AdminTx = Parameters<Parameters<typeof db.transaction>[0]>[0]
 
@@ -980,7 +980,7 @@ async function recalcCustomerType(tx: AdminTx, clientUserId: string, saleOrderId
 
   const threshold = await getMemberThreshold()
 
-  // 八处 SQL 独立副本，修改时必须同步其余七处；一致性由 staffApi
+  // 九处 SQL 独立副本，修改时必须同步其余八处；一致性由 staffApi
   // __tests__/routes/recalc-customer-type-sql.test.js 与 cross-end-sql-snapshot.test.js 守护。
   const typeRes = await tx.execute(sql`
     ${recalcCustomerTypeCte(clientUserId, threshold)}
@@ -1020,7 +1020,7 @@ async function recalcCustomerType(tx: AdminTx, clientUserId: string, saleOrderId
   const updRowCount = rowsAffected(updRes)
   const updRows = updRes as unknown as Array<{ customer_type: string }>
   if (updRowCount > 0 && updRows[0]?.customer_type === '会员客') {
-    // became_member_at 记为确立会员资格的首笔达标单时间（COALESCE(paid_at, created_at)）；
+    // became_member_at 记为确立会员资格的首笔订单实际跨阈值时间；
     // 选单子查询与下方 is_membership_upgrade 归因同源、选同一单。
     await tx.execute(sql`
       UPDATE client_wechat_users SET became_member_at = COALESCE((
@@ -1032,7 +1032,7 @@ async function recalcCustomerType(tx: AdminTx, clientUserId: string, saleOrderId
         LIMIT 1
       ), became_member_at) WHERE user_id = ${clientUserId}
     `)
-    // 给触发本次首次跃迁的达标销售单打会员升级标记（WHERE 与会员客判定 CASE 同源；八处镜像）。
+    // 给触发本次首次跃迁的达标订单打会员升级标记（WHERE 与会员客判定 CASE 同源；九处镜像）。
     // 函数开头“已是会员客即 return”保证只在首次跃迁时执行一次；paid_at 最早 = 确立会员资格的首笔达标单。
     await tx.execute(sql`
       UPDATE sale_orders SET is_membership_upgrade = true
@@ -3994,7 +3994,7 @@ export const confirmOfflinePayment = withPermission(
         return { matched: false as const }
       }
 
-      // 充值卡入账 + 客户分类跃迁：仅订单结清（已支付）时触发
+      // 充值卡入账仍仅在结清时触发；顾客分类在本次明细入账后单独执行
       if (targetStatus === '已支付') {
         await applyRechargeOnOrderPaid(tx, saleOrderId)
       }
@@ -4018,7 +4018,7 @@ export const confirmOfflinePayment = withPermission(
       // 必须在 capture 之后：新 STEP1 从 receipt 聚合 received
       await settlePointsSafe(tx, saleOrderId, 'admin.confirmOffline')
       await recalcPaidSessionsForOrder(tx, saleOrderId)
-      if (targetStatus === '已支付' && clientUserId) {
+      if (clientUserId) {
         await recalcCustomerType(tx, clientUserId, saleOrderId)
       }
 
@@ -8294,13 +8294,13 @@ export const recordPayment = withPermission(
       //     必须在 capture 之后：新 STEP1 从 receipt 聚合 received
       await recalcPaidSessionsForOrder(tx, saleOrderId)
 
-      // 12) customer_type 跃迁（仅在本次回款使订单结清，即翻为'已支付'时触发）
+      // 12) customer_type 跃迁（每次实际回款后，部分支付也参与）
       //     与 staff confirmOffline / payNotify 对齐，保证 admin 财务补录回款
       //     也能驱动客户分类升级（修复 audit-15 P0-15-01 admin 三资金触发点跃迁缺失）。
       //     ⚠️ #187 起必须排在 recalcPaidSessionsForOrder **之后**：跃迁判定已改读
       //     sale_items.received（由上面 STEP1 从 receipt 聚合写出），排在前面会读到本次回款
       //     之前的旧值、少算本笔回款额。旧口径读 o.total_amount（建单即定）不受顺序影响。
-      if (targetStatus === '已支付' && locked.client_user_id) {
+      if (locked.client_user_id) {
         await recalcCustomerType(tx, locked.client_user_id, saleOrderId)
       }
 

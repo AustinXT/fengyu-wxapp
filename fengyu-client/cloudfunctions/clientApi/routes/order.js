@@ -288,7 +288,7 @@ async function refreshSpendingTier(client, clientUserId) {
  * 产出每张已结清销售单的 non_trial / trial = 非体验 / 体验行的**毛实收**合计
  * （sale_items.received 净额 + 该行逐项退款额 → 还原"曾经收到的钱"，退款不扣减）。
  * refund_by_item 的 note→jsonb 三重防线逐字对齐 staffApi utils/paid-sessions.js
- * RECEIVED_REFUNDED_DEDUCT_SQL，根除 22P02。八处副本逐字一致，由 staffApi
+ * RECEIVED_REFUNDED_DEDUCT_SQL，根除 22P02。九处副本逐字一致，由 staffApi
  * __tests__/routes/recalc-customer-type-sql.test.js 守护。
  */
 const RECALC_CUSTOMER_TYPE_CTE = `WITH membership_settings AS (
@@ -411,11 +411,11 @@ const RECALC_CUSTOMER_TYPE_CTE = `WITH membership_settings AS (
 /**
  * 重算顾客类型（customer_type，只升不降）。clientApi 独立副本，镜像 staffApi routes/order.js:109-202。
  * 阈值从 system_configs.new_member_threshold 读取。跃迁为"会员客"时同步写 became_member_at = COALESCE(首笔达标单 paid_at, created_at)（非检测时刻 NOW()），
- * 并给 paid_at 最早的达标销售单打 is_membership_upgrade=true（会员升级单归因）。
+ * 并给 paid_at 最早的达标订单打 is_membership_upgrade=true（会员升级单归因）。
  *
- * 八处 SQL 独立副本（staffApi + clientApi + payNotify + admin orders.ts / recompute-customer-tags.ts
- * + db/scripts/recalc-all-customer-types.js + recalc-became-member-at.js + backfill-membership-upgrade-doc-type.js），
- * 修改必须同步其余七处；一致性由 staffApi __tests__/routes/recalc-customer-type-sql.test.js 守护。
+ * 九处 SQL 独立副本（staffApi + clientApi + payNotify + admin orders.ts / recompute-customer-tags.ts
+ * + db/scripts/recalc-all-customer-types.js + recalc-became-member-at.js + backfill-membership-upgrade-doc-type.js + admin cron refresh-customer-types.ts），
+ * 修改必须同步其余八处；一致性由 staffApi __tests__/routes/recalc-customer-type-sql.test.js 守护。
  * 单笔订单口径（#187 后判定金额换成该单非体验部分毛实收，仍不跨订单累计）。
  * @param {object} client - pg 事务客户端
  * @param {string} clientUserId - client_wechat_users.user_id

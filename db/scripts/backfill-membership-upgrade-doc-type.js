@@ -8,20 +8,20 @@
  *   document_type 创建判定原含「金额达标算售后」分支 B，导致「成为会员那一单」
  *   （下单时仍非会员客、因金额达标触发分支 B）被判成「售后」。已改为仅按下单时
  *   会员身份判（分支 B 移除，售前=非会员客，售后=会员客）。本脚本修正存量：给每个
- *   已是会员客的顾客，把其 paid_at 最早的达标销售单改 document_type='售前一次' 并补打
+ *   已是会员客的顾客，把其 实际跨阈值时间最早的达标订单改 document_type='售前一次' 并补打
  *   is_membership_upgrade。
  *
- *   is_membership_upgrade 打标代码（recalcCustomerType，八处副本）已写好但尚未部署，
+ *   is_membership_upgrade 打标代码（recalcCustomerType，九处副本）已写好但尚未部署，
  *   存量单该标记全为 false；本脚本一并补打。
  *
  * 选单口径（与 staffApi/admin recalcCustomerType 打标 SQL 同源；#187 起按非体验部分毛实收达标）：
- *   status IN ('已支付','已完成') AND sale_order_type='销售单' AND non_trial >= threshold
+ *   status IN ('部分支付','已支付','已完成') AND sale_order_type IN ('销售单','转换单') AND non_trial >= threshold
  *   （non_trial = Σ 非体验行的 received 净额 + 该行逐项退款额）
- *   ORDER BY paid_at ASC NULLS LAST, created_at ASC，每个顾客取最早一单。
+ *   ORDER BY qualified_at ASC NULLS LAST, sale_order_id ASC，每个顾客取最早一单。
  *   2026-04-26 sale-order-domain-refactor 后，回款单已从 sale_order_type 下沉到
  *   sale_order_payments.change_type='回款'，sale_orders 不再产生 sale_order_type='回款单' 行；
  *   payNotify 原回款累计分支已退化为恒为空的死代码，故不存在「超集单」需在线打标的场景。
- *   本脚本只需覆盖单笔 non_trial >= threshold 的销售单（#187 起按非体验部分毛实收，见上方选单口径）。
+ *   本脚本只需覆盖单笔 non_trial >= threshold 的有效订单（#187 起按非体验部分毛实收，见上方选单口径）。
  *
  * #257 A+B：仅对当前会员客且有达标单者维护归因；先执行分类双向对齐，再执行本脚本；排除甲方测试账号。
  * 仅维护仍达标者的既有首次达标归因，不清空降级者的历史归因；再达标定义留待 E。
@@ -63,7 +63,7 @@ SELECT value::numeric AS v
  LIMIT 1
 `
 
-// 每个会员客顾客 paid_at 最早的达标销售单（与 recalcCustomerType 打标 SQL 同源）。
+// 每个会员客顾客 实际跨阈值时间最早的达标订单（与 recalcCustomerType 打标 SQL 同源）。
 // 关键守卫：AND (u.became_member_at IS NULL OR oa.qualified_at <= u.became_member_at)
 // —— 只选「成为会员那一刻或之前」的达标单。became_member_at 现口径 = 首笔达标单的
 // COALESCE(paid_at, created_at)（见 recalc-became-member-at.js），故守卫也用 COALESCE
