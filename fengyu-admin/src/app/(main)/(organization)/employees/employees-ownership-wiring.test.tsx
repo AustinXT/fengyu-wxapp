@@ -120,10 +120,11 @@ describe('新增员工页 — 归属联动真的落进提交 payload', () => {
 })
 
 describe('员工详情页 — 归属联动真的落进提交 payload', () => {
-  function renderDetail() {
+  function renderDetail(canOpenRoleReview = false) {
     render(
       <EmployeeDetailPage
         employee={EMPLOYEE}
+        canOpenRoleReview={canOpenRoleReview}
         roles={[]}
         roleDefinitions={[]}
         stores={STORES}
@@ -134,6 +135,14 @@ describe('员工详情页 — 归属联动真的落进提交 payload', () => {
     )
     fireEvent.click(screen.getByRole('button', { name: '编辑' }))
   }
+
+  it.each([false, true])('权限复核入口仅在具备页面全部读取权限时显示：%s', canOpenRoleReview => {
+    renderDetail(canOpenRoleReview)
+    fireEvent.click(screen.getByText('权限角色'))
+    const link=screen.queryByRole('link', {name:'前往权限管理复核调店绑定'})
+    if (canOpenRoleReview) expect(link).toHaveAttribute('href', `/permissions?employeeId=${encodeURIComponent(EMPLOYEE.employeeId)}`)
+    else expect(link).toBeNull()
+  })
 
   it('同市场内改门店 → 提交的 orgNodeId 跟着变（生产两条脏数据的场景）', async () => {
     renderDetail()

@@ -1,3 +1,5 @@
+import { getRoleMigrationQueue } from '@/actions/role-migrations'
+import EmployeeRoleMigration from './_components/employee-role-migration'
 import { Suspense } from 'react'
 import { getRolesByScope, getRoleCountsByScope } from '@/actions/permissions'
 import { getRoleDefinitions } from '@/actions/role-definitions'
@@ -10,7 +12,9 @@ import PermissionsPage from './_components/permissions-page'
 
 export const dynamic = 'force-dynamic'
 
-export default async function Page() {
+export default async function Page({ searchParams }: { searchParams: Promise<{ employeeId?: string }> }) {
+  const { employeeId = '' } = await searchParams
+  const migrationQueue = await getRoleMigrationQueue()
   const [orgNodes, allEmployees, roleCounts, roleDefinitions, session] = await Promise.all([
     getOrgNodes(),
     getEmployees(),
@@ -39,6 +43,12 @@ export default async function Page() {
 
   return (
     <Suspense>
+      <section className="rounded border p-4 mb-4"><h2>调店角色待办（最多显示100位员工）</h2>
+        {migrationQueue.length === 0 ? <p>暂无待复核调店记录</p> : migrationQueue.map(row => <p key={row.employee_id}>
+          <a href={`/permissions?employeeId=${encodeURIComponent(row.employee_id)}`} className="text-[#C0322A]">{row.employee_name ?? row.employee_id}：复核旧店绑定</a>
+        </p>)}
+      </section>
+      <EmployeeRoleMigration initialEmployeeId={employeeId} canAssign={canAssign} canRevoke={canDelete} />
       <PermissionsPage
         initialRoles={initialRoles}
         initialScopeId={defaultScopeId}

@@ -60,6 +60,7 @@ export async function grantBirthdayBenefits(
     SELECT user_id, member_level
     FROM client_wechat_users
     WHERE birthday IS NOT NULL
+      AND customer_type = '会员客'
       AND member_level IS NOT NULL
       AND EXTRACT(MONTH FROM birthday) = EXTRACT(MONTH FROM ${dateSql})
       AND EXTRACT(DAY FROM birthday) = EXTRACT(DAY FROM ${dateSql})

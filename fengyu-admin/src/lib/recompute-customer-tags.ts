@@ -19,6 +19,7 @@
 
 import { sql } from 'drizzle-orm'
 import { db } from '@/db'
+import { getCustomerTypeThreshold, CUSTOMER_TYPE_THRESHOLD_UNAVAILABLE } from '@/cron/steps/refresh-customer-types'
 import { rowsAffected } from '@/lib/pg-rows'
 import { getMemberThreshold } from '@/cron/config'
 import { loadJsonConfig } from '@/cron/lib/benefits-loader'
@@ -46,6 +47,9 @@ export interface RecomputeResult {
  * 所以本段对单顾客通常 no-op，但保留以保证全套标签一致性。
  */
 async function recomputeCustomerStatusForUser(tx: Tx, clientUserId: string): Promise<boolean> {
+  await tx.execute(sql`UPDATE client_wechat_users SET customer_status = NULL, updated_at = NOW()
+    WHERE user_id = ${clientUserId} AND customer_type IS DISTINCT FROM '会员客'::customer_type
+      AND customer_status IS NOT NULL`)
   const res = await tx.execute(sql`
     WITH visit_stats AS (
       SELECT so.client_user_id,
@@ -76,7 +80,7 @@ async function recomputeCustomerStatusForUser(tx: Tx, clientUserId: string): Pro
 }
 
 /**
- * 段 2：customer_type 跃迁（只升不降）。
+ * 段 2：customer_type 双向对齐（#257 C）。实时四路径仍只升级。
  *
  * 八处 SQL 镜像副本：五处运行时（staffApi order.js + clientApi order.js + payNotify index.js
  * + admin orders.ts + 本 helper）逐字一致，三个 db/scripts 批量脚本（recalc-all-customer-types.js
@@ -141,12 +145,21 @@ async function recomputeCustomerTypeForUser(
 ): Promise<{ from: string | null; to: string | null } | null> {
   const curRes = await tx.execute(sql`
     SELECT customer_type FROM client_wechat_users WHERE user_id = ${clientUserId}
+       AND name IS DISTINCT FROM '谢廷(测试)' FOR NO KEY UPDATE
   `)
   const curRows = curRes as unknown as Array<{ customer_type: string }>
   const oldType = curRows[0]?.customer_type ?? null
-  if (oldType === '会员客') return null
+  if (!curRows[0]) return null
 
-  const threshold = await getMemberThreshold(db)
+  let threshold: number
+  try {
+    threshold = await getCustomerTypeThreshold(tx)
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== CUSTOMER_TYPE_THRESHOLD_UNAVAILABLE) throw error
+    // 配置无效不做分类写入；保留原审核可用性，待修正配置后每日重算补齐。
+    console.warn('[customer-tags] skipped classification: invalid member threshold')
+    return null
+  }
 
   // 八处 SQL 镜像副本，修改时必须同步其余七处（staffApi order.js + clientApi order.js + payNotify index.js
   // + admin orders.ts + 本文件 + db/scripts/recalc-all-customer-types.js + db/scripts/recalc-became-member-at.js）；
@@ -169,14 +182,8 @@ async function recomputeCustomerTypeForUser(
     UPDATE client_wechat_users
        SET customer_type = ${newType}::customer_type, updated_at = NOW()
      WHERE user_id = ${clientUserId}
-       AND (CASE customer_type
-              WHEN '流量客' THEN 0 WHEN '体验客' THEN 1
-              WHEN '小美客' THEN 2 WHEN '会员客' THEN 3
-            END)
-         < (CASE ${newType}::customer_type
-              WHEN '流量客' THEN 0 WHEN '体验客' THEN 1
-              WHEN '小美客' THEN 2 WHEN '会员客' THEN 3
-            END)
+       AND name IS DISTINCT FROM '谢廷(测试)'
+       AND customer_type IS DISTINCT FROM ${newType}::customer_type
      RETURNING customer_type
   `)
   const updRowCount = rowsAffected(updRes)
@@ -196,7 +203,7 @@ async function recomputeCustomerTypeForUser(
         LIMIT 1
       ), became_member_at) WHERE user_id = ${clientUserId}
     `)
-    // 给触发本次首次跃迁的达标销售单打会员升级标记（WHERE 与会员客判定 CASE 同源；八处镜像逐字一致）。
+    // 给现行首笔达标销售单打会员升级标记（再达标归因仍沿用原规则，E另定）（WHERE 与会员客判定 CASE 同源；八处镜像逐字一致）。
     // 2026-09-18 (#187) 订正：旧注释称「payNotify 端额外含回款单累计分支」已不成立——
     // sale-order-domain-refactor 后该分支即被删除，七处归因段一直是同一口径，现统一为 oa.non_trial >= 阈值。
     await tx.execute(sql`
@@ -331,8 +338,8 @@ export async function recomputeCustomerTagsForUser(clientUserId: string): Promis
   }
 
   const { statusUpdated, typeChanged, tierUpdated } = await db.transaction(async (tx) => {
-    const statusUpdated = await recomputeCustomerStatusForUser(tx, clientUserId)
     const typeChanged = await recomputeCustomerTypeForUser(tx, clientUserId)
+    const statusUpdated = await recomputeCustomerStatusForUser(tx, clientUserId)
     const tierUpdated = await recomputeSpendingTierForUser(tx, clientUserId)
     return { statusUpdated, typeChanged, tierUpdated }
   })
@@ -362,8 +369,8 @@ export async function recomputeCustomerTagsInTx(
       spendingTierUpdated: false,
     }
   }
-  const statusUpdated = await recomputeCustomerStatusForUser(tx, clientUserId)
   const typeChanged = await recomputeCustomerTypeForUser(tx, clientUserId)
+  const statusUpdated = await recomputeCustomerStatusForUser(tx, clientUserId)
   const tierUpdated = await recomputeSpendingTierForUser(tx, clientUserId)
   return {
     customerStatusUpdated: statusUpdated,

@@ -49,7 +49,7 @@ describe('card.list', () => {
     const ctx = createBoundCtx({}, { userId: 'user-abc' })
     await routes.list(ctx)
 
-    expect(pg.query.mock.calls[0][1]).toEqual(['user-abc'])
+    expect(pg.query.mock.calls[0][1]).toEqual(['user-abc', 1001])
   })
 
   test('按创建时间倒序排列', async () => {

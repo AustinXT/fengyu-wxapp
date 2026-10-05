@@ -5,6 +5,7 @@
 
 const cloud = require('wx-server-sdk')
 const pg = require('../db/pg')
+const { normalizePaging, assertBoundedList, BOUNDED_LIST_FETCH_LIMIT } = require('../utils/paging')
 const { requirePhone } = require('../middleware/auth')
 const { getMemberThreshold, getPointsToYuanRate, getPointsDeductionMaxRate } = require('../utils/config')
 const { settlePointsSafe, grantPointBatch, consumePointBatches } = require('../utils/points')
@@ -2751,12 +2752,9 @@ async function offlinePay(ctx) {
  */
 async function list(ctx) {
   const { userId } = ctx.auth
-  const { status, statuses, page: pageParam, pageSize: pageSizeParam } = ctx.event.payload || {}
+  const { status, statuses } = ctx.event.payload || {}
 
-  // 分页参数（默认 20 条/页，上限 50）
-  const pageSize = Math.min(Math.max(Number(pageSizeParam) || 20, 1), 50)
-  const page = Math.max(Number(pageParam) || 1, 1)
-  const offset = (page - 1) * pageSize
+  const { page, pageSize, offset } = normalizePaging(ctx.event.payload || {})
 
   // 懒清理过期的待支付订单（同时释放优惠券），仅首页触发
   if (page === 1) {
@@ -3402,7 +3400,9 @@ async function appointableItems(ctx) {
       -- M12：历史订单（workfine 拉取）的 NULL 卡不进可预约列表（后端过滤，前端 uniform-disabled 保留给非 legacy NULL 卡）
       AND NOT (si.paid_sessions IS NULL AND o.legacy_source = 'workfine')
     ORDER BY o.paid_at DESC, si.sale_item_id
-  `, [userId])
+    LIMIT $2
+  `, [userId, BOUNDED_LIST_FETCH_LIMIT])
+  assertBoundedList(items)
 
   // 按订单号分组
   const orderMap = new Map()
@@ -3640,10 +3640,12 @@ async function homeProducts(ctx) {
       WHERE picked_quantity > 0 OR remaining_quantity > 0 OR converted_quantity > 0
    ORDER BY (pending_pickup_quantity > 0) DESC,
             purchased_at DESC,
-            sale_item_id`,
-    [userId],
+            sale_item_id
+      LIMIT $2`,
+    [userId, BOUNDED_LIST_FETCH_LIMIT],
   )
 
+  assertBoundedList(rows)
   ctx.result = { items: rows.map(mapHomeProductRow) }
 }
 
