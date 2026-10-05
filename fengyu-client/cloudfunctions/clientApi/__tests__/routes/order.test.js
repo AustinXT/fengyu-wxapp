@@ -935,7 +935,7 @@ describe('order.pay', () => {
           return { rows: merchantRows, rowCount: merchantRows.length }
         }
         if (membership) {
-          if (/SET status = '已支付', received = \$2/.test(sql)) return { rows: [], rowCount: 1 }
+          if (/SET status = \$4::order_status, received = \$2/.test(sql)) return { rows: [], rowCount: 1 }
           if (/SELECT sale_order_type, legacy_source/.test(sql)) return { rows: [{ sale_order_type: '销售单' }], rowCount: 1 }
           if (/AS cash_paid/.test(sql)) return { rows: [{ cash_paid: 0, received: 0 }], rowCount: 1 }
           if (/AS qualifies/.test(sql)) return { rows: [{ qualifies: true }], rowCount: 1 }

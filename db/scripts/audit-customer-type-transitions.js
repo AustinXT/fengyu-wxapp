@@ -9,9 +9,22 @@ const rank = { 流量客: 0, 体验客: 1, 小美客: 2, 会员客: 3 }
 const TARGET_SELECT = BUILD_TARGET_TABLE_SQL.replace(/^\s*CREATE TEMP TABLE _recalc_target ON COMMIT DROP AS\s*/, '')
 const AUDIT_SQL = `WITH target AS (${TARGET_SELECT})
 SELECT t.user_id, u.name, u.phone, t.old_type, t.new_type,
+       t.old_became, t.first_qualified_at, t.first_qualified_order,
+       first_order.sale_order_type AS qualifying_order_type,
+       first_order.status AS qualifying_order_status,
+       first_order.is_membership_upgrade AS qualifying_order_flag,
+       CASE WHEN t.new_type = '会员客' THEN
+         CASE WHEN first_order.sale_order_type = '转换单' THEN '转换单新增非体验实收达标'
+              WHEN first_order.status = '部分支付' THEN '部分支付单非体验实收达标'
+              ELSE '销售单非体验实收达标' END
+         WHEN t.new_type = '小美客' THEN '单笔未达阈值，存在非体验实收'
+         WHEN t.new_type = '体验客' THEN '仅存在体验实收'
+         ELSE '无有效实收' END AS reason,
+       t.new_type = '会员客' AND t.first_qualified_at IS NULL AS missing_qualification_time,
        EXISTS (SELECT 1 FROM sale_orders o WHERE o.client_user_id = t.user_id
          AND o.created_at >= NOW() - INTERVAL '30 days') AS ordered_30d
   FROM target t JOIN client_wechat_users u USING (user_id)
+  LEFT JOIN sale_orders first_order ON first_order.sale_order_id = t.first_qualified_order
  ORDER BY t.user_id`
 function summarize(rows) {
   const transitions = new Map()

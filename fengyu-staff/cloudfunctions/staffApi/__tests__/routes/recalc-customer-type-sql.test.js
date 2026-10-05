@@ -105,7 +105,7 @@ function extractCaseSql(filePath) {
  */
 function extractCte(filePath) {
   const src = fs.readFileSync(filePath, 'utf8')
-  const match = src.match(/WITH refund_by_item AS \([\s\S]*?GROUP BY o\.sale_order_id, o\.received\s*\)/m)
+  const match = src.match(/WITH membership_settings AS \([\s\S]*?FROM membership_amounts a CROSS JOIN membership_settings cfg\s*\)/m)
   if (!match) {
     throw new Error(
       `未在 ${filePath} 找到 RECALC_CUSTOMER_TYPE_CTE（WITH refund_by_item … GROUP BY o.sale_order_id, o.received）；` +
@@ -178,14 +178,14 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
         })
 
         test('毛实收表达式 = received 净额 + 该行逐项退款额（退款不扣减）', () => {
-          expect(cte).toContain('si.received::numeric + COALESCE(rbi.refunded, 0)')
+          expect(cte).toContain('si.received::numeric + COALESCE(r.refunded, 0)')
         })
 
         test('毛实收按 sale_amount 封顶（LEAST），防加回非逆运算导致的不可逆误升', () => {
           // 加回的是 note.items[].refundAmount 原始额，而 received 的扣减主路径按
           // sale_payment_item_receipts 负额净算（还带 GREATEST(0) clamp）——两者不是严格互逆。
           // 已结清订单的行级毛额上限就是 sale_amount，以此封顶把「误升会员客」压成「最多漏升」。
-          expect(cte).toContain('LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),')
+          expect(cte).toContain('LEAST(si.received::numeric + COALESCE(r.refunded, 0),')
           expect(cte).toContain('si.sale_amount::numeric)')
         })
 
@@ -195,7 +195,7 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
           // 若某销售单只含退出方向行，COUNT=0 会误走回退分支、用订单级 received 且
           // **绕过 LEAST 封顶** → 可能不可逆误升为会员客（闸门 2 GLM P1）。
           expect(cte).toContain(
-            'CASE WHEN NOT EXISTS (SELECT 1 FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)'
+            'CASE WHEN NOT EXISTS (SELECT 1 FROM sale_items x WHERE x.sale_order_id = o.sale_order_id)'
           )
           expect(cte).toContain('THEN GREATEST(o.received::numeric, 0)')
           // 必须是 LEFT JOIN，INNER 会让无明细行的历史单整个消失（相对旧口径是回归）
@@ -235,15 +235,15 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
           expect(cte).toContain("elem ->> 'refSaleItemId' AS sale_item_id")
           expect(cte).toContain('GROUP BY 1, 2')
           expect(cte).toMatch(
-            /LEFT JOIN refund_by_item rbi ON rbi\.sale_order_id = o\.sale_order_id\s*AND rbi\.sale_item_id = si\.sale_item_id/
+            /LEFT JOIN refund_by_item r ON r\.sale_order_id = o\.sale_order_id\s*AND r\.sale_item_id = si\.sale_item_id/
           )
         })
 
-        test('退款展开范围限定在参与判定的已结清销售单（收窄 22P02 爆炸半径）', () => {
+        test('退款展开范围限定在参与判定的有效销售单（收窄 22P02 爆炸半径）', () => {
           // 本 CTE 按顾客聚合（原 RECEIVED_REFUNDED_DEDUCT_SQL 按单聚合）。不加这两条限定，
           // 该顾客任一充值单/寄存单上的脏 note 都会被展开，把故障半径放大到其全部收款事务。
-          expect(cte).toContain("AND ro.status IN ('已支付', '已完成')")
-          expect(cte).toContain("AND ro.sale_order_type = '销售单'")
+          expect(cte).toContain("AND o.status IN ('部分支付', '已支付', '已完成')")
+          expect(cte).toContain("WHERE o.sale_order_type = '销售单'")
         })
 
         test("排除 OVERPAY 哨兵行（与 per-item-refund helper 口径对齐）", () => {
@@ -267,8 +267,8 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
         })
 
         test('订单范围仍限已支付/已完成的销售单', () => {
-          expect(cte).toContain("AND o.status IN ('已支付', '已完成')")
-          expect(cte).toContain("AND o.sale_order_type = '销售单'")
+          expect(cte).toContain("AND o.status IN ('部分支付', '已支付', '已完成')")
+          expect(cte).toContain("AND o.sale_order_type IN ('销售单', '转换单')")
         })
 
         test('按订单分组（单笔口径，不跨订单累计）', () => {
@@ -363,7 +363,7 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
 
     test('recordPayment 事务结清时必须调用 recalcCustomerType（防 audit-15 P0-15-01 admin 触发点跃迁缺失复发）', () => {
       const body = recordPaymentBody()
-      expect(body).toMatch(/targetStatus\s*===\s*'已支付'[\s\S]{0,300}recalcCustomerType\s*\(\s*tx\s*,/)
+      expect(body).toMatch(/if \(locked\.client_user_id\)\s*\{\s*await recalcCustomerType\(tx, locked\.client_user_id, saleOrderId\)/)
     })
 
     test('recordPayment 里 recalcCustomerType 必须排在 recalcPaidSessionsForOrder 之后（#187）', () => {
@@ -384,9 +384,9 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
     test('三个云函数端：CTE 只用 $1（顾客），阈值 $2 只出现在判定/归因条件里', () => {
       for (const [label, file] of RUNTIME_FILES.filter(([l]) => !l.startsWith('admin'))) {
         const cte = extractCte(file)
-        expect(cte, `${label} CTE 不应出现阈值参数 $2`).not.toMatch(/\$2/)
-        expect(cte, `${label} CTE 应按 $1 过滤顾客`).toContain('ro.client_user_id = $1')
-        expect(cte, `${label} CTE 应按 $1 过滤顾客`).toContain('o.client_user_id = $1')
+        expect(cte).toContain('$2::numeric AS threshold')
+        expect(cte).toContain('$1::text AS client_user_id')
+        expect(cte).toContain('o.client_user_id = cfg.client_user_id')
         const caseSql = extractCaseSql(file)
         expect(caseSql, `${label} CASE 不应出现顾客参数 $1`).not.toMatch(/\$1/)
         expect(caseSql, `${label} CASE 应按 $2 比阈值`).toContain('non_trial >= $2')
@@ -396,8 +396,8 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
     test('admin 两端：CTE 只插 clientUserId，阈值 threshold 只出现在判定/归因条件里', () => {
       for (const [label, file] of RUNTIME_FILES.filter(([l]) => l.startsWith('admin'))) {
         const cte = extractCte(file)
-        expect(cte, `${label} CTE 不应插入 threshold`).not.toContain('${threshold}')
-        expect(cte, `${label} CTE 应插入 clientUserId`).toContain('ro.client_user_id = ${clientUserId}')
+        expect(cte).toContain('${threshold}::numeric AS threshold')
+        expect(cte, `${label} CTE 应插入 clientUserId`).toContain('${clientUserId}::text AS client_user_id')
         const caseSql = extractCaseSql(file)
         expect(caseSql, `${label} CASE 不应插入 clientUserId`).not.toContain('${clientUserId}')
         expect(caseSql, `${label} CASE 应按 threshold 比阈值`).toContain('non_trial >= ${threshold}')
@@ -475,7 +475,7 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
       // sale_order_id 是确定性兜底：两张达标单的 paid_at 与 created_at 完全相同时，
       // 没有唯一键 PG 不保证两次独立查询选同一单，会让 became_member_at 与
       // is_membership_upgrade 落到不同订单上（codex 闸门 2 抓出）。
-      const re = /ORDER BY o\.paid_at ASC NULLS LAST, o\.created_at ASC, o\.sale_order_id ASC/
+      const re = /ORDER BY oa\.qualified_at ASC NULLS LAST, o\.sale_order_id ASC/
       expect(staffAttr).toMatch(re)
       expect(paynotifyAttr).toMatch(re)
       expect(adminAttr).toMatch(re)
@@ -499,7 +499,7 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
       clientApiBma = extractBecameMemberAtUpdate(CLIENT_API_ORDER_JS)
     })
 
-    test('五端目标列一致：UPDATE client_wechat_users SET became_member_at = COALESCE((…SELECT COALESCE(o.paid_at, o.created_at)…', () => {
+    test('五端目标列一致：UPDATE client_wechat_users SET became_member_at = COALESCE((…SELECT oa.qualified_at…', () => {
       const re = /^UPDATE client_wechat_users SET became_member_at = COALESCE\(\(/
       expect(staffBma).toMatch(re)
       expect(paynotifyBma).toMatch(re)
@@ -507,7 +507,7 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
       expect(adminRecomputeBma).toMatch(re)
       expect(clientApiBma).toMatch(re)
       for (const s of [staffBma, paynotifyBma, adminBma, adminRecomputeBma, clientApiBma]) {
-        expect(s).toContain('SELECT COALESCE(o.paid_at, o.created_at)')
+        expect(s).toContain('SELECT oa.qualified_at')
       }
     })
 
@@ -557,7 +557,7 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
     })
 
     test('五端都按 paid_at ASC NULLS LAST, created_at ASC, sale_order_id ASC 取首笔达标单（与各端 is_membership_upgrade 同序 ⇒ 选同一单）', () => {
-      const re = /ORDER BY o\.paid_at ASC NULLS LAST, o\.created_at ASC, o\.sale_order_id ASC/
+      const re = /ORDER BY oa\.qualified_at ASC NULLS LAST, o\.sale_order_id ASC/
       expect(staffBma).toMatch(re)
       expect(paynotifyBma).toMatch(re)
       expect(adminBma).toMatch(re)
@@ -602,13 +602,13 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
         })
 
         test('毛实收表达式与运行时一致（received 净额 + 逐项退款额，LEAST 封顶）', () => {
-          expect(src).toContain('LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),')
+          expect(src).toContain('LEAST(si.received::numeric + COALESCE(r.refunded, 0),')
           expect(src).toContain('si.sale_amount::numeric)')
         })
 
         test('无明细行订单回退订单级 received（与运行时同语义）', () => {
           expect(src).toContain(
-            'CASE WHEN NOT EXISTS (SELECT 1 FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)'
+            'CASE WHEN NOT EXISTS (SELECT 1 FROM sale_items x WHERE x.sale_order_id = o.sale_order_id)'
           )
           expect(src).toContain('THEN GREATEST(o.received::numeric, 0)')
           expect(src).toContain('LEFT JOIN sale_items si ON si.sale_order_id = o.sale_order_id')
@@ -634,17 +634,17 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
           expect(src).toContain('SELECT sop.sale_order_id,')
           expect(src).toContain('GROUP BY 1, 2')
           expect(src).toMatch(
-            /LEFT JOIN refund_by_item rbi ON rbi\.sale_order_id = o\.sale_order_id\s*AND rbi\.sale_item_id = si\.sale_item_id/
+            /LEFT JOIN refund_by_item r ON r\.sale_order_id = o\.sale_order_id\s*AND r\.sale_item_id = si\.sale_item_id/
           )
         })
 
-        test('退款聚合只认已支付的退款流水 + 排除 OVERPAY + 限定已结清销售单', () => {
+        test('退款聚合只认已支付的退款流水 + 排除 OVERPAY + 限定有效销售单', () => {
           expect(src).toContain("AND sop.change_type = '退款'")
           expect(src).toContain("AND sop.status = '已支付'")
           expect(src).toContain("AND elem ->> 'refSaleItemId' <> 'OVERPAY'")
           // 本 CTE 按全库聚合，不限定订单范围会把脏 note 的 22P02 半径放到最大
-          expect(src).toContain("WHERE ro.status IN ('已支付', '已完成')")
-          expect(src).toContain("AND ro.sale_order_type = '销售单'")
+          expect(src).toContain("AND o.status IN ('部分支付', '已支付', '已完成')")
+          expect(src).toContain("WHERE o.sale_order_type = '销售单'")
         })
 
         test('达标判定改用 non_trial >= 阈值，不再比 o.total_amount（#187 回归守护）', () => {
@@ -653,7 +653,7 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
         })
 
         test('按订单分组（单笔口径）', () => {
-          expect(src).toContain('GROUP BY o.sale_order_id, o.client_user_id, o.paid_at, o.created_at, o.received')
+          expect(src).toContain('GROUP BY o.sale_order_id, o.received')
         })
       })
     }
@@ -667,16 +667,16 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
     test('recalc-became-member-at.js 选单序与运行时一致（末位 sale_order_id 兜底确定性）', () => {
       const src = fs.readFileSync(SCRIPT_RECALC_BECAME_MEMBER, 'utf8')
       expect(src).toContain(
-        'ORDER BY oa.client_user_id, oa.paid_at ASC NULLS LAST, oa.created_at ASC, oa.sale_order_id ASC'
+        'ORDER BY oa.client_user_id, oa.qualified_at ASC NULLS LAST, oa.sale_order_id ASC'
       )
     })
 
     test('三个脚本的 DISTINCT ON 选单都带 sale_order_id 确定性兜底', () => {
       expect(fs.readFileSync(SCRIPT_RECALC_ALL_TYPES, 'utf8')).toContain(
-        'ORDER BY client_user_id, paid_at ASC NULLS LAST, created_at ASC, sale_order_id ASC'
+        'ORDER BY client_user_id, qualified_at ASC NULLS LAST, sale_order_id ASC'
       )
       expect(fs.readFileSync(SCRIPT_BACKFILL_UPGRADE_DOC_TYPE, 'utf8')).toContain(
-        'ORDER BY o.client_user_id, o.paid_at ASC NULLS LAST, o.created_at ASC, o.sale_order_id ASC'
+        'ORDER BY o.client_user_id, oa.qualified_at ASC NULLS LAST, o.sale_order_id ASC'
       )
     })
   })
@@ -722,6 +722,6 @@ test('C 每日cron批量金额CTE与离线真实SQL逐字一致', () => {
   const cronFile = path.resolve(path.dirname(ADMIN_RECOMPUTE_TS), '../cron/steps/refresh-customer-types.ts')
   const cron = fs.readFileSync(cronFile, 'utf8').match(/CUSTOMER_TYPE_AMOUNTS_SQL = `([\s\S]*?)`/)[1]
   const offline = fs.readFileSync(SCRIPT_RECALC_ALL_TYPES, 'utf8')
-  const amounts = offline.slice(offline.indexOf('refund_by_item AS ('), offline.indexOf(',\nqualified_orders AS ('))
-  expect(cron.trim()).toBe(('WITH\n' + amounts).trim())
+  const amounts = extractCte(SCRIPT_RECALC_ALL_TYPES)
+  expect(cron.trim().replace('(SELECT v FROM threshold)', '$1')).toBe(amounts.trim())
 })

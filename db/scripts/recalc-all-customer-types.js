@@ -13,7 +13,7 @@
  *
  * 修复策略（"系统补激活"，不发权益）：
  *   等价于把 staffApi recalcCustomerType 的判定逻辑全量回放到所有顾客身上：
- *     1. 存在一张销售单，其**非体验部分毛实收** ≥ new_member_threshold ⇒ 会员客
+ *     1. 存在一张有效销售单/转换单，其**非体验部分毛实收** ≥ new_member_threshold ⇒ 会员客
  *     2. 否则存在一张单其非体验部分毛实收 > 0 ⇒ 小美客
  *     3. 否则存在一张单其体验部分毛实收 > 0 ⇒ 体验客
  *     4. 否则 ⇒ 流量客
@@ -26,8 +26,7 @@
  *   - 会员客升级行：member_level 仅在原值为 NULL 时按滚动 12 个月净消费写入
  *     初始等级（黑/金/粉/星/初钻），与 cron-worker determineMemberLevel 同源。
  *   - became_member_at 仅在原值为 NULL 时写入 first_qualified_at（首笔达标单
- *     COALESCE(paid_at, created_at)；选单口径 DISTINCT ON + ORDER BY paid_at
- *     ASC NULLS LAST，与 recalc-became-member-at.js 同源）。
+ *     实际跨阈值时间；无receipt历史已结清销售单才回退父单时间，与归因脚本同源）。
  *   - 不发消息 / 积分 / 优惠券（与 cron-worker.processUpgrade 区别在此；理由：历史存量发"恭喜
  *     升级"会失真，且优惠券有效期会从今天起算）。
  *
@@ -76,83 +75,135 @@ SELECT value::numeric AS v
 // 阈值由 caller 通过 $1 参数传入（已在 main() 里 fail-fast 校验过非空非零）。
 const BUILD_TARGET_TABLE_SQL = `
 CREATE TEMP TABLE _recalc_target ON COMMIT DROP AS
-WITH threshold AS (
-  SELECT $1::numeric AS v
-),
--- #187（2026-09-18）：跃迁判定金额从订单应付额 total_amount 换成
--- **单笔订单的非体验部分毛实收**（sale_items.received 净额 + 该行逐项退款额），
--- 落地 2026-04-26 Q5.2 决策。本段是五端运行时 CTE 的全库批量版：
--- 少了 client_user_id 参数过滤、多带 client_user_id/paid_at/created_at 输出列，
--- 其余判定语义与 staffApi routes/order.js RECALC_CUSTOMER_TYPE_CTE 逐项对齐。
-refund_by_item AS (
-  -- note→jsonb 三重防线逐字对齐 staffApi utils/paid-sessions.js RECEIVED_REFUNDED_DEDUCT_SQL：
-  -- ① 仅退款+已支付流水；② public.try_jsonb 安全转换（非法 JSON 降级 NULL）；③ jsonb_typeof 兜 items 非数组。
-  SELECT sop.sale_order_id,
-         elem ->> 'refSaleItemId' AS sale_item_id,
+WITH membership_settings AS (
+  SELECT NULL::text AS client_user_id, $1::numeric AS threshold
+), membership_scope AS (
+  SELECT o.* FROM sale_orders o CROSS JOIN membership_settings cfg
+  WHERE (cfg.client_user_id IS NULL OR o.client_user_id = cfg.client_user_id)
+    AND o.client_user_id IS NOT NULL
+    AND o.status IN ('部分支付', '已支付', '已完成')
+    AND o.sale_order_type IN ('销售单', '转换单')
+), refund_by_item AS (
+  SELECT sop.sale_order_id, elem ->> 'refSaleItemId' AS sale_item_id,
          SUM(COALESCE(public.try_numeric(elem ->> 'refundAmount'), 0)) AS refunded
-    FROM sale_order_payments sop
-    JOIN sale_orders ro ON ro.sale_order_id = sop.sale_order_id
-    CROSS JOIN LATERAL jsonb_array_elements(
-      CASE WHEN jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'
-           THEN public.try_jsonb(sop.note) -> 'items'
-           ELSE '[]'::jsonb END
-    ) AS elem
-   WHERE ro.status IN ('已支付', '已完成')
-     AND ro.sale_order_type = '销售单'
-     AND sop.change_type = '退款'
-     AND sop.status = '已支付'
-     AND elem ->> 'refSaleItemId' <> 'OVERPAY'
-   -- 序号绑定 SELECT 的前 2 列（sale_order_id, refSaleItemId）；重排 SELECT 列须同步改这里
-   GROUP BY 1, 2
-),
-order_amounts AS (
-  -- LEAST(…, sale_amount) 封顶：加回 note 原始退款额并非扣减的严格逆运算，
-  -- refunded > 实际扣减额时会高估；已结清订单的行级毛额上限就是 sale_amount，故以此封顶，
-  -- 把「不可逆误升会员客」压成「最多漏升」（漏升可由后续订单或再跑一次本脚本自愈）。
-  -- 无明细行订单（WorkFine 历史单只建 sale_orders）回退订单级 received，全额计入 non_trial。
-  SELECT o.sale_order_id, o.client_user_id, o.paid_at, o.created_at,
-         CASE WHEN NOT EXISTS (SELECT 1 FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
+  FROM sale_order_payments sop
+  JOIN membership_scope o ON o.sale_order_id = sop.sale_order_id
+  CROSS JOIN LATERAL jsonb_array_elements(
+    CASE WHEN jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'
+         THEN public.try_jsonb(sop.note) -> 'items' ELSE '[]'::jsonb END
+  ) elem
+  WHERE o.sale_order_type = '销售单' AND sop.change_type = '退款'
+    AND sop.status = '已支付' AND elem ->> 'refSaleItemId' <> 'OVERPAY'
+  GROUP BY 1, 2
+), membership_sales AS (
+  -- #187：销售单继续按行净额加退款、成交额封顶；无明细历史单保留原回退。
+  SELECT o.sale_order_id,
+         CASE WHEN NOT EXISTS (SELECT 1 FROM sale_items x WHERE x.sale_order_id = o.sale_order_id)
               THEN GREATEST(o.received::numeric, 0)
-              ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),
-                                      si.sale_amount::numeric))
-                            FILTER (WHERE si.is_experience = false), 0)
-         END AS non_trial,
-         CASE WHEN NOT EXISTS (SELECT 1 FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
-              THEN 0
-              ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),
-                                      si.sale_amount::numeric))
-                            FILTER (WHERE si.is_experience = true), 0)
-         END AS trial
-    FROM sale_orders o
-    LEFT JOIN sale_items si ON si.sale_order_id = o.sale_order_id
-                           AND si.item_direction = '购买'
-    LEFT JOIN refund_by_item rbi ON rbi.sale_order_id = o.sale_order_id
-                                AND rbi.sale_item_id = si.sale_item_id
-    -- 2026-04-26 sale-order-domain-refactor 后，回款下沉到
-    -- sale_order_payments.change_type='回款'，sale_order_type 枚举已不含“回款单”。
-   WHERE o.status IN ('已支付', '已完成')
-     AND o.sale_order_type = '销售单'
-     AND o.client_user_id IS NOT NULL
-   GROUP BY o.sale_order_id, o.client_user_id, o.paid_at, o.created_at, o.received
-),
+              ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(r.refunded, 0), si.sale_amount::numeric))
+                            FILTER (WHERE si.is_experience = false), 0) END AS non_trial,
+         COALESCE(SUM(LEAST(si.received::numeric + COALESCE(r.refunded, 0), si.sale_amount::numeric))
+                  FILTER (WHERE si.is_experience = true), 0) AS trial
+  FROM membership_scope o
+  LEFT JOIN sale_items si ON si.sale_order_id = o.sale_order_id AND si.item_direction = '购买'
+  LEFT JOIN refund_by_item r ON r.sale_order_id = o.sale_order_id AND r.sale_item_id = si.sale_item_id
+  WHERE o.sale_order_type = '销售单'
+  GROUP BY o.sale_order_id, o.received
+), membership_receipts AS (
+  -- 同场现金+卡的 receipt 已含实际扣卡；只读 receipt 一次，不再另加款项金额。
+  SELECT o.sale_order_id, p.id AS payment_id, p.paid_at, r.sale_item_id, r.amount::numeric
+  FROM membership_scope o
+  JOIN sale_order_payments p ON p.sale_order_id = o.sale_order_id
+  JOIN sale_payment_item_receipts r ON r.sale_payment_id = p.id AND r.sale_order_id = o.sale_order_id
+  WHERE p.status = '已支付' AND p.change_type IN ('首次支付','回款','储值卡抵扣')
+  /* membership-receipt-preview */
+), membership_receipt_rows AS (
+  SELECT r.*, si.sale_amount::numeric AS cap, si.is_experience, si.item_direction, o.sale_order_type,
+         SUM(r.amount) OVER (PARTITION BY r.sale_order_id, r.payment_id) AS event_total,
+         SUM(GREATEST(-r.amount, 0)) FILTER (WHERE si.item_direction = '转出')
+           OVER (PARTITION BY r.sale_order_id, r.payment_id) AS old_assets,
+         SUM(GREATEST(r.amount, 0)) FILTER (WHERE si.item_direction = '转入')
+           OVER (PARTITION BY r.sale_order_id, r.payment_id) AS in_total,
+         SUM(CASE WHEN si.item_direction = '转入' THEN GREATEST(r.amount, 0) ELSE 0 END)
+           OVER (PARTITION BY r.sale_order_id, r.payment_id ORDER BY r.sale_item_id
+                 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS in_cumulative
+  FROM membership_receipts r
+  JOIN membership_scope o ON o.sale_order_id = r.sale_order_id
+  JOIN sale_items si ON si.sale_item_id = r.sale_item_id AND si.sale_order_id = r.sale_order_id
+), membership_normalized AS (
+  -- 旧 signed receipt：新增实收按转入权重拆分；旧资产的体验属性不能污染新收款。
+  -- 新增量 receipt 保留有符号分币差；不改写历史 receipt/分配/资产。
+  SELECT r.*,
+         CASE WHEN sale_order_type = '转换单' AND old_assets > 0
+              THEN ROUND(GREATEST(event_total, 0) * in_cumulative / NULLIF(in_total, 0), 2)
+                 - ROUND(GREATEST(event_total, 0) * (in_cumulative - GREATEST(amount, 0)) / NULLIF(in_total, 0), 2)
+              ELSE amount END AS new_receipt
+  FROM membership_receipt_rows r
+  WHERE (sale_order_type = '销售单' AND item_direction = '购买')
+     OR (sale_order_type = '转换单' AND item_direction = '转入')
+), membership_item_running AS (
+  SELECT r.*,
+         LEAST(GREATEST(cap, 0), GREATEST(0, SUM(COALESCE(new_receipt, 0)) OVER (
+           PARTITION BY sale_order_id, sale_item_id ORDER BY paid_at ASC NULLS LAST, payment_id
+           ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW))) AS item_gross
+  FROM membership_normalized r
+), membership_item_deltas AS (
+  SELECT r.*, item_gross - LAG(item_gross, 1, 0::numeric) OVER (
+    PARTITION BY sale_order_id, sale_item_id ORDER BY paid_at ASC NULLS LAST, payment_id) AS delta
+  FROM membership_item_running r
+), membership_events AS (
+  SELECT sale_order_id, payment_id, paid_at,
+         COALESCE(SUM(delta) FILTER (WHERE is_experience = false), 0) AS non_trial,
+         COALESCE(SUM(delta) FILTER (WHERE is_experience = true), 0) AS trial
+  FROM membership_item_deltas GROUP BY sale_order_id, payment_id, paid_at
+), membership_timeline AS (
+  SELECT sale_order_id, payment_id, paid_at,
+         SUM(non_trial) OVER (PARTITION BY sale_order_id ORDER BY paid_at ASC NULLS LAST, payment_id
+           ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS non_trial
+  FROM membership_events
+), membership_receipt_totals AS (
+  SELECT sale_order_id, SUM(amount) AS gross FROM membership_receipts GROUP BY sale_order_id
+), membership_event_totals AS (
+  SELECT sale_order_id, SUM(non_trial) AS non_trial, SUM(trial) AS trial
+  FROM membership_events GROUP BY sale_order_id
+), membership_amounts AS (
+  SELECT o.sale_order_id, o.client_user_id, o.paid_at, o.created_at, o.status, o.sale_order_type,
+         CASE WHEN o.sale_order_type = '销售单' THEN s.non_trial
+              WHEN r.gross <= o.received::numeric + 0.01 THEN COALESCE(e.non_trial, 0) ELSE 0 END AS non_trial,
+         CASE WHEN o.sale_order_type = '销售单' THEN s.trial
+              WHEN r.gross <= o.received::numeric + 0.01 THEN COALESCE(e.trial, 0) ELSE 0 END AS trial,
+         ABS(COALESCE(r.gross, 0) - o.received::numeric) <= 0.01 AS receipts_complete,
+         r.gross IS NOT NULL AS has_receipts
+  FROM membership_scope o
+  LEFT JOIN membership_sales s ON s.sale_order_id = o.sale_order_id
+  LEFT JOIN membership_receipt_totals r ON r.sale_order_id = o.sale_order_id
+  LEFT JOIN membership_event_totals e ON e.sale_order_id = o.sale_order_id
+), order_amounts AS (
+  SELECT a.*,
+         CASE WHEN a.non_trial >= cfg.threshold THEN
+           COALESCE(
+             (SELECT MIN(t.paid_at) FROM membership_timeline t
+               WHERE t.sale_order_id = a.sale_order_id AND t.non_trial >= cfg.threshold
+                 AND a.receipts_complete),
+             CASE WHEN NOT a.has_receipts AND a.sale_order_type = '销售单'
+                        AND a.status IN ('已支付','已完成')
+                  THEN COALESCE(a.paid_at, a.created_at) END
+           ) END AS qualified_at
+  FROM membership_amounts a CROSS JOIN membership_settings cfg
+), threshold AS (SELECT $1::numeric AS v),
 qualified_orders AS (
-  -- 非体验部分毛实收达阈值的订单。保留 paid_at / created_at 原始列供 member_first
-  -- 按 paid_at ASC NULLS LAST 选单（与 recalc-became-member-at.js 同口径）。
-  SELECT client_user_id, sale_order_id, paid_at, created_at
+  -- 每单实际首次跨阈值的时间，部分支付不依赖父单 paid_at。
+  SELECT client_user_id, sale_order_id, qualified_at
     FROM order_amounts
    WHERE non_trial >= (SELECT v FROM threshold)
 ),
 member_first AS (
-  -- 选单口径与 recalc-became-member-at.js 的 BUILD_TARGET_SQL 同源：
-  -- DISTINCT ON + ORDER BY paid_at ASC NULLS LAST, created_at ASC。
-  -- 不用 MIN(COALESCE(paid_at, created_at))：当某顾客有多张达标单、其中一张
-  -- paid_at IS NULL 但 created_at 早于另一张 paid_at 非空单时，MIN 会选前者、
-  -- ORDER BY paid_at NULLS LAST 选后者，两脚本会给不同的 became_member_at。
+  -- 三个治理脚本统一按 qualified_at、订单ID确定首笔。
   SELECT DISTINCT ON (client_user_id)
          client_user_id AS user_id,
-         COALESCE(paid_at, created_at) AS first_qualified_at
+         qualified_at AS first_qualified_at, sale_order_id AS first_qualified_order
     FROM qualified_orders
-   ORDER BY client_user_id, paid_at ASC NULLS LAST, created_at ASC, sale_order_id ASC
+   ORDER BY client_user_id, qualified_at ASC NULLS LAST, sale_order_id ASC
 ),
 -- 2026-04-26 sku-capability 切换：xiaomei/tiyan 直接用 sale_items.is_experience 判定
 -- 充值卡 SKU 的 is_experience=false → 充值卡购买视同"小美客"消费（D1=A）
@@ -205,7 +256,7 @@ SELECT u.user_id,
            END
          ELSE NULL
        END::member_level AS new_level,
-       m.first_qualified_at
+       m.first_qualified_at, m.first_qualified_order
   FROM client_wechat_users u
   LEFT JOIN member_first m ON m.user_id = u.user_id
   LEFT JOIN xiaomei_users x ON x.user_id = u.user_id
