@@ -935,6 +935,7 @@ describe('order.pay', () => {
           return { rows: merchantRows, rowCount: merchantRows.length }
         }
         if (membership) {
+          if (/SET status = '已支付', received = \$2/.test(sql)) return { rows: [], rowCount: 1 }
           if (/SELECT sale_order_type, legacy_source/.test(sql)) return { rows: [{ sale_order_type: '销售单' }], rowCount: 1 }
           if (/AS cash_paid/.test(sql)) return { rows: [{ cash_paid: 0, received: 0 }], rowCount: 1 }
           if (/AS qualifies/.test(sql)) return { rows: [{ qualifies: true }], rowCount: 1 }
@@ -968,7 +969,7 @@ describe('order.pay', () => {
         total_amount: 2500, sale_order_datetime: new Date().toISOString() },
       membership: { hasBinding: false },
     })
-    await expect(routes.pay(createBoundCtx({ orderNo: 'FY-001' }))).rejects.toThrow('MEMBERSHIP_BINDING_REQUIRED')
+    await expect(routes.pay(createBoundCtx({ orderNo: 'FY-001' }))).rejects.toThrow('店长分配所属员工')
     expect(transactionSql.some(({ sql }) => /SET lakala_out_order_no = \$1/.test(sql))).toBe(false)
     expect(transactionSql.some(({ sql }) => sql === 'ROLLBACK TO SAVEPOINT membership_payment_preview')).toBe(true)
     expect(globalThis.__mocks__.lakalaClient.requestPreorder).not.toHaveBeenCalled()

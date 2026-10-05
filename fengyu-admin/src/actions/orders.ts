@@ -27,6 +27,7 @@ import { withPermission, withAnyPermission } from '@/lib/with-permission'
 import { ORDER_DETAIL_PAGE_CAPABILITIES } from '@/lib/order-detail-access'
 import { logOperation, logTransition, logUpdate } from '@/lib/operation-log'
 import { ApiError, parseErrorPrefix } from '@/lib/api-error'
+import { assertMembershipBinding } from '@/lib/membership-binding'
 import { businessErrorMessage } from '@/lib/action-error'
 import { hasPendingRefund } from '@/lib/refund-cascade'
 import { pgErrorCode, pgErrorConstraint } from '@/lib/pg-error'
@@ -896,7 +897,7 @@ const recalcCustomerTypeCte = (clientUserId: string) => sql`WITH refund_by_item 
        GROUP BY o.sale_order_id, o.received
      )`
 
-async function recalcCustomerType(tx: AdminTx, clientUserId: string): Promise<void> {
+async function recalcCustomerType(tx: AdminTx, clientUserId: string, saleOrderId: string): Promise<void> {
   if (!clientUserId) return
 
   const curRes = await tx.execute(sql`
@@ -922,18 +923,12 @@ async function recalcCustomerType(tx: AdminTx, clientUserId: string): Promise<vo
   const newType = typeRows[0]?.computed_type
   if (!newType) return
 
-  if (newType === '会员客') {
-    const bindingRows = await tx.execute(sql`
-      SELECT c.customer_type, c.became_member_at,
-             EXISTS (SELECT 1 FROM staff_wechat_users e
-                     WHERE e.employee_id = c.bound_employee_id) AS has_binding
-      FROM client_wechat_users c WHERE c.user_id = ${clientUserId} FOR NO KEY UPDATE OF c
-    `) as unknown as Array<{ customer_type: string; became_member_at: unknown; has_binding: boolean }>
-    const customer = bindingRows[0]
-    if (!customer) throw new ApiError('NOT_FOUND', '顾客不存在')
-    if (customer.customer_type !== '会员客' && !customer.became_member_at && !customer.has_binding) {
-      throw new ApiError('INVALID_STATE', 'MEMBERSHIP_BINDING_REQUIRED: 请先由店长分配所属员工，再完成入会付款')
-    }
+  const currentOrderRows = newType === '会员客' ? await tx.execute(sql`
+    ${recalcCustomerTypeCte(clientUserId)}
+    SELECT EXISTS (SELECT 1 FROM order_amounts WHERE sale_order_id = ${saleOrderId} AND non_trial >= ${threshold}) AS current_order_qualifies
+  `) as unknown as Array<{ current_order_qualifies: boolean }> : []
+  if (newType === '会员客' && currentOrderRows[0]?.current_order_qualifies) {
+    await assertMembershipBinding(tx, clientUserId)
   }
 
   const updRes = await tx.execute(sql`
@@ -3952,7 +3947,7 @@ export const confirmOfflinePayment = withPermission(
       await settlePointsSafe(tx, saleOrderId, 'admin.confirmOffline')
       await recalcPaidSessionsForOrder(tx, saleOrderId)
       if (targetStatus === '已支付' && clientUserId) {
-        await recalcCustomerType(tx, clientUserId)
+        await recalcCustomerType(tx, clientUserId, saleOrderId)
       }
 
       return {
@@ -5715,7 +5710,7 @@ export const createOrder = withPermission(
       if (zeroPayable) {
         await settlePointsSafe(tx, id, 'admin.createOrder')
         if (data.clientUserId) {
-          await recalcCustomerType(tx, data.clientUserId)
+          await recalcCustomerType(tx, data.clientUserId, id)
         }
       }
 
@@ -6935,7 +6930,7 @@ export const createConversionOrder = withPermission(
       // 全额抵扣即结清：触发积分发放 + 客户分类跃迁（与 confirmOfflinePayment 已支付分支一致）。
       if (isFullCardCoverage) {
         await settlePointsSafe(tx, saleOrderId, 'admin.createConversion')
-        await recalcCustomerType(tx, data.clientUserId)
+        await recalcCustomerType(tx, data.clientUserId, saleOrderId)
       }
 
       return {
@@ -8234,7 +8229,7 @@ export const recordPayment = withPermission(
       //     sale_items.received（由上面 STEP1 从 receipt 聚合写出），排在前面会读到本次回款
       //     之前的旧值、少算本笔回款额。旧口径读 o.total_amount（建单即定）不受顺序影响。
       if (targetStatus === '已支付' && locked.client_user_id) {
-        await recalcCustomerType(tx, locked.client_user_id)
+        await recalcCustomerType(tx, locked.client_user_id, saleOrderId)
       }
 
       return {
@@ -8246,7 +8241,7 @@ export const recordPayment = withPermission(
     })
   } catch (err: any) {
     const msg = err?.message as string | undefined
-    if (err instanceof ApiError && msg?.includes('MEMBERSHIP_BINDING_REQUIRED:')) {
+    if (err instanceof ApiError && (err.data as { reason?: string } | undefined)?.reason === 'MEMBERSHIP_BINDING_REQUIRED') {
       return { success: false, error: { code: 'INVALID_STATE', message: businessErrorMessage(err, '请先由店长分配所属员工') } }
     }
     if (msg?.includes('REF_ORDER_NOT_FOUND')) {

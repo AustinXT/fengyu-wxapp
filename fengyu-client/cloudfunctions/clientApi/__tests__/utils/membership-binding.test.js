@@ -17,7 +17,7 @@ for (const endpoint of ['fengyu-client/cloudfunctions/clientApi', 'fengyu-staff/
     })
     test('新客缺真实员工归属拒绝，姓名或开单人不能替代', async () => {
       const query = vi.fn().mockResolvedValue({ rows: [{ customer_type: '小美客', became_member_at: null, has_binding: false }] })
-      await expect(assertMembershipBinding({ query }, 'customer-1')).rejects.toThrow('MEMBERSHIP_BINDING_REQUIRED')
+      await expect(assertMembershipBinding({ query }, 'customer-1')).rejects.toThrow('店长分配所属员工')
       expect(query.mock.calls[0][0]).toContain('e.employee_id = c.bound_employee_id')
     })
     test('顾客已删除拒绝', async () => {
@@ -30,4 +30,20 @@ test('两端绑定守护独立副本一致，成功回调不接入门禁', () =>
   expect(fs.readFileSync(path.join(root, 'fengyu-client/cloudfunctions/clientApi/utils/membership-binding.js'), 'utf8'))
     .toBe(fs.readFileSync(path.join(root, 'fengyu-staff/cloudfunctions/staffApi/utils/membership-binding.js'), 'utf8'))
   expect(fs.readFileSync(path.join(root, 'fengyu-client/cloudfunctions/payNotify/index.js'), 'utf8')).not.toContain('assertMembershipBinding')
+})
+
+
+test('返回顾客消息没有内部子标签，机器原因放在data中', async () => {
+  const { assertMembershipBinding } = require('../../utils/membership-binding')
+  const { buildErrorResponse } = require('../../utils/error-codes')
+  try {
+    await assertMembershipBinding({ query: async () => ({ rows: [{ customer_type: '流量客', has_binding: false }] }) }, 'customer')
+    throw new Error('expected guard rejection')
+  } catch (error) {
+    const response = buildErrorResponse(error)
+    expect(response.code).toBe(-400)
+    expect(response.errorType).toBe('INVALID_STATE')
+    expect(response.message).toBe('请先由店长分配所属员工，再完成入会付款')
+    expect(response.data.reason).toBe('MEMBERSHIP_BINDING_REQUIRED')
+  }
 })

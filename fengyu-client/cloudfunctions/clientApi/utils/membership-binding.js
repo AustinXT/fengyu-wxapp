@@ -13,7 +13,9 @@ async function assertMembershipBinding(client, clientUserId) {
   // 存量会员/曾入会后被标签重算者属于阶段2，不阻断其正常消费。
   if (customer.customer_type === '会员客' || customer.became_member_at) return
   if (!customer.has_binding) {
-    throw new Error('INVALID_STATE: MEMBERSHIP_BINDING_REQUIRED: 请先由店长分配所属员工，再完成入会付款')
+    const error = new Error('INVALID_STATE: 请先由店长分配所属员工，再完成入会付款')
+    error.data = { reason: 'MEMBERSHIP_BINDING_REQUIRED' }
+    throw error
   }
 }
 

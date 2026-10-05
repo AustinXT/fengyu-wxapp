@@ -39,10 +39,11 @@ async function assertOnlineMembershipBinding(client, { saleOrderId, clientUserId
   let qualifies = false
   await client.query('SAVEPOINT membership_payment_preview')
   try {
-    await client.query(
-      `UPDATE sale_orders SET status = '已支付', received = $2, client_user_id = $3 WHERE sale_order_id = $1`,
+    const update = await client.query(
+      `UPDATE sale_orders SET status = '已支付', received = $2, client_user_id = $3 WHERE sale_order_id = $1 AND status IN ('待支付','部分支付')`,
       [saleOrderId, newReceived, clientUserId],
     )
+    if (update.rowCount !== 1) throw new Error('CONFLICT: 订单状态已变化，请刷新后重试')
     if (positive > 0 && positive >= newReceived - 0.01) {
       await client.query(
         `UPDATE sale_items si SET received = GREATEST(0,
@@ -61,8 +62,8 @@ async function assertOnlineMembershipBinding(client, { saleOrderId, clientUserId
       await client.query(RECEIVED_REFUNDED_DEDUCT_SQL, [saleOrderId])
     }
     const result = await client.query(
-      `${customerTypeCte} SELECT EXISTS (SELECT 1 FROM order_amounts WHERE non_trial >= $2) AS qualifies`,
-      [clientUserId, threshold],
+      `${customerTypeCte} SELECT EXISTS (SELECT 1 FROM order_amounts WHERE non_trial >= $2 AND sale_order_id = $3) AS qualifies`,
+      [clientUserId, threshold, saleOrderId],
     )
     qualifies = result.rows[0]?.qualifies === true
   } finally {

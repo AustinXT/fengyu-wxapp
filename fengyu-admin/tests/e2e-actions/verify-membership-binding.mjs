@@ -56,16 +56,19 @@ try {
     await client.query("INSERT INTO sale_orders(sale_order_id,sale_order_type,status,client_user_id,total_amount) VALUES ('order-1','销售单','待支付','customer-1',$1)",[amount])
     await client.query("INSERT INTO sale_items(sale_item_id,sale_order_id,sale_amount,pending_received,is_experience) VALUES ('item-1','order-1',$1,$1,$2)",[amount,experience])
   }
+  let previewSql = []
   const preview=async(cashAmount=600,payableAmount=600,cardAmount=0)=>{
+    previewSql = []
+    const traced = { query: (text, params) => { previewSql.push(text); return client.query(text, params) } }
     await client.query('BEGIN')
-    try { await assertOnlineMembershipBinding(client,{saleOrderId:'order-1',clientUserId:'customer-1',cashAmount,cardAmount,payableAmount,threshold:500,customerTypeCte}); await client.query('COMMIT') }
+    try { await assertOnlineMembershipBinding(traced,{saleOrderId:'order-1',clientUserId:'customer-1',cashAmount,cardAmount,payableAmount,threshold:500,customerTypeCte}); await client.query('COMMIT') }
     catch(error) { await client.query('ROLLBACK'); throw error }
   }
   const unchanged=async(status='待支付',received=0)=>{
     const order=(await client.query("SELECT status,received,lakala_out_order_no FROM sale_orders WHERE sale_order_id='order-1'")).rows[0]
     assert.equal(order.status,status); assert.equal(Number(order.received),received); assert.equal(order.lakala_out_order_no,null)
   }
-  await seed(); await assert.rejects(preview(),/MEMBERSHIP_BINDING_REQUIRED/); await unchanged()
+  await seed(); await assert.rejects(preview(),/店长分配所属员工/); await unchanged()
   assert.equal((await client.query('SELECT COUNT(*) FROM sale_order_payments')).rows[0].count,'0')
   assert.equal((await client.query('SELECT received FROM sale_items')).rows[0].received,'0')
   console.log('PASS 未分配首次达标拒绝，订单/行实收/支付意图/流水不变')
@@ -89,24 +92,24 @@ try {
   await preview(300,300); await unchanged(); console.log('PASS 两单300不累计为600')
   await seed()
   await client.query("UPDATE sale_orders SET status='部分支付',received=300; UPDATE sale_items SET received=300; INSERT INTO sale_order_payments(id,sale_order_id,status,change_type,amount) VALUES ('first','order-1','已支付','首次支付',300); INSERT INTO sale_payment_item_receipts(sale_order_id,sale_item_id,sale_payment_id,amount) VALUES ('order-1','item-1','first',300)")
-  await assert.rejects(preview(300,600),/MEMBERSHIP_BINDING_REQUIRED/); await unchanged('部分支付',300); console.log('PASS 分次付款最终结清才门禁，已有款项保留')
+  await assert.rejects(preview(300,600),/店长分配所属员工/); await unchanged('部分支付',300); console.log('PASS 分次付款最终结清才门禁，已有款项保留')
   await seed(500)
   await client.query(`UPDATE sale_orders SET status='部分支付',received=500,refunded_amount=200; UPDATE sale_items SET received=300;
     INSERT INTO sale_order_payments(id,sale_order_id,status,change_type,amount,note) VALUES
     ('first','order-1','已支付','首次支付',500,NULL),('refund','order-1','已支付','退款',-200,'{"items":[{"refSaleItemId":"item-1","refundAmount":200}]}');
     INSERT INTO sale_payment_item_receipts(sale_order_id,sale_item_id,sale_payment_id,amount) VALUES ('order-1','item-1','first',500),('order-1','item-1','refund',-200)`)
-  await assert.rejects(preview(200,500),/MEMBERSHIP_BINDING_REQUIRED/); await unchanged('部分支付',500); console.log('PASS 退款后回款毛实收与封顶不漂移')
+  await assert.rejects(preview(200,500),/店长分配所属员工/); await unchanged('部分支付',500); assert.ok(previewSql.some(text=>text.includes('jsonb_to_recordset'))); console.log('PASS 完整receipt分支叠加退款：毛实收与封顶不漂移')
   await seed()
   await client.query("UPDATE sale_orders SET status='部分支付',received=300; UPDATE sale_items SET received=300; INSERT INTO sale_order_payments(id,sale_order_id,status,change_type,amount) VALUES ('first','order-1','已支付','首次支付',300)")
-  await assert.rejects(preview(300,600),/MEMBERSHIP_BINDING_REQUIRED/); await unchanged('部分支付',300)
-  console.log('PASS 历史receipt不完整，沿实际瀑布重建后首次达标拒绝')
+  await assert.rejects(preview(300,600),/店长分配所属员工/); await unchanged('部分支付',300)
+  assert.ok(previewSql.some(text=>text.includes('WITH tg AS'))); console.log('PASS 历史receipt不完整，沿实际瀑布重建后首次达标拒绝')
   await seed(1000)
   await client.query("UPDATE sale_items SET sale_amount=400,pending_received=400; INSERT INTO sale_items(sale_item_id,sale_order_id,sale_amount,pending_received,is_experience) VALUES ('experience','order-1',600,600,true)")
   await preview(1000,1000); await unchanged(); console.log('PASS 混合体验与非体验，非体验400不误入会')
-  await seed(); await assert.rejects(preview(300,300,300),/MEMBERSHIP_BINDING_REQUIRED/); await unchanged()
+  await seed(); await assert.rejects(preview(300,300,300),/店长分配所属员工/); await unchanged()
   console.log('PASS 本次现金300+待扣卡300一起预测，卡额不重复或漏算')
   await seed(); await client.query("UPDATE client_wechat_users SET bound_employee_id='missing',bound_employee_name='姓名不能代替ID'")
-  await assert.rejects(preview(),/MEMBERSHIP_BINDING_REQUIRED/); await unchanged(); console.log('PASS 悬挂员工ID不能视作有效人工归属')
+  await assert.rejects(preview(),/店长分配所属员工/); await unchanged(); console.log('PASS 悬挂员工ID不能视作有效人工归属')
   await client.query("UPDATE client_wechat_users SET bound_employee_id='employee-1'")
   await client.query('BEGIN'); await assertMembershipBinding(client,'customer-1')
   const contender=new Client({connectionString:process.env.E2E_DATABASE_URL}); await contender.connect()
@@ -117,10 +120,13 @@ try {
     await contender.query("UPDATE client_wechat_users SET bound_employee_id=NULL WHERE user_id='customer-1'")
   } finally { await contender.end() }
   console.log('PASS 本地守护持客户行锁至提交，并发清空不能穿过付款事务')
+  await seed(600,true)
+  await client.query("INSERT INTO sale_orders(sale_order_id,sale_order_type,status,client_user_id,received,total_amount) VALUES ('old','销售单','已支付','customer-1',600,600); INSERT INTO sale_items(sale_item_id,sale_order_id,sale_amount,received,is_experience) VALUES ('old-item','old',600,600,false)")
+  await preview(); await unchanged(); console.log('PASS 历史达标但标签未升级，本次体验消费不被归属门禁误挡')
   await seed(); await client.query("UPDATE client_wechat_users SET customer_type='会员客'"); await preview(); await unchanged(); console.log('PASS 存量会员缺绑定不阻断消费')
   await seed(); await client.query('BEGIN')
   await client.query("UPDATE client_wechat_users SET points_balance=1; INSERT INTO sale_order_payments(id,sale_order_id,status,change_type,amount) VALUES ('local','order-1','已支付','储值卡抵扣',600)")
-  await assert.rejects(assertMembershipBinding(client,'customer-1'),/MEMBERSHIP_BINDING_REQUIRED/); await client.query('ROLLBACK')
+  await assert.rejects(assertMembershipBinding(client,'customer-1'),/店长分配所属员工/); await client.query('ROLLBACK')
   assert.equal((await client.query('SELECT COUNT(*) FROM sale_order_payments')).rows[0].count,'0'); assert.equal((await client.query('SELECT points_balance FROM client_wechat_users')).rows[0].points_balance,null)
   console.log('PASS 本地事务失败回滚先前写入，不留半笔支付事实')
 } finally { if(client)await client.end(); if(globalThis.pgClient)await globalThis.pgClient.end(); if(started)docker('stop',container) }

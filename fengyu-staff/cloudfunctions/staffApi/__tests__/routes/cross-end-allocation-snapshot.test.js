@@ -120,6 +120,13 @@ describe('断言1：staff / clientApi / payNotify 三个 pg 版 capturePaymentAl
     expect(payNotifyBody).toBe(staffBody)
   })
 
+  test('三端只读preview函数体字面一致，算法与capture一起受守护', () => {
+    const staff = extractFnBody(readFile(FILES.staffCaptureJs), 'previewPaymentAllocatables')
+    expect(extractFnBody(readFile(FILES.clientCaptureJs), 'previewPaymentAllocatables')).toBe(staff)
+    expect(extractFnBody(readFile(FILES.payNotifyCaptureJs), 'previewPaymentAllocatables')).toBe(staff)
+    expect(staff).toMatchSnapshot()
+  })
+
   test('Snapshot 守护：canonical capturePaymentAllocatables 函数体文本快照', () => {
     expect(staffBody).toMatchSnapshot()
   })

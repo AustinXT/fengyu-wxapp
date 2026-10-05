@@ -1639,6 +1639,7 @@ describe('confirmOfflinePayment — 事务原子性（AC-13）', () => {
           }
           if (opts.membershipBinding !== undefined) {
             if (/AS computed_type/i.test(text)) return Promise.resolve([{ computed_type: '会员客' }])
+            if (/AS current_order_qualifies/i.test(text)) return Promise.resolve([{ current_order_qualifies: true }])
             if (/FOR NO KEY UPDATE OF c/i.test(text)) return Promise.resolve([{ customer_type: '流量客', became_member_at: null, has_binding: opts.membershipBinding }])
           }
           return Promise.resolve({})
