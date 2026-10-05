@@ -906,6 +906,7 @@ describe('order.pay', () => {
     paidSum = 0,
     merchantRows = STORE_LAKALA_ROW,
     lockedOrderOverrides = {},
+    membership = null,
   }) {
     let activeOutTradeNo = order.lakala_out_order_no || null
     const transactionSql = []
@@ -933,6 +934,12 @@ describe('order.pay', () => {
         if (/lakala_merchants/.test(sql)) {
           return { rows: merchantRows, rowCount: merchantRows.length }
         }
+        if (membership) {
+          if (/SELECT sale_order_type, legacy_source/.test(sql)) return { rows: [{ sale_order_type: '销售单' }], rowCount: 1 }
+          if (/AS cash_paid/.test(sql)) return { rows: [{ cash_paid: 0, received: 0 }], rowCount: 1 }
+          if (/AS qualifies/.test(sql)) return { rows: [{ qualifies: true }], rowCount: 1 }
+          if (/FOR NO KEY UPDATE OF c/.test(sql)) return { rows: [{ customer_type: '流量客', has_binding: membership.hasBinding, became_member_at: null }], rowCount: 1 }
+        }
         if (/SET lakala_out_order_no = \$1/.test(sql)) {
           activeOutTradeNo = params[0]
           return { rows: [{ sale_order_id: order.sale_order_id }], rowCount: 1 }
@@ -954,6 +961,30 @@ describe('order.pay', () => {
     })
     return { transactionSql }
   }
+
+  test('首次入会缺人工归属：在预占意图及渠道下单前拒绝', async () => {
+    const { transactionSql } = mockPayQueries({
+      order: { sale_order_id: 'FY-001', status: '待支付', store_id: 'store-1', client_user_id: 'user-001',
+        total_amount: 2500, sale_order_datetime: new Date().toISOString() },
+      membership: { hasBinding: false },
+    })
+    await expect(routes.pay(createBoundCtx({ orderNo: 'FY-001' }))).rejects.toThrow('MEMBERSHIP_BINDING_REQUIRED')
+    expect(transactionSql.some(({ sql }) => /SET lakala_out_order_no = \$1/.test(sql))).toBe(false)
+    expect(transactionSql.some(({ sql }) => sql === 'ROLLBACK TO SAVEPOINT membership_payment_preview')).toBe(true)
+    expect(globalThis.__mocks__.lakalaClient.requestPreorder).not.toHaveBeenCalled()
+  })
+
+  test('首次入会已由店长分配：放行渠道下单', async () => {
+    mockPayQueries({
+      order: { sale_order_id: 'FY-001', status: '待支付', store_id: 'store-1', client_user_id: 'user-001',
+        total_amount: 2500, sale_order_datetime: new Date().toISOString() },
+      membership: { hasBinding: true },
+    })
+    const ctx = createBoundCtx({ orderNo: 'FY-001' })
+    await routes.pay(ctx)
+    expect(globalThis.__mocks__.lakalaClient.requestPreorder).toHaveBeenCalled()
+    expect(ctx.result.paymentParams.package).toBe('prepay_id=wx_mock_001')
+  })
 
   test('正常发起微信支付（聚合主扫 trans_type=71 直接返回 wx.requestPayment 5 字段）', async () => {
     const now = new Date()

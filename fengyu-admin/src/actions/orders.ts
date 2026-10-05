@@ -922,6 +922,20 @@ async function recalcCustomerType(tx: AdminTx, clientUserId: string): Promise<vo
   const newType = typeRows[0]?.computed_type
   if (!newType) return
 
+  if (newType === '会员客') {
+    const bindingRows = await tx.execute(sql`
+      SELECT c.customer_type, c.became_member_at,
+             EXISTS (SELECT 1 FROM staff_wechat_users e
+                     WHERE e.employee_id = c.bound_employee_id) AS has_binding
+      FROM client_wechat_users c WHERE c.user_id = ${clientUserId} FOR NO KEY UPDATE OF c
+    `) as unknown as Array<{ customer_type: string; became_member_at: unknown; has_binding: boolean }>
+    const customer = bindingRows[0]
+    if (!customer) throw new ApiError('NOT_FOUND', '顾客不存在')
+    if (customer.customer_type !== '会员客' && !customer.became_member_at && !customer.has_binding) {
+      throw new ApiError('INVALID_STATE', 'MEMBERSHIP_BINDING_REQUIRED: 请先由店长分配所属员工，再完成入会付款')
+    }
+  }
+
   const updRes = await tx.execute(sql`
     UPDATE client_wechat_users
        SET customer_type = ${newType}::customer_type, updated_at = NOW()
@@ -3950,7 +3964,7 @@ export const confirmOfflinePayment = withPermission(
       }
     })
   } catch (err: any) {
-    if (err instanceof ApiError && (err.prefix === 'INVALID_PARAMS' || err.prefix === 'CONFLICT')) {
+    if (err instanceof ApiError && (err.prefix === 'INVALID_PARAMS' || err.prefix === 'CONFLICT' || err.prefix === 'INVALID_STATE')) {
       return { success: false, message: businessErrorMessage(err, '确认收款失败，请稍后重试') }
     }
     // 透传 INSUFFICIENT_BALANCE（储值卡余额不足 / 无卡）
@@ -8232,6 +8246,9 @@ export const recordPayment = withPermission(
     })
   } catch (err: any) {
     const msg = err?.message as string | undefined
+    if (err instanceof ApiError && msg?.includes('MEMBERSHIP_BINDING_REQUIRED:')) {
+      return { success: false, error: { code: 'INVALID_STATE', message: businessErrorMessage(err, '请先由店长分配所属员工') } }
+    }
     if (msg?.includes('REF_ORDER_NOT_FOUND')) {
       return { success: false, error: { code: 'REF_ORDER_NOT_FOUND', message: '原订单不存在' } }
     }

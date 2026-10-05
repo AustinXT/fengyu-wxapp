@@ -1620,7 +1620,7 @@ describe('confirmOfflinePayment — 事务原子性（AC-13）', () => {
    * confirmOfflinePayment 重构后：入口 SELECT ... FOR UPDATE 锁单 → 写现金流水 → SUM 重算 →
    * UPDATE sale_orders SET status（带 WHERE status='待支付' 守卫，rowCount=0 视为并发变更）。
    */
-  function mockConfirmTx(opts: { updateRowCount?: number; lock?: Record<string, any>; sumReceived?: string } = {}) {
+  function mockConfirmTx(opts: { updateRowCount?: number; lock?: Record<string, any>; sumReceived?: string; membershipBinding?: boolean } = {}) {
     const updateRowCount = opts.updateRowCount ?? 1
     const statements: string[] = []
     ;(db.transaction as any).mockImplementation(async (fn: any) => {
@@ -1637,6 +1637,10 @@ describe('confirmOfflinePayment — 事务原子性（AC-13）', () => {
           if (/UPDATE\s+sale_orders\s+SET\s+status/i.test(text)) {
             return Promise.resolve({ rowCount: updateRowCount })
           }
+          if (opts.membershipBinding !== undefined) {
+            if (/AS computed_type/i.test(text)) return Promise.resolve([{ computed_type: '会员客' }])
+            if (/FOR NO KEY UPDATE OF c/i.test(text)) return Promise.resolve([{ customer_type: '流量客', became_member_at: null, has_binding: opts.membershipBinding }])
+          }
           return Promise.resolve({})
         }),
         select: vi.fn().mockImplementation(() => {
@@ -1652,6 +1656,15 @@ describe('confirmOfflinePayment — 事务原子性（AC-13）', () => {
     })
     return statements
   }
+
+  it('首次入会缺人工分配：完整confirmOfflinePayment返回失败，事务异常向外传播', async () => {
+    const statements = mockConfirmTx({ lock: { client_user_id: 'customer-1' }, sumReceived: '200', membershipBinding: false })
+    const result = await confirmOfflinePayment('order-1')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('店长分配所属员工')
+    expect(statements.some((text) => /FOR NO KEY UPDATE OF c/.test(text))).toBe(true)
+    expect(statements.some((text) => /SET customer_type =/.test(text))).toBe(false)
+  })
 
   it('终态 UPDATE rowCount=0（并发已变更）→ 失败', async () => {
     mockConfirmTx({ updateRowCount: 0 })

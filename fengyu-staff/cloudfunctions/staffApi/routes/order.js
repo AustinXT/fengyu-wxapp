@@ -12,6 +12,7 @@
  */
 
 const pg = require('../db/pg')
+const { assertMembershipBinding } = require('../utils/membership-binding')
 const { requireStaffBound, requireManager, isCurrentStoreManager } = require('../middleware/auth')
 const { assertOrderInScope, isStoreInScope, restrictToBoundEmployee, buildBundleMarketScopeFilter, buildNormalSkuMarketScopeFilter } = require('../utils/scope')
 const { generateWxacode, uploadToCloudStorage, effectiveEnvVersion, versionPathSuffix } = require('../utils/wxacode')
@@ -629,6 +630,7 @@ async function recalcCustomerType(client, clientUserId) {
   )
 
   const newType = typeResult.rows[0].computed_type
+  if (newType === '会员客') await assertMembershipBinding(client, clientUserId)
   const updateResult = await client.query(
     `UPDATE client_wechat_users
      SET customer_type = $2::customer_type, updated_at = NOW()

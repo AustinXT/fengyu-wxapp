@@ -1567,7 +1567,10 @@ export const createCustomer = withPermission(
     throw err
   }
 
-  await logOperation(session, 'customer.create', 'customer', userId, { name: data.name, phone: data.phone })
+  await logOperation(session, 'customer.create', 'customer', userId, {
+    name: data.name, phone: data.phone, boundStoreId: nextBoundStoreId,
+    boundEmployeeId: nextBoundEmployeeId, boundEmployeeName,
+  })
 
   const { revalidatePath } = await import('next/cache')
   revalidatePath('/customers')
@@ -1844,6 +1847,7 @@ export const mergeClientProfile = withPermission(
     )`
   }
 
+  let bindingTransfer: { beforeId: string | null; beforeName: string | null; afterId: unknown; afterName: unknown } | null = null
   let ordersReassigned = 0
   try {
     await db.transaction(async (tx) => {
@@ -1875,6 +1879,14 @@ export const mergeClientProfile = withPermission(
               fieldsMigrated.splice(i, 1)
             }
           }
+        }
+      }
+
+      if (Object.hasOwn(patch, 'boundEmployeeId') || Object.hasOwn(patch, 'boundEmployeeName')) {
+        bindingTransfer = {
+          beforeId: sourceRow.boundEmployeeId, beforeName: sourceRow.boundEmployeeName,
+          afterId: patch.boundEmployeeId ?? sourceRow.boundEmployeeId,
+          afterName: patch.boundEmployeeName ?? sourceRow.boundEmployeeName,
         }
       }
 
@@ -1929,6 +1941,7 @@ export const mergeClientProfile = withPermission(
     orphanUserId,
     fieldsMigrated,
     ordersReassigned,
+    bindingTransfer,
   })
 
   const { revalidatePath } = await import('next/cache')
