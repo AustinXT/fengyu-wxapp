@@ -29,6 +29,12 @@ describe('planRolePoolRefundAllocations', () => {
       .toEqual([['品项老师', 270000, 0], ['美容师', 270000, 32400]])
   })
 
+  it('手续费留在门店收入，但完整退项的员工分配及销售提成全部归零', () => {
+    const target = planRolePoolRefundAllocations([row({ sum_total: '1000', sum_comm: '60', positive_receipt_total: '1000' })], 950, true)[0]
+    expect(target.allocatedCents).toBe(100000)
+    expect(target.commissionCents).toBe(6000)
+  })
+
   it('同一角色池内用最大余数法精确拆分到分', () => {
     const targets = planRolePoolRefundAllocations([
       row({ employee_id: 'emp-a', sum_total: '70.00', sum_comm: '7.00', positive_receipt_total: '100.00' }),

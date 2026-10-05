@@ -1,3 +1,4 @@
+const { retainedRefundFeeSql } = require('./refund-fee-sql')
 /**
  * 积分发放工具 — 订单链净额差值法（ticket 2026-04-24 points-accrual-on-sale-order）
  *
@@ -102,7 +103,7 @@ async function settlePointsForOrder(client, originalSaleOrderId) {
   //   - 回款单/退款单已迁出 sale_orders → 通过原单的 received / refunded_amount 即可表达整条链净额
   //   - 转换单（仍存在于 sale_orders）通过 ref_sale_order_id 关联，保留 OR 关系兼容
   const sumRes = await client.query(
-    `SELECT COALESCE(SUM(COALESCE(received,0) - COALESCE(refunded_amount,0)), 0)::numeric AS net_settled
+    `SELECT COALESCE(SUM(COALESCE(received,0) - COALESCE(refunded_amount,0) - ${retainedRefundFeeSql('sale_orders.sale_order_id')}), 0)::numeric AS net_settled
        FROM sale_orders
       WHERE sale_order_id = $1
          OR ref_sale_order_id = $1`,

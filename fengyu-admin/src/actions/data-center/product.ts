@@ -178,7 +178,7 @@ async function queryCardHolders(
         WHERE so.client_user_id = c.user_id
           AND si.paid_sessions > 0
           AND so.sale_order_type IN ('销售单', '转换单', '寄存单')
-          AND so.status = '已支付'
+          AND so.status <> '已关闭'
           AND ${filter}
       )
   `)
@@ -361,7 +361,7 @@ async function queryCardHoldersByStore(
         WHERE so.client_user_id = c.user_id
           AND si.paid_sessions > 0
           AND so.sale_order_type IN ('销售单', '转换单', '寄存单')
-          AND so.status = '已支付'
+          AND so.status <> '已关闭'
           AND ${filter}
       )
     GROUP BY c.bound_store_id

@@ -1,3 +1,5 @@
+const { retainedRefundFeeSql } = require('../utils/refund-fee-sql')
+const { allocateRefundAccounting } = require('../utils/refund-accounting')
 /**
  * 订单模块路由（员工端）
  * order.create — 员工开单（店长专用）
@@ -488,7 +490,7 @@ async function refreshSpendingTier(client, clientUserId) {
      END::spending_tier,
      updated_at = NOW()
      FROM (
-       SELECT COALESCE(SUM(GREATEST((received::numeric) - (refunded_amount::numeric), 0)), 0) AS total
+       SELECT COALESCE(SUM(GREATEST((received::numeric) - (refunded_amount::numeric) - ${retainedRefundFeeSql('sale_orders.sale_order_id')}, 0)), 0) AS total
        FROM sale_orders
        WHERE client_user_id = $1
          AND status IN ('已支付', '已完成')
@@ -3577,9 +3579,9 @@ async function reconcileOrderStatusAfterRefund(client, saleOrderId) {
      ),
      item_states AS (
        SELECT si.sale_item_id,
-              si.received::numeric AS received,
+              GREATEST(0, si.received::numeric - ${retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true)}) AS received,
               COALESCE(si.sale_amount::numeric, 0) AS sale_amount,
-              COALESCE(rr.refunded, 0) AS refunded,
+              COALESCE(rr.refunded, 0) + ${retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true)} AS refunded,
               COALESCE(fr.full_refund, false) AS full_refund,
               CASE WHEN si.product_type = '疗程卡'
                 -- 疗程卡：先按**已转走次数**扣掉被折走的部分（折抵把 remaining_sessions 扣光，
@@ -3716,6 +3718,7 @@ async function createRefund(ctx) {
   const origItems = await pg.query(
     // #145/#153：可退数量受「剩余已付」封顶，需要 pickup_records 与转出行聚合（见 utils/refund.js）
     `SELECT si.*,
+            GREATEST(0, si.received::numeric - ${retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true)}) AS received,
             COALESCE((SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr
                        WHERE pr.sale_item_id = si.sale_item_id), 0)::int AS picked_quantity,
             COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric))
@@ -3773,7 +3776,8 @@ async function createRefund(ctx) {
   // refundDetails 不重新赋值（capRefundAmounts 原地改其逐项 refundAmount）；totalRefund 截断时重算。
   let { refundDetails, totalRefund } = buildRefundDetails(origItems, requestItems)
 
-  const fee = Math.max(0, Number(handlingFee) || 0)  // 钳制非负，对齐 admin refunds.ts（防负手续费放大退款额）
+  if (handlingFee != null && (!Number.isFinite(Number(handlingFee)) || Number(handlingFee) < 0)) throw new Error('INVALID_PARAMS: 手续费必须是非负有限金额')
+  const fee = Math.round(Number(handlingFee ?? 0) * 100) / 100  // 钳制非负，对齐 admin refunds.ts（防负手续费放大退款额）
   // 修复（Bug R 手续费虚留次数）：fee ≥ 疗程卡单次价时 recalcPaidSessions 会多留 floor(fee/price) 次（账实背离，
   // 顾客退钱后仍能消费）。限制 fee < 最小疗程卡单次价，保证 paid_sessions 推导无偏；家居无 session_count 不受影响。
   // 0 元赠送项不参与最小价；完整任意 fee 支持需 paid_sessions 改用退款次数价值（follow-up）。两端镜像 admin refunds.ts。
@@ -3849,14 +3853,21 @@ async function createRefund(ctx) {
   const isWholeOrderRefund = origItems.length > 0 && origItems.every((oi) =>
     refundDetails.some((d) => d.refSaleItemId === oi.sale_item_id && d.isFullItemRefund),
   )
+  const accountedDetails = allocateRefundAccounting(refundDetails, new Map(origItems.map(it => [it.sale_item_id, Number(it.received ?? 0)])), fee)
   const detailNote = JSON.stringify({
+    refundAccountingVersion: 2,
     _v: 2,
     refundByCard,
     refundByOrigin,
     handlingFee: fee,
     refundPaymentMethod,
     isWholeOrderRefund,
-    items: refundDetails.map(d => ({
+    items: accountedDetails.map(d => ({
+      grossRefundAmount: d.grossRefundAmount,
+      paidAmount: d.paidAmount,
+      handlingFee: d.handlingFee,
+      overdraftDeduction: d.overdraftDeduction,
+      netRefundAmount: d.netRefundAmount,
       refSaleItemId: d.refSaleItemId,
       quantity: d.quantity,
       refundAmount: d.refundAmount,
@@ -4907,7 +4918,7 @@ async function createConversion(ctx) {
               si.unit_price,
               si.unit_real_price,
               si.sale_amount,
-              si.received,
+              GREATEST(0, si.received::numeric - ${retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true)}) AS received,
               si.pending_received,
               si.sales_category,
               si.service_fee,
@@ -4959,7 +4970,7 @@ async function createConversion(ctx) {
          FROM sale_items si
          JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
          CROSS JOIN LATERAL (
-           SELECT GREATEST(0, si.received::numeric
+           SELECT GREATEST(0, si.received::numeric - ${retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true)}
              - CASE WHEN si.product_type = '疗程卡'
                     THEN GREATEST(0, COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0))::numeric * si.unit_real_price::numeric
                     -- #154：已提货件数直读 picked_up_quantity 列（拆列后它恒等于
@@ -5953,7 +5964,7 @@ async function customerHeldCards(ctx) {
             hp.deductible_quantity AS remaining_quantity,
             si.unit_real_price,
             si.sale_amount,
-            si.received,
+            GREATEST(0, si.received::numeric - ${retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true)}) AS received,
             si.pending_received,
             si.expire_date,
             si.remark,
@@ -5996,7 +6007,7 @@ async function customerHeldCards(ctx) {
               ELSE hpa.remaining_paid
          END AS deductible_amount
        FROM (
-         SELECT GREATEST(0, si.received::numeric
+         SELECT GREATEST(0, si.received::numeric - ${retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true)}
            - CASE WHEN si.product_type = '疗程卡'
                   THEN GREATEST(0, COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0))::numeric * si.unit_real_price::numeric
                   -- #154：已提货件数直读 picked_up_quantity 列（拆列后它恒等于 SUM(pickup_records)）。
@@ -6448,7 +6459,7 @@ async function createGroupedPickup(ctx, saleItemIds, pickupQuantity, remark, ide
               si.product_name, si.quantity, COALESCE(si.picked_up_quantity, 0) AS picked_up_quantity,
               si.inventory_composition_snapshot,
               LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))::int AS settled_quantity,
-              si.sale_amount, si.unit_real_price, si.received,
+              si.sale_amount, si.unit_real_price, GREATEST(0, si.received::numeric - ${retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true)}) AS received,
               CASE
                 -- 寄存单：货本就属于顾客，全额可提（sale_amount 只是原价快照，received 不代表欠款）。
                 -- 判据与 #120 展示侧 is_deposit 同源；刻意不用疗程卡那条 total_amount<=0——后者会连带覆盖
@@ -6457,7 +6468,7 @@ async function createGroupedPickup(ctx, saleItemIds, pickupQuantity, remark, ide
                 WHEN si.sale_amount <= 0 THEN si.quantity
                 ELSE LEAST(
                   si.quantity,
-                  FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int
+                  FLOOR(GREATEST(0, si.received::numeric - ${retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true)}) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int
                 )
               END AS paid_quantity,
               si.product_type, si.item_direction, o.sale_order_type,
@@ -6618,7 +6629,7 @@ async function createPickup(ctx) {
                 LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))::int AS settled_quantity,
                 COALESCE((SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr WHERE pr.sale_item_id = si.sale_item_id), 0)::int AS picked_quantity,
                 COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = si.sale_item_id AND out_item.item_direction = '转出' AND out_item.product_type = '家居产品' AND conv_order.status <> '已关闭'), 0) AS converted_amount,
-                si.sale_amount, si.unit_real_price, si.received,
+                si.sale_amount, si.unit_real_price, GREATEST(0, si.received::numeric - ${retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true)}) AS received,
                 -- pendingHomeProductQuantity 靠 sale_order_type 判「寄存单走物理未结算分支」，
                 -- 漏取这列会让寄存单重放时误走普通实收公式（寄存单 received 不代表权益），
                 -- 首次事务返回 remaining=2 而重放返回 0（对抗审查实证）。
@@ -6629,7 +6640,7 @@ async function createPickup(ctx) {
                   -- 转换单/零总额单，且 total_amount 无 CHECK 约束，负值会静默放行。
                   WHEN o.sale_order_type = '寄存单' THEN si.quantity
                   WHEN si.sale_amount <= 0 THEN si.quantity
-                  ELSE LEAST(si.quantity, FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int)
+                  ELSE LEAST(si.quantity, FLOOR(GREATEST(0, si.received::numeric - ${retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true)}) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int)
                 END AS paid_quantity
            FROM sale_items si
            JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
@@ -6666,14 +6677,14 @@ async function createPickup(ctx) {
       `SELECT si.sale_item_id, si.sale_order_id, si.store_id, si.sku_id, si.product_name,
               si.product_type, si.item_direction, si.quantity, si.inventory_composition_snapshot,
               LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))::int AS settled_quantity,
-              si.sale_amount, si.unit_real_price, si.received,
+              si.sale_amount, si.unit_real_price, GREATEST(0, si.received::numeric - ${retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true)}) AS received,
               CASE
                 -- 寄存单：货本就属于顾客，全额可提（sale_amount 只是原价快照，received 不代表欠款）。
                 -- 判据与 #120 展示侧 is_deposit 同源；刻意不用疗程卡那条 total_amount<=0——后者会连带覆盖
                 -- 转换单/零总额单，且 total_amount 无 CHECK 约束，负值会静默放行。
                 WHEN o.sale_order_type = '寄存单' THEN si.quantity
                 WHEN si.sale_amount <= 0 THEN si.quantity
-                ELSE LEAST(si.quantity, FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int)
+                ELSE LEAST(si.quantity, FLOOR(GREATEST(0, si.received::numeric - ${retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true)}) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int)
               END AS paid_quantity,
               o.sale_order_type,
               o.status AS order_status, o.client_user_id, o.customer_name
@@ -6850,7 +6861,7 @@ async function availablePickupItems(ctx) {
                   THEN GREATEST(0, si.quantity - LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0))))
                 ELSE LEAST(
                   GREATEST(0, si.quantity - LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))),
-                  GREATEST(0, FLOOR((GREATEST(0, si.received::numeric)
+                  GREATEST(0, FLOOR((GREATEST(0, si.received::numeric - ${retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true)})
                     - GREATEST(0, COALESCE(si.picked_up_quantity, 0)) * si.unit_real_price::numeric
                     - COALESCE(ct.converted_amount, 0)) / NULLIF(si.unit_real_price::numeric, 0)))::int
                 )
@@ -6863,7 +6874,7 @@ async function availablePickupItems(ctx) {
                 WHEN si.sale_amount <= 0 THEN si.quantity
                 ELSE LEAST(
                   si.quantity,
-                  FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int
+                  FLOOR(GREATEST(0, si.received::numeric - ${retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true)}) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int
                 )
               END AS paid_quantity,
               si.unit_real_price,
@@ -7313,6 +7324,9 @@ async function refundDetail(ctx) {
       unit: si.sku_unit || ((it.productType || si.product_type) === '家居产品' ? '盒' : '次'),
       quantity: it.quantity,
       refundAmount: it.refundAmount,
+      handlingFee: it.handlingFee ?? 0,
+      overdraftDeduction: it.overdraftDeduction ?? 0,
+      netRefundAmount: it.netRefundAmount ?? it.refundAmount,
     }
   })
 

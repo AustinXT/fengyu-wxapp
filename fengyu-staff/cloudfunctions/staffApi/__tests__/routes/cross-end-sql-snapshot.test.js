@@ -1219,7 +1219,7 @@ describe("ticket 2026-05-19 paid_sessions 重算 SQL 四端字节同义守护", 
 
   describe("公式特征守护（防止公式漂移成不安全形态）", () => {
     test("五端公式直接用净额 received（2026-06-08 退款侧：STEP 1.5 已逐项扣退款，无订单级 refund_share）", () => {
-      const pattern = /FLOOR\(sale_items\.received::numeric\s*\*\s*sale_items\.session_count\s*\/\s*sale_items\.sale_amount::numeric\)/i
+      const pattern = /FLOOR\(GREATEST\(0, sale_items\.received::numeric - rights\.retained \+ rights\.overpay\)\s*\*\s*sale_items\.session_count\s*\/\s*sale_items\.sale_amount::numeric\)/i
       expect(paidSessionsSqls.staff).toMatch(pattern)
       expect(paidSessionsSqls.client).toMatch(pattern)
       expect(paidSessionsSqls.payNotify).toMatch(pattern)
@@ -1247,11 +1247,11 @@ describe("ticket 2026-05-19 paid_sessions 重算 SQL 四端字节同义守护", 
     })
 
     test("五端必须用 LEAST(session_count, ...) 兜底防 CHECK 越界（D4=A）", () => {
-      expect(paidSessionsSqls.staff).toMatch(/LEAST\(sale_items\.session_count,/i)
-      expect(paidSessionsSqls.client).toMatch(/LEAST\(sale_items\.session_count,/i)
-      expect(paidSessionsSqls.payNotify).toMatch(/LEAST\(sale_items\.session_count,/i)
-      expect(paidSessionsSqls.adminTs).toMatch(/LEAST\(sale_items\.session_count,/i)
-      expect(paidSessionsSqls.scriptFix).toMatch(/LEAST\(sale_items\.session_count,/i)
+      expect(paidSessionsSqls.staff).toMatch(/LEAST\(sale_items\.session_count - rights\.refunded_sessions,/i)
+      expect(paidSessionsSqls.client).toMatch(/LEAST\(sale_items\.session_count - rights\.refunded_sessions,/i)
+      expect(paidSessionsSqls.payNotify).toMatch(/LEAST\(sale_items\.session_count - rights\.refunded_sessions,/i)
+      expect(paidSessionsSqls.adminTs).toMatch(/LEAST\(sale_items\.session_count - rights\.refunded_sessions,/i)
+      expect(paidSessionsSqls.scriptFix).toMatch(/LEAST\(sale_items\.session_count - rights\.refunded_sessions,/i)
     })
 
     test("五端必须有 sale_items.sale_amount <= 0 → session_count 兜底（免单行全付）", () => {
@@ -2443,7 +2443,7 @@ describe('家居产品部分支付权益跨端守护', () => {
     const src = homeProductSql(file)
     expect(src).toContain("o.status IN ('已支付', '部分支付', '已完成')")
     expect(src).toContain(
-      'FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int',
+      'FLOOR(GREATEST(0, si.received::numeric - ?) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int',
     )
     // #145/#153：可提件数改用「剩余已付」口径（见 ROW_PENDING_EXPR 断言）。
     // 件数口径在折抵金额含余数时会多放出货，不得回退。
@@ -2533,7 +2533,7 @@ describe('家居产品部分支付权益跨端守护', () => {
   test.each(PICKUP_FILES)('%s 在事务锁内复算已付可提上限', (_name, file) => {
     const src = normalizeSql(readFile(file))
     expect(src).toContain(
-      'FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int',
+      'FLOOR(GREATEST(0, si.received::numeric - ?) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int',
     )
     expect(src).toContain('pendingHomeProductQuantity')
     expect(src).toContain('FOR UPDATE OF si')
@@ -2913,7 +2913,7 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
   // 可提件数与折抵额度必须共用「剩余已付 = 行实收 − 已提货金额 − 已转走金额」口径。
   // 曾经折抵按金额扣、提货按件数扣，两者在折抵金额含余数时对不上：折 4 件带走 ¥450 后
   // 再回款 ¥50，提货侧按件数会多放出 1 件，累计兑现 ¥550 > 累计实收 ¥500（对抗审查实证）。
-  const ROW_PENDING_EXPR = "CASE WHEN o.sale_order_type = '寄存单' OR si.sale_amount <= 0 THEN GREATEST(0, si.quantity - LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))) ELSE LEAST(GREATEST(0, si.quantity - LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))), GREATEST(0, FLOOR((GREATEST(0, si.received::numeric) - GREATEST(0, COALESCE(si.picked_up_quantity, 0)) * si.unit_real_price::numeric - COALESCE(ct.converted_amount, 0)) / NULLIF(si.unit_real_price::numeric, 0)))::int) END AS row_pending_pickup"
+  const ROW_PENDING_EXPR = "CASE WHEN o.sale_order_type = '寄存单' OR si.sale_amount <= 0 THEN GREATEST(0, si.quantity - LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))) ELSE LEAST(GREATEST(0, si.quantity - LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))), GREATEST(0, FLOOR((GREATEST(0, si.received::numeric - ?) - GREATEST(0, COALESCE(si.picked_up_quantity, 0)) * si.unit_real_price::numeric - COALESCE(ct.converted_amount, 0)) / NULLIF(si.unit_real_price::numeric, 0)))::int) END AS row_pending_pickup"
 
   const ROW_PENDING_SITES = [
     ['staff 顾客档案', FILES.staffCustomerJs],
@@ -2983,7 +2983,7 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
   //   都必须计入，限类型会让同一笔已付被折两遍。
   // ⚠ 写 SQL 时不要把续行以 `*` 开头：stripComments 的 /^[ \t]*\*.*$/gm（本意剥 JSDoc 续行）
   //   会把整行删掉，归一化文本会凭空少一个乘法项，断言便对不上实现。
-  const REMAINING_PAID_EXPR = "SELECT GREATEST(0, si.received::numeric - CASE WHEN si.product_type = '疗程卡' THEN GREATEST(0, COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0))::numeric * si.unit_real_price::numeric ELSE COALESCE(si.picked_up_quantity, 0) * si.unit_real_price::numeric END - COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = si.sale_item_id AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)) AS remaining_paid"
+  const REMAINING_PAID_EXPR = "SELECT GREATEST(0, si.received::numeric - ? - CASE WHEN si.product_type = '疗程卡' THEN GREATEST(0, COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0))::numeric * si.unit_real_price::numeric ELSE COALESCE(si.picked_up_quantity, 0) * si.unit_real_price::numeric END - COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = si.sale_item_id AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)) AS remaining_paid"
 
   test('家居折抵额度以「剩余已付金额」为基准，两处 staff 站点同源', () => {
     const staff = normalizeSql(stripComments(readFile(FILES.staffOrderJs)))

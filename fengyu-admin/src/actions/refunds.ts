@@ -1,5 +1,8 @@
 'use server'
 
+import { retainedRefundFeeSql } from '@/lib/refund-fee-sql'
+import { allocateRefundAccounting } from '@/lib/refund-accounting'
+
 import { db } from '@/db'
 import { rowsAffected } from '@/lib/pg-rows'
 import { saleOrders, saleItems, saleOrderPayments } from '@db/order'
@@ -188,6 +191,7 @@ export interface RefundListResult {
 }
 
 export interface RefundDetailResult {
+  refundItems: Array<{ saleItemId: string; productName: string; grossRefundAmount: number; handlingFee: number; overdraftDeduction: number; netRefundAmount: number }>
   refund: RefundListItem
   origOrder: SaleOrder | null
   /** 同一原单上、所有 change_type='退款' 的流水（发起+审批+其他历史退款） */
@@ -282,9 +286,9 @@ async function reconcileOrderStatusAfterRefund(tx: RefundTx, saleOrderId: string
     ),
     item_states AS (
       SELECT si.sale_item_id,
-             si.received::numeric AS received,
+             GREATEST(0, si.received::numeric - ${sql.raw(retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true))}) AS received,
              COALESCE(si.sale_amount::numeric, 0) AS sale_amount,
-             COALESCE(rr.refunded, 0) AS refunded,
+             COALESCE(rr.refunded, 0) + ${sql.raw(retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true))} AS refunded,
              COALESCE(fr.full_refund, false) AS full_refund,
              CASE WHEN si.product_type = '疗程卡'
                -- 疗程卡：先按**已转走次数**扣掉被折走的部分（折抵把 remaining_sessions 扣光，
@@ -379,6 +383,7 @@ export const getRefundable = withAnyPermission(
   const rows = await db
     .select({
       item: saleItems,
+      rightsReceived: sql<string>`GREATEST(0, ${saleItems.received}::numeric - ${sql.raw(retainedRefundFeeSql('sale_items.sale_order_id', 'sale_items.sale_item_id', true))})`,
       skuUnit: productSkus.unit,
       // #145/#153：家居可退数量受「剩余已付」封顶，需要 pickup_records 与转出行聚合
       // （折抵会带走剩余已付的全部金额却只占用向下取整的件数）。
@@ -393,7 +398,7 @@ export const getRefundable = withAnyPermission(
     .where(and(eq(saleItems.saleOrderId, saleOrderId), eq(saleItems.itemDirection, '购买')))
 
   // 先建 RefundSourceItem[]（computeOverpayRemainder 入参），再派生展示用 RefundableItem[]
-  const srcItems: RefundSourceItem[] = rows.map(({ item, pickedQuantity, convertedAmount, convertedQuantity }) => ({
+  const srcItems: RefundSourceItem[] = rows.map(({ item, rightsReceived, pickedQuantity, convertedAmount, convertedQuantity }) => ({
     sale_item_id: item.saleItemId,
     sku_id: item.skuId,
     product_name: item.productName,
@@ -405,7 +410,7 @@ export const getRefundable = withAnyPermission(
     quantity: item.quantity,
     unit_real_price: item.unitRealPrice,
     sale_amount: item.saleAmount,
-    received: item.received,
+    received: rightsReceived,
     // #154×#182：本字段只保留**转出行聚合**那一份（覆盖疗程卡、且不限 product_type）；
     //   sale_items.converted_quantity 列按设计只维护家居，疗程卡行恒 0，用它会漏扣。
     picked_up_quantity: item.pickedUpQuantity,
@@ -558,7 +563,7 @@ export const estimateRefundOverdraft = withAnyPermission(
   //   - paid_amount 列已 DROP，统一改用 received - refunded_amount
   //   - saleOrderType 5→3：'退款单'/'回款单' 已迁至 sale_order_payments
   const spendRows = await db.execute<{ spend: string }>(sql`
-    SELECT COALESCE(SUM(GREATEST((received::numeric) - (refunded_amount::numeric), 0)), 0) AS spend
+    SELECT COALESCE(SUM(GREATEST((received::numeric) - (refunded_amount::numeric) - ${sql.raw(retainedRefundFeeSql('sale_orders.sale_order_id'))}, 0)), 0) AS spend
     FROM sale_orders
     WHERE client_user_id = ${params.userId}
       AND sale_order_type IN ('销售单','转换单')
@@ -799,6 +804,7 @@ export const createRefund = withPermission(
   const origRows = (await db
     .select({
       item: saleItems,
+      rightsReceived: sql<string>`GREATEST(0, ${saleItems.received}::numeric - ${sql.raw(retainedRefundFeeSql('sale_items.sale_order_id', 'sale_items.sale_item_id', true))})`,
       pickedQuantity: sql<number>`COALESCE((SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr WHERE pr.sale_item_id = ${saleItems.saleItemId}), 0)`,
       convertedAmount: sql<string>`COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)`,
       // #182：疗程卡已消耗价值要先按已转走**次数**扣减，再加已转走金额，否则与
@@ -807,8 +813,9 @@ export const createRefund = withPermission(
     })
     .from(saleItems)
     .where(and(eq(saleItems.saleOrderId, refSaleOrderId), eq(saleItems.itemDirection, '购买'))))
-    .map(({ item, pickedQuantity, convertedAmount, convertedQuantity }) => ({
+    .map(({ item, rightsReceived, pickedQuantity, convertedAmount, convertedQuantity }) => ({
       ...item,
+      received: rightsReceived,
       pickedQuantity: Number(pickedQuantity ?? 0),
       convertedAmount,
       convertedQuantity: Number(convertedQuantity ?? 0),
@@ -888,7 +895,10 @@ export const createRefund = withPermission(
     return { success: false, error: { code: 'UNKNOWN', message: businessErrorMessage(err, '退款处理失败，请稍后重试') } }
   }
 
-  const fee = Math.max(0, Number(input.handlingFee) || 0)
+  if (input.handlingFee != null && (!Number.isFinite(Number(input.handlingFee)) || Number(input.handlingFee) < 0)) {
+    return { success: false, error: { code: 'INVALID_PARAMS', message: '手续费必须是非负有限金额' } }
+  }
+  const fee = Math.round(Number(input.handlingFee ?? 0) * 100) / 100
   // 修复（Bug R 手续费虚留次数）：fee ≥ 疗程卡单次价时 recalcPaidSessions 会多留 floor(fee/price) 次。
   // 限制 fee < 最小正价疗程卡单次价，保证 paid_sessions 推导无偏；0 元赠送项/家居不受影响。两端镜像 staff order.js。
   if (isHandlingFeeInvalidForRefund(refundDetails, fee)) {
@@ -983,14 +993,21 @@ export const createRefund = withPermission(
     refundDetails.some((d) => d.refSaleItemId === oi.sale_item_id && d.isFullItemRefund),
   )
   // note 存 JSON（含展示字段 + 逐 item 明细），approveRefund 据此逐 item 级联（Bug Q/M）。两端对齐 staff note。
+  const accountedDetails = allocateRefundAccounting(refundDetails, new Map(sourceItems.map(it => [it.sale_item_id, Number(it.received ?? 0)])), fee, overdraftDeduction)
   const paymentNote = JSON.stringify({
+    refundAccountingVersion: 2,
     refundByCard,
     refundByOrigin,
     handlingFee: fee,
     overdraftDeduction,
     isWholeOrderRefund,
     overpayAmount,
-    items: refundDetails.map((d) => ({
+    items: accountedDetails.map((d) => ({
+      grossRefundAmount: d.grossRefundAmount,
+      paidAmount: d.paidAmount,
+      handlingFee: d.handlingFee,
+      overdraftDeduction: d.overdraftDeduction,
+      netRefundAmount: d.netRefundAmount,
       refSaleItemId: d.refSaleItemId,
       quantity: d.quantity,
       refundAmount: d.refundAmount,
@@ -1830,8 +1847,26 @@ export const getRefundById = withAnyPermission(
     }))
   }
 
+  let refundItems: RefundDetailResult['refundItems'] = []
+  try {
+    const note = rows[0].payment.note ? JSON.parse(rows[0].payment.note) : null
+    if (note && Array.isArray(note.items)) {
+      const itemRows = await db.select({ id: saleItems.saleItemId, name: saleItems.productName, received: saleItems.received })
+        .from(saleItems).where(eq(saleItems.saleOrderId, base.refSaleOrderId!))
+      const byId = new Map(itemRows.map(it => [it.id, it]))
+      const accounted = note.refundAccountingVersion === 2 ? note.items : allocateRefundAccounting(note.items,
+        new Map(itemRows.map(it => [it.id, Number(it.received)])), Number(note.handlingFee ?? 0), Number(note.overdraftDeduction ?? 0))
+      refundItems = accounted.map((it: { refSaleItemId: string; refundAmount: number; grossRefundAmount: number; handlingFee: number; overdraftDeduction: number; netRefundAmount: number }) => ({
+        saleItemId: it.refSaleItemId, productName: byId.get(it.refSaleItemId)?.name ?? '商品',
+        grossRefundAmount: Number(it.grossRefundAmount ?? it.refundAmount), handlingFee: Number(it.handlingFee ?? 0),
+        overdraftDeduction: Number(it.overdraftDeduction ?? 0), netRefundAmount: Number(it.netRefundAmount ?? it.refundAmount),
+      }))
+    }
+  } catch { refundItems = [] }
+
   return {
     refund: base,
+    refundItems,
     origOrder,
     payments,
   }
@@ -1907,7 +1942,7 @@ async function refreshSpendingTierTx(
        END::spending_tier,
        updated_at = NOW()
        FROM (
-         SELECT COALESCE(SUM(GREATEST((received::numeric) - (refunded_amount::numeric), 0)), 0) AS total
+         SELECT COALESCE(SUM(GREATEST((received::numeric) - (refunded_amount::numeric) - ${sql.raw(retainedRefundFeeSql('sale_orders.sale_order_id'))}, 0)), 0) AS total
          FROM sale_orders
          WHERE client_user_id = ${clientUserId}
            AND status IN ('已支付', '已完成')

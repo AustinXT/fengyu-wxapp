@@ -1,5 +1,7 @@
 'use server'
 
+import { retainedRefundFeeSql } from '@/lib/refund-fee-sql'
+
 import { db } from '@/db'
 import { rowsAffected } from '@/lib/pg-rows'
 import {
@@ -6030,7 +6032,7 @@ export const createConversionOrder = withPermission(
           si.unit_price,
           si.unit_real_price,
           si.sale_amount,
-          si.received,
+          GREATEST(0, si.received::numeric - ${sql.raw(retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true))}) AS received,
           si.pending_received,
           si.sales_category,
           COALESCE(si.is_shengmei, psk.is_shengmei) AS is_shengmei,

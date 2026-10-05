@@ -55,16 +55,40 @@ export function computePaidSessionsForItem({
  * SQL 模板字面量（pg 风格 $1 = saleOrderId）— 仅供跨端 snapshot 比对，
  * 实际执行走 sql tagged template 模板插值。三端 cloudfunction 副本字面量与此完全一致。
  */
-export const PAID_SESSIONS_RECALC_SQL = `UPDATE sale_items
+export const PAID_SESSIONS_RECALC_SQL = `WITH refund_rights AS (
+  SELECT elem ->> 'refSaleItemId' AS sale_item_id,
+         SUM(GREATEST(0, COALESCE(public.try_numeric(elem ->> 'handlingFee'), 0))
+           + GREATEST(0, COALESCE(public.try_numeric(elem ->> 'overdraftDeduction'), 0))) AS retained,
+         SUM(GREATEST(0, COALESCE(public.try_numeric(elem ->> 'overpayAmount'), 0))) AS overpay,
+         SUM(GREATEST(0, COALESCE(public.try_numeric(elem ->> 'quantity'), 0))) AS refunded_sessions,
+         BOOL_OR(LOWER(COALESCE(elem ->> 'isFullItemRefund', 'false')) = 'true') AS full_refund
+    FROM sale_order_payments sop
+    CROSS JOIN LATERAL jsonb_array_elements(
+      CASE WHEN jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'
+           THEN public.try_jsonb(sop.note) -> 'items' ELSE '[]'::jsonb END
+    ) elem
+   WHERE sop.sale_order_id = $1 AND sop.change_type = '退款' AND sop.status = '已支付'
+     AND public.try_numeric(public.try_jsonb(sop.note) ->> 'refundAccountingVersion') = 2
+   GROUP BY elem ->> 'refSaleItemId'
+), rights AS (
+  SELECT si.sale_item_id, COALESCE(rr.retained, 0) AS retained, COALESCE(rr.overpay, 0) AS overpay,
+         COALESCE(rr.refunded_sessions, 0) AS refunded_sessions, COALESCE(rr.full_refund, false) AS full_refund
+    FROM sale_items si LEFT JOIN refund_rights rr ON rr.sale_item_id = si.sale_item_id
+   WHERE si.sale_order_id = $1
+)
+UPDATE sale_items
 SET paid_sessions = CASE
   WHEN sale_items.session_count IS NULL THEN NULL
+  WHEN rights.full_refund THEN 0
   WHEN op.total_amount <= 0 THEN sale_items.session_count
   WHEN sale_items.sale_amount <= 0 THEN sale_items.session_count
-  ELSE LEAST(sale_items.session_count, FLOOR(sale_items.received::numeric * sale_items.session_count / sale_items.sale_amount::numeric)::integer)
+  ELSE GREATEST(0, LEAST(sale_items.session_count - rights.refunded_sessions,
+    FLOOR(GREATEST(0, sale_items.received::numeric - rights.retained + rights.overpay)
+      * sale_items.session_count / sale_items.sale_amount::numeric)::integer))
 END,
 updated_at = NOW()
-FROM (SELECT total_amount FROM sale_orders WHERE sale_order_id = $1) op
-WHERE sale_items.sale_order_id = $1`
+FROM (SELECT total_amount FROM sale_orders WHERE sale_order_id = $1) op, rights
+WHERE sale_items.sale_order_id = $1 AND rights.sale_item_id = sale_items.sale_item_id`
 
 export const FULL_REFUND_ZERO_AMOUNT_PAID_SESSIONS_SQL = `WITH full_refund_zero_items AS (
       SELECT elem ->> 'refSaleItemId' AS sale_item_id
@@ -311,7 +335,7 @@ export async function recalcPaidSessionsForOrder(tx: AdminTx, saleOrderId: strin
     await tx.execute(sql`
       WITH refund_items AS (
         SELECT elem ->> 'refSaleItemId' AS sale_item_id,
-               COALESCE(public.try_numeric(elem ->> 'refundAmount'), 0) AS refund_amount
+               COALESCE(public.try_numeric(elem ->> 'netRefundAmount'), public.try_numeric(elem ->> 'refundAmount'), 0) AS refund_amount
         FROM sale_order_payments sop
         CROSS JOIN LATERAL jsonb_array_elements(
           CASE WHEN jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'
@@ -453,19 +477,41 @@ export async function recalcPaidSessionsForOrder(tx: AdminTx, saleOrderId: strin
     WHERE si.sale_item_id = targets.sale_item_id
   `)
 
-  // STEP 2: 按行级公式重算 paid_sessions（received 已净额，不再下分订单级退款；守 cross-end-sql-snapshot）
-  await tx.execute(sql`
-    UPDATE sale_items
-    SET paid_sessions = CASE
-      WHEN sale_items.session_count IS NULL THEN NULL
-      WHEN op.total_amount <= 0 THEN sale_items.session_count
-      WHEN sale_items.sale_amount <= 0 THEN sale_items.session_count
-      ELSE LEAST(sale_items.session_count, FLOOR(sale_items.received::numeric * sale_items.session_count / sale_items.sale_amount::numeric)::integer)
-    END,
-    updated_at = NOW()
-    FROM (SELECT total_amount FROM sale_orders WHERE sale_order_id = ${saleOrderId}) op
-    WHERE sale_items.sale_order_id = ${saleOrderId}
-  `)
+  // #529：手续费不释放权益，纯余数退款不冲减已消费次数。
+  await tx.execute(sql`WITH refund_rights AS (
+  SELECT elem ->> 'refSaleItemId' AS sale_item_id,
+         SUM(GREATEST(0, COALESCE(public.try_numeric(elem ->> 'handlingFee'), 0))
+           + GREATEST(0, COALESCE(public.try_numeric(elem ->> 'overdraftDeduction'), 0))) AS retained,
+         SUM(GREATEST(0, COALESCE(public.try_numeric(elem ->> 'overpayAmount'), 0))) AS overpay,
+         SUM(GREATEST(0, COALESCE(public.try_numeric(elem ->> 'quantity'), 0))) AS refunded_sessions,
+         BOOL_OR(LOWER(COALESCE(elem ->> 'isFullItemRefund', 'false')) = 'true') AS full_refund
+    FROM sale_order_payments sop
+    CROSS JOIN LATERAL jsonb_array_elements(
+      CASE WHEN jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'
+           THEN public.try_jsonb(sop.note) -> 'items' ELSE '[]'::jsonb END
+    ) elem
+   WHERE sop.sale_order_id = ${saleOrderId} AND sop.change_type = '退款' AND sop.status = '已支付'
+     AND public.try_numeric(public.try_jsonb(sop.note) ->> 'refundAccountingVersion') = 2
+   GROUP BY elem ->> 'refSaleItemId'
+), rights AS (
+  SELECT si.sale_item_id, COALESCE(rr.retained, 0) AS retained, COALESCE(rr.overpay, 0) AS overpay,
+         COALESCE(rr.refunded_sessions, 0) AS refunded_sessions, COALESCE(rr.full_refund, false) AS full_refund
+    FROM sale_items si LEFT JOIN refund_rights rr ON rr.sale_item_id = si.sale_item_id
+   WHERE si.sale_order_id = ${saleOrderId}
+)
+UPDATE sale_items
+SET paid_sessions = CASE
+  WHEN sale_items.session_count IS NULL THEN NULL
+  WHEN rights.full_refund THEN 0
+  WHEN op.total_amount <= 0 THEN sale_items.session_count
+  WHEN sale_items.sale_amount <= 0 THEN sale_items.session_count
+  ELSE GREATEST(0, LEAST(sale_items.session_count - rights.refunded_sessions,
+    FLOOR(GREATEST(0, sale_items.received::numeric - rights.retained + rights.overpay)
+      * sale_items.session_count / sale_items.sale_amount::numeric)::integer))
+END,
+updated_at = NOW()
+FROM (SELECT total_amount FROM sale_orders WHERE sale_order_id = ${saleOrderId}) op, rights
+WHERE sale_items.sale_order_id = ${saleOrderId} AND rights.sale_item_id = sale_items.sale_item_id`)
   // STEP 2.5：0 元 item 若已随退款全退，覆盖 paid_sessions=0（否则 sale_amount<=0 兜底会保留满次数）
   await tx.execute(sql`
     WITH full_refund_zero_items AS (
