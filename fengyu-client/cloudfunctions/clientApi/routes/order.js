@@ -4,7 +4,10 @@
  */
 
 const cloud = require('wx-server-sdk')
+const { assertMembershipBinding } = require('../utils/membership-binding')
+const { assertOnlineMembershipBinding } = require('../utils/membership-payment-preview')
 const pg = require('../db/pg')
+const { normalizePaging, assertBoundedList, BOUNDED_LIST_FETCH_LIMIT } = require('../utils/paging')
 const { requirePhone } = require('../middleware/auth')
 const { getMemberThreshold, getPointsToYuanRate, getPointsDeductionMaxRate } = require('../utils/config')
 const { settlePointsSafe, grantPointBatch, consumePointBatches } = require('../utils/points')
@@ -345,7 +348,7 @@ const RECALC_CUSTOMER_TYPE_CTE = `WITH refund_by_item AS (
  * @param {object} client - pg 事务客户端
  * @param {string} clientUserId - client_wechat_users.user_id
  */
-async function recalcCustomerType(client, clientUserId) {
+async function recalcCustomerType(client, clientUserId, saleOrderId) {
   if (!clientUserId) return
 
   // 已是最高级，无需重算
@@ -371,6 +374,15 @@ async function recalcCustomerType(client, clientUserId) {
   const newType = typeResult.rows[0]?.computed_type
   // 防御：SELECT CASE 在真实 PG 必返回一行（ELSE '流量客' 兜底）；测试 mock 空 rows 时安全早退。
   if (!newType) return
+  if (newType === '会员客') {
+    const currentOrder = await client.query(
+      `${RECALC_CUSTOMER_TYPE_CTE} SELECT EXISTS (
+         SELECT 1 FROM order_amounts WHERE sale_order_id = $3 AND non_trial >= $2
+       ) AS current_order_qualifies`, [clientUserId, threshold, saleOrderId],
+    )
+    // 历史达标却尚未标会员的异常档案属于阶段2，不阻挡本次非达标消费。
+    if (currentOrder.rows[0]?.current_order_qualifies) await assertMembershipBinding(client, clientUserId)
+  }
   const updateResult = await client.query(
     `UPDATE client_wechat_users
      SET customer_type = $2::customer_type, updated_at = NOW()
@@ -431,7 +443,7 @@ async function recalcCustomerType(client, clientUserId) {
 async function settlePaidEffects(client, { saleOrderId, clientUserId, paidAmount, source }) {
   if (clientUserId) {
     await refreshSpendingTier(client, clientUserId)
-    await recalcCustomerType(client, clientUserId)
+    await recalcCustomerType(client, clientUserId, saleOrderId)
     // 会员等级即时重算（只升不降；与 recalcCustomerType 同口径，礼包留给 cron）
     await recalcMemberLevel(client, clientUserId, await getMemberThreshold(), 'clientApi')
   }
@@ -1293,6 +1305,12 @@ async function reserveDirectOnlinePaymentIntent({
       order._lakalaMerchant = merchant
       throw activePaymentIntentError(order)
     }
+
+    await assertOnlineMembershipBinding(client, {
+      saleOrderId: orderNo, clientUserId: userId, cashAmount: payAmount,
+      cardAmount: pendingPrepaidAmount, payableAmount: effectivePayableAmount,
+      threshold: await getMemberThreshold(), customerTypeCte: RECALC_CUSTOMER_TYPE_CTE,
+    })
 
     const claimRes = await client.query(
       `UPDATE sale_orders
@@ -2751,12 +2769,9 @@ async function offlinePay(ctx) {
  */
 async function list(ctx) {
   const { userId } = ctx.auth
-  const { status, statuses, page: pageParam, pageSize: pageSizeParam } = ctx.event.payload || {}
+  const { status, statuses } = ctx.event.payload || {}
 
-  // 分页参数（默认 20 条/页，上限 50）
-  const pageSize = Math.min(Math.max(Number(pageSizeParam) || 20, 1), 50)
-  const page = Math.max(Number(pageParam) || 1, 1)
-  const offset = (page - 1) * pageSize
+  const { page, pageSize, offset } = normalizePaging(ctx.event.payload || {})
 
   // 懒清理过期的待支付订单（同时释放优惠券），仅首页触发
   if (page === 1) {
@@ -3402,7 +3417,9 @@ async function appointableItems(ctx) {
       -- M12：历史订单（workfine 拉取）的 NULL 卡不进可预约列表（后端过滤，前端 uniform-disabled 保留给非 legacy NULL 卡）
       AND NOT (si.paid_sessions IS NULL AND o.legacy_source = 'workfine')
     ORDER BY o.paid_at DESC, si.sale_item_id
-  `, [userId])
+    LIMIT $2
+  `, [userId, BOUNDED_LIST_FETCH_LIMIT])
+  assertBoundedList(items)
 
   // 按订单号分组
   const orderMap = new Map()
@@ -3640,10 +3657,12 @@ async function homeProducts(ctx) {
       WHERE picked_quantity > 0 OR remaining_quantity > 0 OR converted_quantity > 0
    ORDER BY (pending_pickup_quantity > 0) DESC,
             purchased_at DESC,
-            sale_item_id`,
-    [userId],
+            sale_item_id
+      LIMIT $2`,
+    [userId, BOUNDED_LIST_FETCH_LIMIT],
   )
 
+  assertBoundedList(rows)
   ctx.result = { items: rows.map(mapHomeProductRow) }
 }
 
@@ -4281,6 +4300,16 @@ async function repay(ctx) {
       if (!repayMerchant) {
         throw new Error('INVALID_STATE: LAKALA_NOT_CONFIGURED: 该门店未启用拉卡拉聚合支付，请联系管理员')
       }
+    }
+
+    if (!isPureCard && !isOffline) {
+      await assertOnlineMembershipBinding(client, {
+        saleOrderId, clientUserId: userId, cashAmount: repayAmountInput,
+        cardAmount: prepaidCardAmountInput,
+        payableAmount: Math.max(0, Number(origOrder.total_amount || 0)
+          - Number(origOrder.prepaid_card_amount || 0) - prepaidCardAmountInput),
+        threshold: await getMemberThreshold(), customerTypeCte: RECALC_CUSTOMER_TYPE_CTE,
+      })
     }
 
     // 4. 储值卡扣款（按通道分流）。

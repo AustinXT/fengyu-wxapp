@@ -79,6 +79,7 @@ export async function grantThanksgivingBenefits(
     WHERE so.service_date = ${dateSql}
       AND so.status IN ('已完成', '服务中')
       AND so.client_user_id IS NOT NULL
+      AND cwu.customer_type = '会员客'
       AND cwu.member_level IS NOT NULL
   `)) as Array<{ user_id: string; member_level: string }>
 

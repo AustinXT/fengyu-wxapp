@@ -353,7 +353,7 @@ const PROBES: Probe[] = [
     // 直接脱离探针，守护恒绿）。排除带 ${…} 的行：bun 打包可能给模板里的局部变量改名，那种行在产物里不一定逐字存在。
     pattern: /^(?!.*\$\{)(AND (spia|sc|so|spe)\.(is_void|sale_order_type|status) .*|HAVING .*|ROUND\(ROUND\(.* AS allocated,)$/,
     minLines: 10,
-    uniqueLines: 8,
+    uniqueLines: 9,
     exactCountsInModule: true,
   },
   {

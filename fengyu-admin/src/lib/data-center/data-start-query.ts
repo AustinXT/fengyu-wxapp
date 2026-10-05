@@ -4,6 +4,7 @@
  * 放在 lib/ 而非 actions/：actions 目录的 ESLint 规则要求每个 export 都 HOF 包装；
  * 对外的 Server Action 入口是 `actions/data-center/shared.ts` 的 `getDataStartDates`。
  */
+import { excludeLegacyPrepaidInflowSql } from './prepaid-performance-filter'
 import { sql } from 'drizzle-orm'
 import { db } from '@/db'
 import type { DataStartAxis, StoreDataStarts } from './data-start'
@@ -31,9 +32,11 @@ async function queryStoreDataStarts(): Promise<StoreDataStarts> {
       SELECT so.store_id, to_char(MIN(p.performance_attribution_date), 'YYYY-MM-DD') AS start
         FROM sale_order_payments p
         JOIN sale_orders so ON so.sale_order_id = p.sale_order_id
+          AND so.status <> '已关闭'
        WHERE p.status = '已支付'
          AND p.change_type IN ('首次支付', '回款', '退款')
          AND so.sale_order_type IN ('销售单', '转换单', '充值单')
+         AND ${excludeLegacyPrepaidInflowSql('so')}
          AND so.legacy_source IS DISTINCT FROM 'workfine'
        GROUP BY so.store_id
     `),

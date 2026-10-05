@@ -1,0 +1,6 @@
+{
+  "navigationBarTitleText": "填写日报",
+  "usingComponents": {
+    "metric-snapshot": "/components/metric-snapshot/index"
+  }
+}

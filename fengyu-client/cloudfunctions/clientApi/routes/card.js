@@ -8,6 +8,7 @@
  */
 
 const pg = require('../db/pg')
+const { normalizePaging, assertBoundedList, BOUNDED_LIST_FETCH_LIMIT } = require('../utils/paging')
 const { requirePhone } = require('../middleware/auth')
 const { shanghaiYYMMDD } = require('../utils/datetime')
 const { classifySaleOrderDocumentType } = require('../utils/document-type')
@@ -98,8 +99,10 @@ async function list(ctx) {
     SELECT pc.card_id, pc.balance, pc.created_at
     FROM prepaid_cards pc
     WHERE pc.user_id = $1
-    ORDER BY pc.created_at DESC
-  `, [userId])
+    ORDER BY pc.created_at DESC, pc.card_id DESC
+    LIMIT $2
+  `, [userId, BOUNDED_LIST_FETCH_LIMIT])
+  assertBoundedList(cards)
 
   ctx.result = {
     cards: cards.map(c => ({
@@ -140,9 +143,9 @@ async function balance(ctx) {
  */
 async function history(ctx) {
   const { userId } = ctx.auth
-  const { cardId, page = 1, pageSize = 20 } = ctx.event.payload || {}
+  const { cardId } = ctx.event.payload || {}
+  const { pageSize, offset } = normalizePaging(ctx.event.payload || {})
   if (!cardId) throw new Error('INVALID_PARAMS: 缺少 cardId')
-  const offset = (page - 1) * pageSize
 
   const cards = await pg.query(
     'SELECT card_id FROM prepaid_cards WHERE card_id = $1 AND user_id = $2',

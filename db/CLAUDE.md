@@ -368,8 +368,8 @@ docker rm -f pg-from-zero
 - `sync-workfine.js` — 综合同步（组织架构、员工、顾客）。⚠️ **对生产库硬拒绝**（#318）：
   业务方 2026-04-16 已决定上线后不再执行该同步，该脚本仅用于历史迁移 / 上线前刷新；
   而它的 `staff_wechat_users` UPSERT 直接写 `is_resigned`、不校验「至少留一名在职超级管理员」，
-  把最后一名超管标成离职就会让所有人无法登录管理后台。指向生产库时必须显式
-  `ALLOW_PROD_WORKFINE_SYNC=1` 才放行；cron 侧另有 `activeAdminCount` 巡检（0 人 → critical）兜底。
+  把最后一名超管标成离职就会让所有人无法登录管理后台。指向生产库时无条件硬拒绝，
+  不存在环境变量放行开关；cron 侧另有 `activeAdminCount` 巡检（0 人 → critical）兜底。
 - `sync-products-from-workfine.js` — 商品数据同步（一次性导入后手动维护）
 
 同步以 phone 为匹配键 UPSERT，运行时需 `MSSQL_CONNECTION_STRING` 和 `DATABASE_URL` 环境变量。
@@ -390,3 +390,21 @@ bash db/scripts/dump-prod.sh -F plain              # 纯 SQL 文本
 ## 与云函数的关系
 
 Drizzle 仅用于此目录的 schema 管理和迁移生成。两者共享同一个 PostgreSQL 数据库，此处的 schema 定义是权威来源。
+
+## WorkFine 顾客分类自动补算（#256）
+
+`sync-workfine.js` 的顾客同步（含 `--sync-only`）在同一事务中调用
+`recalc-all-customer-types.js` 的权威批量补算函数。历史订单必须已导入并审核，
+才有有效消费可供分类；只有商品导入的 `--import-only` 与 `--dry-run` 不补算。
+阈值 `system_configs.new_member_threshold` 缺失/非法或补算失败时，顾客同步整笔回滚。
+分类沿用已合入 #257 的离线双向对齐规则；历史等级与入会时间仅补空、不因降档清除。重复补算不更新无关行。
+补激活不发消息/积分/优惠券，不设置近期升级标记；后续等级和权益仍由 cron 接手。
+若订单在顾客同步之后才导入审核，再跑顾客同步或显式重算脚本以回放这些订单。
+生产同步的硬拒绝继续有效。
+顾客 staging 的文本枚举显式转为 PG enum；旧 WorkFine `category` 不落库，现行分类由权威消费口径派生。
+
+自动同步的补算自检返回缺失入会时间/非会员有等级计数，仅供核查：无达标历史消费的人工会员无法补齐真实入会日期，不因此拒绝档案同步，不伪造日期或清空已有等级。CLI 手工批量命令维持其原有严格自检。
+
+顾客同步只补算本批身份匹配到的顾客（customer_id优先，phone次之），已有行按user_id排序以FOR NO KEY UPDATE NOWAIT锁定，若支付/cron正在写则回滚同步以便重试；另设事务3秒lock_timeout。补算仍用同一权威CTE/UPDATE。档案字段未改变时不UPDATE，不刷新updated_at。CLI全库手工补算不受本批范围限制。
+
+同步先取得顾客行锁后执行只读全库 CTE，锁持有至事务提交；此期间同批顾客的支付或 cron UPDATE 会等待；引用顾客主键的 FK 子表 INSERT 可继续，实际同步事务交错测试验证了两者。共享 dev 应在无支付/cron的维护窗口串行执行；3 秒 lock_timeout 只约束同步自己的等待，不限制其他写入方。历史补算不凭同步发升级礼包，也不新增150天保级期；非法来源/等级整笔回滚，源数据清洗后再重试。

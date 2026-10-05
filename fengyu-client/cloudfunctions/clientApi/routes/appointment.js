@@ -4,6 +4,7 @@
  */
 
 const pg = require('../db/pg')
+const { normalizePaging } = require('../utils/paging')
 const { requirePhone } = require('../middleware/auth')
 const { checkText } = require('../utils/wx-sec-check')
 
@@ -180,12 +181,9 @@ async function create(ctx) {
  */
 async function list(ctx) {
   const { userId } = ctx.auth
-  const { status, page: pageParam, pageSize: pageSizeParam } = ctx.event.payload || {}
+  const { status } = ctx.event.payload || {}
 
-  // 分页参数（默认 20 条/页，上限 50）
-  const pageSize = Math.min(Math.max(Number(pageSizeParam) || 20, 1), 50)
-  const page = Math.max(Number(pageParam) || 1, 1)
-  const offset = (page - 1) * pageSize
+  const { page, pageSize, offset } = normalizePaging(ctx.event.payload || {})
 
   let whereClause = 'WHERE a.client_user_id = $1'
   const params = [userId]

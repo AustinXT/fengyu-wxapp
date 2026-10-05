@@ -1,6 +1,6 @@
-/** 会员价分流 helper —— 与 client/staff cloudfunctions/utils/member-pricing.js 同口径。仅会员享会员价（体验卡同口径，#6=B 不再豁免）。 */
-export function isMember(customerType?: string | null, memberLevel?: string | null): boolean {
-  return customerType === '会员客' || (memberLevel != null && memberLevel !== '')
+/** #257：会员资格仅看当前 customerType；保留的历史等级不授予会员价。会员价分流 helper —— 与 client/staff cloudfunctions/utils/member-pricing.js 同口径。仅会员享会员价（体验卡同口径，#6=B 不再豁免）。 */
+export function isMember(customerType?: string | null, _memberLevel?: string | null): boolean {
+  return customerType === '会员客'
 }
 export function resolveUnitPrice(
   sku: { price: number | string; specialPrice?: number | string | null; isExperience?: boolean | null },

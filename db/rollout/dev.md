@@ -73,3 +73,35 @@
 - 显式 dev 通道串行更新 staffApiDev/clientApiDev/payNotifyDev，3行 deployed、脚本退出0。config pull 与 fn detail 只读回读通过：三个影子函数 PG 均101.34.242.103:5433/fengyu_wxapp、DEPLOY_CHANNEL=shadow，staff true/develop、CLIENT_SECRET/CLIENT_APPSECRET非空且目标密钥一致，client TMAP密钥校验、两端HMAC一致、PAYNOTIFY_FN_NAME=payNotifyDev。envId均prod前缀。
 - 空staff冒烟-1，staff/client auth.login及client store.list无身份请求-401，鉴权冒烟通过；不代表已登录业务流程验证。
 - 脱敏证据 `_tmp/release-dev-v1.17.12/`：两站与云函数部署日志、remote-verify.json、cloud-verify.json及smoke JSON。版本已核对v1.17.12，.active=prod；prod未迁移或部署。小程序两端须手工上传开发版才能生效。
+
+
+## 2026-10-02 daily 分支合并
+
+- `0061_daily_report_loop`：SHA-256 `8643243a716f7b6e249af83bd7360b4ee0c8fdc306f0a5d08f8df0602f43ac05`。日报迁移在本轮 Git 合并前已执行于开发库；本轮未连接数据库执行迁移。
+- 原日报分支 `0057_daily_report_loop` 与 dev 既有编号冲突，顺延至 `0061`；SQL 字节和原 `when=1790921441006` 不变，已执行记录可继续按 when/hash 匹配。`0057` 至 `0060` 的 dev 迁移完整保留。
+- 合并快照包含最新 dev schema 和三张日报表；`db:generate` 返回无 schema 变化。
+
+## 2026-10-03 日报 V2 集中集成
+
+- 正式迁移 `0062_daily_v2_operating_pk`，when=`1791020803394`，SQL SHA-256 `dc0ebb9de66e09ce48580fd43e1dff002ba8d439b8e1a560981474fc45e4e7ca`。基于最新 origin/dev，在隔离分支 codex/daily-v2-migration 集成日报 V2。
+- 内容仅四张新表及 daily_reports 四个 nullable 字段与约束/索引；无删除/回填，旧日报正文和明细不变。复合唯一索引先于引用它的外键创建。
+- 私有空库重放63条通过；存量已提交日报升级完整保留；日报47项、后台26项测试通过；DB测试99项通过、13项环境型跳过；两端类型检查通过；生成器二次核验无额外结构变化。
+- 用户本聊天已授权 dev 建表、后端及后台更新和联调；沿用跳过双谱系决定。部署顺序：核验 dev 历史→db:migrate→结构与历史回读→dailyApiDev→admin dev→真实小程序联调。无额外数据脚本。
+- dev：执行前只读核验既有正式历史全部匹配，唯一 pending 为0062；本条记录时尚未执行。
+
+### 2026-10-03 日报 V2 dev 实际执行结果
+
+- 北京时间17:51:51，`0062_daily_v2_operating_pk` 经显式目标校验后的 `npm --prefix db run db:migrate` 执行成功。目标101.34.242.103:5433/fengyu_wxapp；SQL hash `dc0ebb9de66e09ce48580fd43e1dff002ba8d439b8e1a560981474fc45e4e7ca`、when `1791020803394`，库记录id64。四张新增表、四个新增字段及迁移记录回读通过；日报行数执行前后均0。
+- 发布提交 `f998dc19cbc2`，admin release `dev-f998dc19cbc2-b4377b31991a-20261003T095253Z-24341`，镜像 `fengyu-admin:dev-f998dc19cbc2-64bb1bcb771b`，部署脚本RELEASE_OK。
+- 使用统一入口 `DAILY_DEPLOY_BACKEND=wechat WX_DEVTOOLS_PORT=41652 scripts/deploy-cloudfunctions.sh dev daily` 上传dailyApiDev到cloud1-d5gz7zr8x6c38bd49。26个JS文件完整下载回读一致。微信CLI最终返回待核验提示（退出1），随后通过云控制台只读核验：Node.js18.15、256MB、30秒、PG公网dev目标且无连接覆盖参数、DEPLOY_CHANNEL=shadow、TZ=Asia/Shanghai。
+- 小程序已重新编译；当前微信真实身份auth.login及11个读取接口均code0：period.list/target.read/pk.classes/report.history/metrics.read/contacts.list/report.read/business.list/report.previous/manager.list/management.read。未模拟接口。首页和目标页实际显示尚未配置经营周期。
+- 验收限制：当前绑定管理员无主门店，不能替代普通员工填报验收；真实经营月/四周日期与PK分班未收到用户决定，保持空配置；共享库未写入虚构日报。后续需有门店的员工身份完成保存/提交/店长回读，以及业务配置后的目标和PK验证。三角色截图自动化在首个首页后超时，不将其计为全角色UI验收。
+- 交付PR https://github.com/AustinXT/fengyu-wxapp/pull/523 ，仍待合并。已同步本机daily分支；在PR合入dev前，其他会话不得从旧dev再次生成0062。外部双谱系按用户明确指示跳过。
+- 脱敏执行证据在起点仓库 `_tmp/daily-v2-release/`。prod未迁移、未部署。
+
+### 2026-10-03 日报配置 HTTP 页面异常修复
+
+- 实际浏览器 `/settings/daily` 控制台确认 `TypeError: crypto.randomUUID is not a function`，HTTP IP 地址不支持该安全上下文 API。
+- 提交 `f199f9bbd702` 将经营月与 PK 班级 ID 改为 `crypto.getRandomValues` 生成，并改用惰性表单初始化。回归测试 2 项通过，admin `npx tsc --noEmit` 通过。
+- dev admin release `dev-f199f9bbd702-b4377b31991a-20261003T103707Z-28830`，脚本 exit 0 / RELEASE_OK；未执行数据库迁移。
+- 使用真实已登录浏览器刷新后，版本显示 `f199f9bbd702`，经营月和四周日期表单正常显示，新增经营月、PK 页签切换正常。未写入业务日期或分班配置；已有经营月的添加班级行为通过 HTTP 环境组件回归验证。

@@ -12,6 +12,7 @@
  */
 
 const pg = require('../db/pg')
+const { assertMembershipBinding } = require('../utils/membership-binding')
 const { requireStaffBound, requireManager, isCurrentStoreManager } = require('../middleware/auth')
 const { assertOrderInScope, isStoreInScope, restrictToBoundEmployee, buildBundleMarketScopeFilter, buildNormalSkuMarketScopeFilter } = require('../utils/scope')
 const { generateWxacode, uploadToCloudStorage, effectiveEnvVersion, versionPathSuffix } = require('../utils/wxacode')
@@ -591,7 +592,7 @@ const RECALC_CUSTOMER_TYPE_CTE = `WITH refund_by_item AS (
  * @param {object} client - pg 事务客户端
  * @param {string} clientUserId - client_wechat_users.user_id
  */
-async function recalcCustomerType(client, clientUserId) {
+async function recalcCustomerType(client, clientUserId, saleOrderId) {
   if (!clientUserId) return
 
   // 已是最高级，无需重算
@@ -629,6 +630,15 @@ async function recalcCustomerType(client, clientUserId) {
   )
 
   const newType = typeResult.rows[0].computed_type
+  if (newType === '会员客') {
+    const currentOrder = await client.query(
+      `${RECALC_CUSTOMER_TYPE_CTE} SELECT EXISTS (
+         SELECT 1 FROM order_amounts WHERE sale_order_id = $3 AND non_trial >= $2
+       ) AS current_order_qualifies`, [clientUserId, threshold, saleOrderId],
+    )
+    // 历史达标却尚未标会员的异常档案属于阶段2，不阻挡本次非达标消费。
+    if (currentOrder.rows[0]?.current_order_qualifies) await assertMembershipBinding(client, clientUserId)
+  }
   const updateResult = await client.query(
     `UPDATE client_wechat_users
      SET customer_type = $2::customer_type, updated_at = NOW()
@@ -737,7 +747,7 @@ async function deductPrepaidCardAtCreation(client, { saleOrderId, clientUserId, 
 async function settlePaidByCardAtCreation(client, { saleOrderId, clientUserId, receivedAmount, now }) {
   if (clientUserId) {
     await refreshSpendingTier(client, clientUserId)
-    await recalcCustomerType(client, clientUserId)
+    await recalcCustomerType(client, clientUserId, saleOrderId)
     // 会员等级即时重算（只升不降；与 recalcCustomerType 同口径，礼包留给 cron）
     await recalcMemberLevel(client, clientUserId, await getMemberThreshold(), 'staffApi')
   }
@@ -2322,7 +2332,7 @@ async function confirmOffline(ctx) {
     // 重算顾客历史消费档位
     await refreshSpendingTier(client, order.client_user_id)
     // 重算顾客类型（只升不降）
-    await recalcCustomerType(client, order.client_user_id)
+    await recalcCustomerType(client, order.client_user_id, saleOrderId)
     // 会员等级即时重算（只升不降；礼包留给 cron）
     await recalcMemberLevel(client, order.client_user_id, await getMemberThreshold(), 'staffApi')
 
@@ -4650,7 +4660,7 @@ async function createRepayment(ctx) {
 
     // 重算顾客消费档位 + 顾客类型（付清后累计消费可能跨阈值）
     await refreshSpendingTier(client, locked.client_user_id)
-    await recalcCustomerType(client, locked.client_user_id)
+    await recalcCustomerType(client, locked.client_user_id, refSaleOrderId)
     // 会员等级即时重算（只升不降；付清后累计消费可能跨档，礼包留给 cron）
     await recalcMemberLevel(client, locked.client_user_id, await getMemberThreshold(), 'staffApi')
 

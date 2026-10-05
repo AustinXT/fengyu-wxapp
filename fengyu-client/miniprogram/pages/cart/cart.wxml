@@ -1,8 +1,12 @@
 <!-- pages/cart/cart.wxml — 凤御馆宣传页 -->
 <view class="container">
+  <view wx:if="{{!loading && strips.length === 0}}">
+    宣传图暂时无法加载，请稍后重试
+    <button bindtap="loadStrips">重新加载</button>
+  </view>
   <image
     wx:for="{{strips}}"
-    wx:key="index"
+    wx:key="url"
     class="strip-image"
     src="{{item.url}}"
     mode="widthFix"

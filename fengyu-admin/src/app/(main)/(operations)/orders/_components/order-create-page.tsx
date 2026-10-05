@@ -941,6 +941,12 @@ export default function OrderCreatePageClient({
                         取消选择
                       </button>
                     </div>
+                    {selectedCustomer.customerType !== '会员客' && !selectedCustomer.boundEmployeeId && (
+                      <p className="mb-3 text-sm text-[#C0322A]">
+                        首次入会付款前须由店长明确指定所属员工。
+                        <a className="ml-2 underline" href={`/customers/${encodeURIComponent(selectedCustomer.userId)}`} target="_blank" rel="noreferrer">前往顾客详情分配</a>
+                      </p>
+                    )}
                     <div className="grid grid-cols-2 md:grid-cols-5 gap-4 text-sm">
                       <div>
                         <span className="text-[#999999]">姓名</span>

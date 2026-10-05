@@ -95,9 +95,9 @@ async function upsertReceipt(client, { salePaymentId, saleOrderId, saleItemId, a
   return rows.rows[0]?.id
 }
 
-async function capturePaymentAllocatables(client, { salePaymentId, saleOrderId, eventAmount, directedItems }) {
+async function previewPaymentAllocatables(client, { saleOrderId, eventAmount, directedItems }) {
   const evt = roundCents(Number(eventAmount))
-  if (!salePaymentId || !(evt > 0)) return []
+  if (!(evt > 0)) return []
 
   const ordRes = await client.query(
     'SELECT sale_order_type, legacy_source FROM sale_orders WHERE sale_order_id = $1',
@@ -124,23 +124,7 @@ async function capturePaymentAllocatables(client, { salePaymentId, saleOrderId, 
     const rows = convRes.rows
     if (rows.length === 0) return []
 
-    const convGuard = await client.query(`UPDATE sale_order_payments SET allocation_status = '待分配' WHERE id = $1 AND (allocation_status IS NULL OR allocation_status = '待分配')`, [salePaymentId])
-    if (convGuard.rowCount === 0) return []
-    const perItem = rows.map((r) => ({ saleItemId: r.sale_item_id, amount: Number(r.amount) }))
-
-    const catMap = new Map(rows.map((r) => [r.sale_item_id, r.sales_category]))
-    const out = []
-    for (const d of perItem) {
-      const receiptId = await upsertReceipt(client, {
-        salePaymentId,
-        saleOrderId,
-        saleItemId: d.saleItemId,
-        amount: d.amount,
-        salesCategory: catMap.get(d.saleItemId) || null,
-      })
-      out.push({ receiptId, saleItemId: d.saleItemId, amount: d.amount, salesCategory: catMap.get(d.saleItemId) || null })
-    }
-    return out
+    return rows.map((r) => ({ saleItemId: r.sale_item_id, amount: Number(r.amount), salesCategory: r.sales_category || null }))
   }
 
   const catMap = new Map(items.map((i) => [i.sale_item_id, i.sales_category]))
@@ -223,13 +207,20 @@ async function capturePaymentAllocatables(client, { salePaymentId, saleOrderId, 
     }
   }
 
+  return perItem.map((d) => ({ ...d, salesCategory: catMap.get(d.saleItemId) || null }))
+}
+
+async function capturePaymentAllocatables(client, { salePaymentId, saleOrderId, eventAmount, directedItems }) {
+  if (!salePaymentId) return []
+  const perItem = await previewPaymentAllocatables(client, { saleOrderId, eventAmount, directedItems })
+  if (perItem.length === 0) return []
   // CAS guard: 若已是 已分配（payNotify 重试/并发），跳过 receipt 写入
   const guardRes = await client.query(`UPDATE sale_order_payments SET allocation_status = '待分配' WHERE id = $1 AND (allocation_status IS NULL OR allocation_status = '待分配')`, [salePaymentId])
   if (guardRes.rowCount === 0) return []
 
   const out = []
   for (const d of perItem) {
-    const cat = catMap.get(d.saleItemId) || null
+    const cat = d.salesCategory
     const receiptId = await upsertReceipt(client, {
       salePaymentId,
       saleOrderId,
@@ -320,6 +311,7 @@ async function reconcileAllocationStatusAfterRefund(client, saleOrderId) {
 }
 
 module.exports = {
+  previewPaymentAllocatables,
   capturePaymentAllocatables,
   refreshOrderAllocationRollup,
   reconcileAllocationStatusAfterRefund,

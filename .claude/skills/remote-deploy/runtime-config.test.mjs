@@ -442,3 +442,11 @@ test('migration analysis follows latest created_at and hash instead of row count
   assert.match(currentWithHistoricalGap.reason, /remote journal is missing/)
   assert.equal(currentWithHistoricalGap.historicalRowDelta, -2)
 })
+
+
+test('backup control path cannot drift from the host deployment lock mount (#255)', () => {
+  const config = validConfig('dev')
+  assert.doesNotThrow(() => validateConfig('dev', config))
+  config.DATABASE_BACKUP_REQUEST_DIR = '/tmp/unshared-backups'
+  assert.throws(() => validateConfig('dev', config), /backup-control bind mount/)
+})

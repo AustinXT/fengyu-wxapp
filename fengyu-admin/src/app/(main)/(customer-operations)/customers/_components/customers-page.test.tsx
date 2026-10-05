@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, beforeAll } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
-import type { Customer, Store } from '@/lib/types'
+import type { Customer, Store, Employee } from '@/lib/types'
 import type { MarketStoreFilterOptions } from '@/lib/market-store-filter-types'
 
 const mockRefresh = vi.fn()
@@ -83,6 +83,8 @@ const filterOptions: MarketStoreFilterOptions = {
 }
 const customers: Customer[] = []
 
+const employees = [{ employeeId: "EMP-1", name: "指定员工", storeId: "store-1", storeName: "南昌旗舰店", isResigned: false }] as Employee[]
+
 function renderPage() {
   render(
     <CustomersPage
@@ -91,6 +93,7 @@ function renderPage() {
       filterOptions={filterOptions}
       total={0}
       canCreate
+      employees={employees}
     />,
   )
 }
@@ -129,6 +132,7 @@ describe('CustomersPage — 新增顾客绑定门店', () => {
         phone: '13812345678',
         name: '张三',
         boundStoreId: 'store-1',
+        boundEmployeeId: null,
       })
     })
     expect(mockRefresh).toHaveBeenCalled()
@@ -148,7 +152,21 @@ describe('CustomersPage — 新增顾客绑定门店', () => {
         phone: '13812345679',
         name: '李四',
         boundStoreId: null,
+        boundEmployeeId: null,
       })
     })
   })
+  it('只有店长明确选择后才提交所属员工，不自动采用开单员工', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(screen.getByRole('button', { name: '新增顾客' }))
+    await user.selectOptions(screen.getByDisplayValue('暂未分配，首次入会付款前须分配'), 'EMP-1')
+    await user.type(screen.getByPlaceholderText('请输入手机号'), '13812345680')
+    await user.type(screen.getByPlaceholderText('请输入姓名'), '王五')
+    await user.click(screen.getByRole('button', { name: '确认创建' }))
+    await waitFor(() => expect(mockCreateCustomer).toHaveBeenCalledWith({
+      phone: '13812345680', name: '王五', boundStoreId: null, boundEmployeeId: 'EMP-1',
+    }))
+  })
+
 })

@@ -372,3 +372,29 @@ describe('开单疗程卡阶梯价', () => {
     expect(page.data.prepaidCardMax).toBe('0.00')
   })
 })
+
+describe('#257 历史等级与当前会员价格资格', () => {
+  test('选择降档顾客重算商品和购物车为标价，再达标恢复会员价', () => {
+    const sku = {
+      skuId: 'sku-basic', spuId: 'sku-basic', spuName: '普通商品', specName: '',
+      categoryId: 'cat', categoryName: '产品', productKind: '产品', salesCategory: '自销自耗',
+      price: 1000, specialPrice: 600, sessionCount: 1, productType: '产品',
+      serviceFee: 0, isShengmei: false,
+    }
+    const page = {
+      ...pageDefinition,
+      data: { ...pageDefinition.data, spuList: [{ spuId: 'sku-basic' }], cart: [createCartItem('sku-basic', 1, 600)] },
+      _allSkus: [sku], _experienceSkus: [],
+      setData(update: Record<string, unknown>) { Object.assign(this.data, update) },
+      updateCart: vi.fn(function (this: any, cart: any[]) { this.data.cart = cart }),
+    }
+    page.refreshForCustomer({ customerType: '小美客', memberLevel: '金钻' })
+    expect(page.data.buyerIsMember).toBe(false)
+    expect(page.data.spuList[0].price).toBe(1000)
+    expect(page.data.cart[0].price).toBe(1000)
+    page.refreshForCustomer({ customerType: '会员客', memberLevel: '金钻' })
+    expect(page.data.buyerIsMember).toBe(true)
+    expect(page.data.spuList[0].price).toBe(600)
+    expect(page.data.cart[0].price).toBe(600)
+  })
+})

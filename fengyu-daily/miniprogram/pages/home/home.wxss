@@ -1,0 +1,17 @@
+.test-binding {
+  margin-top: 40rpx;
+  padding-top: 32rpx;
+  border-top: 1rpx solid #eee;
+}
+.goal-entry-action{margin:0 0 0 12rpx;padding:0 16rpx;line-height:64rpx;color:#c0322a;background:#fff1ef;font-size:24rpx;border-radius:12rpx;flex-shrink:0}.goal-entry-action::after{border:0}
+.test-binding input {
+  margin: 24rpx 0;
+  padding: 24rpx;
+  background: #f7f5f3;
+  border-radius: 12rpx;
+  font-size: 28rpx;
+}
+
+.home-content{padding-top:24rpx}.today-summary{padding-bottom:28rpx;margin-bottom:24rpx;border-bottom:1rpx solid #f0f0f0}.today-title{font-size:46rpx;font-weight:700;margin-bottom:14rpx}.today-card .primary{width:100%;font-weight:600}.section-head{margin-bottom:18rpx}.section-head .section{margin:0}.scope-label{padding:20rpx 24rpx;background:#fff;margin-bottom:24rpx;border-radius:14rpx;color:#6d7179}.today-card .title{margin:0}
+
+.goal-entry{background:#fffafa;border-color:#f0d6d6}.goal-pk{padding-top:24rpx;margin-top:24rpx;border-top:1rpx solid #f0d6d6;font-size:28rpx;font-weight:600;color:#c0322a}.goal-entry-action{background:none;padding:0}

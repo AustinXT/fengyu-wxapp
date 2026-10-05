@@ -43,6 +43,7 @@ interface Props {
   stores: Store[]
   orgNodes: OrgNode[]
   skillTags: SkillTag[]
+  canOpenRoleReview?: boolean
   canUpdate?: boolean
   canAssignRole?: boolean
   canRevokeRole?: boolean
@@ -59,6 +60,7 @@ export default function EmployeeDetailPage({
   stores,
   orgNodes,
   skillTags,
+  canOpenRoleReview = false,
   canUpdate = false,
   canAssignRole = false,
   canRevokeRole = false,
@@ -554,6 +556,7 @@ export default function EmployeeDetailPage({
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0">
               <CardTitle className="text-base">权限角色</CardTitle>
+              {canOpenRoleReview && <a href={`/permissions?employeeId=${encodeURIComponent(employee.employeeId)}`} className="text-sm text-[#C0322A]">前往权限管理复核调店绑定</a>}
               {isEditingRoles ? (
                 <div className="flex gap-2">
                   <Button size="sm" loading={savingRoles} onClick={handleSaveRoles}>

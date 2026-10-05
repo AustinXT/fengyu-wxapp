@@ -18,6 +18,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
   const session = await getSession()
   requireUiPageCapability(session, 'employee:create')
   const actions = session?.permissions.actions ?? []
+  const canOpenRoleReview = !!session && ['permission:list', 'employee:list', 'org:list'].every(action => hasPermission(session, action))
   const canUpdate = hasUiCapability(actions, 'employee:update')
   const canAssignRole = hasUiCapability(actions, 'permission:assign')
   const canRevokeRole = hasUiCapability(actions, 'permission:revoke')
@@ -44,6 +45,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
       stores={stores}
       orgNodes={orgNodes}
       skillTags={skillTags}
+      canOpenRoleReview={canOpenRoleReview}
       canUpdate={canUpdate}
       canAssignRole={canAssignRole}
       canRevokeRole={canRevokeRole}
