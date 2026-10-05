@@ -70,3 +70,20 @@
 - 私有空库重放63条通过；存量已提交日报升级完整保留；日报47项、后台26项测试通过；DB测试99项通过、13项环境型跳过；两端类型检查通过；生成器二次核验无额外结构变化。
 - 用户本聊天已授权 dev 建表、后端及后台更新和联调；沿用跳过双谱系决定。部署顺序：核验 dev 历史→db:migrate→结构与历史回读→dailyApiDev→admin dev→真实小程序联调。无额外数据脚本。
 - prod：未授权、未执行、未部署。未来复用本文件，不重生成编号；上线依赖该迁移先执行。
+
+## 2026-10-06 v1.17.23 prod 迁移执行
+
+- 用户确认沿用 v1.17.23，并单独回复 yes 授权生产迁移和后续发布；发布 HEAD bbcad717d。执行人 Codex，时间 2026-10-05T18:14:54.153Z。
+- 目标 118.178.196.26:5433/fengyu_wxapp；先只读检查历史，pending 为0061→0062，无额外脚本。沿用上述集中集成与私有验证依据。
+- 显式目标断言后，PGOPTIONS=-c lock_timeout=3s 下真实 db:migrate 退出0。0061 hash 8643243a716f7b6e249af83bd7360b4ee0c8fdc306f0a5d08f8df0602f43ac05、0062 hash dc0ebb9de66e09ce48580fd43e1dff002ba8d439b8e1a560981474fc45e4e7ca 已回读匹配，七张日报相关表存在。
+- 脱敏证据：_tmp/release-prod-v1.17.23/pre.json、post.json、migrate.log；仅 prod 执行。
+
+### v1.17.23 prod 发布完成
+
+- 执行人 Codex；发布 HEAD bbcad717dc39，实际两站 revision bbcad717dc39-dirty.3a4e68bf5050，包含本台账与两端 version.ts 未提交改动。收尾追加不属于已构建内容，不以 commit 单独代表可复现构建。
+- admin release prod-bbcad717dc39-dirty.3a4e68bf5050-dec16b06d9d5-20261005T182345Z-29339；analyst release prod-bbcad717dc39-dirty.3a4e68bf5050-dec16b06d9d5-20261005T182540Z-31804；两脚本退出0、RELEASE_OK。镜像各为 prod-bbcad717dc39-dirty.3a4e68bf5050-a87938fd433b。
+- admin 初次切换被旧孤儿备份 running 记录阻断，尚未切容器；只读核实无 pg_dump、内核锁空闲后，在持 runtime.lock 时暂停旧 cron worker，按脚本支持的停止worker恢复路径重试。新版worker恢复运行并自动将2026-09-21孤儿记录标failed，未删活锁或改写备份文件。
+- 独立终检：admin/analyst/cron-worker/export-worker均running、DB118.178.196.26:5433/fengyu_wxapp；两站HTTP307，Analyst origin=https://analyst.meiyayabeauty.com/。证据remote-verify.json。
+- 显式prod通道串行部署staffApi/clientApi/payNotify成功；独立fn detail回读三函数生产PG/primary、staff false/release与两项secret非空、client TMAP完整、HMAC跨端一致、client/payNotify通知归属payNotify。staff空请求code=-1（缺action，技能允许）冒烟通过。
+- 两站类型0错误；staff399/admin27/analyst476测试通过；DB132通过、16环境型跳过。两条迁移后journal门禁通过，无pending。证据目录_tmp/release-prod-v1.17.23/。
+- .active=prod，未commit/push。未提交文件：db/rollout/prod.md、client/staff miniprogram/utils/version.ts；两端APP_VERSION=v1.17.23须手动上传正式版小程序生效。独立日报dailyApi不属于release-all默认三函数，本次未部署。
