@@ -151,7 +151,7 @@ async function hasConflictingScopeAssignment(
       FROM permission_roles pr
       LEFT JOIN org_nodes node ON node.id = pr.scope_id
      WHERE pr.role = ${roleKey}
-       AND (node.id IS NULL OR NOT (node.type = ANY(${sql.param([...allowedScopeTypes])}::text[])))
+       AND (node.id IS NULL OR NOT (node.type::text = ANY(${sql.param([...allowedScopeTypes])}::text[])))
      LIMIT 1
   `)
   return (rows as unknown as unknown[]).length > 0
