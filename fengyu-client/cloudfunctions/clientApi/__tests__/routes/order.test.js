@@ -935,7 +935,7 @@ describe('order.pay', () => {
           return { rows: merchantRows, rowCount: merchantRows.length }
         }
         if (membership) {
-          if (/SET status = '已支付', received = \$2/.test(sql)) return { rows: [], rowCount: 1 }
+          if (/SET status = \$4::order_status, received = \$2/.test(sql)) return { rows: [], rowCount: 1 }
           if (/SELECT sale_order_type, legacy_source/.test(sql)) return { rows: [{ sale_order_type: '销售单' }], rowCount: 1 }
           if (/AS cash_paid/.test(sql)) return { rows: [{ cash_paid: 0, received: 0 }], rowCount: 1 }
           if (/AS qualifies/.test(sql)) return { rows: [{ qualifies: true }], rowCount: 1 }
@@ -3554,7 +3554,9 @@ describe('order.homeProducts', () => {
       + " OR (o.sale_order_type = '转换单' AND si.item_direction = '转入') )"
       + " AND si.product_type = '家居产品'",
     )
-    expect(sqlCode).toMatch(/FLOOR\(GREATEST\(0, si\.received::numeric\) \* si\.quantity \/ NULLIF\(si\.sale_amount::numeric, 0\)\)/)
+    expect(sqlCode).toContain("'handlingFee'")
+    expect(sqlCode).toContain("'refundAccountingVersion'")
+    expect(sqlCode).toMatch(/FLOOR\(GREATEST\(0, si\.received::numeric - [\s\S]+?\) \* si\.quantity \/ NULLIF\(si\.sale_amount::numeric, 0\)\)/)
     // issue #120：放行口径改为按物理剩余份额，旧的 pending 过滤会吞掉未付清的行。
     // 注意不能只断言 'pending_pickup_quantity > 0'——那串在 ORDER BY 里也有，测不出过滤口径。
     //

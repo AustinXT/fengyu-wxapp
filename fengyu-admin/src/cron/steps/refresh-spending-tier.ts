@@ -1,3 +1,4 @@
+import { retainedRefundFeeSql } from '@/lib/refund-fee-sql'
 /**
  * STEP — spending_tier（历史消费档位）重算（迁自 db/scripts/calc-spending-tier.js）
  *
@@ -23,7 +24,7 @@ import type { Db } from '../run'
 export const UPDATE_SPENDING_TIER_SQL = `
 WITH spend AS (
   SELECT u.user_id,
-         COALESCE(SUM(GREATEST((o.received::numeric) - (o.refunded_amount::numeric), 0)) FILTER (
+         COALESCE(SUM(GREATEST((o.received::numeric) - (o.refunded_amount::numeric) - ${retainedRefundFeeSql('o.sale_order_id')}, 0)) FILTER (
                     WHERE o.sale_order_type IN ('销售单', '转换单')
                   ), 0) AS total
     FROM client_wechat_users u

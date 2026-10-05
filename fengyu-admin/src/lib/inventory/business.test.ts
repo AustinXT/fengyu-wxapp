@@ -4327,6 +4327,47 @@ describe('市场报货草稿（#348）', () => {
     expect(rendered().some((text) => text.includes('FROM inventory_doc_items') && text.includes('FOR UPDATE'))).toBe(false)
   })
 
+  it('#531 无门店来源可以独立报货，服务端重取价且不写门店血缘', async () => {
+    const { calls, rendered } = mockDraftTx(null)
+    const result = await createMarketReplenishment(SESSION, {
+      marketId: 'M1', supplyChainLocationId: 'HQ',
+      items: [{ skuId: 'SKU-1', sourceRequestItemIds: [], purchaseQuantity: 3, actualUnitPrice: 1 } as never],
+    })
+    expect(result.id).toMatch(/^MBH-/)
+    const item = calls.find((query) => renderSql(query).includes('INSERT INTO inventory_doc_items'))
+    expect(sqlParams(item)[14]).toBe('0')
+    expect(sqlParams(item)).toEqual(expect.arrayContaining(['100', '300']))
+    expect(rendered().some((q) => q.includes('INSERT INTO inventory_doc_links'))).toBe(false)
+    expect(rendered().some((q) => q.includes('FROM inventory_doc_items') && q.includes('FOR UPDATE'))).toBe(false)
+  })
+
+  it('#531 独立草稿写零需求标记，旧提取草稿仍为空值', async () => {
+    for (const independent of [true, false]) {
+      const { calls } = mockDraftTx(null)
+      await saveMarketReplenishmentDraft(SESSION, {
+        marketId: 'M1', supplyChainLocationId: 'HQ',
+        items: [{ skuId: 'SKU-1', purchaseQuantity: 2, independent }],
+      })
+      const item = calls.find((query) => renderSql(query).includes('INSERT INTO inventory_doc_items'))
+      expect(sqlParams(item)[14]).toBe(independent ? '0' : null)
+    }
+  })
+
+  it.each([0, -1, NaN, Infinity, 0.001, 1.005, 10000000000, true])('#531 拒绝非法数量 %s', async (quantity) => {
+    mockDraftTx(null)
+    const input = { marketId: 'M1', supplyChainLocationId: 'HQ', items: [{ skuId: 'SKU-1', sourceRequestItemIds: [], purchaseQuantity: quantity as number }] }
+    await expect(createMarketReplenishment(SESSION, input)).rejects.toThrow('INVALID_PARAMS:')
+    await expect(saveMarketReplenishmentDraft(SESSION, input)).rejects.toThrow('INVALID_PARAMS:')
+  })
+
+  it('#531 空来源可用但缺少/伪造来源以及重复 SKU 拒绝', async () => {
+    mockDraftTx(null)
+    const line = { skuId: 'SKU-1', sourceRequestItemIds: [], purchaseQuantity: 1 }
+    const input = { marketId: 'M1', supplyChainLocationId: 'HQ', items: [line, line] }
+    await expect(createMarketReplenishment(SESSION, input)).rejects.toThrow('商品不能重复')
+    await expect(createMarketReplenishment(SESSION, { ...input, items: [{ ...line, sourceRequestItemIds: undefined } as never] })).rejects.toThrow('来源明细须为数组')
+  })
+
   it('覆盖草稿：只重写明细与单头可改字段，状态保持草稿', async () => {
     const { rendered } = mockDraftTx(DRAFT)
     await saveMarketReplenishmentDraft(SESSION, {
@@ -4530,6 +4571,36 @@ describe('门店报货草稿（#348）', () => {
 
   beforeEach(() => {
     vi.resetAllMocks()
+  })
+
+  it.each([1.06, -1, NaN, Infinity, 10000000000, '', null, true])('非法数量 %s 在新建/存草稿/覆盖/提交均拒绝且不写库（#532）', async (quantity) => {
+    for (const action of [createStoreReplenishmentRequest, saveStoreReplenishmentDraft]) {
+      for (const draftId of [undefined, 'DBH-D1']) {
+        const mock = mockStoreDraftTx(STORE_DRAFT)
+        await expect(action(SESSION, {
+          ...input, draftId, expectedUpdatedAt: DRAFT_VERSION,
+          items: [{ skuId: 'SKU-1', quantity: quantity as number }],
+        })).rejects.toThrow('报货数量须为 0 至 9999999999 的非负整数')
+        expect(mock.rendered().some((sql) => /INSERT INTO inventory_doc|DELETE FROM inventory_doc_items|UPDATE inventory_docs/.test(sql))).toBe(false)
+      }
+    }
+  })
+
+  it('零数量不入需求明细；全零草稿/正式单拒绝且保留原草稿（#532）', async () => {
+    for (const action of [createStoreReplenishmentRequest, saveStoreReplenishmentDraft]) {
+      const mock = mockStoreDraftTx(STORE_DRAFT)
+      await action(SESSION, { ...input, draftId: 'DBH-D1', expectedUpdatedAt: DRAFT_VERSION,
+        items: [{ skuId: 'SKU-ZERO', quantity: 0 }, { skuId: 'SKU-1', quantity: 1 }, { skuId: 'SKU-2', quantity: 2 }],
+      })
+      const writes = mock.calls.filter((q) => renderSql(q).includes('INSERT INTO inventory_doc_items'))
+      expect(writes).toHaveLength(2)
+      expect(writes.flatMap(sqlParams)).not.toContain('SKU-ZERO')
+      const zero = mockStoreDraftTx(STORE_DRAFT)
+      await expect(action(SESSION, { ...input, draftId: 'DBH-D1', expectedUpdatedAt: DRAFT_VERSION,
+        items: [{ skuId: 'SKU-1', quantity: 0 }],
+      })).rejects.toThrow('门店报货至少需要一条数量大于 0 的明细')
+      expect(zero.rendered().some((sql) => sql.includes('DELETE FROM inventory_doc_items'))).toBe(false)
+    }
   })
 
   it('新建草稿：单头状态草稿、不确认；与正式单同一套明细校验', async () => {

@@ -7,7 +7,7 @@
  * 用原生 select 替身即可沿用 `fireEvent.change(select, { target: { value } })` 的写法，
  * 并把 `filters` / `disabled` 挂成 data 属性供断言。
  */
-import type { InventorySkuOptionFilters } from '@/lib/inventory/types'
+import type { InventorySkuOptionFilters, InventorySkuRow } from '@/lib/inventory/types'
 
 export const STUB_SKUS = [
   { skuId: 'SKU-1', productCode: 'P001', productName: '精华液' },
@@ -27,7 +27,7 @@ export function InventorySkuSearchSelect({
   ariaLabel,
 }: {
   value: string
-  onChange: (skuId: string, sku: null) => void
+  onChange: (skuId: string, sku: InventorySkuRow | null) => void
   filters?: InventorySkuOptionFilters
   disabled?: boolean
   placeholder?: string
@@ -40,7 +40,10 @@ export function InventorySkuSearchSelect({
       data-filters={JSON.stringify(filters ?? {})}
       disabled={disabled}
       value={value}
-      onChange={(event) => onChange(event.target.value, null)}
+      onChange={(event) => {
+        const sku = STUB_SKUS.find((row) => row.skuId === event.target.value)
+        onChange(event.target.value, sku ? { ...sku, specName: null } as InventorySkuRow : null)
+      }}
     >
       <option value="">{placeholder}</option>
       {STUB_SKUS.map((sku) => (

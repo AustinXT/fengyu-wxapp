@@ -37,7 +37,8 @@ test('历史分类：真实SQL、离线双向分类与历史保留、幂等、�
         sale_order_id text, sale_item_id text, received numeric, sale_amount numeric,
         is_experience boolean, item_direction text
       );
-      CREATE TEMP TABLE sale_order_payments (sale_order_id text, note text, change_type text, status text);
+      CREATE TEMP TABLE sale_order_payments (id bigint, sale_order_id text, note text, change_type text, status text, paid_at timestamptz);
+      CREATE TEMP TABLE sale_payment_item_receipts (sale_payment_id bigint, sale_order_id text, sale_item_id text, amount numeric);
       INSERT INTO client_wechat_users(user_id, customer_type, member_level, became_member_at) VALUES
         ('member','流量客',NULL,NULL), ('small','流量客',NULL,NULL), ('trial','流量客',NULL,NULL),
         ('nullpaid','流量客',NULL,NULL), ('empty','流量客',NULL,NULL), ('keep','会员客','金钻','2020-01-01T00:00:00Z');

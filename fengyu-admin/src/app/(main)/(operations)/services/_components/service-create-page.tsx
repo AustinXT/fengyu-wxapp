@@ -122,7 +122,7 @@ export default function ServiceCreatePageClient({
   const [submitting, setSubmitting] = useState(false)
   const [createdServiceOrderId, setCreatedServiceOrderId] = useState("")
 
-  // 候选随门店异步加载：本店员工 ∪ 本门店所属市场内出差支援的员工（issue #210）。
+  // 候选随门店异步加载：本店员工 ∪ 全系统已开启出差支援的员工（issue #530）。
   // 切店竞态用 cancelled 标记兜住——后发请求先返回时不会被先发请求的结果覆盖。
   useEffect(() => {
     if (!selectedStoreId) {

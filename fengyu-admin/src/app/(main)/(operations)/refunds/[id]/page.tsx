@@ -34,7 +34,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
 
   const canApprove = !!(session && hasPermission(session, 'sale_order:refund_approve'))
 
-  const { refund, origOrder, payments } = data
+  const { refund, refundItems, origOrder, payments } = data
   const refundAmount = Math.abs(Number(refund.amount))
 
   return (
@@ -51,6 +51,23 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
         </div>
         {refund.status === '待审批' && canApprove && <ApprovalActions refundPaymentId={refund.refundPaymentId} />}
       </div>
+
+      {refundItems.length > 0 && <Card>
+        <CardHeader><CardTitle>退款商品明细</CardTitle></CardHeader>
+        <CardContent><div className="overflow-x-auto"><table className="w-full text-sm text-left">
+          <thead><tr><th className="py-2">商品</th><th>退款毛额</th><th>手续费</th><th>透支扣除</th><th>实际退款</th></tr></thead>
+          <tbody>{refundItems.map(item => <tr key={item.saleItemId}>
+            <td className="py-2">{item.productName}</td><td>¥{item.grossRefundAmount.toFixed(2)}</td>
+            <td>¥{item.handlingFee.toFixed(2)}</td><td>¥{item.overdraftDeduction.toFixed(2)}</td><td>¥{item.netRefundAmount.toFixed(2)}</td>
+          </tr>)}</tbody>
+          <tfoot><tr><td className="py-2 font-medium">合计</td>
+            <td>¥{refundItems.reduce((sum, it) => sum + it.grossRefundAmount, 0).toFixed(2)}</td>
+            <td>¥{refundItems.reduce((sum, it) => sum + it.handlingFee, 0).toFixed(2)}</td>
+            <td>¥{refundItems.reduce((sum, it) => sum + it.overdraftDeduction, 0).toFixed(2)}</td>
+            <td>¥{refundItems.reduce((sum, it) => sum + it.netRefundAmount, 0).toFixed(2)}</td>
+          </tr></tfoot>
+        </table></div></CardContent>
+      </Card>}
 
       {/* 退款单信息 */}
       <Card>

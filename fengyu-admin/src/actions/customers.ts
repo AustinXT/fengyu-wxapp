@@ -1,5 +1,7 @@
 'use server'
 
+import { retainedRefundFeeSql } from '@/lib/refund-fee-sql'
+
 import { db } from '@/db'
 import { clientWechatUsers, staffWechatUsers } from '@db/user'
 import { saleOrders } from '@db/order'
@@ -416,7 +418,7 @@ export const exportCustomers = withPermission(
       const spendRows = await db
         .select({
           clientUserId: saleOrders.clientUserId,
-          total: sql<string>`COALESCE(SUM(GREATEST((received::numeric) - (refunded_amount::numeric), 0)) FILTER (WHERE sale_order_type IN ('销售单','转换单')), 0)::text`,
+          total: sql<string>`COALESCE(SUM(GREATEST((received::numeric) - (refunded_amount::numeric) - ${sql.raw(retainedRefundFeeSql('sale_orders.sale_order_id'))}, 0)) FILTER (WHERE sale_order_type IN ('销售单','转换单')), 0)::text`,
         })
         .from(saleOrders)
         .where(inArray(saleOrders.clientUserId, userIds))
@@ -729,7 +731,7 @@ export const getCustomerHomeProducts = withPermission(
               THEN GREATEST(0, si.quantity - LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0))))
             ELSE LEAST(
               GREATEST(0, si.quantity - LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))),
-              GREATEST(0, FLOOR((GREATEST(0, si.received::numeric)
+              GREATEST(0, FLOOR((GREATEST(0, si.received::numeric - ${sql.raw(retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true))})
                 - GREATEST(0, COALESCE(si.picked_up_quantity, 0)) * si.unit_real_price::numeric
                 - COALESCE(ct.converted_amount, 0)) / NULLIF(si.unit_real_price::numeric, 0)))::int
             )
@@ -742,11 +744,11 @@ export const getCustomerHomeProducts = withPermission(
             WHEN si.sale_amount <= 0 THEN si.quantity
             ELSE LEAST(
               si.quantity,
-              FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int
+              FLOOR(GREATEST(0, si.received::numeric - ${sql.raw(retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true))}) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int
             )
           END AS paid_quantity,
           si.sale_amount::numeric AS row_sale_amount,
-          GREATEST(0, si.received::numeric) AS row_received,
+          GREATEST(0, si.received::numeric - ${sql.raw(retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true))}) AS row_received,
           (o.sale_order_type = '寄存单') AS is_deposit,
           o.store_id,
           s.store_name,

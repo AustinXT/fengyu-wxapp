@@ -18,6 +18,7 @@ import type { AuthSession } from '@/lib/types'
 import { revalidatePath } from 'next/cache'
 import { sql } from 'drizzle-orm'
 import { assertInventoryBusinessWritable } from './cutover'
+import { validNonnegativeStoreRequestQuantity, STORE_REQUEST_QUANTITY_ERROR, STORE_REQUEST_EMPTY_ERROR } from './store-request-quantity'
 import { cancelledMarketReportRetainedSql } from './retained-sql'
 import { allocateConversionLinks, formatConversionAmount, summarizeConversion, uncoveredConversionTargets } from './conversion-plan'
 import { pgRaiseMessage } from '@/lib/pg-error'
@@ -273,7 +274,7 @@ export interface SaveMarketReplenishmentDraftInput {
   supplyChainLocationId: string
   docDate?: string | null
   remark?: string | null
-  items: Array<{ skuId: string; purchaseQuantity: number }>
+  items: Array<{ skuId: string; purchaseQuantity: number; independent?: boolean }>
   promotionSelections?: MarketPromotionSelectionInput[]
   /** 草稿乐观锁（#348），同 CreateStoreReplenishmentInput.expectedUpdatedAt */
   expectedUpdatedAt?: string | null
@@ -2150,7 +2151,7 @@ function refreshInventoryPaths(): void {
  * 门店只能为自身市场创建需求，报货本身不产生库存流水。
  *
  * 门店报货：新建 / 存草稿 / 提交草稿共用一条写路径（#348），校验只有一份 ——
- * 草稿与正式单的明细口径（可报货 SKU、归属本市场、数量为正、同 SKU 合并）完全一致，
+ * 草稿与正式单的明细口径（可报货 SKU、归属本市场、数量为非负整数（零行不产生需求）、同 SKU 合并）完全一致，
  * 差别只在单头状态：草稿不确认、不进任何下游（汇总 / 在途 / 市场报货引用 / 分院配货都只认「已完成」）。
  */
 export async function createStoreReplenishmentRequest(
@@ -2188,12 +2189,18 @@ export async function createStoreReplenishmentRequest(
       skuIds.add(skuId)
       const sku = await loadSku(tx, skuId, true)
       assertSkuAvailableToMarket(sku, marketId)
+      if (!validNonnegativeStoreRequestQuantity(item.quantity)) {
+        throw new ApiError('INVALID_PARAMS', STORE_REQUEST_QUANTITY_ERROR)
+      }
+      const quantity = Number(item.quantity)
+      if (quantity === 0) continue
       prepared.push({
         sku,
-        quantity: positive(item.quantity, '报货数量'),
+        quantity,
         remark: text(item.remark),
       })
     }
+    if (prepared.length === 0) throw new ApiError('INVALID_PARAMS', STORE_REQUEST_EMPTY_ERROR)
     const total = prepared.reduce((sum, item) => sum + item.quantity, 0)
     let docId: string
     if (draftId) {
@@ -2809,7 +2816,14 @@ async function lockMarketReplenishmentDraft(
   return draft
 }
 
-/** 市场报货由服务端从门店需求、实时库存及福利方案计算，采购数量只允许显式业务字段传入。 */
+function marketPurchaseQuantity(value: number): number {
+  if (typeof value !== 'number') throw new ApiError('INVALID_PARAMS', '实际采购数量须为数字')
+  const quantity = twoDecimals(positive(value, '实际采购数量'), '实际采购数量')
+  if (quantity > 9999999999.99) throw new ApiError('INVALID_PARAMS', '实际采购数量超出允许范围')
+  return quantity
+}
+
+/** 市场报货支持门店需求提取与独立报货；价格始终由服务端计算。 */
 export async function createMarketReplenishment(
   session: AuthSession,
   input: CreateMarketReplenishmentInput,
@@ -2834,6 +2848,7 @@ export async function createMarketReplenishment(
     if ((input.promotionSelections?.length ?? 0) > 0) assertMarketPromotionSelectable(session, market)
     if (draftId) await lockMarketReplenishmentDraft(tx, draftId, market, { expectedUpdatedAt: input.expectedUpdatedAt })
     const seenRequestItems = new Set<number>()
+    const seenSkus = new Set<string>()
     const docDate = dateOrToday(input.docDate)
     const prepared: Array<{
       sku: SkuSnapshot
@@ -2844,10 +2859,12 @@ export async function createMarketReplenishment(
     }> = []
     for (const line of input.items) {
       const skuId = required(line.skuId, '库存 SKU')
-      const purchaseQuantity = positive(line.purchaseQuantity, '实际采购数量')
-      if (!Array.isArray(line.sourceRequestItemIds) || line.sourceRequestItemIds.length === 0) {
-        throw new ApiError('INVALID_PARAMS', '市场报货必须选择门店报货明细')
+      const purchaseQuantity = marketPurchaseQuantity(line.purchaseQuantity)
+      if (!Array.isArray(line.sourceRequestItemIds)) {
+        throw new ApiError('INVALID_PARAMS', '市场报货来源明细须为数组，独立报货请传空数组')
       }
+      if (seenSkus.has(skuId)) throw new ApiError('INVALID_PARAMS', '市场报货的商品不能重复')
+      seenSkus.add(skuId)
       const sourceItems: DocItemSnapshot[] = []
       for (const rawItemId of line.sourceRequestItemIds) {
         const requestItemId = Number(rawItemId)
@@ -2874,7 +2891,7 @@ export async function createMarketReplenishment(
         }
         sourceItems.push({ ...item, quantity: outstandingQuantity })
       }
-      const sku = await loadSku(tx, skuId, true)
+      const sku = await loadSku(tx, skuId, true, true)
       assertSkuAvailableToMarket(sku, marketId)
       const [stock] = rows<{ quantity: string | number | null }>(await tx.execute(sql`
         SELECT COALESCE(SUM(quantity_on_hand), 0) AS quantity
@@ -3018,13 +3035,16 @@ export async function saveMarketReplenishmentDraft(
   if ((input.promotionSelections?.length ?? 0) > 0 && !hasPermission(session, 'inventory:market_price_view')) {
     throw new ApiError('PERMISSION_DENIED', '无权切换市场报货福利方案')
   }
-  const lines: Array<{ skuId: string; purchaseQuantity: number }> = []
+  const lines: Array<{ skuId: string; purchaseQuantity: number; independent: boolean }> = []
   const seenSkus = new Set<string>()
   for (const line of input.items) {
     const skuId = required(line.skuId, '库存 SKU')
     if (seenSkus.has(skuId)) throw new ApiError('INVALID_PARAMS', '市场报货草稿的商品不能重复')
     seenSkus.add(skuId)
-    lines.push({ skuId, purchaseQuantity: positive(line.purchaseQuantity, '实际采购数量') })
+    if (line.independent !== undefined && typeof line.independent !== 'boolean') {
+      throw new ApiError('INVALID_PARAMS', '独立报货标记不正确')
+    }
+    lines.push({ skuId, purchaseQuantity: marketPurchaseQuantity(line.purchaseQuantity), independent: line.independent === true })
   }
   await syncLocations()
   const { id, updatedAt } = await db.transaction(async (tx) => {
@@ -3039,7 +3059,7 @@ export async function saveMarketReplenishmentDraft(
     const docDate = dateOrToday(input.docDate)
     const skus = new Map<string, SkuSnapshot>()
     for (const line of lines) {
-      const sku = await loadSku(tx, line.skuId, true)
+      const sku = await loadSku(tx, line.skuId, true, true)
       assertSkuAvailableToMarket(sku, market.orgNodeId)
       skus.set(line.skuId, sku)
     }
@@ -3084,6 +3104,8 @@ export async function saveMarketReplenishmentDraft(
       await insertDocItem(tx, {
         docId,
         ...marketReportItemPriceFields(skus.get(line.skuId)!, line.purchaseQuantity, quote),
+        // 草稿独立行用零需求保留意图；NULL 兼容旧提取草稿，提交时仍重算真实来源。
+        requestQuantity: line.independent ? 0 : null,
       })
     }
     return { id: docId, updatedAt: await docUpdatedAtIso(tx, docId) }

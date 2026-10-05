@@ -24,7 +24,7 @@ const USERS = [
   ['U_trial', '体验客', '只买体验卡 680'],
   ['U_small', '小美客', '非体验 500 < 1980'],
   ['U_refund', '会员客', '付清 2000 后退 1500，毛实收仍 2000（退款不扣减）'],
-  ['U_partial', '流量客', '部分支付已收 2500 未结清，不参与判定'],
+  ['U_partial', '会员客', '部分支付非体验已收2500，#524纳入判定'],
   ['U_none', '流量客', '无订单'],
   ['U_zero', '流量客', '已结清但 received=0（相对旧口径是行为变化）'],
   ['U_legacy', '会员客', 'WorkFine 历史单无明细行，回退订单级 received=3000'],
@@ -44,7 +44,7 @@ const pick = (re, what) => {
   if (!m) throw new Error(`提取失败：${what}。源码结构变了？请同步本脚本与守护测试的正则。`)
   return m[0]
 }
-const cte = pick(/WITH refund_by_item AS \([\s\S]*?GROUP BY o\.sale_order_id, o\.received\s*\)/m, '金额 CTE')
+const cte = pick(/WITH membership_settings AS \([\s\S]*?FROM membership_amounts a CROSS JOIN membership_settings cfg\s*\)/m, '金额 CTE')
 const caseSql = pick(/SELECT CASE[\s\S]*?END AS computed_type/m, '三档 CASE')
 const CTE_REF = '${RECALC_CUSTOMER_TYPE_CTE}'
 const upd = pick(/UPDATE sale_orders SET is_membership_upgrade[\s\S]*?LIMIT 1\s*\)/, 'is_membership_upgrade 归因').replace(CTE_REF, () => cte)

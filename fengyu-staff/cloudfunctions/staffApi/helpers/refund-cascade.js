@@ -1,3 +1,7 @@
+const { settlePointsSafe } = require('../utils/points')
+const { retainedRefundFeeSql } = require('../utils/refund-fee-sql')
+const { allocateRefundAccounting, remapLegacyOverpay } = require('../utils/refund-accounting')
+const { computeItemOverpayRemainders } = require('../utils/refund')
 /**
  * 退款审批通过级联回滚 helper（逐 item + 语义收敛）
  *
@@ -61,7 +65,7 @@ function allocateCentsByWeight(totalCents, rows) {
  * 退款营业额按 role_type 独立成池，再在池内按员工尚未冲销的正向分配权重拆分。
  * 跨角色池各自最多冲销一份退款额；例如美容师/品项老师各 100%，全退后两池均归零。
  */
-function planRolePoolRefundAllocations(rows, refundAmount) {
+function planRolePoolRefundAllocations(rows, refundAmount, fullItemRefund = false) {
   const refundCents = Math.max(0, Math.round(Number(refundAmount || 0) * 100))
   if (refundCents <= 0 || rows.length === 0) return []
 
@@ -97,7 +101,7 @@ function planRolePoolRefundAllocations(rows, refundAmount) {
     const poolRemainingCents = pool.reduce((sum, row) => sum + row.remainingCents, 0)
     if (poolRemainingCents <= 0) continue
     const proportionalTarget = Math.round((refundCents * poolRemainingCents) / availableReceiptCents)
-    const targetCents = Math.min(refundCents, poolRemainingCents, Math.max(0, proportionalTarget))
+    const targetCents = fullItemRefund ? poolRemainingCents : Math.min(refundCents, poolRemainingCents, Math.max(0, proportionalTarget))
     if (targetCents <= 0) continue
 
     const parts = pool.map((row) => {
@@ -138,7 +142,7 @@ async function buildReceiptRefundItems(client, saleOrderId, refundPaymentId, eff
   const requestedCentsByItem = new Map()
   let overpayCents = 0
   for (const it of effItems) {
-    const cents = Math.round(Number(it.refundAmount || 0) * 100)
+    const cents = Math.round(Number(it.netRefundAmount ?? it.refundAmount ?? 0) * 100)
     if (cents <= 0) continue
     if (isLegacyOverpaySentinel(it)) {
       overpayCents += cents
@@ -149,7 +153,9 @@ async function buildReceiptRefundItems(client, saleOrderId, refundPaymentId, eff
 
   const requestedTotalCents = overpayCents
     + Array.from(requestedCentsByItem.values()).reduce((sum, cents) => sum + cents, 0)
-  if (requestedTotalCents <= 0) return []
+  if (requestedTotalCents <= 0) return effItems
+    .filter(it => !isLegacyOverpaySentinel(it) && Number(it.refundAmount ?? 0) > 0)
+    .map(it => ({ saleItemId: it.saleItemId, refundAmount: 0 }))
 
   const residualRows = await client.query(
       `SELECT si.sale_item_id,
@@ -173,6 +179,33 @@ async function buildReceiptRefundItems(client, saleOrderId, refundPaymentId, eff
         ORDER BY si.sale_item_id`,
       [saleOrderId, refundPaymentId],
   )
+  // 完全无 receipt 的单商品历史单，只有来源金额逐分一致且无已生效历史退款时才能确定归属。
+  if (residualRows.rows.length === 1 && Number(residualRows.rows[0].positive_amount) === 0) {
+    const legacyRows = (await client.query(`
+      SELECT so.received,
+             (SELECT COUNT(*) FROM sale_payment_item_receipts WHERE sale_order_id = $1) AS receipt_count,
+             (SELECT COALESCE(SUM(amount), 0) FROM sale_order_payments
+               WHERE sale_order_id = $2 AND status = '已支付'
+                 AND change_type IN ('首次支付','回款','储值卡抵扣')) AS positive_total,
+             (SELECT COUNT(*) FROM sale_order_payments WHERE sale_order_id = $3
+               AND status = '已支付' AND change_type = '退款' AND id <> $4) AS prior_refunds
+        FROM sale_orders so WHERE so.sale_order_id = $5
+    `, [saleOrderId, saleOrderId, saleOrderId, refundPaymentId, saleOrderId])).rows
+    const legacy = legacyRows[0]
+    if (legacy && Number(legacy.receipt_count) === 0 && Number(legacy.prior_refunds) === 0
+        && Number(legacy.received) > 0
+        && Math.round(Number(legacy.received) * 100) === Math.round(Number(legacy.positive_total) * 100)) {
+      await client.query(`
+        INSERT INTO sale_payment_item_receipts (sale_payment_id, sale_order_id, sale_item_id, amount, sales_category, created_at)
+        SELECT sop.id, sop.sale_order_id, si.sale_item_id, sop.amount, si.sales_category, NOW()
+          FROM sale_order_payments sop JOIN sale_items si ON si.sale_order_id = sop.sale_order_id AND si.item_direction = '购买'
+         WHERE sop.sale_order_id = $1 AND sop.status = '已支付'
+           AND sop.change_type IN ('首次支付','回款','储值卡抵扣') AND sop.amount > 0
+        ON CONFLICT (sale_payment_id, sale_item_id) DO NOTHING
+      `, [saleOrderId])
+      residualRows.rows[0].positive_amount = legacy.positive_total
+    }
+  }
   const availableCentsByItem = new Map(residualRows.rows.map((r) => [
     r.sale_item_id,
     Math.max(
@@ -185,8 +218,8 @@ async function buildReceiptRefundItems(client, saleOrderId, refundPaymentId, eff
   let overflowCents = overpayCents
   for (const [saleItemId, requestedCents] of requestedCentsByItem) {
     const mappedCents = Math.min(requestedCents, availableCentsByItem.get(saleItemId) || 0)
+    if (mappedCents !== requestedCents) throw new Error('INVALID_STATE: 退款金额无法完整映射到商品行实收')
     addRefundCents(refundCentsByItem, saleItemId, mappedCents)
-    overflowCents += requestedCents - mappedCents
   }
   const candidates = residualRows.rows
     .map((r) => ({
@@ -205,6 +238,9 @@ async function buildReceiptRefundItems(client, saleOrderId, refundPaymentId, eff
     throw new Error('INVALID_STATE: 退款金额无法完整映射到商品行实收')
   }
 
+  for (const it of effItems) {
+    if (!isLegacyOverpaySentinel(it) && Number(it.refundAmount ?? 0) > 0 && !refundCentsByItem.has(it.saleItemId)) refundCentsByItem.set(it.saleItemId, 0)
+  }
   return Array.from(refundCentsByItem.entries()).map(([saleItemId, cents]) => ({
     saleItemId,
     refundAmount: cents / 100,
@@ -246,12 +282,60 @@ async function cascadeRefund(client, params) {
   // 先为被退 item 写负数 receipt，确保 sale_items.received / paid_sessions 可按净额重算。
   // OVERPAY 是订单级哨兵，不触发其它级联；在本通道按正向 receipt 残留映射回真实 item。
   // 仅当该 item 有原正向子分配时，才按原 (employee, role) 权重生成负数子分配；无原正向则不生成赤字分配。
+  // #529：锁内读取真实主流水，规范化旧待审批 note，避免毛退款被当成现金冲销。
+  const paymentRows = (await client.query(`
+    SELECT note, amount FROM sale_order_payments
+     WHERE id = $1 AND sale_order_id = $2 AND change_type = '退款'
+  `, [refundPaymentId, saleOrderId])).rows
+  const payment = paymentRows[0]
+  let note
+  try { note = payment?.note ? JSON.parse(payment.note) : null }
+  catch { note = null } // 沿用旧文本note的既有级联兜底，不将格式异常升级为未知错误。
+  if (note && Array.isArray(note.items)) {
+    const paidRows = (await client.query(`
+      SELECT si.*, GREATEST(0, si.received::numeric
+        - ${retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true, 'current_refund.id')}) AS received, COALESCE(si.picked_up_quantity, 0) AS picked_quantity,
+          COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item
+            JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+            WHERE out_item.ref_sale_item_id = si.sale_item_id AND out_item.item_direction = '转出'
+              AND conv_order.status <> '已关闭'), 0) AS converted_amount,
+          COALESCE((SELECT SUM(out_item.quantity) FROM sale_items out_item
+            JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+            WHERE out_item.ref_sale_item_id = si.sale_item_id AND out_item.item_direction = '转出'
+              AND conv_order.status <> '已关闭'), 0)::int AS converted_quantity
+        FROM sale_items si CROSS JOIN (SELECT $2::bigint AS id) current_refund
+       WHERE si.sale_order_id = $1 AND si.item_direction = '购买' ORDER BY si.sale_item_id
+    `, [saleOrderId, refundPaymentId])).rows
+    if (note.items.some((it) => it.refSaleItemId === 'OVERPAY')) {
+      note.items = remapLegacyOverpay(note.items, computeItemOverpayRemainders(paidRows))
+      effItems = note.items.map((it) => ({ saleItemId: it.refSaleItemId,
+        sessionCount: it.sessionCount ?? it.quantity ?? 0, refundAmount: it.refundAmount,
+        overpayAmount: it.overpayAmount, isOverpay: false, isFullItemRefund: it.isFullItemRefund === true }))
+    }
+    const accounted = allocateRefundAccounting(note.items,
+      new Map(paidRows.map(r => [r.sale_item_id, Number(note.refundAccountingVersion === 2
+        ? note.items.find((it) => it.refSaleItemId === r.sale_item_id)?.paidAmount ?? r.received : r.received)])),
+      Number(note.handlingFee ?? 0), Number(note.overdraftDeduction ?? 0))
+    if (Math.round(accounted.reduce((sum, it) => sum + it.netRefundAmount, 0) * 100)
+        !== Math.round(Math.abs(Number(payment.amount)) * 100)) {
+      throw new Error('INVALID_STATE: 退款子项净额与主流水不一致')
+    }
+    const byId = new Map(accounted.map((it) => [it.refSaleItemId, it]))
+    effItems = effItems.map(it => ({ ...it, netRefundAmount: byId.get(it.saleItemId)?.netRefundAmount,
+      handlingFee: byId.get(it.saleItemId)?.handlingFee,
+      overdraftDeduction: byId.get(it.saleItemId)?.overdraftDeduction }))
+    await client.query(`UPDATE sale_order_payments SET note = $1
+      WHERE id = $2`, [JSON.stringify({ ...note, refundAccountingVersion: 2, items: accounted }), refundPaymentId])
+  }
+
   let voidedAllocations = 0
   let refundAllocatedCents = 0
   const receiptRefundItems = await buildReceiptRefundItems(client, saleOrderId, refundPaymentId, effItems)
   for (const it of receiptRefundItems) {
     const refundAmt = Number(it.refundAmount || 0)
-    if (refundAmt <= 0) continue
+    const sourceItem = effItems.find(row => row.saleItemId === it.saleItemId)
+    const allocationRefundAmount = Number(sourceItem?.refundAmount ?? refundAmt)
+    if (refundAmt < 0) continue
     const itemRows = await client.query(
       `SELECT sales_category FROM sale_items
         WHERE sale_order_id = $1
@@ -302,7 +386,7 @@ async function cascadeRefund(client, params) {
             AND spir.sale_item_id = $2
             AND spia.is_void = false
             AND spia.allocated_amount < 0
-            AND spir.amount < 0
+            AND spir.amount <= 0
             AND spir.sale_payment_id IS DISTINCT FROM $3
             AND sop.status = '已支付'
             AND sop.change_type = '退款'
@@ -317,7 +401,7 @@ async function cascadeRefund(client, params) {
                 COALESCE(ABS(SUM(CASE
                   WHEN sop.status = '已支付'
                    AND sop.change_type = '退款'
-                   AND spir.amount < 0
+                   AND spir.amount <= 0
                    AND spir.sale_payment_id IS DISTINCT FROM $3
                   THEN spir.amount::numeric ELSE 0 END)), 0) AS prior_refund_receipt_total
            FROM sale_payment_item_receipts spir
@@ -327,15 +411,18 @@ async function cascadeRefund(client, params) {
        )
        SELECT pg.*, COALESCE(pn.prior_negative_total, 0) AS prior_negative_total,
               COALESCE(pn.prior_negative_comm, 0) AS prior_negative_comm,
-              rt.positive_receipt_total, rt.prior_refund_receipt_total
+              rt.positive_receipt_total,
+              rt.prior_refund_receipt_total + GREATEST(0, ${retainedRefundFeeSql('spir_order_id.sale_order_id', 'spir_item_id.sale_item_id', true)} - $4::numeric) AS prior_refund_receipt_total
          FROM positive_grouped pg
          LEFT JOIN prior_negative pn
            ON pn.employee_id = pg.employee_id AND pn.role_type = pg.role_type
-         CROSS JOIN receipt_totals rt`,
-      [saleOrderId, it.saleItemId, refundPaymentId],
+         CROSS JOIN receipt_totals rt
+         CROSS JOIN (SELECT $1::text AS sale_order_id) spir_order_id
+         CROSS JOIN (SELECT $2::text AS sale_item_id) spir_item_id`,
+      [saleOrderId, it.saleItemId, refundPaymentId, Number(sourceItem?.handlingFee ?? 0) + Number(sourceItem?.overdraftDeduction ?? 0)],
     )).rows
     if (allocRows.length === 0) continue
-    const targets = planRolePoolRefundAllocations(allocRows, refundAmt)
+    const targets = planRolePoolRefundAllocations(allocRows, allocationRefundAmount, sourceItem?.isFullItemRefund ?? false)
     for (const target of targets) {
       const voidTotal = target.allocatedCents / 100
       const voidComm = target.commissionCents / 100
@@ -426,6 +513,11 @@ async function cascadeRefund(client, params) {
   // ========== 通道 4: point_transactions 比例冲销（订单级，按 refunded/received 比例）==========
   let reversedPoints = 0
   let pointsBalanceUpdated = false
+  if (note && Array.isArray(note.items)) {
+    const pointResult = await settlePointsSafe(client, saleOrderId, 'refund')
+    reversedPoints = Math.max(0, -Number(pointResult.delta ?? 0))
+    pointsBalanceUpdated = pointResult.delta !== undefined
+  } else {
   const giftRes = await client.query(
     `SELECT COALESCE(SUM(amount), 0) AS g, MIN(user_id) AS user_id
        FROM point_transactions
@@ -438,7 +530,7 @@ async function cascadeRefund(client, params) {
   const pointUserId = giftRes.rows[0]?.user_id || null
   if (grantedTotal > 0 && pointUserId) {
     const orderRes = await client.query(
-      `SELECT received, COALESCE(refunded_amount, 0) AS refunded
+      `SELECT received, COALESCE(refunded_amount, 0) + ${retainedRefundFeeSql('sale_orders.sale_order_id')} AS refunded
          FROM sale_orders
         WHERE sale_order_id = $1`,
       [saleOrderId],
@@ -513,6 +605,8 @@ async function cascadeRefund(client, params) {
       [pointUserId, now],
     )
     pointsBalanceUpdated = true
+  }
+
   }
 
   // ========== 通道 5: 家居退款计入 refunded_quantity（逐被退家居 item，按退款数量）==========

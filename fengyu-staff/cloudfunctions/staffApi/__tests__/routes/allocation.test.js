@@ -122,6 +122,13 @@ describe('allocation.savePayment — 同池不限人数', () => {
     pg.transaction.mockImplementation(async (callback) => callback({ query: clientQuery }))
   })
 
+  test.each(['店经理', '美容师', '养生师', '品项老师', '推广师'])('%s 保存按实际技能校验支援资格', async (roleType) => {
+    await allocationRoutes.savePayment(createManagerCtx({ salePaymentId: 7, allocations: lines(0.25, roleType) }))
+    const [sql, params] = pg.query.mock.calls.find(([sql]) => sql.includes('WHERE u.employee_id = ANY'))
+    expect(sql).toContain('(u.store_id = $2 OR u.is_on_business_trip = true)')
+    expect(params.slice(2)).toEqual([true, [roleType]])
+  })
+
   test('同 SKU 两个实例每池 4 人各 25%，逐 receipt 写入并重算金额', async () => {
     const ctx = createManagerCtx({ salePaymentId: 7, allocations: lines() })
     await allocationRoutes.savePayment(ctx)

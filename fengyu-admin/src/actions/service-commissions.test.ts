@@ -1,3 +1,4 @@
+import { getInvalidEmployeeAssignmentId } from '@/lib/employee-assignment-server'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 vi.mock('@/lib/employee-assignment-server', () => ({ getInvalidEmployeeAssignmentId: vi.fn().mockResolvedValue(null) }))
 
@@ -252,6 +253,28 @@ describe('batchSaveServiceCommissions — 技能标签池校验（P2-14）', () 
       return fn(tx)
     })
   }
+
+  it.each(['店经理', '美容师', '养生师', '品项老师'])('%s 保存校验实际技能与全系统支援范围', async (roleType) => {
+    mockScopeAndItems([{ serviceItemId: 'si-1' }])
+    mockTx()
+    const result = await batchSaveServiceCommissions('so-1', [
+      { serviceItemId: 'si-1', employeeId: 'EMP-001', roleType, allocationRatio: '1', commissionRate: '0', commissionAmount: '0' },
+    ])
+    expect(result.success).toBe(true)
+    expect(getInvalidEmployeeAssignmentId).toHaveBeenCalledWith(['EMP-001'], 'store-1', {
+      assignmentScope: 'allocationSupport', requireServiceSkills: true, skills: [roleType],
+    })
+  })
+
+  it('所选角色技能不符在写事务前拒绝', async () => {
+    mockScopeAndItems([{ serviceItemId: 'si-1' }])
+    vi.mocked(getInvalidEmployeeAssignmentId).mockResolvedValueOnce('EMP-001')
+    const result = await batchSaveServiceCommissions('so-1', [
+      { serviceItemId: 'si-1', employeeId: 'EMP-001', roleType: '美容师', allocationRatio: '1', commissionRate: '0', commissionAmount: '0' },
+    ])
+    expect(result).toMatchObject({ success: false, message: expect.stringContaining('技能标签') })
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
 
   it('分配比例超出 0~1 范围 → 拒绝（支持自定义小数比例）', async () => {
     mockScopeAndItems([{ serviceItemId: 'si-1' }])

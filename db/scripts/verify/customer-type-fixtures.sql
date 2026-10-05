@@ -42,8 +42,11 @@ CREATE TABLE sale_order_payments (
   change_type text NOT NULL,
   status text NOT NULL,
   amount numeric(10,2) NOT NULL DEFAULT 0,
+  paid_at timestamptz,
   note text
 );
+
+CREATE TABLE sale_payment_item_receipts (sale_payment_id bigint, sale_order_id text, sale_item_id text, amount numeric);
 
 -- ============ 正负例数据 ============
 INSERT INTO client_wechat_users (user_id) VALUES

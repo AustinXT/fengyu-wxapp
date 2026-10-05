@@ -1699,7 +1699,7 @@ async function salesData(ctx) {
           WHERE ${scSale.sql}
             AND si.product_type = '家居产品'
             AND o.sale_order_type IN ('销售单', '转换单')
-            AND o.status = '已支付'
+            AND o.status <> '已关闭'
             AND sipe.performance_date BETWEEN $1 AND $2`,
         saleP,
       ),
@@ -1712,7 +1712,7 @@ async function salesData(ctx) {
            JOIN sale_orders o ON o.sale_order_id = sipe.sale_order_id
           WHERE ${scSale.sql}
             AND o.sale_order_type IN ('销售单', '转换单')
-            AND o.status = '已支付'
+            AND o.status <> '已关闭'
             AND sipe.performance_date BETWEEN $1 AND $2
             AND si.sales_category IS NOT NULL
           GROUP BY si.sales_category
@@ -1730,7 +1730,7 @@ async function salesData(ctx) {
            JOIN product_categories pc ON pc.category_id = sk.category_id
           WHERE ${scSale.sql}
             AND o.sale_order_type IN ('销售单', '转换单')
-            AND o.status = '已支付'
+            AND o.status <> '已关闭'
             AND sipe.performance_date BETWEEN $1 AND $2
             AND pc.product_kind IS NOT NULL
           GROUP BY pc.product_kind
@@ -1749,7 +1749,7 @@ async function salesData(ctx) {
            JOIN product_categories pc ON pc.category_id = sk.category_id
           WHERE ${scSale.sql}
             AND o.sale_order_type IN ('销售单', '转换单')
-            AND o.status = '已支付'
+            AND o.status <> '已关闭'
             AND sipe.performance_date BETWEEN $1 AND $2
             AND pc.product_kind IS NOT NULL
             AND pc.category_name IS NOT NULL

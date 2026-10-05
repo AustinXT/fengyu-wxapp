@@ -18,7 +18,7 @@
  *      ├── fengyu-admin/src/lib/service-staff-skills.ts
  *      └── miniprogram/packageService/service-create/service-create.ts（SERVICE_ROLES）
  *
- *   C. 服务单候选/校验的触发点 — 两端必须用 marketSupport + 四项白名单，
+ *   C. 服务单候选/校验的触发点 — 两端必须用 allocationSupport + 显式技能过滤和四项白名单，
  *      且开单 / 顾客端口径不得被波及
  *
  * 归一化策略：别名差异（staff 用 so / admin 用 store_node）归一为 <STORE_NODE>，
@@ -98,6 +98,9 @@ describe('A. 锚定市场 CASE 表达式五端字节同义', () => {
     for (const { name, file } of [
       { name: 'staffApi/utils/employee-assignment.js', file: FILES.staffAssignmentUtil },
       { name: 'admin/src/lib/employee-anchor-market-sql.ts', file: FILES.adminAnchorLib },
+      { name: 'staffApi/routes/allocation.js', file: FILES.staffAllocation },
+      { name: 'staffApi/routes/serviceCommission.js', file: FILES.staffServiceCommission },
+      { name: 'admin/src/actions/employees.ts', file: FILES.adminEmployees },
     ]) {
       const src = read(file)
       expect(src, name).toMatch(/LEFT JOIN stores target_store ON target_store\.store_id = /)
@@ -122,6 +125,22 @@ describe('A. 锚定市场 CASE 表达式五端字节同义', () => {
     expect(extractAnchorExpr(read(FILES.staffAssignmentUtil))).toMatchInlineSnapshot(
       `"COALESCE( <STORE_NODE>.parent_id, CASE WHEN d.type = '市场' THEN d.id WHEN d.type = '门店' THEN d.parent_id WHEN d.type = '部门' AND employee_org_parent.type = '市场' THEN employee_org_parent.id WHEN d.type = '部门' AND employee_org_parent.type = '门店' THEN employee_org_parent.parent_id ELSE NULL END )"`,
     )
+  })
+})
+
+describe('#530 全系统支援候选范围副本', () => {
+  test.each([
+    { file: FILES.staffStaffRoute, count: 1 },
+    { file: FILES.staffAllocation, count: 1 },
+    { file: FILES.staffServiceCommission, count: 1 },
+    { file: FILES.adminEmployees, count: 2 },
+  ])('$file 本店或全系统支援条件保持一致', ({ file, count }) => {
+    const conditions = [...read(file).matchAll(/\(u\.store_id = (?:\$\d|\$\{targetStoreId\}) OR u\.is_on_business_trip = true\)/g)]
+    expect(conditions).toHaveLength(count)
+    for (const match of conditions) {
+      expect(match[0].replace(/\$\d|\$\{targetStoreId\}/g, '?'))
+        .toBe('(u.store_id = ? OR u.is_on_business_trip = true)')
+    }
   })
 })
 
@@ -168,17 +187,19 @@ describe('B. 服务指派技能白名单两端同序', () => {
   })
 })
 
-describe('C. 服务单创建两端均走 marketSupport + 四项白名单', () => {
-  test('staff service.create 校验用 marketSupport', () => {
+describe('C. 服务单创建两端均走 allocationSupport + 四项白名单', () => {
+  test('staff service.create 校验用 allocationSupport', () => {
     const src = read(FILES.staffServiceRoute)
-    expect(src).toMatch(/assignmentScope: 'marketSupport'/)
+    expect(src).toMatch(/assignmentScope: 'allocationSupport'/)
     expect(src).toMatch(/skills: SERVICE_ORDER_ASSIGNABLE_SKILLS/)
+    expect(src).toMatch(/requireServiceSkills: true/)
   })
 
-  test('admin createServiceOrder 校验用 marketSupport', () => {
+  test('admin createServiceOrder 校验用 allocationSupport', () => {
     const src = read(FILES.adminServices)
-    expect(src).toMatch(/assignmentScope: 'marketSupport'/)
+    expect(src).toMatch(/assignmentScope: 'allocationSupport'/)
     expect(src).toMatch(/skills: SERVICE_ORDER_ASSIGNABLE_SKILLS/)
+    expect(src).toMatch(/requireServiceSkills: true/)
   })
 
   test('service 场景仅店长放宽（普通员工只能把服务单指派给自己，无需全市场候选）', () => {

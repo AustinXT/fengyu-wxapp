@@ -1,5 +1,7 @@
 'use server'
 
+import { retainedRefundFeeSql } from '@/lib/refund-fee-sql'
+
 import { db } from '@/db'
 import { rowsAffected } from '@/lib/pg-rows'
 import {
@@ -826,7 +828,7 @@ async function applyRechargeOnOrderPaid(
 /**
  * customer_type 跃迁（admin recordPayment 触发点）。
  *
- * 八处跃迁 SQL 副本之一（staffApi routes/order.js + clientApi routes/order.js + payNotify index.js
+ * 九处跃迁 SQL 副本之一（staffApi routes/order.js + clientApi routes/order.js + payNotify index.js
  * + admin actions/orders.ts + admin lib/recompute-customer-tags.ts
  * + db/scripts/recalc-all-customer-types.js + db/scripts/recalc-became-member-at.js
  * + db/scripts/backfill-membership-upgrade-doc-type.js）。
@@ -841,7 +843,7 @@ async function applyRechargeOnOrderPaid(
  *
  * 只升不降；跃迁为"会员客"时同步写入 became_member_at = COALESCE(首笔达标单 paid_at, created_at)（非检测时刻 NOW()）。
  *
- * SQL 必须与其余七处字面一致 —— 守卫测试 recalc-customer-type-sql.test.js 跨八个文件比对。
+ * SQL 必须与其余八处字面一致 —— 守卫测试 recalc-customer-type-sql.test.js 跨八个文件比对。
  */
 type AdminTx = Parameters<Parameters<typeof db.transaction>[0]>[0]
 
@@ -852,50 +854,122 @@ type AdminTx = Parameters<Parameters<typeof db.transaction>[0]>[0]
  * 非法 JSON / 非数字文本降级为 NULL 而非抛 22P02。全仓退款 note 解析已统一此写法，LIKE 假守门已废除。
  * item_direction='购买' 与 STEP 1.5 扣减作用域一致；FILTER 聚合的 NULL 由 COALESCE 归零。
  */
-const recalcCustomerTypeCte = (clientUserId: string) => sql`WITH refund_by_item AS (
-       SELECT sop.sale_order_id,
-              elem ->> 'refSaleItemId' AS sale_item_id,
-              SUM(COALESCE(public.try_numeric(elem ->> 'refundAmount'), 0)) AS refunded
-       FROM sale_order_payments sop
-       JOIN sale_orders ro ON ro.sale_order_id = sop.sale_order_id
-       CROSS JOIN LATERAL jsonb_array_elements(
-         CASE WHEN jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'
-              THEN public.try_jsonb(sop.note) -> 'items'
-              ELSE '[]'::jsonb END
-       ) AS elem
-       WHERE ro.client_user_id = ${clientUserId}
-         AND ro.status IN ('已支付', '已完成')
-         AND ro.sale_order_type = '销售单'
-         AND sop.change_type = '退款'
-         AND sop.status = '已支付'
-         AND elem ->> 'refSaleItemId' <> 'OVERPAY'
-       -- 序号绑定 SELECT 的前 2 列（sale_order_id, refSaleItemId）；重排 SELECT 列须同步改这里
-       GROUP BY 1, 2
-     ),
-     order_amounts AS (
-       SELECT o.sale_order_id,
-              CASE WHEN NOT EXISTS (SELECT 1 FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
-                   THEN GREATEST(o.received::numeric, 0)
-                   ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),
-                                           si.sale_amount::numeric))
-                                 FILTER (WHERE si.is_experience = false), 0)
-              END AS non_trial,
-              CASE WHEN NOT EXISTS (SELECT 1 FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
-                   THEN 0
-                   ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),
-                                           si.sale_amount::numeric))
-                                 FILTER (WHERE si.is_experience = true), 0)
-              END AS trial
-       FROM sale_orders o
-       LEFT JOIN sale_items si ON si.sale_order_id = o.sale_order_id
-                              AND si.item_direction = '购买'
-       LEFT JOIN refund_by_item rbi ON rbi.sale_order_id = o.sale_order_id
-                                   AND rbi.sale_item_id = si.sale_item_id
-       WHERE o.client_user_id = ${clientUserId}
-         AND o.status IN ('已支付', '已完成')
-         AND o.sale_order_type = '销售单'
-       GROUP BY o.sale_order_id, o.received
-     )`
+const recalcCustomerTypeCte = (clientUserId: string, threshold: number) => sql`WITH membership_settings AS (
+  SELECT ${clientUserId}::text AS client_user_id, ${threshold}::numeric AS threshold
+), membership_scope AS (
+  SELECT o.* FROM sale_orders o CROSS JOIN membership_settings cfg
+  WHERE (cfg.client_user_id IS NULL OR o.client_user_id = cfg.client_user_id)
+    AND o.client_user_id IS NOT NULL
+    AND o.status IN ('部分支付', '已支付', '已完成')
+    AND o.sale_order_type IN ('销售单', '转换单')
+), refund_by_item AS (
+  SELECT sop.sale_order_id, elem ->> 'refSaleItemId' AS sale_item_id,
+         SUM(COALESCE(public.try_numeric(elem ->> 'refundAmount'), 0)) AS refunded
+  FROM sale_order_payments sop
+  JOIN membership_scope o ON o.sale_order_id = sop.sale_order_id
+  CROSS JOIN LATERAL jsonb_array_elements(
+    CASE WHEN jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'
+         THEN public.try_jsonb(sop.note) -> 'items' ELSE '[]'::jsonb END
+  ) elem
+  WHERE o.sale_order_type = '销售单' AND sop.change_type = '退款'
+    AND sop.status = '已支付' AND elem ->> 'refSaleItemId' <> 'OVERPAY'
+  GROUP BY 1, 2
+), membership_sales AS (
+  -- #187：销售单继续按行净额加退款、成交额封顶；无明细历史单保留原回退。
+  SELECT o.sale_order_id,
+         CASE WHEN NOT EXISTS (SELECT 1 FROM sale_items x WHERE x.sale_order_id = o.sale_order_id)
+              THEN GREATEST(o.received::numeric, 0)
+              ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(r.refunded, 0), si.sale_amount::numeric))
+                            FILTER (WHERE si.is_experience = false), 0) END AS non_trial,
+         COALESCE(SUM(LEAST(si.received::numeric + COALESCE(r.refunded, 0), si.sale_amount::numeric))
+                  FILTER (WHERE si.is_experience = true), 0) AS trial
+  FROM membership_scope o
+  LEFT JOIN sale_items si ON si.sale_order_id = o.sale_order_id AND si.item_direction = '购买'
+  LEFT JOIN refund_by_item r ON r.sale_order_id = o.sale_order_id AND r.sale_item_id = si.sale_item_id
+  WHERE o.sale_order_type = '销售单'
+  GROUP BY o.sale_order_id, o.received
+), membership_receipts AS (
+  -- 同场现金+卡的 receipt 已含实际扣卡；只读 receipt 一次，不再另加款项金额。
+  SELECT o.sale_order_id, p.id AS payment_id, p.paid_at, r.sale_item_id, r.amount::numeric
+  FROM membership_scope o
+  JOIN sale_order_payments p ON p.sale_order_id = o.sale_order_id
+  JOIN sale_payment_item_receipts r ON r.sale_payment_id = p.id AND r.sale_order_id = o.sale_order_id
+  WHERE p.status = '已支付' AND p.change_type IN ('首次支付','回款','储值卡抵扣')
+  /* membership-receipt-preview */
+), membership_receipt_rows AS (
+  SELECT r.*, si.sale_amount::numeric AS cap, si.is_experience, si.item_direction, o.sale_order_type,
+         SUM(r.amount) OVER (PARTITION BY r.sale_order_id, r.payment_id) AS event_total,
+         SUM(GREATEST(-r.amount, 0)) FILTER (WHERE si.item_direction = '转出')
+           OVER (PARTITION BY r.sale_order_id, r.payment_id) AS old_assets,
+         SUM(GREATEST(r.amount, 0)) FILTER (WHERE si.item_direction = '转入')
+           OVER (PARTITION BY r.sale_order_id, r.payment_id) AS in_total,
+         SUM(CASE WHEN si.item_direction = '转入' THEN GREATEST(r.amount, 0) ELSE 0 END)
+           OVER (PARTITION BY r.sale_order_id, r.payment_id ORDER BY r.sale_item_id
+                 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS in_cumulative
+  FROM membership_receipts r
+  JOIN membership_scope o ON o.sale_order_id = r.sale_order_id
+  JOIN sale_items si ON si.sale_item_id = r.sale_item_id AND si.sale_order_id = r.sale_order_id
+), membership_normalized AS (
+  -- 旧 signed receipt：新增实收按转入权重拆分；旧资产的体验属性不能污染新收款。
+  -- 新增量 receipt 保留有符号分币差；不改写历史 receipt/分配/资产。
+  SELECT r.*,
+         CASE WHEN sale_order_type = '转换单' AND old_assets > 0
+              THEN ROUND(GREATEST(event_total, 0) * in_cumulative / NULLIF(in_total, 0), 2)
+                 - ROUND(GREATEST(event_total, 0) * (in_cumulative - GREATEST(amount, 0)) / NULLIF(in_total, 0), 2)
+              ELSE amount END AS new_receipt
+  FROM membership_receipt_rows r
+  WHERE (sale_order_type = '销售单' AND item_direction = '购买')
+     OR (sale_order_type = '转换单' AND item_direction = '转入')
+), membership_item_running AS (
+  SELECT r.*,
+         LEAST(GREATEST(cap, 0), GREATEST(0, SUM(COALESCE(new_receipt, 0)) OVER (
+           PARTITION BY sale_order_id, sale_item_id ORDER BY paid_at ASC NULLS LAST, payment_id
+           ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW))) AS item_gross
+  FROM membership_normalized r
+), membership_item_deltas AS (
+  SELECT r.*, item_gross - LAG(item_gross, 1, 0::numeric) OVER (
+    PARTITION BY sale_order_id, sale_item_id ORDER BY paid_at ASC NULLS LAST, payment_id) AS delta
+  FROM membership_item_running r
+), membership_events AS (
+  SELECT sale_order_id, payment_id, paid_at,
+         COALESCE(SUM(delta) FILTER (WHERE is_experience = false), 0) AS non_trial,
+         COALESCE(SUM(delta) FILTER (WHERE is_experience = true), 0) AS trial
+  FROM membership_item_deltas GROUP BY sale_order_id, payment_id, paid_at
+), membership_timeline AS (
+  SELECT sale_order_id, payment_id, paid_at,
+         SUM(non_trial) OVER (PARTITION BY sale_order_id ORDER BY paid_at ASC NULLS LAST, payment_id
+           ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS non_trial
+  FROM membership_events
+), membership_receipt_totals AS (
+  SELECT sale_order_id, SUM(amount) AS gross FROM membership_receipts GROUP BY sale_order_id
+), membership_event_totals AS (
+  SELECT sale_order_id, SUM(non_trial) AS non_trial, SUM(trial) AS trial
+  FROM membership_events GROUP BY sale_order_id
+), membership_amounts AS (
+  SELECT o.sale_order_id, o.client_user_id, o.paid_at, o.created_at, o.status, o.sale_order_type,
+         CASE WHEN o.sale_order_type = '销售单' THEN s.non_trial
+              WHEN r.gross <= o.received::numeric + 0.01 THEN COALESCE(e.non_trial, 0) ELSE 0 END AS non_trial,
+         CASE WHEN o.sale_order_type = '销售单' THEN s.trial
+              WHEN r.gross <= o.received::numeric + 0.01 THEN COALESCE(e.trial, 0) ELSE 0 END AS trial,
+         ABS(COALESCE(r.gross, 0) - o.received::numeric) <= 0.01 AS receipts_complete,
+         r.gross IS NOT NULL AS has_receipts
+  FROM membership_scope o
+  LEFT JOIN membership_sales s ON s.sale_order_id = o.sale_order_id
+  LEFT JOIN membership_receipt_totals r ON r.sale_order_id = o.sale_order_id
+  LEFT JOIN membership_event_totals e ON e.sale_order_id = o.sale_order_id
+), order_amounts AS (
+  SELECT a.*,
+         CASE WHEN a.non_trial >= cfg.threshold THEN
+           COALESCE(
+             (SELECT MIN(t.paid_at) FROM membership_timeline t
+               WHERE t.sale_order_id = a.sale_order_id AND t.non_trial >= cfg.threshold
+                 AND a.receipts_complete),
+             CASE WHEN NOT a.has_receipts AND a.sale_order_type = '销售单'
+                        AND a.status IN ('已支付','已完成')
+                  THEN COALESCE(a.paid_at, a.created_at) END
+           ) END AS qualified_at
+  FROM membership_amounts a CROSS JOIN membership_settings cfg
+)`
 
 async function recalcCustomerType(tx: AdminTx, clientUserId: string, saleOrderId: string): Promise<void> {
   if (!clientUserId) return
@@ -908,10 +982,10 @@ async function recalcCustomerType(tx: AdminTx, clientUserId: string, saleOrderId
 
   const threshold = await getMemberThreshold()
 
-  // 八处 SQL 独立副本，修改时必须同步其余七处；一致性由 staffApi
+  // 九处 SQL 独立副本，修改时必须同步其余八处；一致性由 staffApi
   // __tests__/routes/recalc-customer-type-sql.test.js 与 cross-end-sql-snapshot.test.js 守护。
   const typeRes = await tx.execute(sql`
-    ${recalcCustomerTypeCte(clientUserId)}
+    ${recalcCustomerTypeCte(clientUserId, threshold)}
     SELECT CASE
        WHEN EXISTS (SELECT 1 FROM order_amounts WHERE non_trial >= ${threshold}) THEN '会员客'
        WHEN EXISTS (SELECT 1 FROM order_amounts WHERE non_trial > 0)   THEN '小美客'
@@ -924,7 +998,7 @@ async function recalcCustomerType(tx: AdminTx, clientUserId: string, saleOrderId
   if (!newType) return
 
   const currentOrderRows = newType === '会员客' ? await tx.execute(sql`
-    ${recalcCustomerTypeCte(clientUserId)}
+    ${recalcCustomerTypeCte(clientUserId, threshold)}
     SELECT EXISTS (SELECT 1 FROM order_amounts WHERE sale_order_id = ${saleOrderId} AND non_trial >= ${threshold}) AS current_order_qualifies
   `) as unknown as Array<{ current_order_qualifies: boolean }> : []
   if (newType === '会员客' && currentOrderRows[0]?.current_order_qualifies) {
@@ -948,28 +1022,28 @@ async function recalcCustomerType(tx: AdminTx, clientUserId: string, saleOrderId
   const updRowCount = rowsAffected(updRes)
   const updRows = updRes as unknown as Array<{ customer_type: string }>
   if (updRowCount > 0 && updRows[0]?.customer_type === '会员客') {
-    // became_member_at 记为确立会员资格的首笔达标单时间（COALESCE(paid_at, created_at)）；
+    // became_member_at 记为确立会员资格的首笔订单实际跨阈值时间；
     // 选单子查询与下方 is_membership_upgrade 归因同源、选同一单。
     await tx.execute(sql`
       UPDATE client_wechat_users SET became_member_at = COALESCE((
-        ${recalcCustomerTypeCte(clientUserId)}
-        SELECT COALESCE(o.paid_at, o.created_at) FROM sale_orders o
+        ${recalcCustomerTypeCte(clientUserId, threshold)}
+        SELECT oa.qualified_at FROM sale_orders o
         JOIN order_amounts oa ON oa.sale_order_id = o.sale_order_id
         WHERE oa.non_trial >= ${threshold}
-        ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC, o.sale_order_id ASC
+        ORDER BY oa.qualified_at ASC NULLS LAST, o.sale_order_id ASC
         LIMIT 1
       ), became_member_at) WHERE user_id = ${clientUserId}
     `)
-    // 给触发本次首次跃迁的达标销售单打会员升级标记（WHERE 与会员客判定 CASE 同源；八处镜像）。
+    // 给触发本次首次跃迁的达标订单打会员升级标记（WHERE 与会员客判定 CASE 同源；九处镜像）。
     // 函数开头“已是会员客即 return”保证只在首次跃迁时执行一次；paid_at 最早 = 确立会员资格的首笔达标单。
     await tx.execute(sql`
       UPDATE sale_orders SET is_membership_upgrade = true
       WHERE sale_order_id = (
-        ${recalcCustomerTypeCte(clientUserId)}
+        ${recalcCustomerTypeCte(clientUserId, threshold)}
         SELECT o.sale_order_id FROM sale_orders o
         JOIN order_amounts oa ON oa.sale_order_id = o.sale_order_id
         WHERE oa.non_trial >= ${threshold}
-        ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC, o.sale_order_id ASC
+        ORDER BY oa.qualified_at ASC NULLS LAST, o.sale_order_id ASC
         LIMIT 1
       )
     `)
@@ -3922,7 +3996,7 @@ export const confirmOfflinePayment = withPermission(
         return { matched: false as const }
       }
 
-      // 充值卡入账 + 客户分类跃迁：仅订单结清（已支付）时触发
+      // 充值卡入账仍仅在结清时触发；顾客分类在本次明细入账后单独执行
       if (targetStatus === '已支付') {
         await applyRechargeOnOrderPaid(tx, saleOrderId)
       }
@@ -3946,7 +4020,7 @@ export const confirmOfflinePayment = withPermission(
       // 必须在 capture 之后：新 STEP1 从 receipt 聚合 received
       await settlePointsSafe(tx, saleOrderId, 'admin.confirmOffline')
       await recalcPaidSessionsForOrder(tx, saleOrderId)
-      if (targetStatus === '已支付' && clientUserId) {
+      if (clientUserId) {
         await recalcCustomerType(tx, clientUserId, saleOrderId)
       }
 
@@ -5958,7 +6032,7 @@ export const createConversionOrder = withPermission(
           si.unit_price,
           si.unit_real_price,
           si.sale_amount,
-          si.received,
+          GREATEST(0, si.received::numeric - ${sql.raw(retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true))}) AS received,
           si.pending_received,
           si.sales_category,
           COALESCE(si.is_shengmei, psk.is_shengmei) AS is_shengmei,
@@ -8222,13 +8296,13 @@ export const recordPayment = withPermission(
       //     必须在 capture 之后：新 STEP1 从 receipt 聚合 received
       await recalcPaidSessionsForOrder(tx, saleOrderId)
 
-      // 12) customer_type 跃迁（仅在本次回款使订单结清，即翻为'已支付'时触发）
+      // 12) customer_type 跃迁（每次实际回款后，部分支付也参与）
       //     与 staff confirmOffline / payNotify 对齐，保证 admin 财务补录回款
       //     也能驱动客户分类升级（修复 audit-15 P0-15-01 admin 三资金触发点跃迁缺失）。
       //     ⚠️ #187 起必须排在 recalcPaidSessionsForOrder **之后**：跃迁判定已改读
       //     sale_items.received（由上面 STEP1 从 receipt 聚合写出），排在前面会读到本次回款
       //     之前的旧值、少算本笔回款额。旧口径读 o.total_amount（建单即定）不受顺序影响。
-      if (targetStatus === '已支付' && locked.client_user_id) {
+      if (locked.client_user_id) {
         await recalcCustomerType(tx, locked.client_user_id, saleOrderId)
       }
 

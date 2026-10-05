@@ -127,6 +127,23 @@ describe.skipIf(!testUrl)('数据中心关闭订单 PostgreSQL 回归', () => {
     expect(Number(refund[0].v)).toBe(-500)
   })
 
+  it('#529 已退款手续费收入保留，跨月退款只归属退款款项当月', async () => {
+    await pg.query('BEGIN')
+    try {
+      await pg.query("INSERT INTO sale_orders(sale_order_id,store_id,sale_order_type,status) VALUES ('fee-refund','B','销售单','已退款')")
+      await pg.query("INSERT INTO sale_order_payments(sale_order_id,change_type,amount,performance_attribution_date) VALUES ('fee-refund','首次支付',500,'2026-08-03'),('fee-refund','退款',-450,'2026-09-20')")
+      const scope = { type: 'store' as const, id: 'B' }
+      const originalMonth = await query(performanceTotalSql(session as unknown as AuthSession, scope, { start: '2026-08-01', end: '2026-08-25' }))
+      expect(Number(originalMonth[0].v)).toBe(500)
+      const refundDay = await query(performanceTotalSql(session as unknown as AuthSession, scope, { start: '2026-09-20', end: '2026-09-20' }))
+      expect(Number(refundDay[0].v)).toBe(-450)
+      const combined = await query(performanceTotalSql(session as unknown as AuthSession, scope, { start: '2026-08-01', end: '2026-09-25' }))
+      expect(Number(combined[0].v)).toBe(350) // 原有300 + 此单手续费50
+      const board = await getSalesBoard({ ...params, scope })
+      expect(board.kpis.storeRevenue.value).toBe(-150) // 当前区间原有300 - 本期退款450
+    } finally { await pg.query('ROLLBACK') }
+  })
+
   it('经营报表总业绩与销售 KPI 一致，关闭的充值单也不计入', async () => {
     const total = await query(performanceTotalSql(session as unknown as AuthSession, params.scope, range))
     expect(Number(total[0].v)).toBe(106692)

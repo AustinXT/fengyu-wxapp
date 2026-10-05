@@ -245,24 +245,15 @@ describe('#282 · clientApi 分页 SQL 的 ORDER BY 必须带唯一键 tie-break
       expect(clauses).toContain(expectedClause)
     })
 
-    test('本来就正确的 ORDER BY 不许被「统一风格」改坏', () => {
-      // ⚠️ 初版这里钉的是 `order.js:400/:412` 的
-      // `o.paid_at ASC NULLS LAST, o.created_at ASC, o.sale_order_id ASC` ——
-      // 那是 `UPDATE … SET … = (SELECT … LIMIT 1)` 的**子查询，不翻页**，
-      // 属 #251 那一族，放在「#282 分页 tie-break 守护」的 SAFE 清单里会误导后人
-      // （评审实测指出）。clientApi 侧本来就没有「已有 tie-break 的分页查询」，
-      // 6 处全是本 PR 新补的 —— 那 6 条已由上面的 EXPECTED 清单钉死。
-      //
-      // 这条改为守 `o.paid_at ASC NULLS LAST` 这个 **NULLS 姿态**：
-      // 它是本仓对 paid_at 少见的显式 NULLS LAST 写法，改成默认（DESC→NULLS FIRST）
-      // 会让未支付单跳到结果顶部，静默改变业务语义。
-      // ⚠️ 断言**出现次数**而不是 `re.test(整份源码)`：这个子句在 `order.js` 的
-      // 两个 UPDATE 子查询里重复出现，改坏一处、另一处保留则 `re.test` 仍为 true。
+    test('会员归因的实际达标时间排序保留 NULLS LAST 和唯一键', () => {
+      // 非分页的两个会员归因子查询：#524 改为真实收款跨门槛时间，
+      // 不能退回父订单 paid_at/created_at；未知时间仍后置，同时间按订单ID确定首笔。
+      // 检查两处，避免只剩一处正确时守护仍通过。
       const source = readFileSync(join(ROUTES_DIR, 'order.js'), 'utf8')
       const hits = (source.match(
-        /o\.paid_at ASC NULLS LAST, o\.created_at ASC, o\.sale_order_id ASC/g,
+        /ORDER BY oa\.qualified_at ASC NULLS LAST, o\.sale_order_id ASC/g,
       ) || []).length
-      expect(hits, 'order.js 的 paid_at NULLS LAST 姿态被改了（非分页查询，但会改变业务语义）')
+      expect(hits, '两个会员归因子查询必须按实际达标时间排序、空值后置并带唯一键')
         .toBe(2)
     })
   })
