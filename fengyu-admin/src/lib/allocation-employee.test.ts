@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AllocationEmployeeCandidate, AssignmentScope } from './types'
-import { deriveAllocationSkillTag, getAllocationEmployeesForSkill } from './allocation-employee'
+import { formatAllocationEmployeeOption, deriveAllocationSkillTag, getAllocationEmployeesForSkill } from './allocation-employee'
 
 function candidate(
   employeeId: string,
@@ -54,4 +54,11 @@ describe('分配角色身份', () => {
     ], role)
     expect(result.map(e => e.employeeId)).toEqual(['本店', '支援'])
   })
+})
+
+it('分配候选显示本店/实际外援来源，未知来源明确提示', () => {
+  expect(formatAllocationEmployeeOption(candidate('本店', 'local'))).toBe('本店（本店）')
+  expect(formatAllocationEmployeeOption(candidate('老师', 'cross_market_trip', '品项老师', { marketName: '品项公司', departmentName: '品项部' })))
+    .toBe('老师（外援·品项公司·品项部）')
+  expect(formatAllocationEmployeeOption(candidate('未知', 'cross_market_trip'))).toBe('未知（外援·来源未设置）')
 })

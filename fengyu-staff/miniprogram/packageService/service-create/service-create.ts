@@ -734,7 +734,7 @@ Page({
       // 直挂市场/部门节点的员工 storeId 为空，旧写法会把他们漏标（issue #210）。
       // 字段缺失（老版本云函数）时按「不是外援」处理，与 admin 侧同义。
       const supportTag = (staff: typeof list[number]) => {
-        const source = [staff.marketName, staff.storeName].filter(Boolean).join('·');
+        const source = [staff.marketName, staff.storeName].filter(Boolean).join('·') || '来源未设置';
         return staff.assignmentScope && staff.assignmentScope !== 'local'
           ? `（外援${source ? '·' + source : ''}）` : '';
       };

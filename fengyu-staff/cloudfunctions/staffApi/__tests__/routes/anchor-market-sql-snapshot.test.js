@@ -128,6 +128,22 @@ describe('A. 锚定市场 CASE 表达式五端字节同义', () => {
   })
 })
 
+describe('#530 全系统支援候选范围副本', () => {
+  test.each([
+    { file: FILES.staffStaffRoute, count: 1 },
+    { file: FILES.staffAllocation, count: 1 },
+    { file: FILES.staffServiceCommission, count: 1 },
+    { file: FILES.adminEmployees, count: 2 },
+  ])('$file 本店或全系统支援条件保持一致', ({ file, count }) => {
+    const conditions = [...read(file).matchAll(/\(u\.store_id = (?:\$\d|\$\{targetStoreId\}) OR u\.is_on_business_trip = true\)/g)]
+    expect(conditions).toHaveLength(count)
+    for (const match of conditions) {
+      expect(match[0].replace(/\$\d|\$\{targetStoreId\}/g, '?'))
+        .toBe('(u.store_id = ? OR u.is_on_business_trip = true)')
+    }
+  })
+})
+
 describe('B. 服务指派技能白名单两端同序', () => {
   /** 从源码里取指定常量的字符串数组字面量 */
   function extractSkillList(source, constName) {

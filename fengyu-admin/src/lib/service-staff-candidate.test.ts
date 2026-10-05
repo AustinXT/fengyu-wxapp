@@ -19,7 +19,7 @@ describe('formatServiceStaffOption', () => {
       skills: ['养生师'],
       departmentName: '养生部',
       assignmentScope: 'same_market_trip',
-    })).toBe('市场养生师（养生师·养生部）（外援）')
+    })).toBe('市场养生师（养生师·养生部）（外援·来源未设置）')
   })
 
   it('多技能按白名单顺序拼接，非白名单技能不展示', () => {
@@ -39,7 +39,7 @@ describe('formatServiceStaffOption', () => {
       skills: null,
       departmentName: undefined,
       assignmentScope: 'same_market_trip',
-    })).toBe('FY-4（未分组）（外援）')
+    })).toBe('FY-4（未分组）（外援·来源未设置）')
   })
 })
 

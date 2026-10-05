@@ -57,12 +57,12 @@ arch/005 的适用范围因此收窄为「开单 + 顾客端下单」，服务�
 ### 决策 3：技能白名单参数化，不就地放宽
 
 `employee-assignment` 的技能白名单由硬编码 `ARRAY['美容师','养生师']` 改为入参，
-默认值**跟着场景走**：`marketSupport`（服务单）默认四项，其余默认两项。
+在 #210 当时，默认值**跟着场景走**：`marketSupport` 默认四项，其余默认两项。#530 的服务单改用 `allocationSupport` 并显式传四项技能，不能依赖默认两项。
 避免「传了 marketSupport 却忘了传 skills」静默退回两项，造成前端选得到、提交被拒。
 
 ## 架构设计
 
-### 候选口径
+### 候选口径（#210 历史规则，#530 已改为全系统支援）
 
 ```
 候选 = 本店在职员工
@@ -81,8 +81,8 @@ arch/005 的适用范围因此收窄为「开单 + 顾客端下单」，服务�
 | scope | 条件 | 用途 |
 |---|---|---|
 | `localOnly`（默认） | `store_id = 本店` | 开单等普通指派 |
-| `allocationSupport` | `store_id = 本店 OR is_on_business_trip`（无市场限制） | 营业额 / 服务提成分配 |
-| `marketSupport`（新增） | `store_id = 本店 OR (is_on_business_trip AND 锚定市场 = 目标门店市场)` | 服务单创建 |
+| `allocationSupport` | `store_id = 本店 OR is_on_business_trip`（无市场限制） | 营业额 / 服务提成分配；#530 起也用于服务单创建（显式四技能） |
+| `marketSupport`（新增） | `store_id = 本店 OR (is_on_business_trip AND 锚定市场 = 目标门店市场)` | #210 当时用于服务单创建；#530 起仅保留旧 helper，服务单不再调用 |
 
 候选查询与校验查询的 WHERE **严格等价**，否则会出现「前端选得到、提交被拒」或反向绕过。
 
@@ -116,7 +116,7 @@ LEFT JOIN 则 `target_market.id` 为 NULL、出差分支自然不成立，本店
 **staff**
 - `cloudfunctions/staffApi/utils/employee-assignment.js` — 第三态 scope + 技能白名单参数化 + SQL 片段导出
 - `cloudfunctions/staffApi/routes/staff.js` — `list()` 新增 `scene='service'` 分支（默认分支字面不动）
-- `cloudfunctions/staffApi/routes/service.js` — `create` 校验改用 `marketSupport`
+- `cloudfunctions/staffApi/routes/service.js` — `create` 校验在 #210 改用 `marketSupport`（#530 已改为 `allocationSupport`）
 - `miniprogram/packageService/service-create/service-create.ts` — 传 `scene`、四项角色标签、外援标签读 `assignmentScope`、picker 改用 `e.detail.index`
 
 **admin**
@@ -124,19 +124,19 @@ LEFT JOIN 则 `target_market.id` 为 NULL、出差分支自然不成立，本店
 - `src/lib/service-staff-candidate.ts`（新）— 服务人员 picker 文案（纯 TS，不引 drizzle，供客户端组件用）
 - `src/lib/employee-assignment-server.ts` — 第三态 scope + 白名单入参
 - `src/actions/employees.ts` — 新增 `getServiceStaffCandidates`
-- `src/actions/services.ts` — `createServiceOrder` 校验改用 `marketSupport`
+- `src/actions/services.ts` — `createServiceOrder` 校验在 #210 改用 `marketSupport`（#530 已改为 `allocationSupport`）
 - `src/app/(main)/(operations)/services/create/page.tsx` + `_components/service-create-page.tsx` — 候选改异步加载
 
 db 无 schema 变更。
 
 ## 已知边界（实现时确认，非缺陷）
 
-1. **品项老师按本口径仍选不到**：21 人全部挂「品项公司」（`type='市场'`、父节点为品牌总部，
+1. **历史限制，#530 已解除**：当时品项老师按严格同市场口径选不到，21 人全部挂「品项公司」（`type='市场'`、父节点为品牌总部，
    与「南昌凤御」等业务市场**并列**），锚定市场永不等于任何业务门店所属市场。
-   用户已知悉并选择先按严格市场口径落地。后续若要放开需业务方先定归属方案。
+   #210 当时选择先按严格市场口径落地；#530 已明确允许全系统出差支援，不要求修改人员组织归属。
 2. **skills 未打标的员工选不到**：口径按 `skills` 数组判定（arch/005 固化，不按 `position_name`）。
    dev 库实测：`position_name` 含「经理」的在职有门店员工 92 人中 48 人未打「店经理」标签。
    需 HR 在 admin 员工管理补标签，与「未开启出差支援选不到」同属数据侧维护。
-3. **外援看不到自己被指派的服务单**：`service.js` 的 list / start / complete / cancel / detail
+3. **历史限制，#224 已解除**：当时外援看不到自己被指派的服务单，`service.js` 的 list / start / complete / cancel / detail
    均按 `effectiveStoreId` 收口，外援员工在 staff 端查不到该单，需本店人员或店长推进。
    修它要动 5 处 scope 口径并放开员工跨门店可见性，属独立的产品决策，未在本次处理。

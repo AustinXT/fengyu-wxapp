@@ -11,7 +11,7 @@ import { Separator } from "@/components/ui/separator"
 import { batchSaveServiceCommissions } from "@/actions/service-commissions"
 import type { ServiceOrder, ServiceCommission, AllocationEmployeeCandidate, CommissionRate, SkillTag } from "@/lib/types"
 import type { ServiceItemDetail } from "@/actions/services"
-import { deriveAllocationSkillTag, getAllocationEmployeesForSkill, sortAllocationEmployeeCandidates } from "@/lib/allocation-employee"
+import { formatAllocationEmployeeOption, deriveAllocationSkillTag, getAllocationEmployeesForSkill, sortAllocationEmployeeCandidates } from "@/lib/allocation-employee"
 import { ReturnContextLink, useReturnContext } from "@/components/return-context"
 
 // --------------- 常量 ---------------
@@ -461,7 +461,7 @@ function ServiceItemCard({
                     )}
                     {filteredEmployees.map((emp) => (
                       <option key={emp.employeeId} value={emp.employeeId}>
-                        {emp.name}
+                        {formatAllocationEmployeeOption(emp)}
                       </option>
                     ))}
                   </Select>

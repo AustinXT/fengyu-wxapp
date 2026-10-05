@@ -10,7 +10,7 @@ import { StatusBadge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
 import { batchSaveAllocations } from "@/actions/allocations"
 import type { SaleOrder, SaleItem, SaleAllocation, AllocationEmployeeCandidate, CommissionRate, SkillTag } from "@/lib/types"
-import { deriveAllocationSkillTag, getAllocationEmployeesForSkill, sortAllocationEmployeeCandidates } from "@/lib/allocation-employee"
+import { formatAllocationEmployeeOption, deriveAllocationSkillTag, getAllocationEmployeesForSkill, sortAllocationEmployeeCandidates } from "@/lib/allocation-employee"
 import { ReturnContextLink, useReturnContext } from "@/components/return-context"
 
 // --------------- 常量 ---------------
@@ -378,7 +378,7 @@ function ItemAllocationCard({
                     )}
                     {filteredEmployees.map((emp) => (
                       <option key={emp.employeeId} value={emp.employeeId}>
-                        {emp.name}
+                        {formatAllocationEmployeeOption(emp)}
                       </option>
                     ))}
                   </Select>

@@ -21,8 +21,8 @@ await runSystemSupport({
     assert.equal((await create(employeeId, saleItemId)).success, false)
   },
   async rejectAllocations(serviceOrderId, serviceItemId, salePaymentId, saleItemId, employeeId) {
-    assert.equal((await batchSaveServiceCommissions(serviceOrderId, [{ serviceItemId, employeeId, roleType: '推广师', allocationRatio: 1 }])).success, false)
-    assert.equal((await savePaymentAllocations(salePaymentId, [{ saleItemId, employeeId, roleType: '推广师', allocationRatio: 1 }])).success, false)
+    assert.equal((await batchSaveServiceCommissions(serviceOrderId, [{ serviceItemId, employeeId, roleType: '品项老师', allocationRatio: 1 }])).success, false)
+    assert.equal((await savePaymentAllocations(salePaymentId, [{ saleItemId, employeeId, roleType: '品项老师', allocationRatio: 1 }])).success, false)
   },
   async rejectRevenueSkill(id, allocations) {
     assert.equal((await savePaymentAllocations(id, allocations)).success, false)

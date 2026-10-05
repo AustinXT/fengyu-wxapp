@@ -29,7 +29,7 @@ export function formatServiceStaffOption(
   const group = [roleTag, candidate.departmentName?.trim()].filter(Boolean).join('·') || '未分组'
   // 判「truthy 且非 local」而不是「!== 'local'」：字段缺失时按「不是外援」处理，
   // 与员工端 supportTag 同义，避免同一候选在两端一个标外援一个不标
-  const source = [candidate.marketName, candidate.storeName].filter(Boolean).join('·')
+  const source = [candidate.marketName, candidate.storeName].filter(Boolean).join('·') || '来源未设置'
   const suffix = candidate.assignmentScope && candidate.assignmentScope !== 'local'
     ? `（外援${source ? '·' + source : ''}）` : ''
   return `${name}（${group}）${suffix}`

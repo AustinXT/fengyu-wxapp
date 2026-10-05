@@ -38,9 +38,18 @@ export async function runSystemSupport(admin = null) {
       }
     }
     // 非本店未开支援 / 离职 / 技能不符均不得进入服务候选或直接创建。
-    const invalid = [people[18].id, people[19].id, people[17].id]
-    await pgQuery('UPDATE staff_wechat_users SET is_on_business_trip = false WHERE employee_id = $1', [invalid[0]])
-    await pgQuery('UPDATE staff_wechat_users SET is_resigned = true WHERE employee_id = $1', [invalid[1]])
+    const invalid = []
+    for (const [index, resigned] of [false, true].entries()) {
+      const id = `${NS}_530_BAD${index}`
+      await createTestStaff({ employeeId: id, openid: `${id}_OPENID`, phone: testPhone(60 + index),
+        name: id, isManager: false, skills: ['品项老师'],
+        storeId: TEST_STORES_MULTI.B1.storeId, orgNodeId: TEST_STORES_MULTI.B1.orgId })
+      await pgQuery('UPDATE staff_wechat_users SET is_on_business_trip = $2, is_resigned = $3 WHERE employee_id = $1',
+        [id, resigned, resigned])
+      invalid.push(id)
+    }
+    // 第三人活跃且已支援，但只具备推广技能；独立验证服务技能门控。
+    invalid.push(people[17].id)
     const list = (await invoke('staff.list', { scene: 'service', storeId: TEST_STORE_ID })).staffList
     const expected = people.filter(p => roles.includes(p.role))
     for (const person of expected) assert.equal(list.find(p => p.staffWfId === person.id)?.assignmentScope, person.scope)
@@ -111,10 +120,10 @@ export async function runSystemSupport(admin = null) {
     for (const id of invalid.slice(0, 2)) {
       if (admin) await admin.rejectAllocations(serviceOrderId, serviceItemId, Number(salePaymentId), saleItemId, id)
       const badService = await invokeStaffApi('serviceCommission.save', { _testOpenid: TEST_MANAGER_OPENID,
-        serviceOrderId, commissions: [{ serviceItemId, employeeId: id, roleType: '推广师', allocationRatio: 1 }] })
+        serviceOrderId, commissions: [{ serviceItemId, employeeId: id, roleType: '品项老师', allocationRatio: 1 }] })
       assert.equal(badService.code, -400)
       const badRevenue = await invokeStaffApi('allocation.savePayment', { _testOpenid: TEST_MANAGER_OPENID,
-        salePaymentId, allocations: [{ saleItemId, employeeId: id, roleType: '推广师', allocationRatio: 1 }] })
+        salePaymentId, allocations: [{ saleItemId, employeeId: id, roleType: '品项老师', allocationRatio: 1 }] })
       assert.equal(badRevenue.code, -400)
     }
     console.log(`[system-support] ${admin ? 'admin' : 'staff'} PASS: 全系统四技能、本店置顶、三入口保存回显、推广与非法员工拒绝`)

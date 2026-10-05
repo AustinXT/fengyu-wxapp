@@ -45,3 +45,11 @@ export function deriveAllocationSkillTag(skills: string[] = []): string {
   if (skills.includes('品项老师')) return '品项老师'
   return '美容师'
 }
+
+/** 分配选择器显示实际来源；缺来源时明确提示，不把技术分类显示为市场事实。 */
+export function formatAllocationEmployeeOption(employee: AllocationEmployeeCandidate): string {
+  const name = employee.name?.trim() || employee.employeeId
+  if (!employee.assignmentScope || employee.assignmentScope === 'local') return `${name}（本店）`
+  const source = [employee.marketName, employee.storeName, employee.departmentName].filter(Boolean).join('·') || '来源未设置'
+  return `${name}（外援·${source}）`
+}

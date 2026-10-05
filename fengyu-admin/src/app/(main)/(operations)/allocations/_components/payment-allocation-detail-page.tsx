@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { savePaymentAllocations } from "@/actions/allocations"
 import type { AllocationEmployeeCandidate, CommissionRate, SkillTag } from "@/lib/types"
-import { deriveAllocationSkillTag, getAllocationEmployeesForSkill, sortAllocationEmployeeCandidates } from "@/lib/allocation-employee"
+import { formatAllocationEmployeeOption, deriveAllocationSkillTag, getAllocationEmployeesForSkill, sortAllocationEmployeeCandidates } from "@/lib/allocation-employee"
 import {
   calculateGroupedAmounts,
   expandGroupedAllocationLines,
@@ -464,7 +464,7 @@ function ItemAllocationCard({
                     )}
                     {filteredEmployees.map((emp) => (
                       <option key={emp.employeeId} value={emp.employeeId}>
-                        {emp.name}
+                        {formatAllocationEmployeeOption(emp)}
                       </option>
                     ))}
                   </Select>
