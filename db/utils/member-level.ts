@@ -1,12 +1,18 @@
 /**
  * 会员等级判定共享工具（db 侧权威副本）
  *
- * 同源副本共 5 份，函数体必须逐字一致（三份 .js 另有字节级守护）：
+ * 生产同源副本共 5 份，函数体必须逐字一致（三份 .js 另有字节级守护）：
  *   - `fengyu-admin/src/cron/lib/member-level.ts`（每日 cron）
  *   - `fengyu-staff/cloudfunctions/staffApi/utils/member-level.js`
  *   - `fengyu-client/cloudfunctions/clientApi/utils/member-level.js`
  *   - `fengyu-client/cloudfunctions/payNotify/member-level.js`
  * 一致性由 staffApi `__tests__/routes/recalc-member-level-sql.test.js` 守护。
+ *
+ * 另有**不参与生产、也不在守护范围内**的字面副本，改动时须手工同步：
+ *   - `db/scripts/verify-member-level-cron.js`（手工 docker 集成验证脚本，内联判定 + S2 断言）
+ *   - `db/scripts/recalc-all-customer-types.js` 的等级 CASE（SQL 内联，由 db:test 守护）
+ *   - `fengyu-admin/tests/e2e-chains/link-6-member-upgrade.spec.ts` 的 `expectedLevelForSpend`
+ *   - `fengyu-admin/tests/e2e-actions/verify-customer-types.ts` 的夹具预置等级
  *
  * 规则见 `.42cog/pm/admin.pr.spec.md` / `project_member_level_rules` 记忆。
  */

@@ -678,11 +678,13 @@ async function recalcCustomerType(client, clientUserId, saleOrderId, allowDowngr
 
   // 已是最高级：默认通道无需重算；退款通道仍需重算（达标单退款后可能掉档）。
   //
-  // ⚠️ 隐性前提：本函数读现值**不加行锁**，allowDowngrade 的写入近乎盲写，正确性依赖
-  // 「同一事务里在调用本函数之前已有一条写 client_wechat_users 的语句」——四个调用点都由
-  // 前置的 refreshSpendingTier（UPDATE client_wechat_users）持行锁，从而与并发的另一笔
-  // 退款/收款串行化。将来若把 refreshSpendingTier 从退款路径删掉、或把本调用挪到它前面，
-  // 退款通道的降档会丢更新。（admin 侧 recomputeCustomerTypeOnRefund 自带 FOR NO KEY UPDATE，免疫。）
+  // ⚠️ 隐性前提（**只对 allowDowngrade=true 的退款调用点成立**）：本函数读现值不加行锁，
+  // 降档写入近乎盲写，其正确性依赖「同一事务里已先有一条写 client_wechat_users 的语句」把
+  // 该行锁住 —— 退款路径的 refreshSpendingTier 正好在它之前，从而与并发的另一笔退款/收款
+  // 串行化（`cross-end-sql-snapshot.test.js` 钉住这个先后顺序）。
+  // 三条收款路径不满足该前提（它们在 refreshSpendingTier **之前**调用本函数），但那些路径
+  // allowDowngrade=false、最多只做升级：竞争输了也只是漏升，次日 cron 会用正确数据重算。
+  // （admin 侧 recomputeCustomerTypeOnRefund 自带 FOR NO KEY UPDATE，不依赖调用顺序。）
   const cur = await client.query(
     'SELECT customer_type FROM client_wechat_users WHERE user_id = $1',
     [clientUserId]
@@ -799,6 +801,12 @@ async function recalcCustomerType(client, clientUserId, saleOrderId, allowDowngr
       [clientUserId, threshold]
     )
   }
+
+  // 返回本次实际发生的档位变更（未写库时为 null），供调用方写审计 —— 退款是唯一放行降档
+  // 的通道，掉档会立刻收走会员价与生日/感恩权益，必须留痕。
+  return updateResult.rowCount > 0
+    ? { from: cur.rows[0]?.customer_type ?? null, to: newType }
+    : null
 }
 
 /**
@@ -4327,9 +4335,10 @@ async function approveRefund(ctx) {
     // 故必须显式传 allowDowngrade=true；否则退款后顾客会永久保留会员客身份。
     // recalcMemberLevel 仍只升不降——会员等级下限为初钻，档位回落由每日 cron 在 150 天保级期后处理。
     // 与 admin approveRefund 保持一致。
+    let customerTypeChange = null
     if (sopRow.client_user_id) {
       await refreshSpendingTier(client, sopRow.client_user_id)
-      await recalcCustomerType(client, sopRow.client_user_id, refSaleOrderId, true)
+      customerTypeChange = await recalcCustomerType(client, sopRow.client_user_id, refSaleOrderId, true)
     }
 
     // 6. 写 operation_logs（审计）
@@ -4341,6 +4350,8 @@ async function approveRefund(ctx) {
       cascade: cascadeResult,
       // true = 本次审批把寄存单置为「已退款」终态（该单已无可用权益）
       depositMarkedRefunded,
+      // 本次退款连带改写的顾客分类（#545：唯一放行降档的通道，掉档会收走会员价与会员权益）
+      customerTypeChange,
     })
 
     // 通知发起人审批通过（Bug C；自审降噪：审批人=发起人则跳过）
