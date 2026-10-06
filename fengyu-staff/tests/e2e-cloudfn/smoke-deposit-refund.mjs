@@ -21,6 +21,8 @@
  *   D5 驳回无副作用（验收 6）：流水翻「已作废」、金额/次数/实收零变化、可重新发起
  *   D6 家居寄存件退款（验收 3）：级联通道 5 累加 refunded_quantity → 可提量收敛到 0
  *   D7 只退其中一行 → 不跳「已退款」终态、也不落「部分支付」（#543 追加口径的边界）
+ *   D8 豁免前提（本单无 receipt）被打破 → 必须退回常规通道，绝不允许「成功 + 零 receipt」
+ *   D9 两笔退款：第二笔退光全部可用权益才推进「已退款」终态
  */
 import './setup.mjs'
 import {
@@ -167,9 +169,10 @@ async function main() {
         // 关键是**绝不能**被 reconcileOrderStatusAfterRefund 那套「标价快照 vs received」判据误改成
         // 「部分支付」——寄存单不是欠款。
         if (ord?.status !== '已退款') errors.push(`D1 全部行无可用权益后应=已退款，实际='${ord?.status}'`)
-        else if (ord?.status === '部分支付') errors.push('D1 状态被误改成「部分支付」（寄存单不是欠款）')
+        // 独立校验「不得落部分支付」（寄存单不是欠款）。刻意不写成 else-if：那样恒不可达。
 
         // 豁免通道 1 的实证：本单不产生任何 receipt
+        if (ord?.status === '部分支付') errors.push('D1 状态被误改成「部分支付」（寄存单不是欠款）')
         const rc = (await pgQuery(
           `SELECT COUNT(*)::int AS c FROM sale_payment_item_receipts WHERE sale_order_id=$1`, [o]))[0]
         if (Number(rc?.c) !== 0) errors.push(`D1 寄存单不应产生 sale_payment_item_receipts（通道 1 已豁免），实际=${rc?.c} 行`)
@@ -428,6 +431,81 @@ async function main() {
         rec(`  ✅ D7 只退一行：行A 可用归零、行B 不变，状态仍「已支付」（未跳终态、未落部分支付）`)
       }
     }
+  }
+
+  // ════════════════ D8 豁免前提被打破时必须走常规通道（fail-safe，不得静默跳过） ════════════════
+  {
+    const o = `${NS}_DEPRF_D8`
+    await seedDepositOrder(o, [
+      { sessionCount: 5, remaining: 2, saleAmount: 500, received: 300, unitRealPrice: 60 },
+    ], { received: 300 })
+    const itemId = `${o}_ITEM_1`
+    // 人为给该单写一条 receipt，破坏「寄存单无 receipt」这一豁免前提
+    const pay = (await pgQuery(
+      `SELECT id FROM sale_order_payments WHERE sale_order_id=$1 AND change_type='回款' ORDER BY id LIMIT 1`, [o]))[0]
+    await pgQuery(
+      `INSERT INTO sale_payment_item_receipts (sale_payment_id, sale_order_id, sale_item_id, amount, sales_category, created_at)
+       VALUES ($1, $2, $3, 300, '他销自耗', NOW())
+       ON CONFLICT (sale_payment_id, sale_item_id) DO NOTHING`,
+      [pay.id, o, itemId])
+
+    const cr = await invokeStaffApi('order.createRefund', {
+      _testOpenid: TEST_MANAGER_OPENID, refSaleOrderId: o,
+      items: [{ saleItemId: itemId }], refundReason: 'e2e_D8_failsafe',
+    })
+    if (cr.code !== 0) {
+      errors.push(`D8 createRefund 应能发起（发起阶段不涉及级联），实际 code=${cr.code} msg=${cr.message}`)
+    } else {
+      const ap = await invokeStaffApi('order.approveRefund', {
+        _testOpenid: TEST_MANAGER_OPENID, paymentId: cr.data?.paymentId,
+      })
+      // fail-safe 的判据：**要么拒绝（退回常规通道后映射失败），要么成功且真的写了负数 receipt**。
+      // 绝不允许「成功 + 零 receipt」——那说明豁免在前提被破坏时仍然静默跳过了冲销。
+      if (ap.code !== 0) {
+        rec(`  ✅ D8 前提被破坏 → 走常规通道并拒绝（${ap.errorType}）：${(ap.message || '').slice(0, 40)}`)
+      } else {
+        const neg = (await pgQuery(
+          `SELECT COUNT(*)::int AS c FROM sale_payment_item_receipts
+            WHERE sale_payment_id=$1 AND amount < 0`, [cr.data.paymentId]))[0]
+        if (Number(neg?.c) === 0) {
+          errors.push('D8 豁免前提被破坏时仍静默跳过了冲销（成功但零负数 receipt）—— fail-safe 失效')
+        } else {
+          rec(`  ✅ D8 前提被破坏 → 退回常规通道，写了 ${neg.c} 条负数 receipt（未静默跳过）`)
+        }
+      }
+    }
+  }
+
+  // ════════════════ D9 两笔退款：第二笔才把订单推进「已退款」终态 ════════════════
+  {
+    const o = `${NS}_DEPRF_D9`
+    await seedDepositOrder(o, [
+      { sessionCount: 6, remaining: 2, saleAmount: 600, received: 480, unitRealPrice: 80 },
+      { sessionCount: 4, remaining: 4, saleAmount: 400, received: 200, unitRealPrice: 50 },
+    ], { received: 680 })
+
+    const refundOne = async (itemId, reason) => {
+      const cr = await invokeStaffApi('order.createRefund', {
+        _testOpenid: TEST_MANAGER_OPENID, refSaleOrderId: o,
+        items: [{ saleItemId: itemId }], refundReason: reason,
+      })
+      if (cr.code !== 0) return cr
+      return await invokeStaffApi('order.approveRefund', {
+        _testOpenid: TEST_MANAGER_OPENID, paymentId: cr.data?.paymentId,
+      })
+    }
+    const st = async () => (await pgQuery(`SELECT status FROM sale_orders WHERE sale_order_id=$1`, [o]))[0]?.status
+
+    const a = await refundOne(`${o}_ITEM_1`, 'e2e_D9_A')
+    if (a.code !== 0) errors.push(`D9 第一笔退款应成功，实际 code=${a.code} msg=${a.message}`)
+    const afterA = await st()
+    if (afterA !== '已支付') errors.push(`D9 第一笔（行B 仍有可用权益）后应保持「已支付」，实际='${afterA}'`)
+
+    const b = await refundOne(`${o}_ITEM_2`, 'e2e_D9_B')
+    if (b.code !== 0) errors.push(`D9 第二笔退款应成功，实际 code=${b.code} msg=${b.message}`)
+    const afterB = await st()
+    if (afterB !== '已退款') errors.push(`D9 第二笔退光全部可用权益后应=已退款，实际='${afterB}'`)
+    else rec(`  ✅ D9 两笔退款：第一笔后仍「已支付」，第二笔退光后→「已退款」`)
   }
 
   if (errors.length) {

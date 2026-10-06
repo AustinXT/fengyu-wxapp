@@ -272,6 +272,9 @@ export async function auditRefundCascadeCoverage(db: Db): Promise<RefundCascadeC
   // 0 元退款只退项/扣次数，运行态合法地不写 receipt，因此必须保留 sop.amount < 0 过滤。
   // 寄存单豁免通道 1（2026-10-06 #543）：寄存单没有任何正向 receipt，其净额由 paid-sessions 的
   // STEP 1 分支 B + STEP 1.5 承担，**永远**不会写负数 receipt —— 不排除会每晚误报。
+  // ⚠ 排除须与级联豁免**同一前提**（寄存单 **且** 本单无 receipt）：若某寄存单因脏数据/其它入口
+  // 有了 receipt，级联的 fail-safe 会退回常规通道（应写负数 receipt），此时它必须回到巡检范围内，
+  // 否则会变成「不制造无告警账实偏差」的反面。
   const c1ReceiptMissing = (await db.execute(sql`
     SELECT sop.id AS sop_id, sop.sale_order_id, sop.ref_sale_item_id, sop.amount
       FROM sale_order_payments sop
@@ -279,7 +282,8 @@ export async function auditRefundCascadeCoverage(db: Db): Promise<RefundCascadeC
      WHERE sop.status = '已支付'
        AND sop.change_type = '退款'
        AND sop.amount < 0
-       AND so.sale_order_type <> '寄存单'
+       AND NOT (so.sale_order_type = '寄存单' AND NOT EXISTS (
+             SELECT 1 FROM sale_payment_item_receipts r WHERE r.sale_order_id = so.sale_order_id))
        AND NOT EXISTS (
          SELECT 1
            FROM sale_payment_item_receipts spir
@@ -301,11 +305,13 @@ export async function auditRefundCascadeCoverage(db: Db): Promise<RefundCascadeC
     WITH refunds AS (
       -- 寄存单豁免通道 1/2（2026-10-06 #543）：寄存单正常消费会产 service_commissions，
       -- 但退款不经过通道 2（部分消耗时 isFullItemRefund 恒 false），不排除会每晚误报。
+      -- ⚠ 与通道 1 的豁免同一前提（寄存单 **且** 无 receipt）：前提被破坏时应回到巡检范围。
       SELECT sop.id AS sop_id, sop.sale_order_id, sop.ref_sale_item_id
       FROM sale_order_payments sop
       JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
       WHERE sop.change_type = '退款' AND sop.status = '已支付'
-        AND so.sale_order_type <> '寄存单'
+        AND NOT (so.sale_order_type = '寄存单' AND NOT EXISTS (
+              SELECT 1 FROM sale_payment_item_receipts r WHERE r.sale_order_id = so.sale_order_id))
     ),
     sc_status AS (
       SELECT r.sop_id, r.sale_order_id, r.ref_sale_item_id,

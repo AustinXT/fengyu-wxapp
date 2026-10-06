@@ -1295,19 +1295,35 @@ describe("ticket 2026-05-19 paid_sessions 重算 SQL 四端字节同义守护", 
       }
     })
 
-    test("admin lib 内**每一份** paid_sessions 公式都必须同步（常量只供快照，内联副本才是执行体）", () => {
-      // 踩过的坑（#543 round-3 P0）：admin/src/lib/paid-sessions.ts 有两份公式 ——
-      //   · 导出常量 PAID_SESSIONS_RECALC_SQL（占位符 $1，**只供跨端快照比对**，不执行）
+    test("admin lib 的三对「导出常量 / 执行内联」副本必须归一化等价（防只改常量不改执行体）", () => {
+      // 踩过的坑（#543 round-3 P0）：admin/src/lib/paid-sessions.ts 里每个 SQL 都有**两份**——
+      //   · 导出常量 `XXX_SQL`（占位符 $1，**只供跨端快照比对**，不执行）
       //   · recalcPaidSessionsForOrder 内的 sql`` 内联副本（占位符 ${var}，**真正执行的那份**）
-      // 只改常量不改内联 → 387 项快照全绿，但真库解析期 42703（column op.sale_order_type does not exist），
-      // admin 全部退款审批（含销售单）事务回滚、流水永滞「待审批」。
-      // 故这里按**出现的份数**逐份断言，任一份漏改即红。
-      const adminPaidSrc = readFile(FILES.adminPaidSessionsTs)
-      const segs = adminPaidSrc.split('paid_sessions = CASE').slice(1)
-      expect(segs.length, 'admin paid-sessions 公式份数变了，请同步本守护').toBeGreaterThanOrEqual(2)
+      // 只改常量不改内联 ⇒ 快照全绿但真库执行旧 SQL（round-3 实测解析期 42703，
+      // admin 全部退款审批事务回滚、流水永滞「待审批」，波及**所有**订单类型）。
+      // 故逐对做**归一化逐字比对**：任一方向的单边修改都立即变红。
+      const src = readFile(FILES.adminPaidSessionsTs)
+      const pairs = [
+        'paid_sessions = CASE',
+        'WITH full_refund_zero_items AS',
+        'WITH conversion_order AS',
+      ]
+      for (const marker of pairs) {
+        const bodies = []
+        let idx = -1
+        while ((idx = src.indexOf(marker, idx + 1)) !== -1) {
+          const end = src.indexOf('`', idx)
+          expect(end, `${marker} 第 ${bodies.length + 1} 份未以反引号结束`).toBeGreaterThan(idx)
+          bodies.push(normalizeSql(src.slice(idx, end)))
+        }
+        expect(bodies.length, `${marker} 的副本份数从 2 变了，请同步本守护`).toBe(2)
+        expect(bodies[1], `${marker}: 执行内联副本与导出常量不等价（改一份漏另一份会真库跑旧 SQL）`).toBe(bodies[0])
+      }
+      // 附加：改到的寄存单分支与 op 子查询必须两份都在（等价性已隐含，此处给出可读定位）
+      const segs = src.split('paid_sessions = CASE').slice(1)
       for (const [i, seg] of segs.entries()) {
         expect(seg, `admin 第 ${i + 1} 份 paid_sessions 公式缺寄存单专属分支`).toMatch(/op\.sale_order_type = '寄存单'/)
-        expect(seg, `admin 第 ${i + 1} 份公式的 op 子查询缺 sale_order_type（会真库 42703）`).toMatch(/SELECT total_amount, sale_order_type FROM sale_orders/)
+        expect(seg, `admin 第 ${i + 1} 份公式的 op 子查询缺 sale_order_type`).toMatch(/SELECT total_amount, sale_order_type FROM sale_orders/)
       }
     })
 
@@ -2082,7 +2098,7 @@ describe('寄存单/历史订单 资金操作锁定守护', () => {
       expect(src, `${name} 缺「本笔退过次数」前提`).toContain('this_refund_sessions')
       expect(src, `${name} 缺「本笔退过次数」判据`).toContain("SUM(GREATEST(0, public.try_numeric(elem ->> 'quantity')))")
       expect(src, `${name} 缺「本笔退过次数」门槛`).toContain('AND (SELECT refunded_sessions FROM this_refund_sessions) > 0')
-      expect(src, `${name} 缺状态迁移约束`).toContain("AND so.status IN ('已支付', '已完成')")
+      expect(src, `${name} 缺状态迁移约束`).toContain("AND so.status IN ('已支付', '已完成', '部分支付')")
       expect(src, `${name} 未置已退款`).toContain("SET status = '已退款'::order_status")
     }
     // 终态只对寄存单生效，不得外溢（两端变量名不同：staff 用 sopRow，admin 用 pre）

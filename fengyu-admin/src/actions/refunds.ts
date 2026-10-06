@@ -1475,7 +1475,7 @@ export const approveRefund = withPermission(
              SET status = '已退款'::order_status,
                  updated_at = NOW()
            WHERE so.sale_order_id = ${refSaleOrderId}
-             AND so.status IN ('已支付', '已完成')
+             AND so.status IN ('已支付', '已完成', '部分支付')
              AND EXISTS (SELECT 1 FROM deposit_items)
              AND NOT EXISTS (SELECT 1 FROM deposit_items di WHERE di.has_usable_right)
              AND (SELECT refunded_sessions FROM this_refund_sessions) > 0
