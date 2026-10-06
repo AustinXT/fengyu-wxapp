@@ -270,10 +270,14 @@ spend_12m AS (
   -- 「口径/算法修正」不产生降档。computed_type 只读输出，供 dry-run 与审计观察
   -- 「若无单调门会有多少人掉档」；不参与任何 UPDATE。
   SELECT user_id, old_type, old_level, old_became, computed_type, spend,
+         -- 写成「计算值严格高于现值才升级」而非「现值 >= 计算值就保留」：后者在 rank 为
+         -- NULL（未知档位）时会落 ELSE 分支、静默按低档降级；本写法在同样情形下比较结果为
+         -- NULL → 落 ELSE 保留现值，fail closed。当前 customer_type 是闭合 4 值 enum、rank
+         -- 不可能为 NULL，这是给「将来加第 5 档」留的安全方向。
          CASE
-           WHEN (${TYPE_RANK_CASE('old_type')}) >= (${TYPE_RANK_CASE('computed_type')})
-             THEN old_type
-           ELSE computed_type
+           WHEN (${TYPE_RANK_CASE('computed_type')}) > (${TYPE_RANK_CASE('old_type')})
+             THEN computed_type
+           ELSE old_type
          END::customer_type AS new_type,
          first_qualified_at, first_qualified_order
     FROM classified

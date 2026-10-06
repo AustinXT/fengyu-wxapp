@@ -27,7 +27,8 @@ describe('#545 单顾客分类重算（只升不降，推翻 #257）', () => {
     const upd = execute.mock.calls.map(([s])=>compile(s)).find(q=>q.sql.includes('SET customer_type'))!
     expect(upd.sql).toContain('customer_type IS DISTINCT FROM')
     // rank 守卫：现值 < 计算值才写；默认不放行降档（绑定参数为 false）
-    expect(upd.sql).toMatch(/CASE customer_type[\s\S]*?END\)\s*< \(CASE/)
+    expect(upd.sql).toMatch(/END\s*\)\s*<\s*\(\s*CASE/)
+    expect(upd.sql).toContain("WHEN '会员客' THEN 3")
     expect(upd.sql).toContain('::boolean')
   })
   it('退款通道放开降档：会员客按剩余有效订单降到小美客', async () => {

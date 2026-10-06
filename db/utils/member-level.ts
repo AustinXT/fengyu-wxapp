@@ -1,8 +1,12 @@
 /**
- * 会员等级判定共享工具（admin 侧）
+ * 会员等级判定共享工具（db 侧权威副本）
  *
- * cronTask 云函数（JS）内部有同名本地实现，二者需同步更新；详见
- * `.../cloudfunctions/cronTask/index.js` 中的 LEVEL_RANK / determineMemberLevel。
+ * 同源副本共 5 份，函数体必须逐字一致（三份 .js 另有字节级守护）：
+ *   - `fengyu-admin/src/cron/lib/member-level.ts`（每日 cron）
+ *   - `fengyu-staff/cloudfunctions/staffApi/utils/member-level.js`
+ *   - `fengyu-client/cloudfunctions/clientApi/utils/member-level.js`
+ *   - `fengyu-client/cloudfunctions/payNotify/member-level.js`
+ * 一致性由 staffApi `__tests__/routes/recalc-member-level-sql.test.js` 守护。
  *
  * 规则见 `.42cog/pm/admin.pr.spec.md` / `project_member_level_rules` 记忆。
  */

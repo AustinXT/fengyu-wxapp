@@ -33,6 +33,9 @@ related: ["arch/013"]
 
 ### customer_type（方向反转，4 处）
 
+判据写成「计算值 rank **严格高于**现值才升级」，而非「现值 >= 计算值就保留」。两者在正常数据上等价，但后者在 rank 为 NULL（未知档位）时会落 ELSE 分支、**静默按低档降级**；写成前者则比较结果为 NULL → 保留现值，fail closed。当前 `customer_type` 是闭合 4 值 enum、rank 不可能为 NULL，这是给「将来加第 5 档」留的安全方向。
+
+
 实时收款 4 条路径（staffApi / clientApi / payNotify / admin orders.ts 的 `recalcCustomerType`）**本来就是只升不降**，未动。改回单向的是：
 
 | 位置 | 改动 |
@@ -56,10 +59,20 @@ related: ["arch/013"]
 `db/utils/member-level.ts`、`fengyu-admin/src/cron/lib/member-level.ts`、staffApi/clientApi/payNotify 三份 `utils/member-level.js`（字节一致）、`db/scripts/recalc-all-customer-types.js` 的内联 SQL、`db/scripts/verify-member-level-cron.js`。调用点已全部按 `customer_type='会员客'` 门控，非会员客不会被误伤；`spending_tier` 与会员价资格（只看 customer_type）均解耦。
 
 ## 顺带修掉的缺陷（R1）
-
 `processDowngrade` 也会写 `member_level_upgraded_at`，而「等级未变」分支靠「近 36h 内升级过」给会员**补发升级礼包**。此前降档终点是 NULL、被 `if (newLevel && …)` 短路；下限改初钻后降档终点是真值，**次日 cron 会给刚被降档的会员补发「恭喜升级到初钻」的消息/积分/券**。同类问题在 黑钻→金钻 这类非空降档上早已存在。
 
 修法：`shouldRetryUnchangedUpgradeBenefits` 增加「上次跃迁是降档（`old_member_level` 高于现值）则跳过」守卫，并补回归用例。
+
+## 评审轮修掉的缺陷（P1）：两条退款通道的阈值可用性语义相反
+
+PR 前的三视角扫描发现：`customer_type` 重算在「会员门槛配置不可用」时，各通道行为不一致，而两条**退款**通道恰好是相反的两个方向。
+
+- admin `recomputeCustomerTypeOnRefund`：`getCustomerTypeThreshold` 抛 `CUSTOMER_TYPE_THRESHOLD_UNAVAILABLE` 被捕获 → `return null` → 退款成功但**静默放弃本次降档**。退款是唯一降档通道，这次机会一过，顾客会带着会员客身份长期停留。
+- staffApi `recalcCustomerType`：走 `utils/config.js` 的 `getMemberThreshold`，该函数**从不抛错**，配置缺失/非法时兜底 `FALLBACK_THRESHOLD`（硬编码 1980）→ 用与真实门槛无关的数重算并**写出不可逆的错误降档**（降档会立刻收走会员价与权益）。
+
+修法：新增 `getMemberThresholdStrict()`（缺失/非法/查询失败一律抛错，不兜底），`recalcCustomerType` 在 `allowDowngrade` 分支改用它，捕获后跳过本次分类重算、不阻断退款审批本身 —— 与 admin 侧同语义。两端注释都写着「与对方保持一致」，此前与实现不符。
+
+方向取舍：**漏降**优于**错降**。兜底阈值在只升不降的收款链路上无害（最坏漏升，次日 cron 会用正确阈值纠正），但在唯一放行降档的退款通道上方向不可控，故取 fail-closed。
 
 ## 生产数据现状（2026-10-06 实测）
 

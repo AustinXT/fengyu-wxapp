@@ -50,14 +50,13 @@ const SKU2_NAME = '假性皱纹管家' // 其他 SKU ¥100
 // 预期升级路径：根据补 spend 后的实际 12mo spend 动态判定（与 cron `determineMemberLevel` 同步）
 // 仅在 beforeAll 跑完才确定，因 fixture 顾客历史 spend 会随测试积累漂移
 // 阈值与 determineMemberLevel (src/cron/lib/member-level.ts) 对齐
-const SPEND_THRESHOLD_INIT = 1980
+// #545：会员客等级下限为初钻，低于门槛不再落 NULL
 function expectedLevelForSpend(spend: number): string {
   if (spend >= 100000) return '黑钻'
   if (spend >= 60000) return '金钻'
   if (spend >= 30000) return '粉钻'
   if (spend >= 10000) return '星钻'
-  if (spend >= SPEND_THRESHOLD_INIT) return '初钻'
-  return 'NULL'
+  return '初钻'
 }
 // 这两个 let 在 beforeAll 里赋值（依赖动态算 spend）
 let EXPECTED_LEVEL = '初钻'

@@ -69,6 +69,27 @@ async function getMemberThreshold() {
 }
 
 /**
+ * 严格读取会员门槛：缺失 / 非法 / 查询失败一律抛错，**不兜底**。
+ *
+ * 仅供「全仓唯一放行降档」的退款通道使用（`order.approveRefund` → `recalcCustomerType(…, true)`）。
+ * `getMemberThreshold` 的 FALLBACK_THRESHOLD 兜底对只升不降的收款链路无害（最坏是漏升，
+ * 次日 cron 会用正确阈值纠正），但在退款通道会按一个与真实门槛无关的数**写出不可逆的降档**。
+ * admin 侧 `recomputeCustomerTypeOnRefund` 同样是「配置不可用则跳过」，两端语义靠这里对齐。
+ *
+ * @returns {Promise<number>}
+ */
+async function getMemberThresholdStrict() {
+  const rows = await pg.query(
+    "SELECT value FROM system_configs WHERE key = 'new_member_threshold'"
+  )
+  const v = rows[0] ? Number(rows[0].value) : NaN
+  if (!Number.isFinite(v) || v <= 0) {
+    throw new Error('INVALID_STATE: 会员门槛配置不可用，停止顾客分类重算')
+  }
+  return v
+}
+
+/**
  * 获取积分折算金额比例（默认 0.01，即 100 积分 = 1 元）。
  * @returns {Promise<number>}
  */
@@ -189,6 +210,7 @@ if (_ttlTimer && typeof _ttlTimer.unref === 'function') {
 
 module.exports = {
   getMemberThreshold,
+  getMemberThresholdStrict,
   getPointsToYuanRate,
   getPointsDeductionMaxRate,
   invalidateCache,

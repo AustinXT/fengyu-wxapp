@@ -711,10 +711,11 @@ describe('#545 顾客分类方向守护', () => {
     expect(src).toContain('AND u.customer_type IS DISTINCT FROM t.new_type')
     expect(src).toContain('TYPE_RANK_CASE')
     expect(src).toMatch(/WHEN '流量客' THEN 0 WHEN '体验客' THEN 1/)
-    // new_type 必须是 max(现值, 计算值)；computed_type 只读输出，不参与 UPDATE
+    // new_type 必须是 max(现值, 计算值)；computed_type 只读输出，不参与 UPDATE。
+    // 判据写成「计算值 > 现值才升级」，rank 为 NULL 时落 ELSE 保留现值（fail closed）。
     expect(src).toContain('END::customer_type AS computed_type')
     expect(src).toContain('END::customer_type AS new_type')
-    expect(src).toMatch(/>=\s*\(\$\{TYPE_RANK_CASE\('computed_type'\)\}\)/)
+    expect(src).toMatch(/>\s*\(\$\{TYPE_RANK_CASE\('old_type'\)\}\)/)
   })
   for (const [label, file] of [
     ['all-types', SCRIPT_RECALC_ALL_TYPES], ['became', SCRIPT_RECALC_BECAME_MEMBER],
@@ -732,7 +733,10 @@ describe('#545 顾客分类方向守护', () => {
     const src = fs.readFileSync(ADMIN_RECOMPUTE_TS, 'utf8')
     expect(src).toMatch(/if \(!allowDowngrade && oldType === '会员客'\) return null/)
     expect(src).toMatch(/customer_type (?:<>|IS DISTINCT FROM)/)
-    expect(src).toMatch(/CASE customer_type[\s\S]*?END\)\s*< \(CASE/)
+    // rank 守卫由本文件 rankCase 助手插值（两侧同一表达式，避免漂移），与实时四端同序
+    expect(src).toContain('const rankCase =')
+    expect(src).toMatch(/rankCase\(sql`customer_type`\)/)
+    expect(src).toMatch(/rankCase\(sql`\$\{newType\}::customer_type`\)/)
     expect(src).toContain('recomputeCustomerTypeOnRefund')
   })
 })

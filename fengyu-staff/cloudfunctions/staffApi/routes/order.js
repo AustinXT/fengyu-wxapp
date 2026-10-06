@@ -18,7 +18,7 @@ const { assertMembershipBinding } = require('../utils/membership-binding')
 const { requireStaffBound, requireManager, isCurrentStoreManager } = require('../middleware/auth')
 const { assertOrderInScope, isStoreInScope, restrictToBoundEmployee, buildBundleMarketScopeFilter, buildNormalSkuMarketScopeFilter } = require('../utils/scope')
 const { generateWxacode, uploadToCloudStorage, effectiveEnvVersion, versionPathSuffix } = require('../utils/wxacode')
-const { getMemberThreshold, getPointsToYuanRate, getPointsDeductionMaxRate } = require('../utils/config')
+const { getMemberThreshold, getMemberThresholdStrict, getPointsToYuanRate, getPointsDeductionMaxRate } = require('../utils/config')
 // 充值卡剥离 SKU 化（2026-05-20）：充值识别改为 sale_orders.sale_order_type='充值单'，
 // 不再依赖虚拟 SKU ID 或 product_name 正则解析面值。
 const { settlePointsSafe, grantPointBatch, consumePointBatches } = require('../utils/points')
@@ -677,13 +677,33 @@ async function recalcCustomerType(client, clientUserId, saleOrderId, allowDowngr
   if (!clientUserId) return
 
   // 已是最高级：默认通道无需重算；退款通道仍需重算（达标单退款后可能掉档）。
+  //
+  // ⚠️ 隐性前提：本函数读现值**不加行锁**，allowDowngrade 的写入近乎盲写，正确性依赖
+  // 「同一事务里在调用本函数之前已有一条写 client_wechat_users 的语句」——四个调用点都由
+  // 前置的 refreshSpendingTier（UPDATE client_wechat_users）持行锁，从而与并发的另一笔
+  // 退款/收款串行化。将来若把 refreshSpendingTier 从退款路径删掉、或把本调用挪到它前面，
+  // 退款通道的降档会丢更新。（admin 侧 recomputeCustomerTypeOnRefund 自带 FOR NO KEY UPDATE，免疫。）
   const cur = await client.query(
     'SELECT customer_type FROM client_wechat_users WHERE user_id = $1',
     [clientUserId]
   )
   if (!allowDowngrade && cur.rows[0]?.customer_type === '会员客') return
 
-  const threshold = await getMemberThreshold()
+  let threshold
+  if (allowDowngrade) {
+    // 退款是唯一放行降档的通道，阈值必须严格读取：getMemberThreshold 在配置异常时兜底
+    // FALLBACK_THRESHOLD，会按一个与真实门槛无关的数写出**不可逆的错误降档**。
+    // 配置不可用时跳过本次分类重算、不阻断退款审批本身 —— 与 admin
+    // recomputeCustomerTypeOnRefund 的「捕获后 return null」同语义。
+    try {
+      threshold = await getMemberThresholdStrict()
+    } catch (err) {
+      console.warn('[order] 退款通道跳过顾客分类重算：会员门槛配置不可用', err.message)
+      return
+    }
+  } else {
+    threshold = await getMemberThreshold()
+  }
 
   // 九处 SQL 独立副本（staffApi routes/order.js + clientApi routes/order.js + payNotify index.js
   // + admin actions/orders.ts + admin lib/recompute-customer-tags.ts + db/scripts/recalc-all-customer-types.js

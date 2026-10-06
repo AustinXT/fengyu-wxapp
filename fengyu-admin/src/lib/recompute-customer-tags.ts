@@ -18,7 +18,7 @@ import { retainedRefundFeeSql } from './refund-fee-sql'
  * （fengyu-staff/cloudfunctions/staffApi/__tests__/routes/recalc-customer-type-sql.test.js）。
  */
 
-import { sql } from 'drizzle-orm'
+import { sql, type SQL } from 'drizzle-orm'
 import { db } from '@/db'
 import { getCustomerTypeThreshold, CUSTOMER_TYPE_THRESHOLD_UNAVAILABLE } from '@/cron/steps/refresh-customer-types'
 import { rowsAffected } from '@/lib/pg-rows'
@@ -89,6 +89,19 @@ async function recomputeCustomerStatusForUser(tx: Tx, clientUserId: string): Pro
  * SQL 字面必须与其余八处一致；守护测试：
  * fengyu-staff/cloudfunctions/staffApi/__tests__/routes/recalc-customer-type-sql.test.js
  */
+/**
+ * 顾客档位序（只升不降的比较基准）：流量客 < 体验客 < 小美客 < 会员客。
+ * 与实时四端 UPDATE、cron `CUSTOMER_TYPE_RANK_CASE`、db 离线脚本 `TYPE_RANK_CASE` 同序。
+ * 写成同一个表达式插值两次，避免两侧漂移；`<` 比较在任一侧为 NULL 时不命中，
+ * 即未知档位 fail closed（不写）。
+ */
+const rankCase = (expr: SQL) => sql`
+  CASE ${expr}
+    WHEN '流量客' THEN 0 WHEN '体验客' THEN 1
+    WHEN '小美客' THEN 2 WHEN '会员客' THEN 3
+  END
+`
+
 /**
  * 顾客分类跃迁的订单级金额 CTE（#187）。产出每张已结清销售单的
  * non_trial / trial = 非体验 / 体验行的毛实收合计（received 净额 + 该行逐项退款额）。
@@ -262,14 +275,8 @@ async function recomputeCustomerTypeForUser(
        AND name IS DISTINCT FROM '谢廷(测试)'
        AND customer_type IS DISTINCT FROM ${newType}::customer_type
        AND (
-         (CASE customer_type
-            WHEN '流量客' THEN 0 WHEN '体验客' THEN 1
-            WHEN '小美客' THEN 2 WHEN '会员客' THEN 3
-          END)
-         < (CASE ${newType}::customer_type
-            WHEN '流量客' THEN 0 WHEN '体验客' THEN 1
-            WHEN '小美客' THEN 2 WHEN '会员客' THEN 3
-          END)
+         (${rankCase(sql`customer_type`)})
+         < (${rankCase(sql`${newType}::customer_type`)})
          -- #545：默认只升不降；仅退款审批通道（allowDowngrade=true）允许降到计算档位。
          OR ${allowDowngrade}::boolean
        )

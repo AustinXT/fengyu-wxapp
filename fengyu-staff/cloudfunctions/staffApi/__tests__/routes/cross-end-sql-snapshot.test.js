@@ -876,6 +876,19 @@ describe('SUMMARY v3 §2 #14：cascadeRefund 触发点防回归', () => {
     expect(src).toMatch(/await\s+cascadeRefund\s*\(\s*client\s*,/)
   })
 
+  test('#545 退款通道必须严格读取会员门槛：兜底阈值会写出不可逆的错误降档', () => {
+    const src = readFile(FILES.staffOrderJs)
+    const config = readFile(path.resolve(__dirname, '../../utils/config.js'))
+    // 严格读取存在且配置非法时抛错（不兜底）
+    expect(config).toContain('async function getMemberThresholdStrict')
+    expect(config).toMatch(/!Number\.isFinite\(v\) \|\| v <= 0[\s\S]{0,120}throw new Error\('INVALID_STATE: 会员门槛配置不可用/)
+    expect(config).toMatch(/getMemberThresholdStrict,/)
+    // allowDowngrade 分支走严格读取，失败即 return（跳过分类重算，不阻断退款审批本身）
+    expect(src).toMatch(/if \(allowDowngrade\) \{[\s\S]*?getMemberThresholdStrict\(\)[\s\S]*?catch[\s\S]*?return/)
+    // 只升通道继续用带兜底的 getMemberThreshold（配置异常最坏是漏升，次日 cron 纠正）
+    expect(src).toContain('threshold = await getMemberThreshold()')
+  })
+
   test('staff approveRefund 与 admin 一致：退款刷新 spending_tier，并显式放行分类降档（#545）', () => {
     const src = readFile(FILES.staffOrderJs)
     const approveBody = src.slice(
