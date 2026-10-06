@@ -353,8 +353,10 @@ SET paid_sessions = CASE
     WHERE conv_out.ref_sale_item_id = sale_items.sale_item_id AND conv_out.item_direction = '转出'
       AND conv_order.status <> '已关闭'
   ) THEN sale_items.session_count
-  WHEN op.total_amount <= 0 THEN sale_items.session_count
-  WHEN sale_items.sale_amount <= 0 THEN sale_items.session_count
+  -- 寄存单/零金额单：满次数兜底必须扣掉已退次数，否则「退款不退次数」（2026-10-06 寄存单退款口径）。
+  -- 分支 2 full_refund 只覆盖「零消费全退」，部分消耗的寄存单落到这里。非寄存单退款走不到（转换单不可退）。
+  WHEN op.total_amount <= 0 THEN GREATEST(0, sale_items.session_count - rights.refunded_sessions)
+  WHEN sale_items.sale_amount <= 0 THEN GREATEST(0, sale_items.session_count - rights.refunded_sessions)
   ELSE GREATEST(0, LEAST(sale_items.session_count - rights.refunded_sessions,
     FLOOR(GREATEST(0, sale_items.received::numeric - rights.retained + rights.overpay)
       * sale_items.session_count / sale_items.sale_amount::numeric)::integer))
