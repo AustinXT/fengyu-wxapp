@@ -536,7 +536,7 @@ SET paid_sessions = CASE
       * sale_items.session_count / sale_items.sale_amount::numeric)::integer))
 END,
 updated_at = NOW()
-FROM (SELECT total_amount FROM sale_orders WHERE sale_order_id = ${saleOrderId}) op, rights
+FROM (SELECT total_amount, sale_order_type FROM sale_orders WHERE sale_order_id = ${saleOrderId}) op, rights
 WHERE sale_items.sale_order_id = ${saleOrderId} AND rights.sale_item_id = sale_items.sale_item_id`)
   // STEP 2.5：0 元 item 若已随退款全退，覆盖 paid_sessions=0（否则 sale_amount<=0 兜底会保留满次数）
   await tx.execute(sql`

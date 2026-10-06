@@ -1428,16 +1428,22 @@ export const approveRefund = withPermission(
         await reconcileOrderStatusAfterRefund(tx, refSaleOrderId)
       } else {
 
-        // 寄存单退款终态（2026-10-06 追加口径）：走不到 reconcileOrderStatusAfterRefund（理由见上），
-        // 因此这里单独判定「该卡已无可用权益」并置「已退款」。
-        // 「无可用权益」逐行镜像 calculateUnusedQuantity 的三个分支（lib/refund.ts 与
-        // staff utils/refund.js）：
-        //   ① 非次数卡（session_count IS NULL，即家居寄存件）→ 物理剩余 = quantity − (已提货+已退款+已转换)
-        //   ② 次数卡历史行（paid_sessions IS NULL）→ 回退 remaining_sessions（与 calculateUnusedQuantity 同口径）
-        //   ③ 次数卡 → 已付未用 = paid_sessions − 已消费次数(session_count − remaining_sessions)
-        // 另需「本单确实发生过退次数的退款（note.items[].quantity > 0）」：否则一张**自然消耗殆尽**
-        // （remaining=0、从未退过款）的寄存单也满足「无可用权益」，会被误判成已退款。
-        // 两端镜像 staffApi routes/order.js。
+      // 寄存单退款终态（2026-10-06 追加口径）：走不到 reconcileOrderStatusAfterRefund（理由见上），
+      // 因此这里单独判定「该卡已无可用权益」并置「已退款」。
+      // ⚠ 状态语义跨类型不同：销售单的「已退款」= 钱全退清（reconcileOrderStatusAfterRefund 按
+      //   逐行 refunded>=sale_amount 判定）；寄存单的「已退款」= **可退权益退光**（部分消耗后退卡时
+      //   已消费那部分本就不退钱，refunded_amount 永远小于 received）。寄存单本就不进金额口径
+      //   （`sale_order_type IN ('销售单','转换单')`），故不会污染报表。
+      // 「无可用权益」逐行判据：
+      //   ① 非次数卡（session_count IS NULL，即家居寄存件）→ 物理剩余 = quantity − (已提货+已退款+已转换)。
+      //      **刻意不含** calculateUnusedQuantity 的「剩余已付」金额封顶：判据更宽 ⇒ 只会漏置终态、
+      //      不会误置（保守方向）。
+      //   ② 次数卡历史行（paid_sessions IS NULL）→ 回退 remaining_sessions（与 calculateUnusedQuantity 同口径）。
+      //   ③ 次数卡 → 已付未用 = paid_sessions − 已消费次数(session_count − remaining_sessions)。
+      // 「本次审批这笔退款**确实退了次数**（note.items[].quantity > 0）」是必需条件，否则一张
+      // **自然消耗殆尽**（remaining=0、从未退过款）的寄存单也满足「无可用权益」而被误判成已退款。
+      // 用**本笔**而不是「本单历史上任一笔」：排除「曾退过次数 → 剩余被自然消耗殆尽 → 之后又审批一笔
+      // 纯余数退款」的灰区（那种单的钱并没有全退，不该翻终态）。
         const depositRefundedRes = await tx.execute(sql`
           WITH deposit_items AS (
             SELECT CASE
@@ -1453,18 +1459,17 @@ export const approveRefund = withPermission(
              WHERE si.sale_order_id = ${refSaleOrderId}
                AND si.item_direction = '购买'
           ),
-          session_refund AS (
-            SELECT 1
+          this_refund_sessions AS (
+            SELECT COALESCE(SUM(GREATEST(0, public.try_numeric(elem ->> 'quantity'))), 0) AS refunded_sessions
               FROM sale_order_payments sop
               CROSS JOIN LATERAL jsonb_array_elements(
                 CASE WHEN jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'
                      THEN public.try_jsonb(sop.note) -> 'items' ELSE '[]'::jsonb END
               ) elem
-             WHERE sop.sale_order_id = ${refSaleOrderId}
+             WHERE sop.id = ${idNum}
+               AND sop.sale_order_id = ${refSaleOrderId}
                AND sop.change_type = '退款'
                AND sop.status = '已支付'
-               AND public.try_numeric(elem ->> 'quantity') > 0
-             LIMIT 1
           )
           UPDATE sale_orders so
              SET status = '已退款'::order_status,
@@ -1473,7 +1478,7 @@ export const approveRefund = withPermission(
              AND so.status IN ('已支付', '已完成')
              AND EXISTS (SELECT 1 FROM deposit_items)
              AND NOT EXISTS (SELECT 1 FROM deposit_items di WHERE di.has_usable_right)
-             AND EXISTS (SELECT 1 FROM session_refund)
+             AND (SELECT refunded_sessions FROM this_refund_sessions) > 0
         `)
         if (rowsAffected(depositRefundedRes) > 0) {
           depositMarkedRefunded = true

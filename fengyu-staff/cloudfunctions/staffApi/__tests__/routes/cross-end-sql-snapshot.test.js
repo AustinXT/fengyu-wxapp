@@ -1295,6 +1295,22 @@ describe("ticket 2026-05-19 paid_sessions 重算 SQL 四端字节同义守护", 
       }
     })
 
+    test("admin lib 内**每一份** paid_sessions 公式都必须同步（常量只供快照，内联副本才是执行体）", () => {
+      // 踩过的坑（#543 round-3 P0）：admin/src/lib/paid-sessions.ts 有两份公式 ——
+      //   · 导出常量 PAID_SESSIONS_RECALC_SQL（占位符 $1，**只供跨端快照比对**，不执行）
+      //   · recalcPaidSessionsForOrder 内的 sql`` 内联副本（占位符 ${var}，**真正执行的那份**）
+      // 只改常量不改内联 → 387 项快照全绿，但真库解析期 42703（column op.sale_order_type does not exist），
+      // admin 全部退款审批（含销售单）事务回滚、流水永滞「待审批」。
+      // 故这里按**出现的份数**逐份断言，任一份漏改即红。
+      const adminPaidSrc = readFile(FILES.adminPaidSessionsTs)
+      const segs = adminPaidSrc.split('paid_sessions = CASE').slice(1)
+      expect(segs.length, 'admin paid-sessions 公式份数变了，请同步本守护').toBeGreaterThanOrEqual(2)
+      for (const [i, seg] of segs.entries()) {
+        expect(seg, `admin 第 ${i + 1} 份 paid_sessions 公式缺寄存单专属分支`).toMatch(/op\.sale_order_type = '寄存单'/)
+        expect(seg, `admin 第 ${i + 1} 份公式的 op 子查询缺 sale_order_type（会真库 42703）`).toMatch(/SELECT total_amount, sale_order_type FROM sale_orders/)
+      }
+    })
+
     test("五端 paid_sessions 不再除以订单级 total（无 NULLIF(op.total)；分母为 sale_amount + 行级 <=0 兜底）", () => {
       expect(paidSessionsSqls.staff).not.toMatch(/NULLIF\(op\.total_amount/i)
       expect(paidSessionsSqls.client).not.toMatch(/NULLIF\(op\.total_amount/i)
@@ -2063,7 +2079,9 @@ describe('寄存单/历史订单 资金操作锁定守护', () => {
       expect(src, `${name} 缺次数卡分支`).toMatch(/COALESCE\(si\.paid_sessions, 0\)\s*\n?\s*> GREATEST\(0, si\.session_count - COALESCE\(si\.remaining_sessions, 0\)\)/)
       expect(src, `${name} 缺历史行回退 remaining 分支`).toContain('THEN COALESCE(si.remaining_sessions, 0) > 0')
       expect(src, `${name} 缺家居件分支`).toContain('+ COALESCE(si.converted_quantity, 0)) < si.quantity')
-      expect(src, `${name} 缺「退过次数」前提`).toContain("public.try_numeric(elem ->> 'quantity') > 0")
+      expect(src, `${name} 缺「本笔退过次数」前提`).toContain('this_refund_sessions')
+      expect(src, `${name} 缺「本笔退过次数」判据`).toContain("SUM(GREATEST(0, public.try_numeric(elem ->> 'quantity')))")
+      expect(src, `${name} 缺「本笔退过次数」门槛`).toContain('AND (SELECT refunded_sessions FROM this_refund_sessions) > 0')
       expect(src, `${name} 缺状态迁移约束`).toContain("AND so.status IN ('已支付', '已完成')")
       expect(src, `${name} 未置已退款`).toContain("SET status = '已退款'::order_status")
     }
