@@ -270,12 +270,20 @@ export async function auditRefundCascadeCoverage(db: Db): Promise<RefundCascadeC
 
   // ── C1 通道入口兜底：负数退款主流水必须产生负数 receipt ──
   // 0 元退款只退项/扣次数，运行态合法地不写 receipt，因此必须保留 sop.amount < 0 过滤。
+  // 寄存单豁免通道 1（2026-10-06 #543）：寄存单没有任何正向 receipt，其净额由 paid-sessions 的
+  // STEP 1 分支 B + STEP 1.5 承担，**永远**不会写负数 receipt —— 不排除会每晚误报。
+  // ⚠ 排除须与级联豁免**同一前提**（寄存单 **且** 本单无 receipt）：若某寄存单因脏数据/其它入口
+  // 有了 receipt，级联的 fail-safe 会退回常规通道（应写负数 receipt），此时它必须回到巡检范围内，
+  // 否则会变成「不制造无告警账实偏差」的反面。
   const c1ReceiptMissing = (await db.execute(sql`
     SELECT sop.id AS sop_id, sop.sale_order_id, sop.ref_sale_item_id, sop.amount
       FROM sale_order_payments sop
+      JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
      WHERE sop.status = '已支付'
        AND sop.change_type = '退款'
        AND sop.amount < 0
+       AND NOT (so.sale_order_type = '寄存单' AND NOT EXISTS (
+             SELECT 1 FROM sale_payment_item_receipts r WHERE r.sale_order_id = so.sale_order_id))
        AND NOT EXISTS (
          SELECT 1
            FROM sale_payment_item_receipts spir
@@ -295,9 +303,26 @@ export async function auditRefundCascadeCoverage(db: Db): Promise<RefundCascadeC
   // ── C2: service_commissions 应已 voided_at IS NOT NULL ──
   const c2 = (await db.execute(sql`
     WITH refunds AS (
+      -- 寄存单（2026-10-06 #543）：通道 2 只在「零消费整行全退」时作废服务提成（cascade 的
+      -- fullItemIds 门控）。部分消耗的寄存单退款天然不作废任何提成，若不过滤会每晚误报；
+      -- 但**不能按订单类型一刀切排除** —— 寄存单的「零消费整行全退」确实会走通道 2，
+      -- 排除掉就成了盲区（fail-safe 路径把它拉回巡检范围时同理）。
+      -- 故按**与通道 2 同一判据**收窄：仅排除「寄存单 且 本笔退款不含 isFullItemRefund=true 明细」。
+      -- 其它订单类型的语义完全不变（NOT(...) 对它们恒为 false）。
       SELECT sop.id AS sop_id, sop.sale_order_id, sop.ref_sale_item_id
       FROM sale_order_payments sop
+      JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
       WHERE sop.change_type = '退款' AND sop.status = '已支付'
+        AND NOT (
+          so.sale_order_type = '寄存单'
+          AND NOT EXISTS (
+            SELECT 1 FROM jsonb_array_elements(
+              CASE WHEN jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'
+                   THEN public.try_jsonb(sop.note) -> 'items' ELSE '[]'::jsonb END
+            ) e
+            WHERE LOWER(COALESCE(e ->> 'isFullItemRefund', 'false')) = 'true'
+          )
+        )
     ),
     sc_status AS (
       SELECT r.sop_id, r.sale_order_id, r.ref_sale_item_id,

@@ -94,7 +94,9 @@ def command(lineage, args):
         model = args.glm_model
         if model.endswith("/glm-5.3[1m]"):
             model = model[:-4]
-        config = {"share": "disabled", "permission": {"*": "deny"}, "tools": {"*": False}}
+        # OpenCode v2.0.20 起 `run` 移除了 `--pure`（禁插件）开关，改用配置项 plugin: []
+        # 达到同一效果；`permission`/`tools` 继续由 OPENCODE_CONFIG_CONTENT 收口。
+        config = {"share": "disabled", "plugin": [], "permission": {"*": "deny"}, "tools": {"*": False}}
         if model.endswith("/glm-5.3"):
             provider, model_id = model.rsplit("/", 1)
             config["provider"] = {provider: {"models": {model_id: {
@@ -105,7 +107,7 @@ def command(lineage, args):
         env.update({"OPENCODE_PERMISSION": '{"*":"deny"}',
                     "OPENCODE_CONFIG_CONTENT": json.dumps(config),
                     "OPENCODE_DISABLE_CLAUDE_CODE": "true", "OPENCODE_DISABLE_AUTOUPDATE": "true"})
-        cmd = ["opencode", "run", "--pure", "--model", model, "--format", "json"]
+        cmd = ["opencode", "run", "--model", model, "--format", "json"]
     else:
         token = deepseek_token(env)
         for key in list(env):

@@ -209,6 +209,17 @@ describe('PAID_SESSIONS_RECALC_SQL 模板字面量守护', () => {
     expect(PAID_SESSIONS_RECALC_SQL).toMatch(/sale_items\.sale_amount\s*<=\s*0\s+THEN\s+sale_items\.session_count/i)
   })
 
+  test('#543：寄存单专属兜底分支扣已退次数，且不影响非寄存单零金额行（零回归）', () => {
+    expect(PAID_SESSIONS_RECALC_SQL).toMatch(
+      /op\.total_amount\s*<=\s*0\s+AND\s+op\.sale_order_type\s*=\s*'寄存单'\s+THEN\s+GREATEST\(0,\s*sale_items\.session_count\s*-\s*rights\.refunded_sessions\)/i,
+    )
+    expect(PAID_SESSIONS_RECALC_SQL).toMatch(
+      /sale_items\.sale_amount\s*<=\s*0\s+AND\s+op\.sale_order_type\s*=\s*'寄存单'\s+THEN\s+GREATEST\(0,\s*sale_items\.session_count\s*-\s*rights\.refunded_sessions\)/i,
+    )
+    expect(PAID_SESSIONS_RECALC_SQL).toMatch(/WHEN op\.total_amount <= 0 THEN sale_items\.session_count/)
+    expect(PAID_SESSIONS_RECALC_SQL).toMatch(/SELECT total_amount, sale_order_type FROM sale_orders/i)
+  })
+
   test('session_count IS NULL 时 → NULL（D5=A 非次数卡）', () => {
     expect(PAID_SESSIONS_RECALC_SQL).toMatch(/sale_items\.session_count\s+IS\s+NULL\s+THEN\s+NULL/i)
   })

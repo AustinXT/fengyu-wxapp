@@ -142,6 +142,13 @@ describe('cron-worker STEP 9 — auditRefundCascadeCoverage', () => {
     )).toBe(true)
     // C2 service_commissions
     expect(sqlTexts.some((s) => s.includes('service_commissions') && s.includes('voided_at'))).toBe(true)
+    // #543：C2 的寄存单豁免必须按**通道 2 的同一判据**收窄（仅排除「不含 isFullItemRefund=true 明细」的
+    // 寄存单退款），不得按订单类型一刀切 —— 寄存单的「零消费整行全退」确实会走通道 2，
+    // 一刀切会把这类回归变成盲区；fail-safe 路径（带 receipt 的寄存单）同理。
+    const c2Sql = sqlTexts.find((s) => s.includes('service_commissions') && s.includes('voided_at')) ?? ''
+    expect(c2Sql).toContain("so.sale_order_type = '寄存单'")
+    expect(c2Sql).toContain("LOWER(COALESCE(e ->> 'isFullItemRefund', 'false')) = 'true'")
+    expect(c2Sql, 'C2 退回按订单类型一刀切排除寄存单').not.toMatch(/sale_order_type\s*<>\s*'寄存单'/)
     // C3 user_coupons + paid_at（关键易错列名 — 不是 updated_at）
     expect(sqlTexts.some((s) => s.includes('user_coupons') && s.includes('paid_at'))).toBe(true)
     // C4 point_transactions + 消费冲销

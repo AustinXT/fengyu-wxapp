@@ -284,22 +284,32 @@ function buildRefundDetails(origItems, requestItems) {
 
 /**
  * 0 元退项仅允许现有审批重算能真正扣减权益的场景：
- * 0 元疗程卡、零消费全退、且 sale_amount<=0 会命中 paid_sessions=0 覆盖。
+ * 0 元疗程卡、零消费全退、且 sale_amount<=0 会命中 paid_sessions=0 覆盖；
+ * 寄存单另放开（见下 isDepositSessionRefund）。
  *
  * @param {Array<object>} refundDetails
  * @param {number} handlingFee
  * @param {number} totalRefund
+ * @param {string|null} [saleOrderType] 原单类型；仅 '寄存单' 放宽「必须全退」
  * @returns {boolean}
  */
-function isZeroCashPaidSessionRefund(refundDetails, handlingFee, totalRefund) {
+function isZeroCashPaidSessionRefund(refundDetails, handlingFee, totalRefund, saleOrderType) {
   const fee = Math.max(0, Number(handlingFee) || 0)
   const total = Math.round((Number(totalRefund) || 0) * 100) / 100
   if (fee >= 0.001 || total >= 0.001) return false
+
+  // 寄存单：历史实收为 0 的行 unit_real_price 被 recomputeDepositRealPrice 写成 0 → 退款额恒 0；
+  // 而部分消耗时 isFullItemRefund 恒 false，会落进「无可退项」被拒。
+  // 寄存单退款口径（2026-10-06）下 paid_sessions 分支 4/5 已按 rights.refunded_sessions 扣减
+  // （疗程卡 → paid_sessions；家居 → refunded_quantity），数量 > 0 即确实能扣减权益，
+  // 满足本函数「审批重算能真正扣减权益」的前提，故不再要求全退。两端镜像 admin src/lib/refund.ts。
+  const isDepositOrder = saleOrderType === '寄存单'
 
   const itemRefunds = (refundDetails || []).filter((d) => !d.isOverpay && Number(d.quantity || 0) > 0)
   // 允许 0 元退项的场景：
   // 1. 疗程卡：寄存单、优惠券全额抵扣的疗程卡（未消费可退）
   // 2. 非疗程卡：优惠券全额抵扣的商品（unit_real_price < 0.001）
+  // 3. 寄存单：任一可退数量 > 0 的项（部分消耗也可）
   return itemRefunds.length > 0 && itemRefunds.every((d) => {
     // 通用条件：单次价接近 0（优惠券全额抵扣）且全退
     const isUnconsumedZeroPrice = Math.abs(Number(d.unitRealPrice || 0)) < 0.001 && d.isFullItemRefund === true
@@ -311,7 +321,10 @@ function isZeroCashPaidSessionRefund(refundDetails, handlingFee, totalRefund) {
       Number(d.saleAmount) <= 0 &&
       d.isFullItemRefund === true
 
-    return isUnconsumedZeroPrice || isCourseCardDeposit
+    // 寄存单专属条件：数量 > 0 即放行（不再要求全退）
+    const isDepositSessionRefund = isDepositOrder && Number(d.quantity || 0) > 0
+
+    return isUnconsumedZeroPrice || isCourseCardDeposit || isDepositSessionRefund
   })
 }
 
