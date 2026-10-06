@@ -1303,10 +1303,13 @@ describe("ticket 2026-05-19 paid_sessions 重算 SQL 四端字节同义守护", 
       // admin 全部退款审批事务回滚、流水永滞「待审批」，波及**所有**订单类型）。
       // 故逐对做**归一化逐字比对**：任一方向的单边修改都立即变红。
       const src = readFile(FILES.adminPaidSessionsTs)
+      // 锚点必须是**语句头**（WITH ...），不能取 SQL 中段的特征串：取中段会漏掉它之前的整段 CTE 前缀
+      // （refund_rights/rights 的 retained / overpay / refunded_sessions / full_refund 定义），
+      // 那样只改内联副本的前缀仍能绕过 —— 与 round-3 P0 同一攻击面。
       const pairs = [
-        'paid_sessions = CASE',
-        'WITH full_refund_zero_items AS',
-        'WITH conversion_order AS',
+        'WITH refund_rights AS (',
+        'WITH full_refund_zero_items AS (',
+        'WITH conversion_order AS (',
       ]
       for (const marker of pairs) {
         const bodies = []
@@ -2113,6 +2116,20 @@ describe('寄存单/历史订单 资金操作锁定守护', () => {
         'const skipReceiptReversal = isDepositOrder && orderTypeRows[0]?.has_receipts !== true',
       )
     }
+  })
+
+  test('两端寄存单终态 SQL 必须归一化等价（防单边改判据 / 只改一份）', () => {
+    // 与 paid-sessions 的「常量 vs 执行内联」同源风险：终态 SQL 在两端各一份，
+    // 关键字型断言挡不住 `<` 改 `<=`、漏 COALESCE、状态表少一项这类细粒度漂移。
+    const grab = (src) => {
+      const i = src.indexOf('WITH deposit_items AS (')
+      const j = src.indexOf('`', i)
+      return normalizeSql(src.slice(i, j))
+    }
+    const a = grab(adminRefunds)
+    const b = grab(staffOrder)
+    expect(a).toContain('has_usable_right')
+    expect(b).toBe(a)
   })
 
   test('admin 退款表单的 0 元退项闸必须与后端同源（读 getRefundable 下发的 saleOrderType，不硬编码）', () => {
