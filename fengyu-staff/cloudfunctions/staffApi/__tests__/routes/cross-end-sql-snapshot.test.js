@@ -873,14 +873,16 @@ describe('SUMMARY v3 §2 #14：cascadeRefund 触发点防回归', () => {
     expect(src).toMatch(/await\s+cascadeRefund\s*\(\s*client\s*,/)
   })
 
-  test('staff approveRefund 与 admin 一致：退款只刷新 spending_tier，不执行只升不降的结算重算', () => {
+  test('staff approveRefund 与 admin 一致：退款刷新 spending_tier，并显式放行分类降档（#545）', () => {
     const src = readFile(FILES.staffOrderJs)
     const approveBody = src.slice(
       src.indexOf('async function approveRefund(ctx)'),
       src.indexOf('async function rejectRefund(ctx)'),
     )
     expect(approveBody).toContain('await refreshSpendingTier(client, sopRow.client_user_id)')
-    expect(approveBody).not.toMatch(/await\s+recalcCustomerType\s*\(/)
+    // #545：退款抹掉该单达标贡献 → 须按剩余有效订单重算分类，且是全仓唯一允许降档的通道
+    expect(approveBody).toMatch(/await\s+recalcCustomerType\(\s*client,\s*sopRow\.client_user_id,[^)]*,\s*true\s*\)/)
+    // 会员等级仍只升不降（下限初钻，档位回落留给每日 cron 的 150 天保级期）
     expect(approveBody).not.toMatch(/await\s+recalcMemberLevel\s*\(/)
   })
 })

@@ -7,7 +7,7 @@
  *
  * 覆盖场景（来自 ticket §9 PR-4 验收列表）：
  *   [S1] 销售单消费 2000 → 等级升至初钻（阈值 1990）→ locked_until 设为 NOW()+150d
- *   [S2] 消费额 SQL 白名单：内部单 10 万 + 销售单 0 → spend=0，等级 null 不变
+ *   [S2] 消费额 SQL 白名单：内部单 10 万 + 销售单 0 → spend=0（#545 起下界档为初钻）
  *   [S3] 再次插入相同 idempotency_key 消息 → 第二次 ON CONFLICT DO NOTHING
  *   [S4] 再次插入相同 external_ref 积分 → 第二次 ON CONFLICT DO NOTHING
  *   [S5] 退款单通过 sale_order_payments 负流水减少 paid_amount → 消费额正确下降
@@ -147,8 +147,8 @@ function determineMemberLevel(spend, threshold) {
   if (spend >= 60000) return '金钻'
   if (spend >= 30000) return '粉钻'
   if (spend >= 10000) return '星钻'
-  if (spend >= threshold) return '初钻'
-  return null
+  // #545：会员客等级下限为初钻 —— 低于入会门槛不再返回 null。
+  return '初钻'
 }
 function isUpgrade(from, to) {
   return (LEVEL_RANK[to] ?? 0) > (LEVEL_RANK[from] ?? 0)
@@ -340,7 +340,7 @@ async function S1_upgrade_to_chuzuan(client, threshold) {
 }
 
 async function S2_internal_order_not_counted(client, threshold) {
-  const id = 'S2'; const name = 'S2 内部单 10w 不计入消费，等级保持 null'
+  const id = 'S2'; const name = 'S2 内部单 10w 不计入消费，滚动消费=0（会员客下限初钻）'
   try {
     const userId = 'FYGK-S2'
     await createClient(client, userId, '13800000002')
@@ -353,15 +353,17 @@ async function S2_internal_order_not_counted(client, threshold) {
     const spend = Number(spendRow.spend)
     if (spend !== 0) throw new Error(`spend expected 0 (internal excluded), got ${spend}`)
 
+    // #545：下界档是初钻（不再是 null）。本场景真正断言的是内部单不进滚动消费。
     const newLevel = determineMemberLevel(spend, threshold)
-    if (newLevel !== null) throw new Error(`newLevel expected null, got ${newLevel}`)
+    if (newLevel !== '初钻') throw new Error(`newLevel expected 初钻 (floor), got ${newLevel}`)
 
+    // 本场景未跑 cron 步骤，档案列本身不应被动过。
     const row = (await client.query(
       `SELECT member_level FROM client_wechat_users WHERE user_id = $1`, [userId]
     )).rows[0]
-    if (row.member_level !== null) throw new Error(`level should remain null, got ${row.member_level}`)
+    if (row.member_level !== null) throw new Error(`level should remain untouched, got ${row.member_level}`)
 
-    pass(id, name, `spend=0 level=null`)
+    pass(id, name, `spend=0 newLevel=初钻`)
   } catch (e) {
     fail(id, name, e)
   }

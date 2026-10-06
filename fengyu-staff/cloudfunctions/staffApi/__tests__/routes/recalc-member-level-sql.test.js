@@ -9,7 +9,8 @@
  *   1. 三端 utils/member-level.js 字节级完全一致（任一端漂移即失败）
  *   2. 滚动 12 月 spend 口径与 cron refresh-member-levels.ts 一致
  *      （GREATEST(received - refunded_amount) + sale_order_type IN('销售单','转换单') + INTERVAL '12 months'）
- *   3. determineMemberLevel 阈值与 db/utils/member-level.ts（口径权威）逐行一致
+ *   3. determineMemberLevel 阈值与 db/utils/member-level.ts（口径权威）逐行一致，
+ *      且第 5 档为下限档「初钻」（#545：会员客 member_level 不允许为 NULL）
  *   4. 只升不降 + 150 天保级期 + 审计日志关键结构存在
  */
 
@@ -37,9 +38,13 @@ const DB_UTIL_TS = path.resolve(
 const read = (p) => fs.readFileSync(p, 'utf8')
 const norm = (s) => s.replace(/\s+/g, ' ').trim()
 
-/** 提取 determineMemberLevel 的 5 行阈值判定（归一化后比对） */
+/**
+ * 提取 determineMemberLevel 的阈值判定段（归一化后比对）。
+ * 锚点收在末尾的 `return '初钻'` + 闭括号上：第 5 档自 #545 起不再是 `return null`
+ * （会员客等级下限即初钻），旧的 `return null` 锚点会失配。
+ */
 function extractThresholdLogic(src) {
-  const m = src.match(/if \(spend >= 100000\)[\s\S]*?return null/m)
+  const m = src.match(/if \(spend >= 100000\)[\s\S]*?return '初钻'\s*\n\}/m)
   if (!m) throw new Error('未找到 determineMemberLevel 阈值段')
   return norm(m[0])
 }
@@ -87,6 +92,13 @@ describe('recalcMemberLevel 跨端 SQL 守卫', () => {
       }
       for (const lvl of ['黑钻', '金钻', '粉钻', '星钻', '初钻']) {
         expect(staff).toContain(lvl)
+      }
+    })
+    test('#545：第 5 档是下限初钻兜底，不再是 return null（三端 + db 权威一致）', () => {
+      for (const src of [staff, dbUtil]) {
+        expect(src).toContain("if (spend >= 10000) return '星钻'")
+        expect(src).toMatch(/if \(spend >= 10000\) return '星钻'\s*\n\s*return '初钻'/)
+        expect(src).not.toMatch(/if \(spend >= threshold\) return '初钻'/)
       }
     })
   })

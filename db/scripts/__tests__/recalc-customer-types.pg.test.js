@@ -6,7 +6,7 @@ const { recalcCustomerTypesInTransaction } = require('../recalc-all-customer-typ
 const url = process.env.CUSTOMER_TYPE_PG_TEST_URL
 
 // 仅一次性私有容器；绝不触及业务库/共享测试库。
-test('历史分类：真实SQL、离线双向分类与历史保留、幂等、补等级/时间且不设置权益标记', { skip: !url }, async () => {
+test('历史分类：真实SQL、离线只升不降与历史保留、幂等、补等级/时间且不设置权益标记', { skip: !url }, async () => {
   const parsed = new URL(url)
   assert.ok(['localhost', '127.0.0.1'].includes(parsed.hostname))
   assert.equal(parsed.port, '54416')
@@ -50,7 +50,7 @@ test('历史分类：真实SQL、离线双向分类与历史保留、幂等、�
         ('ignored','empty',now(),now(),'待支付','销售单',9000,0);
       INSERT INTO sale_items VALUES ('t','ti',100,100,true,'购买');
     `)
-    assert.deepEqual(await recalcCustomerTypesInTransaction(db), { typeCount: 5, levelCount: 1, becameCount: 2, selfCheck: { member_no_became: 0, nonmember_with_level: 1 } })
+    assert.deepEqual(await recalcCustomerTypesInTransaction(db), { typeCount: 4, levelCount: 2, becameCount: 2, selfCheck: { member_no_became: 0, member_no_level: 0, nonmember_with_level: 0 } })
     const first = (await db.query('SELECT * FROM client_wechat_users ORDER BY user_id')).rows
     const member = first.find(r => r.user_id === 'member')
     assert.equal(member.customer_type, '会员客')
@@ -60,18 +60,21 @@ test('历史分类：真实SQL、离线双向分类与历史保留、幂等、�
     assert.equal(member.old_member_level, null)
     const nullpaid = first.find(r => r.user_id === 'nullpaid')
     assert.equal(nullpaid.customer_type, '会员客')
-    assert.equal(nullpaid.member_level, null) // paid_at为空，同cron一样不算滚动消费，无法凭导入时间升级
+    // paid_at 为空，同 cron 一样不算滚动消费 → 滚动档位低于门槛，
+    // 但 #545 起会员客等级下限为初钻，不再留 NULL。
+    assert.equal(nullpaid.member_level, '初钻')
     assert.equal(nullpaid.member_level_upgraded_at, null)
     assert.equal(first.find(r => r.user_id === 'small').customer_type, '小美客')
     assert.equal(first.find(r => r.user_id === 'trial').customer_type, '体验客')
     assert.equal(first.find(r => r.user_id === 'empty').updated_at.toISOString(), '2020-01-01T00:00:00.000Z')
-    // #257已合入：离线分类双向对齐，降档不清除历史等级/入会时间。
+    // #545（推翻 #257）：离线分类只升不降——现会员客不因计算档位更低而降档，
+    // 历史等级/入会时间原样保留。
     const keep = first.find(r => r.user_id === 'keep')
-    assert.equal(keep.customer_type, '流量客')
+    assert.equal(keep.customer_type, '会员客')
     assert.equal(keep.member_level, '金钻')
     assert.equal(keep.became_member_at.toISOString(), '2020-01-01T00:00:00.000Z')
     await db.query('DROP TABLE _recalc_target')
-    assert.deepEqual(await recalcCustomerTypesInTransaction(db), { typeCount: 0, levelCount: 0, becameCount: 0, selfCheck: { member_no_became: 0, nonmember_with_level: 1 } })
+    assert.deepEqual(await recalcCustomerTypesInTransaction(db), { typeCount: 0, levelCount: 0, becameCount: 0, selfCheck: { member_no_became: 0, member_no_level: 0, nonmember_with_level: 0 } })
     assert.deepEqual((await db.query('SELECT * FROM client_wechat_users ORDER BY user_id')).rows, first)
     await db.query('ROLLBACK')
   } finally {

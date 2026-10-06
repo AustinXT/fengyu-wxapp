@@ -81,7 +81,7 @@ async function recomputeCustomerStatusForUser(tx: Tx, clientUserId: string): Pro
 }
 
 /**
- * 段 2：customer_type 双向对齐（#257 C）。实时四路径仍只升级。
+ * 段 2：customer_type 只升不降（#545，推翻 #257 的双向对齐）。实时四路径同样是只升级。
  *
  * 九处 SQL 镜像副本：五处单客入口 + cron（staffApi order.js + clientApi order.js + payNotify index.js
  * + admin orders.ts + 本 helper）逐字一致，三个 db/scripts 批量脚本（recalc-all-customer-types.js
@@ -215,6 +215,7 @@ const recalcCustomerTypeCte = (clientUserId: string, threshold: number) => sql`W
 async function recomputeCustomerTypeForUser(
   tx: Tx,
   clientUserId: string,
+  allowDowngrade = false,
 ): Promise<{ from: string | null; to: string | null } | null> {
   const curRes = await tx.execute(sql`
     SELECT customer_type FROM client_wechat_users WHERE user_id = ${clientUserId}
@@ -223,6 +224,9 @@ async function recomputeCustomerTypeForUser(
   const curRows = curRes as unknown as Array<{ customer_type: string }>
   const oldType = curRows[0]?.customer_type ?? null
   if (!curRows[0]) return null
+  // #545（推翻 #257）：只升不降。会员客是档位顶格，max(现值, 计算值) 恒等于现值，
+  // 早退既是最廉价的等价表达，也免掉一次金额 CTE。仅退款通道（allowDowngrade=true）例外。
+  if (!allowDowngrade && oldType === '会员客') return null
 
   let threshold: number
   try {
@@ -257,6 +261,18 @@ async function recomputeCustomerTypeForUser(
      WHERE user_id = ${clientUserId}
        AND name IS DISTINCT FROM '谢廷(测试)'
        AND customer_type IS DISTINCT FROM ${newType}::customer_type
+       AND (
+         (CASE customer_type
+            WHEN '流量客' THEN 0 WHEN '体验客' THEN 1
+            WHEN '小美客' THEN 2 WHEN '会员客' THEN 3
+          END)
+         < (CASE ${newType}::customer_type
+            WHEN '流量客' THEN 0 WHEN '体验客' THEN 1
+            WHEN '小美客' THEN 2 WHEN '会员客' THEN 3
+          END)
+         -- #545：默认只升不降；仅退款审批通道（allowDowngrade=true）允许降到计算档位。
+         OR ${allowDowngrade}::boolean
+       )
      RETURNING customer_type
   `)
   const updRowCount = rowsAffected(updRes)
@@ -450,6 +466,21 @@ export async function recomputeCustomerTagsInTx(
     customerTypeChanged: typeChanged,
     spendingTierUpdated: tierUpdated,
   }
+}
+
+/**
+ * 退款审批通道专用入口（#524 第 5 条 / #545）。
+ *
+ * 已退款订单退出达标判定后，须按剩余有效订单重算 customer_type 并**允许降档**——
+ * 这是全仓唯一放行降档的通道（每日 cron / 离线 / 历史审核 / 收款一律只升不降）。
+ * 与 staffApi `order.approveRefund` 里传 allowDowngrade=true 的 recalcCustomerType 同语义。
+ */
+export async function recomputeCustomerTypeOnRefund(
+  tx: Tx,
+  clientUserId: string,
+): Promise<{ from: string | null; to: string | null } | null> {
+  if (!clientUserId) return null
+  return recomputeCustomerTypeForUser(tx, clientUserId, true)
 }
 
 /**

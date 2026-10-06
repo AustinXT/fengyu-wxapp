@@ -204,7 +204,7 @@ test.describe.serial('cron-03 refreshMemberLevels（会员权益）', () => {
     expect(getClientLevelAndLock(uid).level).toBe('初钻')
   })
 
-  test('3.8 sale_order_type 过滤：internal=15000 → spend=0 → 不升级', () => {
+  test('3.8 sale_order_type 过滤：internal=15000 → spend=0 → 下限初钻', () => {
     const uid = upsertClient('ML_38', { customerType: '会员客', memberLevel: null })
     insertSaleOrder('ML_38', {
       storeId: STORE_ID,
@@ -214,10 +214,11 @@ test.describe.serial('cron-03 refreshMemberLevels（会员权益）', () => {
       paidAt: '2026-11-01 10:00:00',
     })
     runMemberLevels(REF_DATE)
-    expect(getClientLevelAndLock(uid).level).toBeNull()
+    // #545：会员客等级下限为初钻；内部单不进 spend，故落在下限档
+    expect(getClientLevelAndLock(uid).level).toBe('初钻')
   })
 
-  test('3.9 paid_at 出窗：13M 前已支付 → spend=0', () => {
+  test('3.9 paid_at 出窗：13M 前已支付 → spend=0 → 下限初钻', () => {
     const uid = upsertClient('ML_39', { customerType: '会员客', memberLevel: null })
     insertSaleOrder('ML_39', {
       storeId: STORE_ID,
@@ -226,7 +227,7 @@ test.describe.serial('cron-03 refreshMemberLevels（会员权益）', () => {
       paidAt: '2025-10-01 10:00:00', // 13M+ 前
     })
     runMemberLevels(REF_DATE)
-    expect(getClientLevelAndLock(uid).level).toBeNull()
+    expect(getClientLevelAndLock(uid).level).toBe('初钻')
   })
 
   test('3.10 customer_type 过滤：流量客 spend=10000 → 不进循环', () => {

@@ -25,8 +25,12 @@ function rank(level) {
 }
 
 /**
- * 按滚动 12 个月消费额计算等级
- * 阈值：黑钻 ≥10w / 金钻 ≥6w / 粉钻 ≥3w / 星钻 ≥1w / 初钻 ≥ threshold
+ * 按滚动 12 个月消费额计算等级。
+ * 阈值：黑钻 ≥10w / 金钻 ≥6w / 粉钻 ≥3w / 星钻 ≥1w；其余一律落在下限档「初钻」。
+ *
+ * #545：会员客的 member_level 不允许为 NULL —— 低于入会门槛同样返回「初钻」。
+ * 因此 threshold（system_configs.new_member_threshold）自此不参与等级判定，
+ * 只用于 customer_type 的入会判定；入参保留是为了与各端调用点及 db 权威副本同签名。
  * 与 db/utils/member-level.ts determineMemberLevel 字面一致。
  */
 function determineMemberLevel(spend, threshold) {
@@ -34,8 +38,7 @@ function determineMemberLevel(spend, threshold) {
   if (spend >= 60000) return '金钻'
   if (spend >= 30000) return '粉钻'
   if (spend >= 10000) return '星钻'
-  if (spend >= threshold) return '初钻'
-  return null
+  return '初钻'
 }
 
 /**

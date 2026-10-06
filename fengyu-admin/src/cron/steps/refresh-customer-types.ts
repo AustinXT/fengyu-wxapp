@@ -1,4 +1,4 @@
-/** #257 C：每日按#187单笔非体验毛实收双向对齐；双向分类；首次入会归因仍按既有首笔达标单，降级不清历史，E新定义另定。 */
+/** #545（推翻 #257）：每日按 #187 单笔非体验毛实收判定，但只升不降（目标 = max(现值, 计算值)）；首次入会归因仍按既有首笔达标单；降档仅由退款审批通道的即时重算产生。 */
 import { sql } from 'drizzle-orm'
 import type { Db } from '../run'
 import { rowsAffected } from '@/lib/pg-rows'
@@ -145,7 +145,7 @@ export function customerTypeBatchSql(threshold: number) {
                WHEN EXISTS (SELECT 1 FROM order_amounts oa WHERE oa.client_user_id = u.user_id AND oa.non_trial > 0) THEN '小美客'
                WHEN EXISTS (SELECT 1 FROM order_amounts oa WHERE oa.client_user_id = u.user_id AND oa.trial > 0) THEN '体验客'
                ELSE '流量客'
-             END::customer_type AS new_type
+             END::customer_type AS computed_type
         FROM client_wechat_users u
         LEFT JOIN LATERAL (
           SELECT oa.sale_order_id, oa.qualified_at AS first_qualified_at
@@ -155,10 +155,29 @@ export function customerTypeBatchSql(threshold: number) {
         ) q ON true
        WHERE u.name IS DISTINCT FROM '谢廷(测试)'
     ),
+    monotonic AS (
+      -- #545（推翻 #257）：只升不降 —— 目标档位 = max(现值, 计算值)，档位序
+      -- 流量客 < 体验客 < 小美客 < 会员客。口径/算法修正导致的降档不生效；
+      -- 「已退款订单抹掉达标贡献」由退款审批通道即时重算承担，不在本步骤降档。
+      SELECT user_id, old_type, first_qualified_order, first_qualified_at,
+             CASE
+               WHEN (CASE old_type
+                       WHEN '流量客' THEN 0 WHEN '体验客' THEN 1
+                       WHEN '小美客' THEN 2 WHEN '会员客' THEN 3
+                     END)
+                 >= (CASE computed_type
+                       WHEN '流量客' THEN 0 WHEN '体验客' THEN 1
+                       WHEN '小美客' THEN 2 WHEN '会员客' THEN 3
+                     END)
+                 THEN old_type
+               ELSE computed_type
+             END::customer_type AS new_type
+        FROM classified
+    ),
     flagged_orders AS (
       -- 标记和分类在同一事务提交；RETURNING依赖不构成其他写入方的全局锁序协议。
       UPDATE sale_orders o SET is_membership_upgrade = true
-        FROM classified c
+        FROM monotonic c
        WHERE o.sale_order_id = c.first_qualified_order AND c.new_type = '会员客'
          AND c.old_type IS DISTINCT FROM c.new_type
          AND o.is_membership_upgrade IS DISTINCT FROM true
@@ -167,7 +186,7 @@ export function customerTypeBatchSql(threshold: number) {
     UPDATE client_wechat_users u SET customer_type = c.new_type,
       became_member_at = CASE WHEN c.new_type = '会员客' THEN COALESCE(u.became_member_at, c.first_qualified_at) ELSE u.became_member_at END,
       updated_at = NOW()
-      FROM classified c
+      FROM monotonic c
      WHERE u.user_id = c.user_id AND u.name IS DISTINCT FROM '谢廷(测试)'
        AND u.customer_type IS DISTINCT FROM c.new_type
        AND (SELECT count(*) FROM flagged_orders) >= 0

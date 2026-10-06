@@ -308,6 +308,71 @@ describe('cron-worker STEP 2 — refreshMemberLevels', () => {
     })
   })
 
+  describe('#545 会员客等级下限初钻', () => {
+    it('member_level 为 NULL 且滚动消费为 0 → 升级到初钻（写 150d 锁 + 变更日志）', async () => {
+      mockExecute.mockResolvedValueOnce([{ value: JSON.stringify({}) }]) // 无初钻权益配置
+      mockExecute.mockResolvedValueOnce([
+        {
+          user_id: 'u1',
+          member_level: null,
+          old_member_level: null,
+          member_level_locked_until: null,
+          member_level_upgraded_at: null,
+          became_member_at: new Date(Date.now() - 60 * 86400000), // 历史会员：不补发礼包
+          spend: '0',
+        },
+      ])
+      mockExecute.mockResolvedValueOnce([]) // tx: UPDATE level
+      mockExecute.mockResolvedValueOnce([]) // tx: INSERT memberLevelChange
+
+      const result = await refreshMemberLevels(mockDb as never)
+
+      expect(result).toEqual({
+        total: 1,
+        upgradeCount: 1,
+        downgradeCount: 0,
+        heldCount: 0,
+        unchangedCount: 0,
+        errorCount: 0,
+      })
+      const sqlTexts = mockExecute.mock.calls.map((c) => sqlTextOf(c[0]))
+      expect(sqlTexts.some((t) => t.includes("INTERVAL '150 days'"))).toBe(true)
+      expect(sqlTexts.some((t) => t.includes('customer.memberLevelChange'))).toBe(true)
+      const detailParams = mockExecute.mock.calls
+        .flatMap((c) => paramsOf(c[0]))
+        .filter((p): p is string => typeof p === 'string' && p.startsWith('{'))
+      expect(detailParams.some((d) => d.includes('"to":"初钻"'))).toBe(true)
+    })
+
+    // R1 回归：processDowngrade 同样写 member_level_upgraded_at，只看「近 36h 升级过」
+    // 会把刚被降档的人当成升级、补发「恭喜升级到初钻」礼包。此前降档终点是 NULL，
+    // 被 `if (newLevel && …)` 短路才没暴露。
+    it('降档到初钻后 36h 内不得补发升级礼包', async () => {
+      mockExecute.mockResolvedValueOnce([
+        { value: JSON.stringify({ 初钻: { messageTitle: '初钻特权', messageBody: '感谢' } }) },
+      ])
+      mockExecute.mockResolvedValueOnce([
+        {
+          user_id: 'u1',
+          member_level: '初钻',
+          old_member_level: '星钻', // 上次跃迁是降档
+          member_level_locked_until: null,
+          member_level_upgraded_at: new Date(), // 降档时写入，落在 36h 窗口内
+          became_member_at: new Date(Date.now() - 60 * 86400000),
+          spend: '0',
+        },
+      ])
+
+      const result = await refreshMemberLevels(mockDb as never)
+
+      expect(result.unchangedCount).toBe(1)
+      expect(mockDb.transaction).not.toHaveBeenCalled()
+      expect(
+        mockExecute.mock.calls.some((c) => sqlTextOf(c[0]).includes('INSERT INTO messages')),
+      ).toBe(false)
+    })
+  })
+
   describe('E. 等级未变', () => {
     it('newLevel === oldLevel → unchangedCount++', async () => {
       mockExecute.mockResolvedValueOnce([{ value: JSON.stringify(BLACK_BENEFITS) }])
