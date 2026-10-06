@@ -125,3 +125,12 @@
 - 影子冒烟：staff空payload code=-1，staff/client auth.login、client store.list无身份请求code=-401，通过；不代表已登录业务流程验收。APP_VERSION两端v1.17.20，.active=prod。
 - 脱敏证据 `_tmp/release-dev-v1.17.20/`：迁移前后/日志、admin-deploy-retry.log、analyst-deploy.log、cloud-deploy.log、remote-verify.json、cloud-verify.json与smoke JSON。本台账收尾追加发生在两站构建后，镜像指纹对应构建时工作树。
 - Git未提交文件：runtime-config.mjs/runtime-config.test.mjs、.dockerignore、db/rollout/dev.md、admin cloudbase.ts/cloudbase.test.ts。本地忽略配置envs/dev.env的envId/CDN亦已修正。client/staff小程序如需更新须手工上传开发版；日报独立dailyApiDev不在release-all默认3函数范围内。本次prod无迁移或部署。
+
+## 2026-10-06 明细快照回填（是否生美 / 经营类型）
+
+- 目标：用当前 SKU / 品项分类配置刷新 `sale_items`、`service_items` 的 `is_shengmei` 与 `sales_category` 四列快照。脚本 `db/scripts/backfill-item-snapshots-shengmei-category.js`（commit `25a84190f`）。执行人 Claude。
+- 目标 `101.34.242.103:5433/fengyu_wxapp`；`envs/dev.env` 的 `PG_CONNECTION_STRING` 显式传 `DATABASE_URL` + 白名单断言 + `--confirm-target` 逐字确认。
+- 执行前 dry-run：`sale_items` **8344 行**（`service_items` 0 行）。构成：古法瑶浴(寄存专用) 4127、头皮舒养(寄存专用) 3534、年轻态 ZX 系列 631、健康爱你礼包养护 18、其余含 `NULL→true/false` 与少量经营类型变化 ~34。
+- 这些差异即 #378 描述的「SKU 事后改标」历史行；dev 此前保持 #378 原口径（`sale_items` 不回填），本次按用户要求对齐到当前 SKU 配置，**等于把「sale_items 不回填」的口径反转落到 dev**（prod 已于 2026-10-05 做过同样对齐）。
+- 执行：`--execute` 写入 **sale_items 8344 行 + service_items 0 行**，单事务提交，写入后复核归零。回滚文件（CAS，含四列原值）落项目外 `~/backups/fengyu/backfill-snapshot-dev-20261006T132545.json`。
+- ⚠ 口径备注同 prod：`sale_items.is_shengmei` 原为 #378 的开单快照口径，本次对齐后与 SKU 当前值一致；若需退回开单快照口径，用上述回滚文件恢复。
