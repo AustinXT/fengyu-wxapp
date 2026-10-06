@@ -49,6 +49,7 @@ export function RefundForm({
   const [handlingFee, setHandlingFee] = useState<string>("0.00")
   const [refundReason, setRefundReason] = useState<string>("")
   const [clientUserId, setClientUserId] = useState<string | null>(null)
+  const [saleOrderType, setSaleOrderType] = useState<string>("")
   const [overdraft, setOverdraft] = useState<EstimateOverdraftResult | null>(null)
   const [overdraftLoading, setOverdraftLoading] = useState(false)
   const [applyOverdraft, setApplyOverdraft] = useState(true)
@@ -61,6 +62,7 @@ export function RefundForm({
       .then((res) => {
         setItems(res.items)
         setClientUserId(res.clientUserId)
+        setSaleOrderType(res.saleOrderType ?? "")
         const defaults: Record<string, LineState> = {}
         for (const it of res.items) {
           const overpay = Math.max(0, Number(it.overpayRefundable || 0))
@@ -153,6 +155,11 @@ export function RefundForm({
     // 允许 0 元退项的场景：
     // 1. 疗程卡：寄存单、优惠券全额抵扣的疗程卡（未消费可退）
     // 2. 非疗程卡：优惠券全额抵扣的商品（unit_real_price = 0）
+    // 寄存单（#543，2026-10-06 口径）：历史实收为 0 的行 unit_real_price 被 recomputeDepositRealPrice
+    // 写成 0 → 退款额恒 0；而部分消耗时「全退」条件不成立，会被下面的通用/疗程卡条件挡掉。
+    // 服务端 isZeroCashPaidSessionRefund 已同步放宽，这里必须同源，否则 UI 先报「退款金额为 0，无法提交」。
+    const isDepositOrder = saleOrderType === '寄存单'
+
     return itemRefunds.length > 0 && itemRefunds.every(({ it, qty }) => {
       // #154：这里要的是「已结算」（已提货 + 已退款 + 已转换）而非「已消耗」——保持拆列前语义。
       // 该闸门放行的是「0 元且完全未动过」的行；把已退款件数排除出去会让退过一次的行重新
@@ -173,9 +180,12 @@ export function RefundForm({
         qty >= it.unusedQuantity &&
         consumed <= 0
 
-      return isUnconsumedZeroPrice || isCourseCardDeposit
+      // 寄存单专属条件：数量 > 0 即放行（不再要求全退）
+      const isDepositSessionRefund = isDepositOrder && qty > 0
+
+      return isUnconsumedZeroPrice || isCourseCardDeposit || isDepositSessionRefund
     })
-  }, [items, lineStates, previewTotals.fee, previewTotals.subtotal])
+  }, [items, lineStates, previewTotals.fee, previewTotals.subtotal, saleOrderType])
 
   const handleSubmit = () => {
     if (!refundReason.trim()) {

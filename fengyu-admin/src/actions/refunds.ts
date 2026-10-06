@@ -91,6 +91,8 @@ export interface RefundableItem {
 
 export interface GetRefundableResult {
   items: RefundableItem[]
+  /** 原单类型；前端 0 元退项闸门据此判定寄存单（与服务端 isZeroCashPaidSessionRefund 同源） */
+  saleOrderType: string
   origTotalAmount: number
   origPrepaidCardAmount: number
   origPaymentMethod: PaymentMethod
@@ -373,8 +375,11 @@ export const getRefundable = withAnyPermission(
   if (!order) {
     throw new Error('NOT_FOUND: 原订单不存在或无权访问')
   }
-  if (order.saleOrderType !== '销售单') {
-    throw new Error('INVALID_STATE: 仅销售单支持退款')
+  // 2026-10-06（#543）：放开寄存单退款（仅「退款」一项；回款/改实收仍锁，见 orders.ts 回款拦截）。
+  // 寄存单 total_amount 恒 0、行级 received 由「寄存单初始化实收」回款行聚合，
+  // 可退次数 = min(remaining, paid_sessions - 已消费)，可退额 = unit_real_price × 未消耗次数。
+  if (order.saleOrderType !== '销售单' && order.saleOrderType !== '寄存单') {
+    throw new Error('INVALID_STATE: 仅销售单/寄存单支持退款')
   }
   if (!['已支付', '已完成', '部分支付'].includes(order.status)) {
     throw new Error(`INVALID_STATE: 当前状态"${order.status}"不允许退款`)
@@ -457,6 +462,7 @@ export const getRefundable = withAnyPermission(
 
   return {
     items,
+    saleOrderType: order.saleOrderType,
     origTotalAmount: Number(order.totalAmount),
     origPrepaidCardAmount: Number(order.prepaidCardAmount),
     origPaymentMethod: order.paymentMethod as PaymentMethod,
@@ -748,7 +754,9 @@ export const createRefund = withPermission(
   if (origOrder.legacySource === 'workfine') {
     return { success: false, error: { code: 'INVALID_STATE', message: '历史订单不支持退款' } }
   }
-  if (origOrder.saleOrderType !== '销售单') {
+  // 2026-10-06（#543）：寄存单与销售单同样支持退款；充值单走员工端充值卡入口，
+  // 内部单/转换单仍不支持。两端镜像 staffApi routes/order.js。
+  if (origOrder.saleOrderType !== '销售单' && origOrder.saleOrderType !== '寄存单') {
     if (origOrder.saleOrderType === '充值单') {
       return {
         success: false,
@@ -758,7 +766,7 @@ export const createRefund = withPermission(
         },
       }
     }
-    return { success: false, error: { code: 'INVALID_STATE', message: '仅销售单支持退款' } }
+    return { success: false, error: { code: 'INVALID_STATE', message: '仅销售单/寄存单支持退款' } }
   }
   if (!['已支付', '已完成', '部分支付'].includes(origOrder.status)) {
     return {
@@ -904,7 +912,7 @@ export const createRefund = withPermission(
   if (isHandlingFeeInvalidForRefund(refundDetails, fee)) {
     return { success: false, error: { code: 'INVALID_PARAMS', message: '手续费不能超过单次服务价格' } }
   }
-  const isZeroCashItemRefund = isZeroCashPaidSessionRefund(refundDetails, fee, totalRefund)
+  const isZeroCashItemRefund = isZeroCashPaidSessionRefund(refundDetails, fee, totalRefund, origOrder.saleOrderType)
   let finalRefundAmount = Math.max(0, Math.round((totalRefund - fee) * 100) / 100)
   if (finalRefundAmount <= 0 && !isZeroCashItemRefund) {
     return { success: false, error: { code: 'INVALID_STATE', message: '无可退项' } }
@@ -1410,7 +1418,13 @@ export const approveRefund = withPermission(
       // 若新 paid_sessions < 已消费次数，抛 CONFLICT 阻止退款
       await recalcPaidSessionsForOrder(tx, refSaleOrderId)
       await reconcileAllocationStatusAfterRefund(tx, refSaleOrderId)
-      await reconcileOrderStatusAfterRefund(tx, refSaleOrderId)
+      // 寄存单不改订单状态（2026-10-06 #543）：reconcileOrderStatusAfterRefund 用
+      // sale_payment_item_receipts 统计 refunded，而寄存单该表恒零行、sale_amount 又是**标价快照**，
+      // 会被判成 received < retained_value → 把「已支付」误改成「部分支付」，
+      // 让 total_amount=0 的寄存单掉进欠款/催款口径（寄存单 received>0 是历史实收，不是欠款）。
+      if (pre.orderSaleOrderType !== '寄存单') {
+        await reconcileOrderStatusAfterRefund(tx, refSaleOrderId)
+      }
 
       // 6) 重算顾客历史消费档位
       if (pre.orderClientUserId) {

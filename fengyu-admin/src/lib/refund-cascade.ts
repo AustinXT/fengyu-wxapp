@@ -444,6 +444,12 @@ export async function cascadeRefund(
     wholeOrder = true
   }
 
+  // 寄存单退款豁免通道 1 的判据（2026-10-06 口径，见下）。两端镜像 staffApi helpers/refund-cascade.js。
+  const orderTypeRows = (await tx.execute(sql`
+    SELECT sale_order_type FROM sale_orders WHERE sale_order_id = ${saleOrderId}
+  `)) as unknown as Array<{ sale_order_type: string | null }>
+  const isDepositOrder = orderTypeRows[0]?.sale_order_type === '寄存单'
+
   // 仅「零消费全退」item 才作废服务提成（通道 2）+ 参与整单券判定（通道 3）；通道 1 不再依赖（Bug M 语义收敛）
   const fullItemIds = effItems.filter((it) => it.isFullItemRefund).map((it) => it.saleItemId)
 
@@ -499,7 +505,16 @@ export async function cascadeRefund(
   // 仅当该 item 有原正向子分配时，才按原 (employee, role) 权重生成负数子分配；无原正向则不生成赤字分配。
   let voidedAllocations = 0
   let refundAllocatedCents = 0
-  const receiptRefundItems = await buildReceiptRefundItems(tx, saleOrderId, refundPaymentId, effItems)
+  // 寄存单豁免通道 1（2026-10-06 寄存单退款口径）：寄存单在 sale_payment_item_receipts /
+  // sale_payment_item_allocations 上恒零行（被 ALLOCATABLE_ORDER_TYPES=['销售单','转换单'] 排除在
+  // 营业额分配外），行级净额改由 paid-sessions 的 STEP 1 分支 B + STEP 1.5 承担。若走本通道，
+  // buildReceiptRefundItems 对**多购买行**的寄存单会直接抛
+  // INVALID_STATE: 退款金额无法完整映射到商品行实收（该单没有任何正向 receipt；自愈补 receipt
+  // 只覆盖单购买行）——prod 多行且有钱的寄存单 6,142 单 / ¥38,293,737.84。
+  // 空数组 ⇒ 下方写负数 receipt / 负数子分配的循环整体空跑，refundAllocatedCents 保持 0。
+  const receiptRefundItems = isDepositOrder
+    ? []
+    : await buildReceiptRefundItems(tx, saleOrderId, refundPaymentId, effItems)
   for (const it of receiptRefundItems) {
     const refundAmt = Number(it.refundAmount || 0)
     const sourceItem = effItems.find(row => row.saleItemId === it.saleItemId)

@@ -3681,16 +3681,18 @@ async function createRefund(ctx) {
   if (origOrders.length === 0) throw new Error('INVALID_PARAMS: 原订单状态不允许退款')
   const origOrder = origOrders[0]
 
-  // 修复（Bug L）：改正向白名单——仅销售单支持退款。原黑名单只挡寄存单/legacy，漏了内部单/转换单/充值单。
-  // 两端镜像 admin refunds.ts。充值卡退款走员工端「充值卡」入口（card.createRefund，扣 prepaid_cards.balance）。
+  // 修复（Bug L）：改正向白名单——原黑名单只挡寄存单/legacy，漏了内部单/转换单/充值单。
+  // 2026-10-06（#543）：寄存单改为**放行**（仅「退款」一项；回款/改实收仍锁，见 createRepayment /
+  // 仅 admin 的 updateDepositReceived 已整端移除）。两端镜像 admin refunds.ts。
+  // 充值卡退款走员工端「充值卡」入口（card.createRefund，扣 prepaid_cards.balance）。
   if (origOrder.legacy_source === 'workfine') {
     throw new Error('INVALID_STATE: 历史订单不支持退款')
   }
-  if (origOrder.sale_order_type !== '销售单') {
+  if (origOrder.sale_order_type !== '销售单' && origOrder.sale_order_type !== '寄存单') {
     if (origOrder.sale_order_type === '充值单') {
       throw new Error('INVALID_STATE: 充值卡退款请在「充值卡」入口发起')
     }
-    throw new Error('INVALID_STATE: 仅销售单支持退款')
+    throw new Error('INVALID_STATE: 仅销售单/寄存单支持退款')
   }
 
   // in-flight 唯一性：同一原单仅允许一笔 '待审批' 退款（DB 上有 partial unique uq_sop_status_audit 兜底）
@@ -3787,7 +3789,7 @@ async function createRefund(ctx) {
   if (isHandlingFeeInvalidForRefund(refundDetails, fee)) {
     throw new Error('INVALID_PARAMS: 手续费不能超过单次服务价格')
   }
-  const isZeroCashItemRefund = isZeroCashPaidSessionRefund(refundDetails, fee, totalRefund)
+  const isZeroCashItemRefund = isZeroCashPaidSessionRefund(refundDetails, fee, totalRefund, origOrder.sale_order_type)
   let finalRefundAmount = Math.max(0, Math.round((totalRefund - fee) * 100) / 100)
   if (finalRefundAmount <= 0 && !isZeroCashItemRefund) {
     throw new Error('INVALID_STATE: 无可退项')
@@ -4214,7 +4216,13 @@ async function approveRefund(ctx) {
     // 若新 paid_sessions < 已消费次数(session_count - remaining_sessions)，抛 CONFLICT 阻止退款
     await recalcPaidSessionsForOrder(client, refSaleOrderId)
     await reconcileAllocationStatusAfterRefund(client, refSaleOrderId)
-    await reconcileOrderStatusAfterRefund(client, refSaleOrderId)
+    // 寄存单不改订单状态（2026-10-06 #543）：reconcileOrderStatusAfterRefund 用
+    // sale_payment_item_receipts 统计 refunded，而寄存单该表恒零行、sale_amount 又是**标价快照**，
+    // 会被判成 received < retained_value → 把「已支付」误改成「部分支付」，
+    // 让 total_amount=0 的寄存单掉进欠款/催款口径。两端镜像 admin refunds.ts。
+    if (sopRow.sale_order_type !== '寄存单') {
+      await reconcileOrderStatusAfterRefund(client, refSaleOrderId)
+    }
 
     // 5. 退款只会降低净消费，这里仅重算允许随净额下降的 spending_tier。
     // recalcCustomerType / recalcMemberLevel 都是“只升不降”的支付结算逻辑，
