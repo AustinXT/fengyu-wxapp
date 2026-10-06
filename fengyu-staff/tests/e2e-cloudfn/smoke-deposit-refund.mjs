@@ -12,7 +12,7 @@
  *        buildReceiptRefundItems 的残值映射必抛「退款金额无法完整映射到商品行实收」）
  *      · paid_sessions 按未消耗次数下降（零金额兜底分支扣 rights.refunded_sessions）
  *      · 不触发 D3：paid_sessions 恰等于已消费次数，判据是严格 >
- *      · sale_orders.status 保持「已支付」（不能被 reconcileOrderStatusAfterRefund 误判成「部分支付」）
+ *      · 全部行可用权益退光 ⇒ sale_orders.status 置「已退款」终态（绝不能被误判成「部分支付」）
  *      · 二次退款被可退数量门拦住（防重复退款）
  *   D2 0 元寄存单（received=0 → unit_real_price=0）· 部分消耗 → 只退次数、金额 0
  *      · isZeroCashPaidSessionRefund 对寄存单放宽（部分消耗时 isFullItemRefund 恒 false）
@@ -20,6 +20,7 @@
  *   D4 豁免范围不扩散：多行**销售单**无 receipt 仍抛残值映射错误
  *   D5 驳回无副作用（验收 6）：流水翻「已作废」、金额/次数/实收零变化、可重新发起
  *   D6 家居寄存件退款（验收 3）：级联通道 5 累加 refunded_quantity → 可提量收敛到 0
+ *   D7 只退其中一行 → 不跳「已退款」终态、也不落「部分支付」（#543 追加口径的边界）
  */
 import './setup.mjs'
 import {
@@ -162,15 +163,18 @@ async function main() {
         const ord = (await pgQuery(
           `SELECT refunded_amount, status FROM sale_orders WHERE sale_order_id=$1`, [o]))[0]
         if (Math.abs(n2(ord?.refunded_amount) - 700) > 0.001) errors.push(`D1 refunded_amount 应=700，实际=${ord?.refunded_amount}`)
-        // 寄存单不是欠款：状态必须保持「已支付」，不能被 reconcileOrderStatusAfterRefund 误改「部分支付」
-        if (ord?.status !== '已支付') errors.push(`D1 订单状态应保持「已支付」，实际='${ord?.status}'`)
+        // 全部行的可用权益都退光 ⇒ 置「已退款」终态（#543 追加口径）。
+        // 关键是**绝不能**被 reconcileOrderStatusAfterRefund 那套「标价快照 vs received」判据误改成
+        // 「部分支付」——寄存单不是欠款。
+        if (ord?.status !== '已退款') errors.push(`D1 全部行无可用权益后应=已退款，实际='${ord?.status}'`)
+        else if (ord?.status === '部分支付') errors.push('D1 状态被误改成「部分支付」（寄存单不是欠款）')
 
         // 豁免通道 1 的实证：本单不产生任何 receipt
         const rc = (await pgQuery(
           `SELECT COUNT(*)::int AS c FROM sale_payment_item_receipts WHERE sale_order_id=$1`, [o]))[0]
         if (Number(rc?.c) !== 0) errors.push(`D1 寄存单不应产生 sale_payment_item_receipts（通道 1 已豁免），实际=${rc?.c} 行`)
 
-        rec(`  ✅ D1 多行寄存单退款：refunded_amount=700 / paid 10→5 与 5→0 / received 800→400、300→0 / 状态仍已支付`)
+        rec(`  ✅ D1 多行寄存单退款：refunded_amount=700 / paid 10→5 与 5→0 / received 800→400、300→0 / 状态→已退款`)
       }
     }
 
@@ -181,7 +185,9 @@ async function main() {
       items: ids.map((saleItemId) => ({ saleItemId })),
       refundReason: 'e2e_D1_dup',
     })
-    if (cr2.code === 0) errors.push(`D1-2 二次退款应被拒（可退 0），实际成功 paymentId=${cr2.data?.paymentId}（资损！）`)
+    // 二次退款必须被拒。终态落地后先撞「原订单状态不允许退款」这道状态门，退可数量门在状态门之前
+    // 也都拦得住；两者都算通过，只断言「不得成功」。
+    if (cr2.code === 0) errors.push(`D1-2 二次退款应被拒（状态门或可退数量门），实际成功 paymentId=${cr2.data?.paymentId}（资损！）`)
   }
 
   // ════════════════ D2 0 元寄存单 · 部分消耗 → 只退次数、金额 0 ════════════════
@@ -212,8 +218,9 @@ async function main() {
         const ord = (await pgQuery(
           `SELECT refunded_amount, status FROM sale_orders WHERE sale_order_id=$1`, [o]))[0]
         if (Math.abs(n2(ord?.refunded_amount)) > 0.001) errors.push(`D2 refunded_amount 应=0（无钱可退），实际=${ord?.refunded_amount}`)
-        if (ord?.status !== '已支付') errors.push(`D2 订单状态应保持「已支付」，实际='${ord?.status}'`)
-        rec(`  ✅ D2 0 元寄存单：只退次数 paid 6→4，金额 0`)
+        // 0 元寄存单退光可用次数同样进「已退款」终态（卡已作废，退款额 0）
+        if (ord?.status !== '已退款') errors.push(`D2 可用次数退光后应=已退款，实际='${ord?.status}'`)
+        rec(`  ✅ D2 0 元寄存单：只退次数 paid 6→4，金额 0，状态→已退款`)
       }
     }
   }
@@ -378,7 +385,47 @@ async function main() {
         const rc = (await pgQuery(
           `SELECT COUNT(*)::int AS c FROM sale_payment_item_receipts WHERE sale_order_id=$1`, [o]))[0]
         if (Number(rc?.c) !== 0) errors.push(`D6 寄存单不应产生 receipt（豁免前提），实际=${rc?.c} 行`)
-        rec(`  ✅ D6 家居寄存件：refunded_quantity 0→3，可提量 3→0`)
+        const ord6 = (await pgQuery(`SELECT status FROM sale_orders WHERE sale_order_id=$1`, [o]))[0]
+        if (ord6?.status !== '已退款') errors.push(`D6 家居件退光后应=已退款，实际='${ord6?.status}'`)
+        rec(`  ✅ D6 家居寄存件：refunded_quantity 0→3，可提量 3→0，状态→已退款`)
+      }
+    }
+  }
+
+  // ════════════════ D7 只退其中一行 → 状态不得跳终态（也不得落「部分支付」） ════════════════
+  {
+    const o = `${NS}_DEPRF_D7`
+    // 行 A：6 次 × ¥80（实收 ¥480），已消费 4 次 → 未消耗 2 次
+    // 行 B：4 次 × ¥50（实收 ¥200），完全未消耗 → 保持可用
+    await seedDepositOrder(o, [
+      { sessionCount: 6, remaining: 2, saleAmount: 600, received: 480, unitRealPrice: 80 },
+      { sessionCount: 4, remaining: 4, saleAmount: 400, received: 200, unitRealPrice: 50 },
+    ], { received: 680 })
+
+    const cr = await invokeStaffApi('order.createRefund', {
+      _testOpenid: TEST_MANAGER_OPENID,
+      refSaleOrderId: o,
+      items: [{ saleItemId: `${o}_ITEM_1` }],   // 只退行 A
+      refundReason: 'e2e_D7_部分行',
+    })
+    if (cr.code !== 0) {
+      errors.push(`D7 只退一行的退款应成功，实际 code=${cr.code} type=${cr.errorType} msg=${cr.message}`)
+    } else {
+      const ap = await invokeStaffApi('order.approveRefund', {
+        _testOpenid: TEST_MANAGER_OPENID, paymentId: cr.data?.paymentId,
+      })
+      if (ap.code !== 0) {
+        errors.push(`D7 approveRefund 应成功，实际 code=${ap.code} msg=${ap.message}`)
+      } else {
+        const items = await fetchItems(o)
+        const a = items.find((r) => r.sale_item_id === `${o}_ITEM_1`)
+        const b = items.find((r) => r.sale_item_id === `${o}_ITEM_2`)
+        if (n2(a?.paid_sessions) !== 4) errors.push(`D7 行A paid 应=4（退光未消耗 2 次），实际=${a?.paid_sessions}`)
+        if (n2(b?.paid_sessions) !== 4) errors.push(`D7 行B paid 不应变化（仍 4），实际=${b?.paid_sessions}`)
+        const ord = (await pgQuery(`SELECT status FROM sale_orders WHERE sale_order_id=$1`, [o]))[0]
+        // 行 B 仍有可用权益 ⇒ 不得进终态；且不得被标价快照判据误改成「部分支付」
+        if (ord?.status !== '已支付') errors.push(`D7 仍有可用权益时应保持「已支付」，实际='${ord?.status}'`)
+        rec(`  ✅ D7 只退一行：行A 可用归零、行B 不变，状态仍「已支付」（未跳终态、未落部分支付）`)
       }
     }
   }
@@ -390,7 +437,7 @@ async function main() {
   }
   pass = true
   exitCode = 0
-  rec(`  ✅ PASS — 寄存单退款：白名单放行 / 通道 1 豁免（fail-safe 前置） / 只退未消耗（次数+金额+家居可提量）/ 状态不改 / 驳回无副作用 / 回款仍锁`)
+  rec(`  ✅ PASS — 寄存单退款：白名单放行 / 通道 1 豁免（fail-safe）/ 只退未消耗（次数+金额+家居可提量）/ 全退→已退款终态（部分行不跳终态）/ 驳回无副作用 / 回款仍锁`)
 }
 
 try {

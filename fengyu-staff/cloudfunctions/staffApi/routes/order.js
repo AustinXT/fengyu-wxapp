@@ -4212,6 +4212,9 @@ async function approveRefund(ctx) {
       refundReason: sopRow.refund_reason || '退款审批通过',
     })
 
+    // 寄存单退款终态是否本次落地（进 order.approveRefund 审计 detail；见下 else 分支）
+    let depositMarkedRefunded = false
+
     // 4.1 paid_sessions 重算（ticket 2026-05-19，D3=A）：refunded_amount 增长 → settled 下降
     // 若新 paid_sessions < 已消费次数(session_count - remaining_sessions)，抛 CONFLICT 阻止退款
     await recalcPaidSessionsForOrder(client, refSaleOrderId)
@@ -4222,6 +4225,55 @@ async function approveRefund(ctx) {
     // 让 total_amount=0 的寄存单掉进欠款/催款口径。两端镜像 admin refunds.ts。
     if (sopRow.sale_order_type !== '寄存单') {
       await reconcileOrderStatusAfterRefund(client, refSaleOrderId)
+    } else {
+      // 寄存单退款终态（2026-10-06 追加口径）：走不到 reconcileOrderStatusAfterRefund（理由见上），
+      // 因此这里单独判定「该卡已无可用权益」并置「已退款」。
+      // 「无可用权益」逐行镜像 calculateUnusedQuantity 的三个分支（utils/refund.js 与
+      // admin src/lib/refund.ts）：
+      //   ① 非次数卡（session_count IS NULL，即家居寄存件）→ 物理剩余 = quantity − (已提货+已退款+已转换)
+      //   ② 次数卡历史行（paid_sessions IS NULL）→ 回退 remaining_sessions（与 calculateUnusedQuantity 同口径）
+      //   ③ 次数卡 → 已付未用 = paid_sessions − 已消费次数(session_count − remaining_sessions)
+      // 另需「本单确实发生过退次数的退款（note.items[].quantity > 0）」：否则一张**自然消耗殆尽**
+      // （remaining=0、从未退过款）的寄存单也满足「无可用权益」，会被误判成已退款。
+      // 两端镜像 admin src/actions/refunds.ts。
+      const depositRefundedRes = await client.query(`
+        WITH deposit_items AS (
+          SELECT CASE
+                   WHEN si.session_count IS NULL
+                     THEN (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0)
+                           + COALESCE(si.converted_quantity, 0)) < si.quantity
+                   WHEN si.paid_sessions IS NULL
+                     THEN COALESCE(si.remaining_sessions, 0) > 0
+                   ELSE COALESCE(si.paid_sessions, 0)
+                        > GREATEST(0, si.session_count - COALESCE(si.remaining_sessions, 0))
+                 END AS has_usable_right
+            FROM sale_items si
+           WHERE si.sale_order_id = $1
+             AND si.item_direction = '购买'
+        ),
+        session_refund AS (
+          SELECT 1
+            FROM sale_order_payments sop
+            CROSS JOIN LATERAL jsonb_array_elements(
+              CASE WHEN jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'
+                   THEN public.try_jsonb(sop.note) -> 'items' ELSE '[]'::jsonb END
+            ) elem
+           WHERE sop.sale_order_id = $1
+             AND sop.change_type = '退款'
+             AND sop.status = '已支付'
+             AND public.try_numeric(elem ->> 'quantity') > 0
+           LIMIT 1
+        )
+        UPDATE sale_orders so
+           SET status = '已退款'::order_status,
+               updated_at = NOW()
+         WHERE so.sale_order_id = $1
+           AND so.status IN ('已支付', '已完成')
+           AND EXISTS (SELECT 1 FROM deposit_items)
+           AND NOT EXISTS (SELECT 1 FROM deposit_items di WHERE di.has_usable_right)
+           AND EXISTS (SELECT 1 FROM session_refund)
+      `, [refSaleOrderId])
+      depositMarkedRefunded = (depositRefundedRes.rowCount || 0) > 0
     }
 
     // 5. 退款只会降低净消费，这里仅重算允许随净额下降的 spending_tier。
@@ -4239,6 +4291,8 @@ async function approveRefund(ctx) {
       refundAbs,
       paymentMethod: sopRow.payment_method,
       cascade: cascadeResult,
+      // true = 本次审批把寄存单置为「已退款」终态（该单已无可用权益）
+      depositMarkedRefunded,
     })
 
     // 通知发起人审批通过（Bug C；自审降噪：审批人=发起人则跳过）

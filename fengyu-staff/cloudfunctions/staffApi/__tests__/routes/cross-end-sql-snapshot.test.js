@@ -2053,6 +2053,25 @@ describe('寄存单/历史订单 资金操作锁定守护', () => {
     expect(adminRefunds).toContain('仅销售单/寄存单支持退款')
   })
 
+  test('两端寄存单全额退款后置「已退款」终态（#543 追加口径）', () => {
+    // 寄存单不走 reconcileOrderStatusAfterRefund，故终态由两端 approveRefund 内独立 SQL 判定。
+    // 判据三件套必须同时在位：① 逐行镜像 calculateUnusedQuantity 的三分支；② 必须发生过「退次数」，
+    // 否则自然消耗殆尽的寄存单（remaining=0、未退过款）会被误判成已退款；③ 只在已支付/已完成上迁移。
+    for (const [name, src] of [['staff', staffOrder], ['admin', adminRefunds]]) {
+      expect(src, `${name} 缺寄存单终态 SQL`).toContain("deposit_items")
+      expect(src, `${name} 缺「无可用权益」三分支`).toContain('AS has_usable_right')
+      expect(src, `${name} 缺次数卡分支`).toMatch(/COALESCE\(si\.paid_sessions, 0\)\s*\n?\s*> GREATEST\(0, si\.session_count - COALESCE\(si\.remaining_sessions, 0\)\)/)
+      expect(src, `${name} 缺历史行回退 remaining 分支`).toContain('THEN COALESCE(si.remaining_sessions, 0) > 0')
+      expect(src, `${name} 缺家居件分支`).toContain('+ COALESCE(si.converted_quantity, 0)) < si.quantity')
+      expect(src, `${name} 缺「退过次数」前提`).toContain("public.try_numeric(elem ->> 'quantity') > 0")
+      expect(src, `${name} 缺状态迁移约束`).toContain("AND so.status IN ('已支付', '已完成')")
+      expect(src, `${name} 未置已退款`).toContain("SET status = '已退款'::order_status")
+    }
+    // 终态只对寄存单生效，不得外溢（两端变量名不同：staff 用 sopRow，admin 用 pre）
+    expect(staffOrder, 'staff 终态未挂在寄存单分支上').toContain("sopRow.sale_order_type !== '寄存单'")
+    expect(adminRefunds, 'admin 终态未挂在寄存单分支上').toContain("pre.orderSaleOrderType !== '寄存单'")
+  })
+
   test('两端通道 1 豁免以「本单无 receipt」为前置（fail-safe，不静默跳过冲销）', () => {
     for (const [name, src] of [['staff', staffCascade], ['admin', adminCascade]]) {
       expect(src, `${name} 缺 has_receipts 探测`).toContain('AS has_receipts')
