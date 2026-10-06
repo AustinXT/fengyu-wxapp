@@ -87,3 +87,13 @@
 - 显式prod通道串行部署staffApi/clientApi/payNotify成功；独立fn detail回读三函数生产PG/primary、staff false/release与两项secret非空、client TMAP完整、HMAC跨端一致、client/payNotify通知归属payNotify。staff空请求code=-1（缺action，技能允许）冒烟通过。
 - 两站类型0错误；staff399/admin27/analyst476测试通过；DB132通过、16环境型跳过。两条迁移后journal门禁通过，无pending。证据目录_tmp/release-prod-v1.17.23/。
 - .active=prod，未commit/push。未提交文件：db/rollout/prod.md、client/staff miniprogram/utils/version.ts；两端APP_VERSION=v1.17.23须手动上传正式版小程序生效。独立日报dailyApi不属于release-all默认三函数，本次未部署。
+
+## 2026-10-06 明细快照回填（是否生美 / 经营类型）
+
+- 目标：用当前 SKU / 品项分类配置刷新 `sale_items`、`service_items` 的 `is_shengmei`（是否生美）与 `sales_category`（经营类型）四列快照。
+- 脚本：`db/scripts/backfill-item-snapshots-shengmei-category.js`（新增；幂等、默认 dry-run、写入需 `--confirm-target` 逐字确认、导出 CAS 回滚文件、经 `_lib/assert-db-target` 白名单）。执行人 Claude，2026-10-06。
+- 前置只读核对（`fengyu_ro`，118.178.196.26:5433）：`sale_items` 137,733 行、`service_items` 27,531 行，四列差异均为 **0**；派生表 `sale_item_performance_events` / `sale_payment_item_receipts` / `sale_payment_allocatable_items` / `sale_reportable_item_events` 亦为 0；`sale_items.product_kind_at_sale` 亦为 0。
+- 执行：`ADMIN_DATABASE_URL` 显式目标断言后 `--execute --confirm-target=118.178.196.26:5433/fengyu_wxapp`，命中 **0 行，未写入、未生成回滚文件**（脚本按设计在 0 行时不写库）。
+- 归因：prod 已于 **2026-10-05 17:23** 有一次批量对齐（`sale_items` 8,366 行 + `service_items` 1,039 行，跨 20 个 SKU），与当日 17:19–17:23 的 4 个 SKU 生美标记修正同批；其后无新的 SKU/分类改动，10-05 之后新开的 296 行 `sale_items` 写入时即取当前值。
+- ⚠ 口径备注：`sale_items.is_shengmei` 在 #378 定为「**不回填**的开单快照（生美业绩口径）」；10-05 的批量对齐已把它改到与 SKU 当前值一致，与 #378 原口径相反。若需保留开单快照口径，须另行评估回退。
+- 本地验证（未连业务库）：临时 docker PG 全量 `db:migrate` + 夹具端到端 22 项断言通过（命中数、写入、幂等归零、NULL 源不覆盖、无 SKU 行回退、回滚恢复、漂移 CAS 默认拒绝 + `--allow-drift` 跳过）。`npm run db:test` 132 通过 / 0 失败。
