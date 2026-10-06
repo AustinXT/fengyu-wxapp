@@ -696,7 +696,8 @@ async function recalcCustomerType(client, clientUserId, saleOrderId, allowDowngr
     // 配置不可用时跳过本次分类重算、不阻断退款审批本身 —— 与 admin
     // recomputeCustomerTypeOnRefund 的「捕获后 return null」同语义。
     try {
-      threshold = await getMemberThresholdStrict()
+      // 传 client：复用本事务连接，不在事务内经连接池二次借连接
+      threshold = await getMemberThresholdStrict(client)
     } catch (err) {
       console.warn('[order] 退款通道跳过顾客分类重算：会员门槛配置不可用', err.message)
       return
@@ -705,9 +706,9 @@ async function recalcCustomerType(client, clientUserId, saleOrderId, allowDowngr
     threshold = await getMemberThreshold()
   }
 
-  // 九处 SQL 独立副本（staffApi routes/order.js + clientApi routes/order.js + payNotify index.js
-  // + admin actions/orders.ts + admin lib/recompute-customer-tags.ts + db/scripts/recalc-all-customer-types.js
-  // + db/scripts/recalc-became-member-at.js + db/scripts/backfill-membership-upgrade-doc-type.js）。
+  // 九处 SQL 独立副本：staffApi routes/order.js + clientApi routes/order.js + payNotify index.js
+  // + admin actions/orders.ts + admin lib/recompute-customer-tags.ts + admin cron/steps/refresh-customer-types.ts
+  // + db/scripts/{recalc-all-customer-types, recalc-became-member-at, backfill-membership-upgrade-doc-type}.js。
   // 修改时必须同步其余八处；一致性由 staffApi
   // __tests__/routes/recalc-customer-type-sql.test.js 守护，任一处漂移立即触发测试失败。
   //

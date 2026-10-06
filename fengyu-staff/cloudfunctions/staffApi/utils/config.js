@@ -76,12 +76,13 @@ async function getMemberThreshold() {
  * 次日 cron 会用正确阈值纠正），但在退款通道会按一个与真实门槛无关的数**写出不可逆的降档**。
  * admin 侧 `recomputeCustomerTypeOnRefund` 同样是「配置不可用则跳过」，两端语义靠这里对齐。
  *
+ * @param {object} [client] - 已开的 pg 事务客户端；传入时复用该连接，避免在事务内经连接池
+ *   二次借连接（池 max 5，并发退款时可能把池借空而自锁）。不传则走池。
  * @returns {Promise<number>}
  */
-async function getMemberThresholdStrict() {
-  const rows = await pg.query(
-    "SELECT value FROM system_configs WHERE key = 'new_member_threshold'"
-  )
+async function getMemberThresholdStrict(client) {
+  const sql = "SELECT value FROM system_configs WHERE key = 'new_member_threshold'"
+  const rows = client ? await client.query(sql) : await pg.query(sql)
   const v = rows[0] ? Number(rows[0].value) : NaN
   if (!Number.isFinite(v) || v <= 0) {
     throw new Error('INVALID_STATE: 会员门槛配置不可用，停止顾客分类重算')

@@ -83,10 +83,10 @@ async function recomputeCustomerStatusForUser(tx: Tx, clientUserId: string): Pro
 /**
  * 段 2：customer_type 只升不降（#545，推翻 #257 的双向对齐）。实时四路径同样是只升级。
  *
- * 九处 SQL 镜像副本：五处单客入口 + cron（staffApi order.js + clientApi order.js + payNotify index.js
- * + admin orders.ts + 本 helper）逐字一致，三个 db/scripts 批量脚本（recalc-all-customer-types.js
- * + recalc-became-member-at.js + backfill-membership-upgrade-doc-type.js + admin cron refresh-customer-types.ts）结构对齐。
- * SQL 字面必须与其余八处一致；守护测试：
+ * 九处 SQL 镜像副本：staffApi routes/order.js + clientApi routes/order.js + payNotify index.js
+ * + admin actions/orders.ts + 本 helper + admin cron/steps/refresh-customer-types.ts
+ * + db/scripts/{recalc-all-customer-types, recalc-became-member-at, backfill-membership-upgrade-doc-type}.js。
+ * 前五处逐字一致，后四处结构对齐。SQL 字面必须与其余八处一致；守护测试：
  * fengyu-staff/cloudfunctions/staffApi/__tests__/routes/recalc-customer-type-sql.test.js
  */
 /**
@@ -252,7 +252,8 @@ async function recomputeCustomerTypeForUser(
   }
 
   // 九处 SQL 镜像副本，修改时必须同步其余八处（staffApi order.js + clientApi order.js + payNotify index.js
-  // + admin orders.ts + 本文件 + db/scripts/recalc-all-customer-types.js + db/scripts/recalc-became-member-at.js）；
+  // + admin orders.ts + 本文件 + admin cron/steps/refresh-customer-types.ts
+  // + db/scripts/{recalc-all-customer-types, recalc-became-member-at, backfill-membership-upgrade-doc-type}.js）；
   // 一致性由 recalc-customer-type-sql.test.js 守护。
   // #187（2026-09-18）：按单笔订单的非体验部分毛实收判定（received 净额 + 逐项退款额），落地 Q5.2 决策。
   const typeRes = await tx.execute(sql`

@@ -884,7 +884,7 @@ describe('SUMMARY v3 §2 #14：cascadeRefund 触发点防回归', () => {
     expect(config).toMatch(/!Number\.isFinite\(v\) \|\| v <= 0[\s\S]{0,120}throw new Error\('INVALID_STATE: 会员门槛配置不可用/)
     expect(config).toMatch(/getMemberThresholdStrict,/)
     // allowDowngrade 分支走严格读取，失败即 return（跳过分类重算，不阻断退款审批本身）
-    expect(src).toMatch(/if \(allowDowngrade\) \{[\s\S]*?getMemberThresholdStrict\(\)[\s\S]*?catch[\s\S]*?return/)
+    expect(src).toMatch(/if \(allowDowngrade\) \{[\s\S]*?getMemberThresholdStrict\(client\)[\s\S]*?catch[\s\S]*?return/)
     // 只升通道继续用带兜底的 getMemberThreshold（配置异常最坏是漏升，次日 cron 纠正）
     expect(src).toContain('threshold = await getMemberThreshold()')
   })
