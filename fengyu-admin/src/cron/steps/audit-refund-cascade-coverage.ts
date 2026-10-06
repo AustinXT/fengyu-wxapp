@@ -270,12 +270,16 @@ export async function auditRefundCascadeCoverage(db: Db): Promise<RefundCascadeC
 
   // ── C1 通道入口兜底：负数退款主流水必须产生负数 receipt ──
   // 0 元退款只退项/扣次数，运行态合法地不写 receipt，因此必须保留 sop.amount < 0 过滤。
+  // 寄存单豁免通道 1（2026-10-06 #543）：寄存单没有任何正向 receipt，其净额由 paid-sessions 的
+  // STEP 1 分支 B + STEP 1.5 承担，**永远**不会写负数 receipt —— 不排除会每晚误报。
   const c1ReceiptMissing = (await db.execute(sql`
     SELECT sop.id AS sop_id, sop.sale_order_id, sop.ref_sale_item_id, sop.amount
       FROM sale_order_payments sop
+      JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
      WHERE sop.status = '已支付'
        AND sop.change_type = '退款'
        AND sop.amount < 0
+       AND so.sale_order_type <> '寄存单'
        AND NOT EXISTS (
          SELECT 1
            FROM sale_payment_item_receipts spir
@@ -295,9 +299,13 @@ export async function auditRefundCascadeCoverage(db: Db): Promise<RefundCascadeC
   // ── C2: service_commissions 应已 voided_at IS NOT NULL ──
   const c2 = (await db.execute(sql`
     WITH refunds AS (
+      -- 寄存单豁免通道 1/2（2026-10-06 #543）：寄存单正常消费会产 service_commissions，
+      -- 但退款不经过通道 2（部分消耗时 isFullItemRefund 恒 false），不排除会每晚误报。
       SELECT sop.id AS sop_id, sop.sale_order_id, sop.ref_sale_item_id
       FROM sale_order_payments sop
+      JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
       WHERE sop.change_type = '退款' AND sop.status = '已支付'
+        AND so.sale_order_type <> '寄存单'
     ),
     sc_status AS (
       SELECT r.sop_id, r.sale_order_id, r.ref_sale_item_id,

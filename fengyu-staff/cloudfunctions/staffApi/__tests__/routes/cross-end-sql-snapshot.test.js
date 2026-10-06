@@ -666,7 +666,9 @@ describe('SUMMARY v3 §2 #14：refund-cascade 双端 5 通道覆盖守护', () =
         expect(src, `${name} 缺退款全额映射守卫`).toMatch(/mappedTotalCents !== requestedTotalCents/)
         expect(src, `${name} 缺按超额容量分配 overpay`).toMatch(/allocateCentsByWeight/)
         expect(src, `${name} 不应把 OVERPAY 限制在已选退款商品`).not.toMatch(/selectedItemIds/)
-        expect(src, `${name} 通道 1 未使用映射后的 receipt 列表`).toMatch(/const receiptRefundItems = await buildReceiptRefundItems/)
+        // #543：通道 1 对寄存单豁免（该单无任何正向 receipt，映射必抛），其它类型仍须走映射后的列表
+        expect(src, `${name} 通道 1 未使用映射后的 receipt 列表`).toMatch(/const receiptRefundItems = isDepositOrder/)
+        expect(src, `${name} 通道 1 未调用 receipt 映射 helper`).toMatch(/await buildReceiptRefundItems\(/)
       }
     })
     test('两端通道 1 不再软删原分配行（保留正数行，报表 SUM 自动净额化）', () => {
@@ -2006,10 +2008,14 @@ describe('寄存单/历史订单 资金操作锁定守护', () => {
     adminRefunds = readFile(FILES.adminRefundsTs)
   })
 
-  test('staff order.js 含 仅销售单退款白名单（Bug L）+ 寄存单/历史订单 回款拦截', () => {
-    // Bug L：退款改正向白名单（仅销售单），原「寄存单不支持退款」黑名单已被「仅销售单支持退款」取代
-    expect(staffOrder).toContain('仅销售单支持退款')
+  test('staff order.js 含 销售单/寄存单退款白名单（Bug L + #543）+ 寄存单/历史订单 回款拦截', () => {
+    // Bug L：退款改正向白名单（原「寄存单不支持退款」黑名单已被白名单取代）。
+    // #543（2026-10-06）：寄存单**加入**退款白名单——只放开「退款」，回款/改实收仍锁。
+    expect(staffOrder).toContain("origOrder.sale_order_type !== '销售单' && origOrder.sale_order_type !== '寄存单'")
+    expect(staffOrder).toContain('仅销售单/寄存单支持退款')
     expect(staffOrder).toContain('历史订单不支持退款')
+    expect(staffOrder).toContain('充值卡退款请在')
+    // 回款仍锁（寄存单「只放开退款」的边界，勿被顺手放开）
     expect(staffOrder).toContain('寄存单不支持回款')
     expect(staffOrder).toContain('历史订单不支持回款')
   })
@@ -2019,9 +2025,18 @@ describe('寄存单/历史订单 资金操作锁定守护', () => {
     expect(adminOrders).toContain('历史订单不支持回款')
   })
 
-  test('admin createRefund 含 历史订单/仅销售单 退款拦截（寄存单走"仅销售单"通用拒绝）', () => {
+  test('admin getRefundable/createRefund 含 销售单/寄存单退款白名单（#543）+ 历史订单拦截', () => {
     expect(adminRefunds).toContain('历史订单不支持退款')
-    expect(adminRefunds).toContain('仅销售单支持退款')
+    expect(adminRefunds).toContain("order.saleOrderType !== '销售单' && order.saleOrderType !== '寄存单'")
+    expect(adminRefunds).toContain("origOrder.saleOrderType !== '销售单' && origOrder.saleOrderType !== '寄存单'")
+    expect(adminRefunds).toContain('仅销售单/寄存单支持退款')
+  })
+
+  test('两端 approveRefund 对寄存单跳过 reconcileOrderStatusAfterRefund（#543：寄存单不是欠款）', () => {
+    // 该函数用 sale_payment_item_receipts 统计 refunded，寄存单该表恒零行、sale_amount 又是标价快照，
+    // 会把「已支付」误改成「部分支付」，让 total_amount=0 的寄存单掉进欠款/催收口径。
+    expect(adminRefunds).toContain("pre.orderSaleOrderType !== '寄存单'")
+    expect(staffOrder).toContain("sopRow.sale_order_type !== '寄存单'")
   })
 })
 

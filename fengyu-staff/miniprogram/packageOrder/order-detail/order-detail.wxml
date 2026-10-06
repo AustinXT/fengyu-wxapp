@@ -200,9 +200,9 @@
         custom-style="border-radius:48rpx;margin-top:24rpx;"
         bind:click="onCreateService"
       >创建服务单</van-button>
-      <!-- P2: 退款按钮（已支付/已完成/部分支付 + 仅销售单；排除 workfine 历史单 + 已有待审批退款；员工可发起→店长审批，对齐 admin order-detail-page.tsx；充值单走下方专用按钮） -->
+      <!-- P2: 退款按钮（已支付/已完成/部分支付 + 销售单/寄存单；排除 workfine 历史单 + 已有待审批退款；员工可发起→店长审批，对齐 admin order-detail-page.tsx；充值单走下方专用按钮） -->
       <van-button
-        wx:if="{{!isReadOnly && (order.status === '已支付' || order.status === '已完成' || order.status === '部分支付') && order.orderType === '销售单' && !order.isLegacy && !hasPendingRefund}}"
+        wx:if="{{!isReadOnly && (order.status === '已支付' || order.status === '已完成' || order.status === '部分支付') && (order.orderType === '销售单' || order.orderType === '寄存单') && !order.isLegacy && !hasPendingRefund}}"
         block plain type="danger"
         custom-style="border-radius:48rpx;margin-top:24rpx;"
         bind:click="onCreateRefund"

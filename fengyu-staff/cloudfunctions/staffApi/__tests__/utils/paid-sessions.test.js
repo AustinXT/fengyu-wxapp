@@ -205,8 +205,12 @@ describe('PAID_SESSIONS_RECALC_SQL 模板字面量守护', () => {
     expect(PAID_SESSIONS_RECALC_SQL).toMatch(/LEAST\(sale_items\.session_count - rights\.refunded_sessions,/i)
   })
 
-  test('必须有 sale_items.sale_amount <= 0 → session_count 兜底（免单/寄存行）', () => {
-    expect(PAID_SESSIONS_RECALC_SQL).toMatch(/sale_items\.sale_amount\s*<=\s*0\s+THEN\s+sale_items\.session_count/i)
+  test('必须有 sale_items.sale_amount <= 0 → session_count - 已退次数 兜底（免单/寄存行）', () => {
+    // #543（2026-10-06）：寄存单 op.total_amount 恒 0，永远落在本组兜底分支上，
+    // 不减 rights.refunded_sessions 会让寄存单退款不退次数。
+    expect(PAID_SESSIONS_RECALC_SQL).toMatch(
+      /sale_items\.sale_amount\s*<=\s*0\s+THEN\s+GREATEST\(0,\s*sale_items\.session_count\s*-\s*rights\.refunded_sessions\)/i,
+    )
   })
 
   test('session_count IS NULL 时 → NULL（D5=A 非次数卡）', () => {
@@ -215,8 +219,10 @@ describe('PAID_SESSIONS_RECALC_SQL 模板字面量守护', () => {
 
   test('必须用 op.total_amount <= 0 分支防 total=0 时除零（分支式守护，替代旧 NULLIF）', () => {
     // 2026-06-28 重构：除零保护从 NULLIF(op.total_amount, 0) 改为 CASE 分支
-    // WHEN op.total_amount <= 0 THEN sale_items.session_count（全付兜底）
-    expect(PAID_SESSIONS_RECALC_SQL).toMatch(/op\.total_amount\s*<=\s*0\s+THEN\s+sale_items\.session_count/i)
+    // WHEN op.total_amount <= 0 THEN GREATEST(0, session_count - 已退次数)（全付兜底；#543 起扣已退次数）
+    expect(PAID_SESSIONS_RECALC_SQL).toMatch(
+      /op\.total_amount\s*<=\s*0\s+THEN\s+GREATEST\(0,\s*sale_items\.session_count\s*-\s*rights\.refunded_sessions\)/i,
+    )
     // 旧 NULLIF 形态不应残留
     expect(PAID_SESSIONS_RECALC_SQL).not.toMatch(/NULLIF\(op\.total_amount::numeric,\s*0\)/i)
   })

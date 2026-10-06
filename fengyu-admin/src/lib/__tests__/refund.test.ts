@@ -271,6 +271,32 @@ describe('isZeroCashPaidSessionRefund', () => {
     expect(refundDetails[0].isFullItemRefund).toBe(false)
     expect(isZeroCashPaidSessionRefund(refundDetails, 0, totalRefund)).toBe(false)
   })
+
+  it('寄存单：0 元且已消费部分次数时放行（#543 口径，公式已能扣减权益）', () => {
+    // 真实寄存单形态：sale_amount 是标价快照 > 0，而 received=0 时 recomputeDepositRealPrice
+    // 把 unit_real_price 写成 0 → 退款额 0；部分消耗时 isFullItemRefund 恒 false。
+    const { refundDetails, totalRefund } = buildRefundDetails(
+      [freeCard({ sale_amount: '1000', unit_real_price: '0', session_count: 5, remaining_sessions: 2, paid_sessions: 5 })],
+      [{ saleItemId: 'SI-ZERO' }],
+    )
+
+    expect(refundDetails[0].quantity).toBe(2)
+    expect(refundDetails[0].isFullItemRefund).toBe(false)
+    // 不传订单类型 → 沿用旧闸（拒绝），兜住非寄存单零回归
+    expect(isZeroCashPaidSessionRefund(refundDetails, 0, totalRefund)).toBe(false)
+    expect(isZeroCashPaidSessionRefund(refundDetails, 0, totalRefund, '销售单')).toBe(false)
+    // 寄存单放行
+    expect(isZeroCashPaidSessionRefund(refundDetails, 0, totalRefund, '寄存单')).toBe(true)
+  })
+
+  it('寄存单：数量为 0（纯余数/无可退项）仍不放行', () => {
+    const { refundDetails, totalRefund } = buildRefundDetails(
+      [freeCard({ sale_amount: '1000', unit_real_price: '0', session_count: 5, remaining_sessions: 5, paid_sessions: 5 })],
+      [{ saleItemId: 'SI-ZERO', includeOverpay: true }],
+    )
+    const onlyQtyZero = [{ ...refundDetails[0], quantity: 0 }]
+    expect(isZeroCashPaidSessionRefund(onlyQtyZero, 0, totalRefund, '寄存单')).toBe(false)
+  })
 })
 
 describe('isHandlingFeeInvalidForRefund', () => {
