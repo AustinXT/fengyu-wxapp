@@ -179,16 +179,22 @@ SET paid_sessions = CASE
     WHERE conv_out.ref_sale_item_id = sale_items.sale_item_id AND conv_out.item_direction = '转出'
       AND conv_order.status <> '已关闭'
   ) THEN sale_items.session_count
-  -- 寄存单/零金额单：满次数兜底必须扣掉已退次数，否则「退款不退次数」（2026-10-06 寄存单退款口径）。
-  -- 分支 2 full_refund 只覆盖「零消费全退」，部分消耗的寄存单落到这里。非寄存单退款走不到（转换单不可退）。
-  WHEN op.total_amount <= 0 THEN GREATEST(0, sale_items.session_count - rights.refunded_sessions)
-  WHEN sale_items.sale_amount <= 0 THEN GREATEST(0, sale_items.session_count - rights.refunded_sessions)
+  -- 寄存单专属（2026-10-06 #543）：寄存单 total_amount 恒 0 ⇒ 永远落在下面两个兜底分支上，
+  -- 不减 rights.refunded_sessions 就等于「退款不退次数」（分支 2 full_refund 只覆盖「零消费全退」，
+  -- 部分消耗的寄存单走不到）。**刻意用 op.sale_order_type 收窄到寄存单**：非寄存单的零金额行
+  -- （券全额抵扣/免单，prod 1,807 行全部 received=0）继续走原来的 «= session_count»，零回归。
+  WHEN op.total_amount <= 0 AND op.sale_order_type = '寄存单'
+    THEN GREATEST(0, sale_items.session_count - rights.refunded_sessions)
+  WHEN sale_items.sale_amount <= 0 AND op.sale_order_type = '寄存单'
+    THEN GREATEST(0, sale_items.session_count - rights.refunded_sessions)
+  WHEN op.total_amount <= 0 THEN sale_items.session_count
+  WHEN sale_items.sale_amount <= 0 THEN sale_items.session_count
   ELSE GREATEST(0, LEAST(sale_items.session_count - rights.refunded_sessions,
     FLOOR(GREATEST(0, sale_items.received::numeric - rights.retained + rights.overpay)
       * sale_items.session_count / sale_items.sale_amount::numeric)::integer))
 END,
 updated_at = NOW()
-FROM (SELECT total_amount FROM sale_orders WHERE sale_order_id = $1) op, rights
+FROM (SELECT total_amount, sale_order_type FROM sale_orders WHERE sale_order_id = $1) op, rights
 WHERE sale_items.sale_order_id = $1 AND rights.sale_item_id = sale_items.sale_item_id`
       const FULL_REFUND_ZERO_AMOUNT_PAID_SESSIONS_SQL = `WITH full_refund_zero_items AS (
       SELECT elem ->> 'refSaleItemId' AS sale_item_id

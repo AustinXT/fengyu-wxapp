@@ -18,6 +18,8 @@
  *      · isZeroCashPaidSessionRefund 对寄存单放宽（部分消耗时 isFullItemRefund 恒 false）
  *   D3 回款仍锁：寄存单 createRepayment → INVALID_STATE/寄存单
  *   D4 豁免范围不扩散：多行**销售单**无 receipt 仍抛残值映射错误
+ *   D5 驳回无副作用（验收 6）：流水翻「已作废」、金额/次数/实收零变化、可重新发起
+ *   D6 家居寄存件退款（验收 3）：级联通道 5 累加 refunded_quantity → 可提量收敛到 0
  */
 import './setup.mjs'
 import {
@@ -272,6 +274,115 @@ async function main() {
     }
   }
 
+  // ════════════════ D5 驳回无副作用（验收 6） ════════════════
+  {
+    const o = `${NS}_DEPRF_D5`
+    await seedDepositOrder(o, [
+      { sessionCount: 8, remaining: 3, saleAmount: 800, received: 500, unitRealPrice: 62.5 },
+    ], { received: 500 })
+    const before = (await fetchItems(o))[0]
+
+    const cr = await invokeStaffApi('order.createRefund', {
+      _testOpenid: TEST_MANAGER_OPENID,
+      refSaleOrderId: o,
+      items: [{ saleItemId: `${o}_ITEM_1` }],
+      refundReason: 'e2e_D5_驳回用',
+    })
+    if (cr.code !== 0) {
+      errors.push(`D5 createRefund 应成功，实际 code=${cr.code} type=${cr.errorType} msg=${cr.message}`)
+    } else {
+      const rj = await invokeStaffApi('order.rejectRefund', {
+        _testOpenid: TEST_MANAGER_OPENID, paymentId: cr.data?.paymentId, auditRemark: 'e2e_D5_驳回',
+      })
+      if (rj.code !== 0) {
+        errors.push(`D5 rejectRefund 应成功，实际 code=${rj.code} type=${rj.errorType} msg=${rj.message}`)
+      } else {
+        const pay = (await pgQuery(
+          `SELECT status, audit_remark FROM sale_order_payments WHERE id=$1`, [cr.data.paymentId]))[0]
+        if (pay?.status !== '已作废') errors.push(`D5 退款流水应=已作废，实际='${pay?.status}'`)
+        const ord = (await pgQuery(
+          `SELECT refunded_amount, status FROM sale_orders WHERE sale_order_id=$1`, [o]))[0]
+        if (n2(ord?.refunded_amount) !== 0) errors.push(`D5 refunded_amount 应=0（驳回不累计），实际=${ord?.refunded_amount}`)
+        if (ord?.status !== '已支付') errors.push(`D5 订单状态不应变化，实际='${ord?.status}'`)
+        const after = (await fetchItems(o))[0]
+        for (const col of ['paid_sessions', 'received', 'remaining_sessions']) {
+          if (String(after[col]) !== String(before[col])) {
+            errors.push(`D5 驳回后 ${col} 不应变化：${before[col]} → ${after[col]}`)
+          }
+        }
+        // 驳回后必须能重新发起（流水唯一约束只挡『待审批』那一笔）
+        const again = await invokeStaffApi('order.createRefund', {
+          _testOpenid: TEST_MANAGER_OPENID,
+          refSaleOrderId: o,
+          items: [{ saleItemId: `${o}_ITEM_1` }],
+          refundReason: 'e2e_D5_重新发起',
+        })
+        if (again.code !== 0) errors.push(`D5 驳回后应可重新发起退款，实际 code=${again.code} msg=${again.message}`)
+        else rec(`  ✅ D5 驳回无副作用（已作废 / 金额与次数零变化 / 可重新发起）`)
+      }
+    }
+  }
+
+  // ════════════════ D6 家居寄存件退款 → 可提量收敛（验收 3） ════════════════
+  {
+    const o = `${NS}_DEPRF_D6`
+    // 家居行：3 件 × ¥100，寄存单（sale_order_type='寄存单'，session_count IS NULL）
+    await createTestSaleOrder({
+      saleOrderId: o, clientUserId: TEST_CLIENT_USER_ID,
+      saleOrderType: '寄存单', productName: `${NS}_寄存家居`, productType: '家居产品',
+      quantity: 3, sessionCount: null, totalAmount: 300, status: '已支付', salesCategory: '他销自耗',
+    })
+    const itemId = `${o}_ITEM_1`
+    await pgQuery(
+      `UPDATE sale_orders SET total_amount=0, payable_amount=0, received=300, payment_method='无' WHERE sale_order_id=$1`, [o])
+    // 历史实收回款行（定向到行），与真寄存单同形；仍不写 receipt
+    await pgQuery(
+      `INSERT INTO sale_order_payments
+         (sale_order_id, ref_sale_item_id, change_type, amount, payment_method, status, source_end, note, created_at, paid_at)
+       VALUES ($1, $2, '回款', 300, '线下', '已支付', 'staff', '寄存单初始化实收', NOW(), NOW())`,
+      [o, itemId])
+
+    const available = (row) => n2(row.quantity) - Math.min(
+      n2(row.quantity),
+      n2(row.picked_up_quantity) + n2(row.refunded_quantity) + n2(row.converted_quantity),
+    )
+    // 与 pickup-records.ts / staffApi availablePickupItems 的 row_pending_pickup 同式
+    // （寄存单分支：quantity − LEAST(quantity, 已提货 + 已退款 + 已转换)）
+    const before = (await pgQuery(
+      `SELECT quantity, picked_up_quantity, refunded_quantity, converted_quantity, received
+         FROM sale_items WHERE sale_item_id=$1`, [itemId]))[0]
+    if (available(before) !== 3) errors.push(`D6 种子态可提量应=3，实际=${available(before)}`)
+
+    const cr = await invokeStaffApi('order.createRefund', {
+      _testOpenid: TEST_MANAGER_OPENID,
+      refSaleOrderId: o,
+      items: [{ saleItemId: itemId }],
+      refundReason: 'e2e_D6_家居寄存件',
+    })
+    if (cr.code !== 0) {
+      errors.push(`D6 家居寄存件退款应成功，实际 code=${cr.code} type=${cr.errorType} msg=${cr.message}`)
+    } else {
+      const ap = await invokeStaffApi('order.approveRefund', {
+        _testOpenid: TEST_MANAGER_OPENID, paymentId: cr.data?.paymentId,
+      })
+      if (ap.code !== 0) {
+        errors.push(`D6 approveRefund 应成功，实际 code=${ap.code} type=${ap.errorType} msg=${ap.message}`)
+      } else {
+        const after = (await pgQuery(
+          `SELECT quantity, picked_up_quantity, refunded_quantity, converted_quantity
+             FROM sale_items WHERE sale_item_id=$1`, [itemId]))[0]
+        if (n2(after?.refunded_quantity) !== 3) {
+          errors.push(`D6 refunded_quantity 应=3（级联通道 5 累加），实际=${after?.refunded_quantity}`)
+        }
+        if (available(after) !== 0) errors.push(`D6 可提量应收敛到 0，实际=${available(after)}`)
+        const rc = (await pgQuery(
+          `SELECT COUNT(*)::int AS c FROM sale_payment_item_receipts WHERE sale_order_id=$1`, [o]))[0]
+        if (Number(rc?.c) !== 0) errors.push(`D6 寄存单不应产生 receipt（豁免前提），实际=${rc?.c} 行`)
+        rec(`  ✅ D6 家居寄存件：refunded_quantity 0→3，可提量 3→0`)
+      }
+    }
+  }
+
   if (errors.length) {
     rec(`  ✗ FAIL: ${errors.length} 项断言失败`)
     for (const e of errors) rec(`    - ${e}`)
@@ -279,7 +390,7 @@ async function main() {
   }
   pass = true
   exitCode = 0
-  rec(`  ✅ PASS — 寄存单退款：白名单放行 / 通道 1 豁免 / 只退未消耗（次数+金额）/ 状态不改 / 回款仍锁`)
+  rec(`  ✅ PASS — 寄存单退款：白名单放行 / 通道 1 豁免（fail-safe 前置） / 只退未消耗（次数+金额+家居可提量）/ 状态不改 / 驳回无副作用 / 回款仍锁`)
 }
 
 try {
