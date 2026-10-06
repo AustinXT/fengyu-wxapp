@@ -31,6 +31,12 @@ let _deductRateCachedUpdatedAt = null
 let _deductRateLastCheckAt = 0
 
 /**
+ * 会员门槛配置不可用的错误文案。抛错方（getMemberThresholdStrict）与捕获方
+ * （routes/order.js 的退款通道）共用同一常量，避免靠字符串字面量匹配时漂移。
+ */
+const THRESHOLD_UNAVAILABLE_MSG = 'INVALID_STATE: 会员门槛配置不可用，停止顾客分类重算'
+
+/**
  * 获取会员门槛（单位：元）。
  * @returns {Promise<number>}
  */
@@ -85,7 +91,7 @@ async function getMemberThresholdStrict(client) {
   const rows = client ? await client.query(sql) : await pg.query(sql)
   const v = rows[0] ? Number(rows[0].value) : NaN
   if (!Number.isFinite(v) || v <= 0) {
-    throw new Error('INVALID_STATE: 会员门槛配置不可用，停止顾客分类重算')
+    throw new Error(THRESHOLD_UNAVAILABLE_MSG)
   }
   return v
 }
@@ -212,6 +218,7 @@ if (_ttlTimer && typeof _ttlTimer.unref === 'function') {
 module.exports = {
   getMemberThreshold,
   getMemberThresholdStrict,
+  THRESHOLD_UNAVAILABLE_MSG,
   getPointsToYuanRate,
   getPointsDeductionMaxRate,
   invalidateCache,

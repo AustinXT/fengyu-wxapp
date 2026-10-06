@@ -18,7 +18,7 @@ const { assertMembershipBinding } = require('../utils/membership-binding')
 const { requireStaffBound, requireManager, isCurrentStoreManager } = require('../middleware/auth')
 const { assertOrderInScope, isStoreInScope, restrictToBoundEmployee, buildBundleMarketScopeFilter, buildNormalSkuMarketScopeFilter } = require('../utils/scope')
 const { generateWxacode, uploadToCloudStorage, effectiveEnvVersion, versionPathSuffix } = require('../utils/wxacode')
-const { getMemberThreshold, getMemberThresholdStrict, getPointsToYuanRate, getPointsDeductionMaxRate } = require('../utils/config')
+const { getMemberThreshold, getMemberThresholdStrict, THRESHOLD_UNAVAILABLE_MSG, getPointsToYuanRate, getPointsDeductionMaxRate } = require('../utils/config')
 // 充值卡剥离 SKU 化（2026-05-20）：充值识别改为 sale_orders.sale_order_type='充值单'，
 // 不再依赖虚拟 SKU ID 或 product_name 正则解析面值。
 const { settlePointsSafe, grantPointBatch, consumePointBatches } = require('../utils/points')
@@ -699,7 +699,11 @@ async function recalcCustomerType(client, clientUserId, saleOrderId, allowDowngr
       // 传 client：复用本事务连接，不在事务内经连接池二次借连接
       threshold = await getMemberThresholdStrict(client)
     } catch (err) {
-      console.warn('[order] 退款通道跳过顾客分类重算：会员门槛配置不可用', err.message)
+      // 只吞「配置不可用」这一类业务错误（查询本身成功、事务未被 abort，跳过是安全的）。
+      // 查询级/连接级错误必须 rethrow：事务已进入 aborted 状态，继续跑后续语句只会以
+      // 25P02 之类的晦涩错误失败、极难排障。与 admin 侧的同名判定保持一致。
+      if (!(err instanceof Error) || err.message !== THRESHOLD_UNAVAILABLE_MSG) throw err
+      console.warn('[order] 退款通道跳过顾客分类重算：会员门槛配置不可用')
       return
     }
   } else {
@@ -732,7 +736,12 @@ async function recalcCustomerType(client, clientUserId, saleOrderId, allowDowngr
   )
 
   const newType = typeResult.rows[0].computed_type
-  if (newType === '会员客') {
+  // #301 入会绑定门禁只在**首次入会**路径生效：它不是退款审批该管的事，
+  // 且下游全量通道（每日 cron、离线脚本、admin helper）都没有这道闸。
+  // 退款通道刻意跳过它 —— 否则「档案漂移态（库里非会员客、无 became_member_at、
+  // 未绑员工）＋ 一笔部分退款」会让整笔退款审批被一句与退款无关的绑定文案拦死，
+  // 同时与 admin `recomputeCustomerTypeOnRefund`（无等价断言）形成两端行为漂移。
+  if (newType === '会员客' && !allowDowngrade) {
     const currentOrder = await client.query(
       `${RECALC_CUSTOMER_TYPE_CTE} SELECT EXISTS (
          SELECT 1 FROM order_amounts WHERE sale_order_id = $3 AND non_trial >= $2
