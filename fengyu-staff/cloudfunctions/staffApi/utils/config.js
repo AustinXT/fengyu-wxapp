@@ -88,7 +88,10 @@ async function getMemberThreshold() {
  */
 async function getMemberThresholdStrict(client) {
   const sql = "SELECT value FROM system_configs WHERE key = 'new_member_threshold'"
-  const rows = client ? await client.query(sql) : await pg.query(sql)
+  // 两条路径的返回形状不同：`pg.query` 已解包成行数组；事务客户端的 `client.query` 返回
+  // pg 的 QueryResult（行在 `.rows`）。统一成行数组再取值 —— 对 client 结果直接 rows[0]
+  // 会恒为 undefined，让退款通道把正常配置误判成「不可用」并静默跳过降档。
+  const rows = client ? (await client.query(sql)).rows : await pg.query(sql)
   const v = rows[0] ? Number(rows[0].value) : NaN
   if (!Number.isFinite(v) || v <= 0) {
     throw new Error(THRESHOLD_UNAVAILABLE_MSG)

@@ -696,7 +696,8 @@ describe('#545 顾客分类方向守护', () => {
   test('#545 退款通道显式放开降档：仅 staffApi 副本带 $3 布尔逃生口', () => {
     const staff = fs.readFileSync(STAFF_ORDER_JS, 'utf8')
     expect(staff).toContain('allowDowngrade = false')
-    expect(staff).toMatch(/OR \(\$3::boolean AND customer_type IS DISTINCT FROM \$2::customer_type\)/)
+    // 逃生口只放行降档分支，并排除甲方测试账号（与 admin helper / cron / 离线脚本同口径）
+    expect(staff).toMatch(/OR \(\$3::boolean AND customer_type IS DISTINCT FROM \$2::customer_type\s+AND name IS DISTINCT FROM '谢廷\(测试\)'\)/)
     // 会员客早退必须被 allowDowngrade 豁免，否则退款后永远降不下去
     expect(staff).toContain("if (!allowDowngrade && cur.rows[0]?.customer_type === '会员客') return")
     for (const [label, file] of RUNTIME_FILES.filter(

@@ -453,7 +453,7 @@ async function main() {
     log(`member_level 初始化分布（会员客 ∩ old_level=NULL）:`)
     let totalLevel = 0
     for (const r of levels.rows) {
-      log(`  ${r.new_level || 'NULL（非会员客，跳过）'}: ${r.cnt}`)
+      log(`  ${r.new_level}: ${r.cnt}`)
       totalLevel += r.cnt
     }
     log(`  合计待 UPDATE member_level: ${totalLevel} 行`)

@@ -52,7 +52,7 @@ related: ["arch/013"]
 - `staffApi/routes/order.js` 的 `approveRefund`：恢复 `recalcCustomerType(..., true)`。
 - `fengyu-admin/src/actions/refunds.ts`：新增 `recomputeCustomerTypeOnRefund(tx, userId)`。
 
-两处的 UPDATE 都追加 `OR (<allowDowngrade>::boolean AND customer_type IS DISTINCT FROM <new>)`，但**只有这两个降档入口带逃生口**：另外三条收款实时副本（clientApi / payNotify / admin orders.ts）的 UPDATE 里不得出现 `allowDowngrade`，由守护测试反向断言。
+两处的 UPDATE 都带降档逃生口，但**写法各异**：staffApi 是 `… < (CASE $2 …) OR ($3::boolean AND customer_type IS DISTINCT FROM $2 AND name IS DISTINCT FROM '谢廷(测试)')`；admin 因 `customer_type IS DISTINCT FROM <new>` 已在外层 AND 中，逃生口只是 `(rank < rank OR <allowDowngrade>::boolean)`。**只有这两个降档入口带逃生口**：另外三条收款实时副本（clientApi / payNotify / admin orders.ts）的 UPDATE 里不得出现 `allowDowngrade`，由守护测试反向断言。
 
 ⚠️ 措辞澄清：五处运行时副本的逐字镜像范围是**金额 CTE / `SELECT CASE … computed_type` / 升档归因 UPDATE 三段**，UPDATE 的 WHERE 子句本来就不在这三段里（各端写法不同：native pg 用 `$2`、Drizzle 用插值）。所以「五处逐字一致」是对那三段成立，不要读成「整个 recalcCustomerType 逐字一致」。
 

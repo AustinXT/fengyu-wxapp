@@ -766,7 +766,10 @@ async function recalcCustomerType(client, clientUserId, saleOrderId, allowDowngr
             WHEN '小美客' THEN 2 WHEN '会员客' THEN 3
           END)
          -- #545：默认只升不降；仅退款审批通道（$3=true）允许降到计算档位。
-         OR ($3::boolean AND customer_type IS DISTINCT FROM $2::customer_type)
+         -- 降档分支排除甲方测试账号（与 admin helper / cron / 离线脚本同口径）；
+         -- 升级分支不加，保持与 clientApi / payNotify 副本的实时 UPDATE 一致。
+         OR ($3::boolean AND customer_type IS DISTINCT FROM $2::customer_type
+             AND name IS DISTINCT FROM '谢廷(测试)')
        )
      RETURNING customer_type`,
     [clientUserId, newType, allowDowngrade === true]
@@ -7817,5 +7820,6 @@ Object.defineProperty(module.exports, '__testables__', {
     resolveCustomerOrderMarketScope,
     buildCustomerOrderMarketScopeFilter,
     pickupAmountSnapshot,
+    recalcCustomerType,
   },
 })
