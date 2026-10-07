@@ -246,7 +246,12 @@ async function recomputeCustomerTypeForUser(
     threshold = await getCustomerTypeThreshold(tx)
   } catch (error) {
     if (!(error instanceof Error) || error.message !== CUSTOMER_TYPE_THRESHOLD_UNAVAILABLE) throw error
-    // 配置无效不做分类写入；保留原审核可用性，待修正配置后每日重算补齐。
+    // 配置无效不做分类写入；保留原审核可用性。
+    // ⚠️ 本函数同时服务两条通道，「事后补齐」只对其中一条成立：
+    //   · 历史审核（allowDowngrade=false，只升）：修正配置后每日 cron 会补上漏掉的升级；
+    //   · 退款（allowDowngrade=true，降档）：#545 起 cron 只升不降，**不会**补上漏掉的降档，
+    //     漏降的顾客会保留会员客身份直到下一次退款事件。取舍是「漏降优于错降」，
+    //     配置不可用是不该发生的态，靠本 warn + cron 的阈值告警暴露。
     console.warn('[customer-tags] skipped classification: invalid member threshold')
     return null
   }
