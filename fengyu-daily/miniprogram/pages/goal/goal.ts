@@ -1,3 +1,4 @@
+import { decodeRouteId } from '../../utils/route';
 import { callApi, showError, today, Employee } from '../../utils/cloud'
 import { login } from '../../utils/workspace'
 interface Period {
@@ -55,6 +56,7 @@ const parseAmount = (raw: string): number | null => {
 }
 Page({
   data: {
+    routeInvalid: false,
     scope: 'personal',
     scopeId: '',
     title: '我的经营目标',
@@ -111,15 +113,18 @@ Page({
     ready: false,
   },
   onLoad(options: Record<string, string | undefined>) {
+    const routeId = decodeRouteId(options.scopeId);
+    if (routeId === null) { this.setData({ routeInvalid: true }); return; }
     this.setData({
       scope: ['personal', 'store', 'market'].includes(options.scope || '')
         ? options.scope!
         : 'personal',
-      scopeId: options.scopeId || '',
+      scopeId: routeId,
     })
     void this.initialize()
   },
   async initialize() {
+    if (this.data.routeInvalid) return;
     this.setData({ loading: true })
     try {
       const { user } = await login()
@@ -162,6 +167,7 @@ Page({
     }
   },
   async load() {
+    if (this.data.routeInvalid) return;
     this.setData({ ready: false })
     const result = await callApi<Result>('target.read', {
       scope: this.data.scope,

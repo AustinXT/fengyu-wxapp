@@ -134,3 +134,13 @@ UI 自动化通过开发者工具，临时模拟接口返回；不替代真实�
 ### 日报独立调试环境（2026-10-04）
 
 日报开发版已切换到独立8151数据库；本地后台运行 `npm --prefix fengyu-admin run dev:daily`，访问 http://localhost:3010。共用dev后台和5433库不改。完整操作、候选迁移状态、备份及验收限制见 [独立调试说明](../docs/handoff/daily-isolated-debug.md)。
+
+### 在现有开发数据库服务上补跑数据库回归
+
+```bash
+node scripts/test-daily-dev.mjs
+```
+
+入口使用 `envs/daily.env` 的固定日报开发连接和现有 `lx-test` SSH访问。在同一PostgreSQL服务上创建随机命名临时库，仅复制当前开发库结构，运行三组真实数据库测试，最后删除临时库。需要本机 `psql` 和服务器 `daily_owner` 的建库权限；不会向已有日报开发库写入测试员工或订单。
+
+未配置 `DAILY_TEST_DATABASE_URL` 的普通 `npm test` 仍会跳过这三项；请用上述专项命令补跑。不要将普通开发/生产业务库连接串直接作为测试库传入。

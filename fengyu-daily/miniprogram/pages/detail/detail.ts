@@ -1,12 +1,15 @@
+import { decodeRouteId } from '../../utils/route';
 import { callApi, showError, Report, Business } from "../../utils/cloud";
 Page({
-  data: { id: '', date: '', report: null as Report | null, entries: [] as Business[],
+  data: { routeInvalid: false, id: '', date: '', report: null as Report | null, entries: [] as Business[],
     loading: false, own: false, canEdit: false, submittedLabel: '' },
   onLoad(options: Record<string, string | undefined>) {
-    this.setData({ id: options.id || '', date: options.date || '' }); void this.load();
+    const routeId = decodeRouteId(options.id);
+    if (routeId === null) { this.setData({ routeInvalid: true }); return; }
+    this.setData({ id: routeId, date: options.date || '' }); void this.load();
   },
   async load() {
-    if (this.data.loading) return;
+    if (this.data.loading || this.data.routeInvalid) return;
     this.setData({ loading: true });
     try {
       const data = await callApi<{ report: Report; entries: Business[]; own: boolean; canEdit: boolean }>(

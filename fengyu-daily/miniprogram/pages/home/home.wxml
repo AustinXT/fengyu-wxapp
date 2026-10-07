@@ -22,6 +22,6 @@
     <view wx:if="{{historyLoading && !recent.length}}" class="card empty">读取最近日报…</view>
     <view wx:elif="{{historyError}}" class="card empty" bindtap="retry">历史记录读取失败，点击重试</view>
     <view wx:elif="{{!recent.length}}" class="card empty">暂无日报记录，开始记录今天吧。</view>
-    <view wx:for="{{recent}}" wx:key="id" class="card row" data-date="{{item.report_date}}" bindtap="openRecent"><view><view class="title">{{item.report_date}} 日报</view><view class="muted">{{item.status==='submitted'?'已提交日总结':'继续填写日总结'}}</view></view><view class="tag {{item.status==='submitted'?'ok':'warn'}}">{{item.status==='submitted'?'已提交':'草稿'}} ›</view></view>
+    <view wx:for="{{recent}}" wx:key="id" class="card row" data-date="{{item.report_date}}" data-id="{{item.id}}" data-status="{{item.status}}" bindtap="openRecent"><view><view class="title">{{item.report_date}} 日报</view><view class="muted">{{item.status==='submitted'?'已提交日报':'继续填写日报'}}</view></view><view class="tag {{item.status==='submitted'?'ok':'warn'}}">{{item.status==='submitted'?'已提交':'草稿'}} ›</view></view>
   </block>
 </view>

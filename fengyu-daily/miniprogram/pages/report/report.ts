@@ -1,5 +1,7 @@
 import { callApi, showError, today, Editor, Business, MetricSnapshot } from "../../utils/cloud";
 Page({
+  _loadGeneration: 0,
+  _contactsRequest: 0,
   data: {
     editing: false,
     date: today(),
@@ -18,6 +20,8 @@ Page({
     ready: false,
     metrics: null as MetricSnapshot | null,
     contacts: [] as { employee_id: string; name: string; position_name?: string | null }[],
+    contactsLoading: false,
+    contactsError: false,
     mentorIndex: 0,
     peerIndex: 0,
     mentorId: '',
@@ -33,26 +37,28 @@ Page({
   },
   onLoad(options: Record<string, string | undefined>) {
     this.setData({ date: options.date || today(), editing: options.edit === "1" });
-    wx.setNavigationBarTitle({ title: options.edit === "1" ? "修改今日日报" : "填写经营日报" });
+    wx.setNavigationBarTitle({ title: options.edit === "1" ? "修改今日日报" : "填写日报" });
     void this.load();
   },
   async load() {
     if (this.data.loading) return;
-    this.setData({ loading: true, ready: false });
+    const generation = ++this._loadGeneration;
+    const request = ++this._contactsRequest;
+    this.setData({ loading: true, ready: false, contactsLoading: true, contactsError: false, contacts: [] });
+    const contactsTask = this.fetchContacts();
     try {
       const data = await callApi<Editor>("report.read", {
         date: this.data.date,
         workspace: wx.getStorageSync('dailyWorkspace'),
       });
+      if (generation !== this._loadGeneration) return;
       const r = data.report;
       if (r?.status === 'submitted' && (!this.data.editing || data.readOnly)) {
+        ++this._contactsRequest;
+        this.setData({ contactsLoading: false });
         wx.redirectTo({ url: '/pages/detail/detail?id=' + encodeURIComponent(r.id) }); return;
       }
-      const choices = data.readOnly ? [] : (await callApi<{ contacts: { employee_id: string; name: string }[] }>('contacts.list')).contacts;
-      const contacts = [{ employee_id: '', name: '不选择' }, ...choices];
       const mentorId = r?.mentor_employee_id || '', peerId = r?.peer_employee_id || '';
-      const mentorIndex = Math.max(0, contacts.findIndex((p) => p.employee_id === mentorId));
-      const peerIndex = Math.max(0, contacts.findIndex((p) => p.employee_id === peerId));
       this.setData({
         entries: data.entries,
         action: r?.action || "",
@@ -66,23 +72,62 @@ Page({
         sourceDate: this.data.date,
         selectingBusiness: false,
         metrics: data.metrics || null,
-        contacts, mentorId, peerId, mentorIndex, peerIndex,
-        mentorName: data.metrics?.guidance?.mentor?.name || (mentorIndex ? contacts[mentorIndex].name : '请选择指导员'),
-        peerName: data.metrics?.guidance?.peer?.name || (peerIndex ? contacts[peerIndex].name : '请选择同事'),
+        mentorId, peerId, mentorIndex: 0, peerIndex: 0,
+        mentorName: data.metrics?.guidance?.mentor?.name || r?.metric_snapshot?.guidance?.mentor?.name ||
+          (mentorId ? (mentorId === this.data.mentorId ? this.data.mentorName : '已选择指导员') : '请选择指导员'),
+        peerName: data.metrics?.guidance?.peer?.name || r?.metric_snapshot?.guidance?.peer?.name ||
+          (peerId ? (peerId === this.data.peerId ? this.data.peerName : '已选择同事') : '请选择同事'),
+      });
+      void contactsTask.then((result) => {
+        if (generation !== this._loadGeneration || request !== this._contactsRequest) return;
+        this.setContactChoices(result.contacts, result.error);
       });
       wx.disableAlertBeforeUnload();
     } catch (e) {
-      showError(e);
+      if (generation === this._loadGeneration) {
+        ++this._contactsRequest;
+        this.setData({ contactsLoading: false });
+        showError(e);
+      }
     } finally {
-      this.setData({ loading: false });
+      if (generation === this._loadGeneration) this.setData({ loading: false });
     }
+  },
+  onUnload() {
+    ++this._loadGeneration;
+    ++this._contactsRequest;
+  },
+  async fetchContacts() {
+    try {
+      const data = await callApi<{ contacts: { employee_id: string; name: string }[] }>('contacts.list');
+      return { contacts: data.contacts, error: false };
+    } catch (_) {
+      return { contacts: [], error: true };
+    }
+  },
+  setContactChoices(choices: { employee_id: string; name: string }[], error: boolean) {
+    if (error) { this.setData({ contactsLoading: false, contactsError: true }); return; }
+    const contacts = [{ employee_id: '', name: '不选择' }, ...choices];
+    const mentorIndex = Math.max(0, contacts.findIndex((p) => p.employee_id === this.data.mentorId));
+    const peerIndex = Math.max(0, contacts.findIndex((p) => p.employee_id === this.data.peerId));
+    this.setData({ contacts, mentorIndex, peerIndex, contactsLoading: false, contactsError: false,
+      mentorName: mentorIndex ? contacts[mentorIndex].name : this.data.mentorName,
+      peerName: peerIndex ? contacts[peerIndex].name : this.data.peerName });
+  },
+  async retryContacts() {
+    if (!this.data.ready || this.data.contactsLoading || this.data.readOnly) return;
+    const generation = this._loadGeneration, request = ++this._contactsRequest;
+    this.setData({ contactsLoading: true, contactsError: false });
+    const result = await this.fetchContacts();
+    if (generation !== this._loadGeneration || request !== this._contactsRequest) return;
+    this.setContactChoices(result.contacts, result.error);
   },
   markDirty() {
     this.setData({ dirty: true });
     wx.enableAlertBeforeUnload({ message: "日报尚未保存，确定离开吗？" });
   },
   chooseContact(e: WechatMiniprogram.CustomEvent<{ value: string }>) {
-    if (this.data.readOnly || this.data.submitting || this.data.copying) return;
+    if (this.data.readOnly || this.data.submitting || this.data.copying || this.data.contactsLoading || this.data.contactsError) return;
     const index = Number(e.detail.value), contact = this.data.contacts[index];
     if (!contact) return;
     if (e.currentTarget.dataset.kind === 'mentor') this.setData({ mentorIndex: index, mentorId: contact.employee_id, mentorName: index ? contact.name : '请选择指导员' });
@@ -217,8 +262,10 @@ Page({
         title: submit ? "日报已提交" : "草稿已保存",
         icon: "success",
       });
-      if (submit)
+      if (submit) {
+        ++this._contactsRequest;
         wx.redirectTo({ url: "/pages/detail/detail?date=" + this.data.date });
+      }
     } catch (e) {
       showError(e);
     } finally {
@@ -226,7 +273,7 @@ Page({
     }
   },
   cancelEdit() {
-    const leave = () => { wx.disableAlertBeforeUnload(); wx.redirectTo({ url: '/pages/detail/detail?date=' + this.data.date }); };
+    const leave = () => { ++this._contactsRequest; wx.disableAlertBeforeUnload(); wx.redirectTo({ url: '/pages/detail/detail?date=' + this.data.date }); };
     if (this.data.dirty) wx.showModal({ title: '取消修改', content: '放弃本次未提交的修改？', success: (r) => { if (r.confirm) leave(); } });
     else leave();
   },

@@ -1,13 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
-const url = process.env.DAILY_TEST_DATABASE_URL;
-if (url) {
-  const parsed = new URL(url);
-  if (!['127.0.0.1', 'localhost'].includes(parsed.hostname) || parsed.pathname !== '/test')
-    throw Error('Only localhost/test is allowed');
-  process.env.PG_CONNECTION_STRING = url;
-}
+const url = require('./test-database').testDatabase();
 const pg = require('../db/pg');
 const target = require('../routes/target');
 const validation = require('../utils/validation');

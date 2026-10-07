@@ -91,7 +91,7 @@ async function write(ctx, month) {
       }
       const amounts = validateMonth(payload, scope.scope);
       [row] = await query(`INSERT INTO daily_operating_targets(period_id,scope,scope_id,sales,consumption,penalty,month_confirmed,weeks)
-        VALUES($1,$2,$3,$4,$5,$6,true,$7::jsonb)
+        VALUES($1,$2,$3,$4,$5,$6,true,COALESCE($7::jsonb,'{}'::jsonb))
         ON CONFLICT(period_id,scope,scope_id) DO UPDATE SET sales=EXCLUDED.sales,consumption=EXCLUDED.consumption,
           penalty=EXCLUDED.penalty,month_confirmed=true,weeks=CASE WHEN $7::jsonb IS NULL THEN daily_operating_targets.weeks ELSE EXCLUDED.weeks END,
           version=daily_operating_targets.version+1,updated_at=NOW()

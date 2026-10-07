@@ -1,3 +1,4 @@
+import { decodeRouteId } from '../../utils/route';
 import { callApi, showError, today, Employee, Management } from "../../utils/cloud";
 interface Submission {
   id: string;
@@ -7,6 +8,7 @@ interface Submission {
 }
 Page({
   data: {
+    routeInvalid: false,
     date: today(),
     period: "today",
     range: null as Management["range"] | null,
@@ -22,13 +24,15 @@ Page({
     selectedStoreId: "",
   },
   onLoad(options: Record<string, string | undefined>) {
-    this.setData({ selectedStoreId: options.storeId || "", period: ["today", "week", "month"].includes(options.period || "") ? options.period! : "today" });
+    const routeId = decodeRouteId(options.storeId);
+    if (routeId === null) { this.setData({ routeInvalid: true }); return; }
+    this.setData({ selectedStoreId: routeId, period: ["today", "week", "month"].includes(options.period || "") ? options.period! : "today" });
   },
   onShow() {
     void this.load();
   },
   async load() {
-    if (this.data.loading) return;
+    if (this.data.loading || this.data.routeInvalid) return;
     this.setData({ loading: true, ready: false });
     try {
       const data = await callApi<{

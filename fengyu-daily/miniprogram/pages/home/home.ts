@@ -82,7 +82,7 @@ Page({
         const statusTask = callApi<{ status: 'submitted' | 'draft' | null }>('report.status', { date: this.data.date })
           .then(({ status }) => this.setData({
             status: status === 'submitted' ? '已提交' : status ? '草稿' : '未填写',
-            button: status === 'submitted' ? '查看今日日总结' : status ? '继续填写' : '填写今日日总结',
+            button: status === 'submitted' ? '查看今日日报' : status ? '继续填写' : '填写今日日报',
           }))
           .catch(() => this.setData({ statusError: true }))
           .finally(() => this.setData({ statusLoading: false }));
@@ -140,7 +140,8 @@ Page({
     }
   },
   report() {
-    wx.navigateTo({ url: "/pages/report/report?date=" + this.data.date });
+    if (this.data.statusLoading || this.data.statusError) return;
+    wx.navigateTo({ url: (this.data.status === "已提交" ? "/pages/detail/detail?date=" : "/pages/report/report?date=") + this.data.date });
   },
   inputTestCode(e: WechatMiniprogram.CustomEvent<{ value: string }>) {
     this.setData({ testCode: e.detail.value.trim().toLowerCase() });
@@ -190,7 +191,9 @@ Page({
   },
   openRecent(e: WechatMiniprogram.CustomEvent) {
     wx.navigateTo({
-      url: "/pages/report/report?date=" + e.currentTarget.dataset.date,
+      url: e.currentTarget.dataset.status === "submitted"
+        ? "/pages/detail/detail?id=" + encodeURIComponent(e.currentTarget.dataset.id)
+        : "/pages/report/report?date=" + e.currentTarget.dataset.date,
     });
   },
   openMarket(e: WechatMiniprogram.CustomEvent) {

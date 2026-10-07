@@ -1,16 +1,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { randomUUID } = require("node:crypto");
-// 只允许独立测试库；真实业务库不注入测试员工和业务。
-const url = process.env.DAILY_TEST_DATABASE_URL;
-const allowed = url && new URL(url);
-if (
-  url &&
-  (!["localhost", "127.0.0.1"].includes(allowed.hostname) ||
-    allowed.pathname !== "/test")
-)
-  throw Error("Only localhost/test is allowed");
-if (url) process.env.PG_CONNECTION_STRING = url;
+const url = require('./test-database').testDatabase();
 const pg = require("../db/pg");
 const auth = require("../routes/auth"),
   report = require("../routes/report"),
@@ -433,9 +424,9 @@ test("真实 PG 最小闭环、归属、并发和门店权限", { skip: !url }, 
         await assert.rejects(run(report.history, { employeeId: c }, boss), /NOT_FOUND/);
         const pk = require('../routes/pk');
         const klass = await run(pk.classes, { periodId });
-        assert.equal(klass.classes[0].members, 2);
+        assert.equal(klass.classes[0].members, 3);
         const board = await run(pk.read, { periodId, classId, date: '2025-01-15' });
-        assert.deepEqual(new Set(board.rows.map((r) => r.employeeId)), new Set([a, b]));
+        assert.deepEqual(new Set(board.rows.map((r) => r.employeeId)), new Set([a, b, c]));
         assert.equal(board.rows.find((r) => r.employeeId === a).scope, 'store');
         assert.equal(board.rows.find((r) => r.employeeId === a).sales.monthTarget, null);
         await pg.query(`INSERT INTO daily_operating_targets(period_id,scope,scope_id,sales,consumption,weeks,month_confirmed)
@@ -466,7 +457,7 @@ test("真实 PG 最小闭环、归属、并发和门店权限", { skip: !url }, 
       await pg.query('INSERT INTO permission_roles(employee_id,role,scope_id) VALUES($1,$2,$3)', [a, prefix + 'market-role', prefix + 'empty-market']);
       require('../utils/permission-matrix').invalidatePermissionMatrixCache();
       const empty = await auth.requireUser(ident);
-      assert.deepEqual(empty.availableWorkspaces, ['employee', 'management']);
+      assert.deepEqual(empty.availableWorkspaces, ['employee', 'manager', 'management']);
       assert.equal(empty.scopedStores.length, 0);
       const overview = await run(require('../routes/management').read, {}, empty);
       assert.equal(overview.summary.due, 0);

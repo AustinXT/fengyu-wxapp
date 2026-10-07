@@ -11,6 +11,7 @@ async function roster(query, auth) {
         AND r.scope_id IN (SELECT id FROM lineage))) ORDER BY u.name,u.employee_id`, [storeIds, auth.employeeId]);
 }
 async function validate(query, auth, mentorId, peerId) {
+  if (!mentorId && !peerId) return { mentor: null, peer: null };
   const rows = await roster(query, auth);
   const byId = new Map(rows.map((row) => [row.employee_id, row]));
   for (const id of [mentorId, peerId]) if (id && !byId.has(id)) throw Error('PERMISSION_DENIED: 指导员或同事不在可选择范围');

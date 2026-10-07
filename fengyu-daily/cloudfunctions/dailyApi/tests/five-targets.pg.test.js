@@ -1,6 +1,5 @@
 const test=require('node:test'),assert=require('node:assert/strict'),{randomUUID}=require('node:crypto');
-const url=process.env.DAILY_TEST_DATABASE_URL;
-if(url){const u=new URL(url);if(!['localhost','127.0.0.1'].includes(u.hostname)||u.pathname!='/test')throw Error('Only localhost/test is allowed');process.env.PG_CONNECTION_STRING=url;}
+const url=require('./test-database').testDatabase();
 const pg=require('../db/pg'),target=require('../routes/target'),validation=require('../utils/validation');
 test('五项目标零值、旧金额锁定、补充确认、周余额及旧请求兼容', {skip:!url},async()=>{
  const id='five-'+randomUUID().slice(0,10),real=Date.now,now='1999-01-01',date=n=>new Date(Date.parse(now+'T12:00:00Z')+n*86400000).toISOString().slice(0,10);

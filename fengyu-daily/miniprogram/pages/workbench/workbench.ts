@@ -194,7 +194,7 @@ Page({
     void this.load();
   },
   open(e: WechatMiniprogram.CustomEvent) {
-    if (e.currentTarget.dataset.date)
+    if (e.currentTarget.dataset.date && e.currentTarget.dataset.status !== "submitted")
       wx.navigateTo({
         url: "/pages/report/report?date=" + e.currentTarget.dataset.date,
       });

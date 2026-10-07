@@ -109,6 +109,7 @@ const automator = require("miniprogram-automator");
           break;
         case "manager.list":
           data = {
+            stores: user.scopedStores, storeId: "UI-STORE",
             date,
             reports: [
               {
