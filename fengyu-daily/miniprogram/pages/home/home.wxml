@@ -17,6 +17,7 @@
   <block wx:else>
     <view class="card today-card"><view class="today-summary"><view class="today-title">我的日报</view><view class="muted">{{date}} · {{user.name}} · {{user.storeName || '尚未分配门店'}}</view></view><view wx:if="{{statusError}}" class="muted" bindtap="retry">状态读取失败，点击重试</view><view class="row"><view class="title">今日状态</view><view class="tag {{status==='已提交'?'ok':status==='草稿'?'warn':'danger'}}">{{statusLoading ? '读取中…' : statusError ? '读取失败' : status}}</view></view><button class="primary" bindtap="report">{{button}}</button></view>
     <view wx:if="{{showGoalEntry}}" class="card goal-entry"><view class="row"><view><view class="title">{{goalTitle}}</view><view class="muted">{{goalLoading ? '读取目标中…' : goalError ? '目标读取失败，点击重试' : goalPeriod}}</view></view><button class="goal-entry-action" bindtap="goal">{{goalLoading ? '读取中…' : goalError ? '重试' : goalLabel}} ›</button></view><view class="goal-pk" bindtap="pk">经营指标 PK ›<view class="muted">查看班级、业绩榜和消耗榜</view></view></view>
+    <view wx:if="{{!showGoalEntry}}" class="card row" bindtap="pk"><view><view class="title">经营指标 PK</view><view class="muted">查看班级、业绩榜和消耗榜</view></view><text class="link">查看榜单 ›</text></view>
     <view class="section-head row"><view class="section">我的最近日报</view><view class="link" bindtap="history">历史记录 ›</view></view>
     <view wx:if="{{historyLoading && !recent.length}}" class="card empty">读取最近日报…</view>
     <view wx:elif="{{historyError}}" class="card empty" bindtap="retry">历史记录读取失败，点击重试</view>

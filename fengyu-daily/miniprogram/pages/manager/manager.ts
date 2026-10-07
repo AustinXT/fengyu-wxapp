@@ -31,31 +31,20 @@ Page({
     if (this.data.loading) return;
     this.setData({ loading: true, ready: false });
     try {
-      const { user } = await callApi<{ user: Employee | null }>("auth.login");
-      const stores = user?.availableWorkspaces.includes("management")
-        ? user.scopedStores
-        : user?.managerStores || [];
-      if (!stores.length) throw new Error("您没有门店日报查看权限");
-      this.setData({
-        stores,
-        storeIndex: this.data.selectedStoreId
-          ? Math.max(
-              0,
-              stores.findIndex((s) => s.store_id === this.data.selectedStoreId),
-            )
-          : Math.min(this.data.storeIndex, stores.length - 1),
-        selectedStoreId: "",
-      });
       const data = await callApi<{
+        stores: Employee["managerStores"]; storeId: string;
         reports: Submission[];
         range: Management["range"]; summary: Management["summary"]; employees: Management["employees"];
         unsubmitted: { employee_id: string; name: string }[];
       }>("manager.list", {
         date: this.data.date,
         period: this.data.period,
-        storeId: stores[this.data.storeIndex].store_id,
+        storeId: this.data.selectedStoreId || this.data.stores[this.data.storeIndex]?.store_id,
       });
-      this.setData({ ...data, ready: true });
+      const { stores, storeId, ...overview } = data;
+      this.setData({ ...overview, stores,
+        storeIndex: Math.max(0, stores.findIndex((store) => store.store_id === storeId)),
+        selectedStoreId: "", ready: true });
     } catch (e) {
       showError(e);
     } finally {

@@ -51,7 +51,7 @@ Page({
       const isStoreManager = (user?.managerStores || []).length > 0;
       this.setData({ user, workspace,
         showGoalEntry: (workspace === 'manager' && isStoreManager) ||
-          (workspace === 'employee' && !isStoreManager && user?.staffLevel === 'store_staff'),
+          (workspace === 'employee' && !isStoreManager),
       });
       syncTabs(this, workspace, 0);
       if (user) {

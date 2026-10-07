@@ -3,21 +3,31 @@ const { resolve } = require('./period');
 const target = require('./target');
 const { rankRows } = require('../utils/pk-rules');
 const { visibleStores } = require('../utils/operating-visibility');
+const jitDisabledQuery = require('../utils/query-with-jit-disabled');
 async function classes(ctx) {
   const { period } = await resolve(pg.query, ctx.event.payload, ctx.auth);
   const allowed = await visibleStores(ctx.auth, pg);
   let rows = [];
   if (period) {
-    const { directory, participantObjects } = require('../utils/operating-objects');
-    const dir = await directory(pg.query, allowed);
-    const assignments = await pg.query('SELECT * FROM daily_pk_stores WHERE period_id=$1 AND store_id=ANY($2::text[]) ORDER BY store_id', [period.id, allowed]);
-    const participants = participantObjects(dir, assignments);
-    rows = await pg.query(`SELECT c.id,c.name,count(DISTINCT ps.store_id)::int AS stores
-      FROM daily_pk_classes c JOIN daily_pk_stores ps ON ps.class_id=c.id AND ps.period_id=c.period_id
-      WHERE c.period_id=$1 AND ps.store_id=ANY($2::text[]) GROUP BY c.id,c.name ORDER BY c.name`, [period.id, allowed]);
-    rows = rows.map(row => ({...row, members: participants.filter(p => p.classId === row.id).length}));
+    // 组织授权只决定可进入的班级；进入后统一读取该班全部参与门店。
+    rows = await pg.query(`SELECT c.id,c.name FROM daily_pk_classes c
+      WHERE c.period_id=$1 AND EXISTS(SELECT 1 FROM daily_pk_stores ps
+        WHERE ps.class_id=c.id AND ps.period_id=c.period_id AND ps.store_id=ANY($2::text[]))
+      ORDER BY c.name,c.id`, [period.id, allowed]);
+    if (rows.length) {
+      const { directory, participantObjects } = require('../utils/operating-objects');
+      const assignments = await pg.query(`SELECT * FROM daily_pk_stores
+        WHERE period_id=$1 AND class_id=ANY($2::text[]) ORDER BY store_id`, [period.id, rows.map(row => row.id)]);
+      const classStores = [...new Set(assignments.map(row => row.store_id))];
+      const dir = await directory(pg.query, classStores);
+      const participants = participantObjects(dir, assignments);
+      rows = rows.map(row => ({ ...row,
+        stores: assignments.filter(a => a.class_id === row.id).length,
+        members: participants.filter(p => p.classId === row.id).length,
+      }));
+    }
   }
-  ctx.result = { period, classes: rows, scopeLabel: allowed.length ? '人数及排名仅统计您有权限查看的门店' : '尚未分配门店或 PK 归属，请联系管理员' };
+  ctx.result = { period, classes: rows, scopeLabel: allowed.length ? '同一班级统一展示全部参与人员及排名' : '尚未分配门店或 PK 归属，请联系管理员' };
 }
 async function read(ctx) {
   const { date, period, week } = await resolve(pg.query, ctx.event.payload, ctx.auth);
@@ -34,13 +44,14 @@ async function read(ctx) {
   const { directory, participantObjects } = require('../utils/operating-objects');
   const { series, marketNewCustomers } = require('../utils/operating-series');
   const { buildRows } = require('../utils/operating-rows');
-  const dir = await directory(pg.query, allowedStores);
-  const assignments = await pg.query('SELECT * FROM daily_pk_stores WHERE period_id=$1 AND store_id=ANY($2::text[]) ORDER BY store_id', [period.id,allowedStores]);
+  const assignments = await pg.query('SELECT * FROM daily_pk_stores WHERE period_id=$1 AND class_id=$2 ORDER BY store_id', [period.id,classId]);
+  const classStores = [...new Set(assignments.map(row => row.store_id))];
+  const dir = await directory(pg.query, classStores);
   const people = participantObjects(dir, assignments).filter(p=>p.classId===classId);
   const cutoff = date < period.end ? date : period.end;
   const targets = await pg.query('SELECT * FROM daily_operating_targets WHERE period_id=$1', [period.id]);
-  const events = await series(pg.query,{storeIds:allowedStores,employeeIds:people.map(p=>p.employeeId),start:period.start,end:cutoff});
-  const firstVisits = await marketNewCustomers(pg.query,allowedStores,period.start,cutoff);
+  const events = await series(jitDisabledQuery.query,{storeIds:classStores,employeeIds:people.map(p=>p.employeeId),start:period.start,end:cutoff});
+  const firstVisits = await marketNewCustomers(jitDisabledQuery.query,classStores,period.start,cutoff);
   for (const marketId of dir.fullMarkets) {
     const dates = [...new Set(events.filter(e=>e.scope==='store'&&dir.stores.find(s=>s.id===e.id)?.market_id===marketId).map(e=>e.date))];
     for(const day of dates) {
@@ -52,6 +63,6 @@ async function read(ctx) {
   }
   const rows = buildRows(people,events,targets,period,active,cutoff,target.expand).map(r=>({...r,...r.values}));
   const metric = ctx.event.payload?.metric || 'sales';
-  ctx.result = { period, week: active, class: klass, metric, rows: rankRows(rows, metric), scopeLabel: '排名仅统计授权门店' };
+  ctx.result = { period, week: active, class: klass, metric, rows: rankRows(rows, metric), scopeLabel: '同一班级统一展示全部参与人员及排名' };
 }
 module.exports = { classes, read };

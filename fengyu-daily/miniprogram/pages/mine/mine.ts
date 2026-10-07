@@ -32,7 +32,11 @@ Page({
             : workspace === "manager"
               ? "店长"
               : "员工",
-        scopeLabel: scopeLabels.join("、") || "本人日报",
+        scopeLabel: workspace === "employee"
+          ? "本人日报"
+          : workspace === "manager"
+            ? (user?.managerWorkspaceStores || user?.managerStores || []).map((store) => store.store_name).join("、") || "暂无授权门店"
+            : scopeLabels.join("、") || "暂无授权范围",
       });
       syncTabs(this, workspace, 2);
     } catch (e) {
@@ -56,8 +60,5 @@ Page({
         wx.switchTab({ url: "/pages/home/home" });
       },
     });
-  },
-  history() {
-    wx.navigateTo({ url: "/pages/history/history" });
   },
 });

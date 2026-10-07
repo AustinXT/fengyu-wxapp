@@ -11,7 +11,8 @@ function assertStore(ctx, storeId) {
     throw new Error("PERMISSION_DENIED: 无权查看该门店日报");
 }
 async function list(ctx) {
-  const storeId = ctx.event.payload?.storeId;
+  const stores = reportStores(ctx.auth);
+  const storeId = ctx.event.payload?.storeId || stores[0]?.store_id;
   assertStore(ctx, storeId);
   const range = await submissions.range(pg.query, ctx.event.payload, ctx.auth), date = range.date;
   // 草稿内容、版本、是否存在均不向店长暴露。
@@ -22,6 +23,8 @@ async function list(ctx) {
   );
   const employees = await submissions.people(pg.query, [storeId], range);
   ctx.result = {
+    stores,
+    storeId,
     date,
     range,
     reports,

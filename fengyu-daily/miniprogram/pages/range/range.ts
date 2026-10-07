@@ -2,7 +2,14 @@ import { callApi, showError, today, Management } from '../../utils/cloud';
 Page({
   data: { nodeId: '', period: 'today', title: '范围日报', loading: false, overview: null as Management | null },
   onLoad(options: Record<string, string | undefined>) {
-    this.setData({ nodeId: options.nodeId || '', period: ['today', 'week', 'month'].includes(options.period || '') ? options.period! : 'today' });
+    let nodeId = '';
+    try {
+      nodeId = decodeURIComponent(options.nodeId || '');
+    } catch (e) {
+      showError(new Error('组织范围参数无效，请返回后重新进入'));
+      return;
+    }
+    this.setData({ nodeId, period: ['today', 'week', 'month'].includes(options.period || '') ? options.period! : 'today' });
     void this.load();
   },
   async load() {
