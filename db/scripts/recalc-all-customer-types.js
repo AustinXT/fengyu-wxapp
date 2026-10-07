@@ -376,6 +376,12 @@ UPDATE client_wechat_users u
 const SELFCHECK_SQL = `
 SELECT
   (SELECT COUNT(*) FROM client_wechat_users WHERE customer_type = '会员客' AND became_member_at IS NULL AND name IS DISTINCT FROM '谢廷(测试)')::int AS member_no_became,
+  -- 其中「可修复却没修上」的子集：_recalc_target 里有首次达标时间、入会时间却仍为空。
+  -- 理论上 UPDATE_BECAME_SQL 之后恒为 0；只有它才构成 CLI 的硬失败。其余（无任何达标订单的
+  -- 人工会员 / WorkFine 历史档案）无从补齐 —— #545 起单调门会把这类人保留为会员客
+  -- （#257 时代会被降级、不会触发本自检），不能因此回滚整批补算。
+  (SELECT COUNT(*) FROM client_wechat_users u JOIN _recalc_target t ON t.user_id = u.user_id
+     WHERE u.customer_type = '会员客' AND u.became_member_at IS NULL AND t.first_qualified_at IS NOT NULL)::int AS member_no_became_fixable,
   -- #545：会员客等级下限为初钻，重算后不应再有会员客缺失等级。
   (SELECT COUNT(*) FROM client_wechat_users WHERE customer_type = '会员客' AND member_level IS NULL AND name IS DISTINCT FROM '谢廷(测试)')::int AS member_no_level,
   (SELECT COUNT(*) FROM client_wechat_users WHERE customer_type != '会员客' AND member_level IS NOT NULL)::int AS nonmember_with_level
@@ -480,10 +486,13 @@ async function main() {
     log(`  UPDATE became_member_at: ${r3.rowCount} 行`)
 
     const check = await client.query(SELFCHECK_SQL)
-    const { member_no_became, member_no_level, nonmember_with_level } = check.rows[0]
-    log(`自检: 会员客∧became=NULL=${member_no_became}; 会员客∧level=NULL=${member_no_level}; 非会员客∧member_level≠NULL=${nonmember_with_level}`)
-    if (Number(member_no_became) > 0) {
-      log('✗ 自检失败：仍有会员客缺失 became_member_at（不应发生）')
+    const { member_no_became, member_no_became_fixable, member_no_level, nonmember_with_level } = check.rows[0]
+    log(`自检: 会员客∧became=NULL=${member_no_became}（其中可修复未修=${member_no_became_fixable}）; 会员客∧level=NULL=${member_no_level}; 非会员客∧member_level≠NULL=${nonmember_with_level}`)
+    if (Number(member_no_became) > Number(member_no_became_fixable)) {
+      log(`⚠ ${Number(member_no_became) - Number(member_no_became_fixable)} 位会员客无任何达标订单、无从补齐入会时间（人工会员/历史档案，已保留会员客），不阻断补算，请核查`)
+    }
+    if (Number(member_no_became_fixable) > 0) {
+      log('✗ 自检失败：仍有可修复的会员客缺失 became_member_at（不应发生）')
       await client.query('ROLLBACK')
       process.exitCode = 1
       return

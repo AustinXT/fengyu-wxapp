@@ -41,7 +41,9 @@ test('历史分类：真实SQL、离线只升不降与历史保留、幂等、�
       CREATE TEMP TABLE sale_payment_item_receipts (sale_payment_id bigint, sale_order_id text, sale_item_id text, amount numeric);
       INSERT INTO client_wechat_users(user_id, customer_type, member_level, became_member_at) VALUES
         ('member','流量客',NULL,NULL), ('small','流量客',NULL,NULL), ('trial','流量客',NULL,NULL),
-        ('nullpaid','流量客',NULL,NULL), ('empty','流量客',NULL,NULL), ('keep','会员客','金钻','2020-01-01T00:00:00Z');
+        ('nullpaid','流量客',NULL,NULL), ('empty','流量客',NULL,NULL), ('keep','会员客','金钻','2020-01-01T00:00:00Z'),
+        -- 人工会员：无任何订单、无入会时间。#545 单调门把他保留为会员客；自检不得因此回滚整批。
+        ('manual','会员客',NULL,NULL);
       INSERT INTO sale_orders VALUES
         ('m','member', now()-interval '2 months', now()-interval '2 months','已完成','销售单',4000,0),
         ('s','small',now(),now(),'已支付','销售单',100,0),
@@ -50,7 +52,7 @@ test('历史分类：真实SQL、离线只升不降与历史保留、幂等、�
         ('ignored','empty',now(),now(),'待支付','销售单',9000,0);
       INSERT INTO sale_items VALUES ('t','ti',100,100,true,'购买');
     `)
-    assert.deepEqual(await recalcCustomerTypesInTransaction(db), { typeCount: 4, levelCount: 2, becameCount: 2, selfCheck: { member_no_became: 0, member_no_level: 0, nonmember_with_level: 0 } })
+    assert.deepEqual(await recalcCustomerTypesInTransaction(db), { typeCount: 4, levelCount: 3, becameCount: 2, selfCheck: { member_no_became: 1, member_no_became_fixable: 0, member_no_level: 0, nonmember_with_level: 0 } })
     const first = (await db.query('SELECT * FROM client_wechat_users ORDER BY user_id')).rows
     const member = first.find(r => r.user_id === 'member')
     assert.equal(member.customer_type, '会员客')
@@ -69,12 +71,16 @@ test('历史分类：真实SQL、离线只升不降与历史保留、幂等、�
     assert.equal(first.find(r => r.user_id === 'empty').updated_at.toISOString(), '2020-01-01T00:00:00.000Z')
     // #545（推翻 #257）：离线分类只升不降——现会员客不因计算档位更低而降档，
     // 历史等级/入会时间原样保留。
+    const manual = first.find(r => r.user_id === 'manual')
+    assert.equal(manual.customer_type, '会员客') // 单调门：无达标订单也不降档
+    assert.equal(manual.member_level, '初钻') // 会员客等级下限
+    assert.equal(manual.became_member_at, null) // 无从补齐，保持空而不是伪造
     const keep = first.find(r => r.user_id === 'keep')
     assert.equal(keep.customer_type, '会员客')
     assert.equal(keep.member_level, '金钻')
     assert.equal(keep.became_member_at.toISOString(), '2020-01-01T00:00:00.000Z')
     await db.query('DROP TABLE _recalc_target')
-    assert.deepEqual(await recalcCustomerTypesInTransaction(db), { typeCount: 0, levelCount: 0, becameCount: 0, selfCheck: { member_no_became: 0, member_no_level: 0, nonmember_with_level: 0 } })
+    assert.deepEqual(await recalcCustomerTypesInTransaction(db), { typeCount: 0, levelCount: 0, becameCount: 0, selfCheck: { member_no_became: 1, member_no_became_fixable: 0, member_no_level: 0, nonmember_with_level: 0 } })
     assert.deepEqual((await db.query('SELECT * FROM client_wechat_users ORDER BY user_id')).rows, first)
     await db.query('ROLLBACK')
   } finally {
