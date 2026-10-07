@@ -11,6 +11,7 @@ import {
   Gift,
   Grid3x3,
   HandCoins,
+  BookOpenText,
   History,
   Landmark,
   LayoutDashboard,
@@ -41,6 +42,9 @@ import {
   Coins,
   Building2,
   Factory,
+  MapPinned,
+  ClipboardPenLine,
+  Swords,
   type LucideIcon,
 } from 'lucide-react'
 import type { AuthSession } from './types'
@@ -98,7 +102,16 @@ const DATA_CENTER_REPORT_ICONS: Record<DataCenterReportKey, LucideIcon> = {
   remainingCards: ListChecks,
   operatingMaster: FileSpreadsheet,
   commissionDaily: HandCoins,
+  dailyReportSummary: BookOpenText,
   commissionDetail: HandCoins,
+}
+
+const OPERATING_REPORT_ICONS: Record<string, LucideIcon> = {
+  '/data-center/operating-progress': UserRound,
+  '/data-center/operating-store-progress': Store,
+  '/data-center/operating-region-progress': MapPinned,
+  '/data-center/operating-targets': ClipboardPenLine,
+  '/data-center/operating-pk': Swords,
 }
 
 /**
@@ -110,7 +123,9 @@ function dataCenterReportMenuItems(): MenuItem[] {
   return [...DATA_CENTER_REPORT_LIST, ...OPERATING_REPORTS].sort((a,b)=>DATA_CENTER_MENU_SECTIONS.indexOf(a.menu?.section||'经营明细')-DATA_CENTER_MENU_SECTIONS.indexOf(b.menu?.section||'经营明细')).flatMap((report) => report.menu
     ? [{
         label: report.title,
-        icon: 'key' in report ? DATA_CENTER_REPORT_ICONS[report.key as DataCenterReportKey] : ChartNoAxesCombined,
+        icon: 'key' in report
+          ? DATA_CENTER_REPORT_ICONS[report.key as DataCenterReportKey]
+          : OPERATING_REPORT_ICONS[report.path] ?? ChartNoAxesCombined,
         href: report.path,
         requiredActions: [DATA_CENTER_DASHBOARD_ACTION],
         requiredAllActions: [...report.requiredActions],

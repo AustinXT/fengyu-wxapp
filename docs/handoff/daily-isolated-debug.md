@@ -26,6 +26,10 @@
 
 正式迁移仍待集中集成，前置 PR #523 未自动合并；独立库采用候选结构并不表示共用 dev 已升级。将来正式迁移衔接需要先核对独立库候选状态，避免重复添加列。
 
+## 经营周期模板候选结构
+
+2026-10-05：备份日报库到 `/www/wwwroot/fengyu-daily-db/backups/daily-20261005T134826Z.dump` 后，以 `daily_owner` 在 `fengyu_daily_dev` 事务执行 `db/rollout/requests/daily-cycle-templates.sql`。SHA-256 `f54f3e70cd3014a65bb1834016566dd21a685c39e18272086bde6ab3f63d6225`。回读确认三张新表、`daily_operating_periods` 四个新增字段及应用账号周期查询可用；未修改 Drizzle journal。正式迁移仍待集中集成，生成/执行前必须核对该候选结构并避免重复 DDL。
+
 ## 2026-10-04 核验
 
 - 初始源库约299MB，压缩备份18,782,357字节；恢复后440条库存单据、1条经营周期、1条目标。

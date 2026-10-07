@@ -5,13 +5,13 @@ test('总部只读授权不能代填市场；只能填写本人管理市场及�
  const query=async()=>[{id:'m1'}];
  await assert.rejects(targetScope({...base,roleBindings:[{scopeType:'总部',scopeId:'hq',actions:['data_center:dashboard']}]},{scope:'market',scopeId:'m1'},query),/PERMISSION_DENIED/);
  const director={...base,roleBindings:[{scopeType:'市场',scopeId:'m1',actions:['data_center:dashboard']}]};
- assert.deepEqual(await targetScope(director,{scope:'market',scopeId:'m1'},query),{scope:'market',scopeId:'m1'});
+ assert.deepEqual(await targetScope(director,{scope:'market',scopeId:'m1'},query),{scope:'market',scopeId:'m1',regionId:'m1',storeId:null});
  await assert.rejects(targetScope(director,{scope:'market',scopeId:'m2'},query),/PERMISSION_DENIED/);
  await assert.rejects(targetScope(base,{scope:'store',scopeId:'s2'},query),/PERMISSION_DENIED/);
  await assert.rejects(targetScope(base,{scope:'personal',scopeId:'other'},query),/PERMISSION_DENIED/);
  const storeManager={...base,employeeId:'manager',roleBindings:[{isStoreManager:true,scopeType:'门店',scopeId:'s1'}]};
  await assert.rejects(targetScope(storeManager,{scope:'personal'},query),/店长无需设置个人经营目标/);
- assert.deepEqual(await targetScope(storeManager,{scope:'store',scopeId:'s1'},query),{scope:'store',scopeId:'s1'});
+ assert.deepEqual(await targetScope(storeManager,{scope:'store',scopeId:'s1'},query),{scope:'store',scopeId:'s1',regionId:'m1',storeId:'s1'});
  const employee={...base,managerStores:[],roleBindings:[]};
- assert.deepEqual(await targetScope(employee,{scope:'personal'},query),{scope:'personal',scopeId:'self'});
+ assert.deepEqual(await targetScope(employee,{scope:'personal'},query),{scope:'personal',scopeId:'self',regionId:null,storeId:null});
 });

@@ -22,7 +22,12 @@ interface SidebarProps {
 export function Sidebar({ collapsed, onToggle, session }: SidebarProps) {
   const pathname = usePathname()
   const rootRef = useRef<HTMLElement>(null)
-  const primaryRole = session.roles[0]
+  const primaryRole = session.roles.find((role) => role.isSuperAdmin) ?? session.roles[0]
+  const primaryRoleLabel = primaryRole?.isSuperAdmin
+    ? '系统管理员'
+    : primaryRole
+      ? getRoleLabel(primaryRole.role, primaryRole.roleName)
+      : '未分配角色'
   const menuNodes = getVisibleMenuItems(session)
   const activeHref = useMemo(() => getMenuItemForPath(menuNodes, pathname)?.href ?? null, [menuNodes, pathname])
   const activeParentLabel = useMemo(
@@ -208,7 +213,7 @@ export function Sidebar({ collapsed, onToggle, session }: SidebarProps) {
         <div className="border-t border-[var(--border)] px-4 py-3">
           <div className="truncate text-sm font-medium text-[var(--foreground)]">{session.name}</div>
           <div className="truncate text-xs text-[#999999]">
-            {primaryRole ? getRoleLabel(primaryRole.role, primaryRole.roleName) : '未分配角色'}
+            {primaryRoleLabel}
           </div>
         </div>
       )}

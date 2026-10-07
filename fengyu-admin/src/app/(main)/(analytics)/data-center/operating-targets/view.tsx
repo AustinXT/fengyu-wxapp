@@ -4,7 +4,10 @@ import Link from 'next/link'
 import { toast } from 'sonner'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
 import { actionErrorMessage } from '@/lib/action-error'
+import { cents, count, distributeByDays } from '@/lib/operating/operating-target'
+import { ReportInfoBar } from '../_components/report/report-info-bar'
 import {
   getOwnOperatingTarget,
   saveOwnOperatingTarget,
@@ -37,10 +40,15 @@ function values(data: Data, week = false) {
     ]),
   ) as Record<Metric, string>
 }
+function planValues(data: Data) {
+  return Object.fromEntries((data.period?.weeks || []).map((w) => [w.id, Object.fromEntries(specs.map((s) => [s.key, display(data.target?.weeks[w.id]?.[s.key], s.key)]))])) as Record<string, Record<Metric, string>>
+}
 export function TargetEntry({ initial }: { initial: Data }) {
   const [data, setData] = useState(initial),
     [month, setMonth] = useState(values(initial)),
     [week, setWeek] = useState(values(initial, true)),
+    [weekPlan, setWeekPlan] = useState(planValues(initial)),
+    [weekPlanTouched, setWeekPlanTouched] = useState(false),
     [penalty, setPenalty] = useState(initial.target?.penalty || ''),
     [busy, setBusy] = useState(false)
   const today = new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10),
@@ -53,6 +61,7 @@ export function TargetEntry({ initial }: { initial: Data }) {
     periodId?: string
     scope?: string
     scopeId?: string
+    regionId?: string | null
   }) {
     setBusy(true)
     try {
@@ -60,6 +69,8 @@ export function TargetEntry({ initial }: { initial: Data }) {
       setData(result)
       setMonth(values(result))
       setWeek(values(result, true))
+      setWeekPlan(planValues(result))
+      setWeekPlanTouched(false)
       setPenalty(result.target?.penalty || '')
     } catch (e) {
       toast.error(actionErrorMessage(e, '读取目标失败'))
@@ -68,7 +79,7 @@ export function TargetEntry({ initial }: { initial: Data }) {
     }
   }
   async function save(kind: 'month' | 'week') {
-    if (!data.period || !editable || busy) return
+    if (!data.period || !data.scope || !editable || busy) return
     if (
       kind === 'month' &&
       !window.confirm('确认后本月目标不可修改，是否确认？')
@@ -83,17 +94,22 @@ export function TargetEntry({ initial }: { initial: Data }) {
         version: data.target?.version || 0,
         scope: data.scope.scope,
         scopeId: data.scope.scopeId,
+        regionId: data.scope.regionId,
         ...(kind === 'month' ? month : week),
+        ...(kind === 'month' && weekPlanTouched ? { weekPlan } : {}),
         penalty,
       })
       const result = await getOwnOperatingTarget({
         periodId: data.period.id,
         scope: data.scope.scope,
         scopeId: data.scope.scopeId,
+        regionId: data.scope.regionId,
       })
       setData(result)
       setMonth(values(result))
       setWeek(values(result, true))
+      setWeekPlan(planValues(result))
+      setWeekPlanTouched(false)
       toast.success('目标已保存')
     } catch (e) {
       toast.error(actionErrorMessage(e, '保存失败'))
@@ -101,7 +117,7 @@ export function TargetEntry({ initial }: { initial: Data }) {
       setBusy(false)
     }
   }
-  const field = 'h-10 w-full rounded-md border border-[var(--border)] bg-white px-3'
+  const field = 'h-10 w-full rounded-md border border-[var(--border)] bg-white px-3 text-sm text-[var(--foreground)]'
   const fixed = (key: Metric) =>
     (confirmed && (key === 'sales' || key === 'consumption')) ||
     (countsConfirmed &&
@@ -113,17 +129,34 @@ export function TargetEntry({ initial }: { initial: Data }) {
           Number(raw[s.key]) >= (confirmed ? 0 : 0.01)
         : /^\d+$/.test(raw[s.key]) && Number(raw[s.key]) <= 2147483647,
     )
+  function autoDistribute() {
+    if (!data.period) return
+    const days = data.period.weeks.map((w) => Math.round((Date.parse(w.end + 'T12:00:00Z') - Date.parse(w.start + 'T12:00:00Z')) / 86400000) + 1)
+    const next = { ...weekPlan }
+    for (const s of specs) {
+      const raw = month[s.key]
+      if (!raw || !/^\d+(\.\d{1,2})?$/.test(raw)) continue
+      let total: number
+      try { total = s.key === 'sales' || s.key === 'consumption' ? cents(raw) : count(raw) } catch { return }
+      distributeByDays(total, days).forEach((amount, i) => {
+        const w = data.period!.weeks[i]
+        next[w.id] = { ...next[w.id], [s.key]: s.key === 'sales' || s.key === 'consumption' ? (amount / 100).toFixed(2) : String(amount) }
+      })
+    }
+    setWeekPlan(next)
+    setWeekPlanTouched(true)
+  }
   return (
-    <main className="space-y-5 p-6">
-      <div className="flex justify-between">
-        <h1 className="text-2xl font-semibold">经营目标填报</h1>
-        <Link className="text-[#C0322A]" href="/data-center/operating-progress">
-          查看目标进度
+    <div className="flex flex-col gap-4">
+      <div className="flex items-center justify-between">
+        <h1 className="text-xl font-semibold text-[var(--foreground)]">经营目标填报</h1>
+        <Link className="rounded-md border border-[var(--border)] bg-white px-3 py-2 text-sm text-[var(--foreground)] hover:border-[var(--primary)] hover:text-[var(--primary)]" href="/data-center/operating-progress">
+          查看美容师进度
         </Link>
       </div>
       <fieldset
         disabled={busy}
-        className="flex flex-wrap gap-3 rounded-xl border border-[var(--border)] bg-white p-4"
+        className="flex flex-wrap gap-3 rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--card)] p-4"
       >
         <select
           aria-label="经营月"
@@ -132,8 +165,7 @@ export function TargetEntry({ initial }: { initial: Data }) {
           onChange={(e) =>
             void reload({
               periodId: e.target.value,
-              scope: data.scope.scope,
-              scopeId: data.scope.scopeId,
+              ...(data.scope ? { scope: data.scope.scope, scopeId: data.scope.scopeId } : {}),
             })
           }
         >
@@ -145,21 +177,23 @@ export function TargetEntry({ initial }: { initial: Data }) {
           ))}
         </select>
         <select
-          aria-label="本人目标范围"
+          aria-label="目标填报对象"
           className="h-10 rounded-md border border-[var(--border)] px-3"
-          value={data.scope.scope + ':' + data.scope.scopeId}
+          value={data.scope ? data.scope.scope + ':' + data.scope.scopeId : ''}
           onChange={(e) => {
             const s = data.scopes.find(
               (s) => s.scope + ':' + s.scopeId === e.target.value,
             )
             if (s)
               void reload({
-                periodId: data.period?.id,
+                periodId: s.regionId === data.scope?.regionId ? data.period?.id : undefined,
                 scope: s.scope,
                 scopeId: s.scopeId,
+                regionId: s.regionId,
               })
           }}
         >
+          {!data.scope && <option value="">请选择填报对象</option>}
           {data.scopes.map((s) => (
             <option
               key={s.scope + ':' + s.scopeId}
@@ -170,17 +204,21 @@ export function TargetEntry({ initial }: { initial: Data }) {
           ))}
         </select>
       </fieldset>
-      {!data.period ? (
-        <p className="rounded-xl border border-[var(--border)] bg-white p-8">
+      <ReportInfoBar items={[
+        { label: '填报对象', value: data.scope?.name || '请选择门店或员工' },
+        { label: '经营月', value: data.period ? `${data.period.name}（${data.period.start} 至 ${data.period.end}）${!editable ? ' · 历史或未来月份仅可查看' : ''}` : '尚未配置经营周期' },
+      ]} />
+      {!data.scope ? (
+        <Card className="p-8 text-sm text-[var(--muted-foreground)]">
+          请选择一个具体门店或员工，再查看或填写该对象的经营目标。
+        </Card>
+      ) : !data.period ? (
+        <Card className="p-8 text-sm text-[var(--muted-foreground)]">
           尚未配置经营周期，请联系管理员。
-        </p>
+        </Card>
       ) : (
         <>
-          <p className="text-sm text-gray-500">
-            {data.period.start} 至 {data.period.end}
-            {!editable ? ' · 历史或未来经营月仅可查看' : ''}
-          </p>
-          <section className="space-y-4 rounded-xl border border-[var(--border)] bg-white p-5">
+          <Card className="space-y-4 p-5">
             <div className="flex justify-between">
               <h2 className="text-lg font-semibold">本经营月目标</h2>
               <span>
@@ -216,6 +254,10 @@ export function TargetEntry({ initial }: { initial: Data }) {
                 </label>
               ))}
             </div>
+            {(!confirmed || !countsConfirmed) && editable && <div className="space-y-3 rounded-lg bg-[#F8F9FB] p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2"><div><h3 className="font-medium">按周分摊</h3><p className="text-xs text-gray-500">按经营周天数分配，第四周自动补足；可手动调整前三周。</p></div><Button type="button" variant="outline" onClick={autoDistribute}>按经营天数自动分摊</Button></div>
+              <div className="overflow-x-auto"><table className="w-full min-w-[720px] text-sm"><thead><tr><th className="p-2 text-left">经营周</th>{specs.map((s) => <th key={s.key} className="p-2 text-right">{s.label}</th>)}</tr></thead><tbody>{data.period.weeks.map((w, i) => <tr key={w.id} className="border-t"><td className="p-2">{w.name} · {w.start}—{w.end}</td>{specs.map((s) => { const raw = weekPlan[w.id]?.[s.key] || ''; const total = s.key === 'sales' || s.key === 'consumption' ? Math.round(Number(month[s.key] || 0) * 100) : Number(month[s.key] || 0); const used = data.period!.weeks.slice(0, i).reduce((n, prev) => { const v = weekPlan[prev.id]?.[s.key] || '0'; return n + (s.key === 'sales' || s.key === 'consumption' ? Math.round(Number(v) * 100) : Number(v)) }, 0); const balance = Math.max(0, total - used); return <td key={s.key} className="p-2 text-right">{i < 3 ? <Input aria-label={`${w.name}${s.label}分摊`} type="number" min="0" step={s.key === 'sales' || s.key === 'consumption' ? '0.01' : '1'} value={raw} onChange={(e) => { setWeekPlan({ ...weekPlan, [w.id]: { ...weekPlan[w.id], [s.key]: e.target.value } }); setWeekPlanTouched(true) }}/>: <span>{s.key === 'sales' || s.key === 'consumption' ? (balance / 100).toFixed(2) : String(balance)}</span>}</td> })}</tr>)}</tbody></table></div>
+            </div>}
             {data.scope.scope === 'personal' && (
               <label className="block space-y-2 text-sm">
                 <span>本月负激励</span>
@@ -240,9 +282,9 @@ export function TargetEntry({ initial }: { initial: Data }) {
                 {confirmed ? '补充确认三项月目标' : '确认本月五项目标'}
               </Button>
             )}
-          </section>
+          </Card>
           {confirmed && data.week && (
-            <section className="space-y-4 rounded-xl border border-[var(--border)] bg-white p-5">
+            <Card className="space-y-4 p-5">
               <h2 className="text-lg font-semibold">{data.week.name}目标</h2>
               <p className="text-sm text-gray-500">
                 {data.week.start} 至 {data.week.end}
@@ -286,10 +328,10 @@ export function TargetEntry({ initial }: { initial: Data }) {
                   )}
                 </>
               )}
-            </section>
+            </Card>
           )}
           {confirmed && (
-            <section className="overflow-auto rounded-xl border border-[var(--border)] bg-white p-5">
+            <Card className="overflow-auto p-5">
               <h2 className="mb-4 text-lg font-semibold">四周目标安排</h2>
               <table className="w-full whitespace-nowrap text-sm">
                 <thead>
@@ -323,10 +365,10 @@ export function TargetEntry({ initial }: { initial: Data }) {
                   ))}
                 </tbody>
               </table>
-            </section>
+            </Card>
           )}
         </>
       )}
-    </main>
+    </div>
   )
 }

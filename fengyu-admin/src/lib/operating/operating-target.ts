@@ -12,6 +12,19 @@ export function cents(value: any, positive: any = false) {
   return amount
 }
 
+export function distributeByDays(total: number, days: number[]) {
+  if (!Number.isSafeInteger(total) || total < 0 || days.length !== 4 || days.some((day) => !Number.isSafeInteger(day) || day <= 0))
+    throw Error('INVALID_PARAMS: 无效的目标分摊参数')
+  const totalDays = days.reduce((sum, day) => sum + BigInt(day), BigInt(0))
+  const totalValue = BigInt(total)
+  let used = BigInt(0)
+  return days.map((day, index) => {
+    const value = index === days.length - 1 ? totalValue - used : totalValue * BigInt(day) / totalDays
+    used += value
+    return Number(value)
+  })
+}
+
 export function validateMonth(input: any, scope: any) {
   if (!['personal', 'store', 'market'].includes(scope))
     throw Error('INVALID_PARAMS: 无效目标范围')

@@ -217,7 +217,7 @@ async function history(ctx) {
     FROM staff_wechat_users u LEFT JOIN stores s ON s.store_id=u.store_id
     WHERE u.employee_id=$1 AND ($2::boolean OR u.store_id=ANY($3::text[]))`, [employeeId, own, storeIds]);
   if (!employee) throw Error('NOT_FOUND: 员工不存在或无权查看');
-  const resolved = payload.periodId ? await require('./period').resolve(pg.query, payload) : null;
+  const resolved = payload.periodId ? await require('./period').resolve(pg.query, payload, ctx.auth) : null;
   if (payload.periodId && !resolved.period) throw Error('NOT_FOUND: 经营周期不存在');
   const period = resolved?.period;
   const end = period ? (period.end < v.today() ? period.end : v.today()) : v.today();

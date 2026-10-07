@@ -1,4 +1,4 @@
 import { TablePageSkeleton } from '@/components/ui/page-skeleton'
 export default function Loading() {
-  return <TablePageSkeleton title="美容师目标进度表" />
+  return <TablePageSkeleton title="区域目标进度表" />
 }

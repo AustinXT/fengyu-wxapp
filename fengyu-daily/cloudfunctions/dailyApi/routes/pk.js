@@ -4,7 +4,7 @@ const target = require('./target');
 const { rankRows } = require('../utils/pk-rules');
 const { visibleStores } = require('../utils/operating-visibility');
 async function classes(ctx) {
-  const { period } = await resolve(pg.query, ctx.event.payload);
+  const { period } = await resolve(pg.query, ctx.event.payload, ctx.auth);
   const allowed = await visibleStores(ctx.auth, pg);
   let rows = [];
   if (period) {
@@ -20,7 +20,7 @@ async function classes(ctx) {
   ctx.result = { period, classes: rows, scopeLabel: allowed.length ? '人数及排名仅统计您有权限查看的门店' : '尚未分配门店或 PK 归属，请联系管理员' };
 }
 async function read(ctx) {
-  const { date, period, week } = await resolve(pg.query, ctx.event.payload);
+  const { date, period, week } = await resolve(pg.query, ctx.event.payload, ctx.auth);
   if (!period) throw Error('NOT_FOUND: 经营周期不存在');
   const active = week || [...period.weeks].reverse().find((w) => w.start <= date);
   if (!active) throw Error('INVALID_STATE: 经营月尚未开始');

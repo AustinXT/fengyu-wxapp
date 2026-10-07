@@ -79,6 +79,13 @@ export const DATA_CENTER_REPORTS = {
     requiredActions: DATA_CENTER_STAFF_COMMISSION_ACTIONS,
     menu: { section: '员工收入', enabled: true },
   },
+  dailyReportSummary: {
+    path: '/data-center/daily-report-summary',
+    title: '员工日报内容汇总',
+    periodKind: 'none',
+    requiredActions: [DATA_CENTER_DASHBOARD_ACTION],
+    menu: { section: '经营明细', enabled: true },
+  },
   commissionDetail: {
     path: '/data-center/commission-daily/detail',
     title: '提成明细',
@@ -96,7 +103,15 @@ export const DATA_CENTER_REPORT_LIST: ReadonlyArray<DataCenterReport & { key: Da
 /** 经营目标业务页面使用目标周期与填写权限，不使用通用经营明细日期筛选。 */
 export const OPERATING_REPORTS: DataCenterReport[] = [
   {
-    path: '/data-center/operating-progress', title: '经营目标进度', periodKind: 'month',
+    path: '/data-center/operating-progress', title: '美容师目标进度表', periodKind: 'month',
+    requiredActions: [DATA_CENTER_DASHBOARD_ACTION], menu: { section: '经营明细', enabled: true },
+  },
+  {
+    path: '/data-center/operating-store-progress', title: '门店目标进度表', periodKind: 'month',
+    requiredActions: [DATA_CENTER_DASHBOARD_ACTION], menu: { section: '经营明细', enabled: true },
+  },
+  {
+    path: '/data-center/operating-region-progress', title: '区域目标进度表', periodKind: 'month',
     requiredActions: [DATA_CENTER_DASHBOARD_ACTION], menu: { section: '经营明细', enabled: true },
   },
   {

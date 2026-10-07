@@ -13,7 +13,7 @@ function assertStore(ctx, storeId) {
 async function list(ctx) {
   const storeId = ctx.event.payload?.storeId;
   assertStore(ctx, storeId);
-  const range = await submissions.range(pg.query, ctx.event.payload), date = range.date;
+  const range = await submissions.range(pg.query, ctx.event.payload, ctx.auth), date = range.date;
   // 草稿内容、版本、是否存在均不向店长暴露。
   const reports = await pg.query(
     `SELECT r.id,r.employee_id,r.employee_name,r.report_date,r.submitted_at

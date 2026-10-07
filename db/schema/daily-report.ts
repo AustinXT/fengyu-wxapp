@@ -16,7 +16,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { staffWechatUsers } from "./user";
-import { stores } from "./org";
+import { orgNodes, stores } from "./org";
 
 // 微信身份按 AppID 隔离；不覆盖员工端的 OPENID。
 export const dailyWechatBindings = pgTable(
@@ -87,18 +87,63 @@ const auditColumns = () => ({
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+export const dailyOperatingPeriodTemplates = pgTable('daily_operating_period_templates', {
+  id: text('id').primaryKey(),
+  regionId: text('region_id').references(() => orgNodes.id, { onDelete: 'cascade' }),
+  name: varchar('name', { length: 60 }).notNull(),
+  pattern: jsonb('pattern').notNull(),
+  version: integer('version').notNull().default(1),
+  ...auditColumns(),
+}, (t) => [
+  check('chk_daily_period_template_version', sql`${t.version} > 0`),
+  uniqueIndex('uq_daily_period_template_global').on(t.name).where(sql`${t.regionId} IS NULL`),
+  uniqueIndex('uq_daily_period_template_region').on(t.regionId).where(sql`${t.regionId} IS NOT NULL`),
+]);
+
+export const dailyOperatingPeriodOverrides = pgTable('daily_operating_period_overrides', {
+  id: text('id').primaryKey(),
+  templateId: text('template_id').notNull().references(() => dailyOperatingPeriodTemplates.id, { onDelete: 'cascade' }),
+  regionId: text('region_id').references(() => orgNodes.id, { onDelete: 'cascade' }),
+  monthKey: varchar('month_key', { length: 7 }).notNull(),
+  pattern: jsonb('pattern').notNull(),
+  createdBy: text('created_by').notNull().default(''),
+  ...auditColumns(),
+}, (t) => [
+  uniqueIndex('uq_daily_period_override_global').on(t.templateId, t.monthKey).where(sql`${t.regionId} IS NULL`),
+  uniqueIndex('uq_daily_period_override_region').on(t.templateId, t.monthKey, t.regionId).where(sql`${t.regionId} IS NOT NULL`),
+  check('chk_daily_period_override_month', sql`${t.monthKey} ~ '^\\d{4}-(0[1-9]|1[0-2])$'`),
+]);
+
 export const dailyOperatingPeriods = pgTable('daily_operating_periods', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
   startDate: date('start_date').notNull(),
   endDate: date('end_date').notNull(),
   weeks: jsonb('weeks').notNull(),
+  regionId: text('region_id').references(() => orgNodes.id),
+  monthKey: varchar('month_key', { length: 7 }),
+  templateId: text('template_id').references(() => dailyOperatingPeriodTemplates.id, { onDelete: 'set null' }),
+  templateSource: text('template_source').notNull().default('legacy'),
   version: integer('version').notNull().default(1),
   ...auditColumns(),
 }, (t) => [
   check('chk_daily_period_dates', sql`${t.startDate} <= ${t.endDate}`),
   check('chk_daily_period_weeks', sql`jsonb_typeof(${t.weeks}) = 'array' AND jsonb_array_length(${t.weeks}) = 4`),
   check('chk_daily_period_version', sql`${t.version} > 0`),
+  check('chk_daily_period_template_source', sql`${t.templateSource} IN ('legacy','global-template','region-template','month-override','manual')`),
+  check('chk_daily_period_month_key', sql`${t.monthKey} IS NULL OR ${t.monthKey} ~ '^\\d{4}-(0[1-9]|1[0-2])$'`),
+  uniqueIndex('uq_daily_period_region_month').on(t.regionId, t.monthKey).where(sql`${t.regionId} IS NOT NULL AND ${t.monthKey} IS NOT NULL`),
+  uniqueIndex('uq_daily_period_global_month').on(t.monthKey).where(sql`${t.regionId} IS NULL AND ${t.monthKey} IS NOT NULL`),
+  index('ix_daily_period_region_dates').on(t.regionId, t.startDate, t.endDate),
+]);
+
+export const dailyOperatingPeriodStores = pgTable('daily_operating_period_stores', {
+  periodId: text('period_id').notNull().references(() => dailyOperatingPeriods.id, { onDelete: 'cascade' }),
+  storeId: text('store_id').notNull().references(() => stores.storeId),
+  ...auditColumns(),
+}, (t) => [
+  primaryKey({ columns: [t.periodId, t.storeId] }),
+  index('ix_daily_period_store_store').on(t.storeId, t.periodId),
 ]);
 
 export const dailyOperatingTargets = pgTable('daily_operating_targets', {

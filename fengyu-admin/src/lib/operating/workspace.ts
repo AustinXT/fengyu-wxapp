@@ -55,18 +55,32 @@ export const query = queryWith(db)
 export async function resolve(
   query: Query,
   payload: { periodId?: string; date?: string } = {},
+  regionId: string | null = null,
+  storeId: string | null = null,
 ) {
   const date = payload.date || today()
   const rows = payload.periodId
-    ? await query('SELECT * FROM daily_operating_periods WHERE id=$1', [
-        payload.periodId,
-      ])
+    ? await query(`SELECT * FROM daily_operating_periods p WHERE p.id=$1 AND (p.region_id IS NULL OR
+        ($3::text IS NOT NULL AND EXISTS(SELECT 1 FROM daily_operating_period_stores ps WHERE ps.period_id=p.id AND ps.store_id=$3)) OR
+        ($3::text IS NULL AND p.region_id=$2))`, [payload.periodId, regionId, storeId])
+    : storeId
+      ? await query(`SELECT p.* FROM daily_operating_periods p WHERE p.start_date<=$1 AND p.end_date>=$1
+        AND (p.region_id IS NULL OR EXISTS(SELECT 1 FROM daily_operating_period_stores ps WHERE ps.period_id=p.id AND ps.store_id=$3))
+        ORDER BY (p.region_id IS NOT NULL) DESC,p.start_date DESC`, [date, regionId, storeId])
     : await query(
-        'SELECT * FROM daily_operating_periods WHERE start_date<=$1 AND end_date>=$1',
-        [date],
+        `SELECT * FROM daily_operating_periods WHERE start_date<=$1 AND end_date>=$1
+        AND (region_id=$2 OR region_id IS NULL) ORDER BY (region_id=$2) DESC,start_date DESC`,
+        [date, regionId],
       )
-  if (rows.length > 1) throw Error('INVALID_STATE: 经营周期配置重叠')
-  const row = rows[0]
+  const preferredRows = storeId
+    ? rows.filter((row: any) => row.region_id !== null && row.region_id !== undefined).length
+      ? rows.filter((row: any) => row.region_id !== null && row.region_id !== undefined)
+      : rows.filter((row: any) => row.region_id == null)
+    : rows.some((row: any) => row.region_id === regionId)
+      ? rows.filter((row: any) => row.region_id === regionId)
+      : rows.filter((row: any) => row.region_id == null)
+  if (preferredRows.length > 1) throw Error('INVALID_STATE: 经营周期配置重叠')
+  const row = preferredRows[0]
   const period = row
     ? dailyPeriodInput.parse({
         id: row.id,
@@ -85,12 +99,12 @@ export async function resolve(
 }
 export interface Filters {
   periodId?: string
-  regionId?: string
   storeId?: string
   employeeId?: string
   classId?: string
   weekId?: string
   dimension?: 'personal' | 'store' | 'market'
+  regionId?: string
   metric?: Metric
 }
 export interface Value {
@@ -123,9 +137,20 @@ export async function workspace(
   pk = false,
   metadataOnly = false,
 ) {
+  const sessionMarket = session.roles.find((r) => r.scopeType === '市场')?.scopeId
+  const [selfStore] = session.employeeId ? await query('SELECT store_id FROM staff_wechat_users WHERE employee_id=$1 AND NOT is_resigned', [session.employeeId]) : []
+  const [market] = filters.regionId ? [{ market_id: filters.regionId }] : selfStore?.store_id ? await query(`WITH RECURSIVE a AS (
+    SELECT n.id,n.parent_id,n.type FROM stores s JOIN org_nodes n ON n.id=s.org_node_id WHERE s.store_id=$1
+    UNION ALL SELECT n.id,n.parent_id,n.type FROM org_nodes n JOIN a ON a.parent_id=n.id
+  ) SELECT id AS market_id FROM a WHERE type='市场' LIMIT 1`, [selfStore.store_id]) : []
+  const regionId = filters.regionId || sessionMarket || market?.market_id || null
+  const periodStoreId = filters.storeId || selfStore?.store_id || null
   const [{ period, week }, periods, all] = await Promise.all([
-    resolve(query, filters),
-    query('SELECT id,name FROM daily_operating_periods ORDER BY start_date DESC'),
+    resolve(query, filters, regionId, periodStoreId),
+    query(`SELECT id,name,region_id AS "regionId",month_key AS "monthKey" FROM daily_operating_periods p
+      WHERE p.region_id=$1 OR p.region_id IS NULL OR ($2::text IS NOT NULL AND EXISTS(
+        SELECT 1 FROM daily_operating_period_stores ps WHERE ps.period_id=p.id AND ps.store_id=$2
+      )) ORDER BY start_date DESC`, [regionId, periodStoreId]),
     query('SELECT store_id FROM stores'),
   ])
   const allowed =
@@ -146,6 +171,10 @@ export async function workspace(
     id,
     name: dir.stores.find((s: any) => s.market_id === id)?.area || id,
   }))
+  const periodStoreIds = filters.periodId
+    ? (await query('SELECT store_id AS "storeId" FROM daily_operating_period_stores WHERE period_id=$1', [filters.periodId])).map((row: any) => row.storeId)
+    : []
+  const hasRegionSnapshot = periodStoreIds.length > 0
   if (
     filters.regionId === undefined &&
     !isAdminScope(session) &&
@@ -154,19 +183,20 @@ export async function workspace(
     filters = { ...filters, regionId: regions[0]?.id }
   if (
     filters.regionId &&
-    !dir.stores.some((s: any) => s.market_id === filters.regionId)
+    !dir.stores.some((s: any) => s.market_id === filters.regionId) &&
+    !periodStoreIds.some((storeId: string) => allowed.includes(storeId))
   )
     throw Error('PERMISSION_DENIED: 无此区域查看权限')
   if (filters.storeId && !allowed.includes(filters.storeId))
     throw Error('PERMISSION_DENIED: 无此门店查看权限')
   const selectedStores = dir.stores.filter(
     (s: any) =>
-      (!filters.regionId || s.market_id === filters.regionId) &&
+      (!filters.regionId || (hasRegionSnapshot ? periodStoreIds.includes(s.id) : s.market_id === filters.regionId)) &&
       (!filters.storeId || s.id === filters.storeId),
   )
-  const ownScopes = [
-    { scope: 'personal', scopeId: session.employeeId, name: '我的目标' },
-  ]
+  const ownScopes: { scope: string; scopeId: string; name: string; regionId: string | null; storeId?: string; delegated?: boolean }[] = []
+  if (!session.roles.some((role) => role.isStoreManager))
+    ownScopes.push({ scope: 'personal', scopeId: session.employeeId, name: '我的目标', regionId: market?.market_id || sessionMarket || null, storeId: selfStore?.store_id || undefined })
   for (const role of session.roles) {
     if (role.isStoreManager)
       for (const store of dir.stores.filter(
@@ -180,6 +210,7 @@ export async function workspace(
             scope: 'store',
             scopeId: store.id,
             name: store.name,
+            regionId: store.market_id || null,
           })
     if (
       role.scopeType === '市场' &&
@@ -191,7 +222,23 @@ export async function workspace(
         scopeId: role.scopeId,
         name:
           regions.find((r: any) => r.id === role.scopeId)?.name || role.scopeId,
+        regionId: role.scopeId,
       })
+  }
+  const targetMarkets = new Set(session.roles.filter((r) => r.scopeType === '市场' && r.actions?.includes('data_center:dashboard')).map((r) => r.scopeId))
+  const canDelegateAll = (isAdminScope(session) || session.roles.some((r) => r.scopeType === '总部')) && session.permissions.actions.includes('data_center:dashboard')
+  const delegateStores = dir.stores.filter((s: any) => canDelegateAll || targetMarkets.has(s.market_id) || session.roles.some((r) => r.isStoreManager && (r.scopeStoreIds?.includes(s.id) || r.scopeId === s.org_node_id)))
+  if (delegateStores.length) {
+    for (const store of delegateStores) {
+      if (!ownScopes.some((s) => s.scope === 'store' && s.scopeId === store.id))
+        ownScopes.push({ scope: 'store', scopeId: store.id, name: `${store.name} · 门店目标`, regionId: store.market_id || null, storeId: store.id, delegated: true })
+    }
+    const employees = await query('SELECT employee_id AS "employeeId",name,store_id AS "storeId" FROM staff_wechat_users WHERE store_id=ANY($1::text[]) AND NOT is_resigned ORDER BY name', [delegateStores.map((s: any) => s.id)])
+    for (const employee of employees) {
+      const store = delegateStores.find((s: any) => s.id === employee.storeId)
+      if (employee.employeeId !== session.employeeId && !ownScopes.some((s) => s.scope === 'personal' && s.scopeId === employee.employeeId))
+        ownScopes.push({ scope: 'personal', scopeId: employee.employeeId, name: `${employee.name} · ${store?.name || '门店员工'}`, regionId: store?.market_id || null, storeId: employee.storeId, delegated: true })
+    }
   }
   const empty = {
     canConfigure:

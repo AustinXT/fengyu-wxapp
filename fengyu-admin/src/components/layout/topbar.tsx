@@ -20,7 +20,12 @@ export function Topbar({ collapsed, onToggle, session }: TopbarProps) {
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const dropdownRef = useRef<HTMLDivElement>(null)
 
-  const primaryRole = session.roles[0]
+  const primaryRole = session.roles.find((role) => role.isSuperAdmin) ?? session.roles[0]
+  const primaryRoleLabel = primaryRole?.isSuperAdmin
+    ? '系统管理员'
+    : primaryRole
+      ? getRoleLabel(primaryRole.role, primaryRole.roleName)
+      : '未分配角色'
   const analystOrigin = getAnalystOrigin()
 
   // Close dropdown on outside click
@@ -108,7 +113,7 @@ export function Topbar({ collapsed, onToggle, session }: TopbarProps) {
                   {session.name}
                 </div>
                 <div className="mt-0.5 text-xs text-[#999999]">
-                  {primaryRole ? getRoleLabel(primaryRole.role, primaryRole.roleName) : "未分配角色"}
+                  {primaryRoleLabel}
                 </div>
               </div>
 

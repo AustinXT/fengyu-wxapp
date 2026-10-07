@@ -205,12 +205,8 @@ const automator = require("miniprogram-automator");
     await wait(() => pk.data('ready'), "pk");
     assert.equal((await pk.data('rows'))[0].weekRate, '60.0%');
     await mp.screenshot({ path: path.join(output, 'pk-consumption.png') });
-    for (const [metric, done, rate] of [['visits', '4', '40.0%'], ['newCustomers', '2', '40.0%'], ['projects', '8', '40.0%']]) {
-      await pk.callMethod('metricChange', { currentTarget: { dataset: { metric } } });
-      await wait(() => pk.data('ready'), `pk-${metric}`);
-      assert.equal((await pk.data('rows'))[0].weekDoneText, done);
-      assert.equal((await pk.data('rows'))[0].weekRate, rate);
-    }
+    await pk.callMethod('metricChange', { currentTarget: { dataset: { metric: 'visits' } } });
+    assert.equal(await pk.data('metric'), 'consumption', 'PK榜只允许切换业绩和消耗');
     await mp.evaluate(() => wx.setStorageSync('dailyWorkspace', 'manager'));
     await mp.evaluate(() => { globalThis.__dailyUiStoreManager = true; });
     const storeWorkbench = await mp.reLaunch('/pages/workbench/workbench');
@@ -259,7 +255,7 @@ const automator = require("miniprogram-automator");
     await wait(async () => (await mp.currentPage()).path === 'pages/detail/detail', '取消修改返回只读');
     assert.deepEqual(exceptions, []);
     console.log(
-      "UI 验证通过：三套工作台、市场角色、填写保存、只读详情、目标校验、个人记录、PK五项榜单、组织筛选和市场详情（模拟接口）",
+      "UI 验证通过：三套工作台、市场角色、填写保存、只读详情、目标校验、个人记录、PK业绩/消耗双榜、组织筛选和市场详情（模拟接口）",
     );
   } finally {
     await mp.evaluate(() => { delete globalThis.__dailyUiSubmitted; delete globalThis.__dailyUiTarget; delete globalThis.__dailyUiMarket; delete globalThis.__dailyUiStoreManager; });

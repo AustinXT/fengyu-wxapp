@@ -1,10 +1,10 @@
 const v = require('./validation');
 const { resolve } = require('../routes/period');
-async function range(query, payload = {}) {
+async function range(query, payload = {}, auth = null, regionId = null) {
   const date = v.date(payload.date), kind = payload.period || 'today';
   if (!['today', 'week', 'month'].includes(kind)) throw Error('INVALID_PARAMS: 无效日报查看周期');
   if (kind === 'today') return { date, start: date, end: date, kind, label: '今日' };
-  const { period, week } = await resolve(query, payload);
+  const { period, week } = await resolve(query, payload, auth, regionId);
   if (!period) throw Error('INVALID_STATE: 尚未配置对应经营周期');
   if (kind === 'week' && !week) throw Error('INVALID_STATE: 该日期不在所选经营月，请选择本经营月');
   const start = kind === 'week' ? week.start : period.start;

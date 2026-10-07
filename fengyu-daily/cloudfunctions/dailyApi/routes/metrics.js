@@ -35,7 +35,7 @@ async function captureReportSnapshot(query, auth, payload = {}) {
     try { return await operation(); }
     finally { timings[name] = Math.round(performance.now() - started); }
   };
-  const { date, period, week } = await measure('periodResolve', () => resolve(query, payload));
+  const { date, period, week } = await measure('periodResolve', () => resolve(query, payload, auth));
   if (!auth.storeId) throw Error('INVALID_STATE: 员工尚未分配门店');
   const start = period?.start || date;
   const requestedWorkspace = payload.workspace;
@@ -186,7 +186,7 @@ async function totals(query, scope, stores, start, end) {
 
 async function capture(query, auth, payload = {}) {
   const scope = await targetScope(auth, payload, query);
-  const { date, period, week } = await resolve(query, payload);
+  const { date, period, week } = await resolve(query, payload, auth, scope.regionId);
   const stores = await scopeStores(query, auth, scope);
   const day = await totals(query, scope, stores, date, date);
   if (!period) return { date, ...scope, day, period: null, week: null, month: null };

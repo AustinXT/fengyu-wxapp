@@ -44,7 +44,7 @@ describe('经营明细报表登记表（#367）', () => {
     }
   })
 
-  it('5 个一级报表页面均已开放菜单入口', () => {
+  it('一级报表页面均已开放菜单入口', () => {
     expect(DATA_CENTER_REPORT_LIST.filter((report) => report.menu).every((report) => report.menu?.enabled)).toBe(true)
   })
 

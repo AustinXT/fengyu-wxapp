@@ -1,7 +1,7 @@
 import { callApi, showError, today } from '../../utils/cloud';
 interface Period { id: string; name: string; start: string; end: string }
 interface Values { weekTarget: number | null; weekDone: number; monthTarget: number | null; monthDone: number }
-type Metric = 'sales' | 'consumption' | 'visits' | 'newCustomers' | 'projects';
+type Metric = 'sales' | 'consumption';
 interface Row { employeeId: string; name: string; area: string; storeName: string; legion: string; group: string; mentor: string; rank: number; sales: Values; consumption: Values; visits: Values; newCustomers: Values; projects: Values }
 const formatValue = (metric: Metric, n: number | null) => n === null ? '未设置' : metric === 'sales' || metric === 'consumption' ? (n / 100).toFixed(2) : String(n);
 const rate = (done: number, target: number | null) => target && target > 0 ? (done / target * 100).toFixed(1) + '%' : '—';
@@ -65,7 +65,9 @@ Page({
   },
   metricChange(e: WechatMiniprogram.CustomEvent) {
     if (this.data.loading) return;
-    this.setData({ metric: e.currentTarget.dataset.metric }); void this.load();
+    const metric = e.currentTarget.dataset.metric as Metric;
+    if (metric !== 'sales' && metric !== 'consumption') return;
+    this.setData({ metric }); void this.load();
   },
   retry() { void this.load(); },
 });

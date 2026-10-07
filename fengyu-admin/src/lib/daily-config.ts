@@ -30,3 +30,16 @@ export const dailyPkInput = z.object({
     ctx.addIssue({ code: 'custom', message: '班级名称及编号不可重复，每店同月只能加入一个有效班级' })
 })
 export type DailyPkInput = z.infer<typeof dailyPkInput>
+
+const point = z.object({ monthOffset: z.union([z.literal(-1), z.literal(0), z.literal(1)]), day: z.number().int().min(1).max(31) })
+export const dailyCyclePattern = z.object({
+  start: point,
+  end: point,
+  weeks: z.array(z.object({ id: z.string().min(1).max(30), name: z.string().trim().min(1).max(30), start: point, end: point })).length(4),
+})
+export const dailyPeriodTemplateInput = z.object({
+  id: z.string().min(1).max(50), regionId: z.string().min(1).max(100).nullable(),
+  name: z.string().trim().min(1).max(60), pattern: dailyCyclePattern, version: z.number().int().nonnegative(),
+})
+export type DailyCyclePatternInput = z.infer<typeof dailyCyclePattern>
+export type DailyPeriodTemplateInput = z.infer<typeof dailyPeriodTemplateInput>

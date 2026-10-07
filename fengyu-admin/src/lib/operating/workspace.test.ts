@@ -18,7 +18,7 @@ vi.mock('./operating-objects', () => ({
   }),
   participantObjects: () => [{ scope: 'personal', scopeId: 'e1', employeeId: 'e1' }],
 }))
-import { workspace } from './workspace'
+import { resolve as resolvePeriod, workspace } from './workspace'
 import type { AuthSession } from '@/lib/types'
 
 const period = {
@@ -54,6 +54,13 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers())
 
 describe('经营页面按需统计与事务内查询设置', () => {
+  it('门店周期快照优先于重叠的旧全局周期', async () => {
+    const result = await resolvePeriod(async () => [
+      { ...period, id: 'legacy', region_id: null },
+      { ...period, id: 'regional', region_id: 'm1' },
+    ], { date: '2026-10-04' }, 'm2', 's1')
+    expect(result.period?.id).toBe('regional')
+  })
   it('个人进度保留统计值，JIT 设置仅在统计事务内执行', async () => {
     const result = await workspace(session)
     expect(result.rows[0].values.sales.monthDone).toBe(100)

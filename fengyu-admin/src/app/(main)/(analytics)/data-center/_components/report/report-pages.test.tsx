@@ -101,6 +101,8 @@ const commission = vi.hoisted(() => ({
   getCommissionDetail: vi.fn(),
 }))
 vi.mock('@/actions/data-center/commission', () => commission)
+const dailyReportSummary = vi.hoisted(() => ({ getDailyReportSummary: vi.fn() }))
+vi.mock('@/actions/data-center/daily-report-summary', () => dailyReportSummary)
 
 function emptyCommissionDaily(month: string) {
   const cell = { sale: 0, service: 0, orders: 0 }
@@ -144,6 +146,7 @@ import RemainingCardsPage from '../../remaining-cards/page'
 import OperatingMasterPage from '../../operating-master/page'
 import CommissionDailyPage from '../../commission-daily/page'
 import CommissionDetailPage from '../../commission-daily/detail/page'
+import DailyReportSummaryPage from '../../daily-report-summary/page'
 import { buildDailyOverview } from '@/lib/data-center/daily-overview'
 import { resolveDeltaDisplay } from '@/lib/delta-display'
 
@@ -156,6 +159,7 @@ const PAGE_COMPONENTS: Record<DataCenterReportKey, { page: PageComponent; needsS
   remainingCards: { page: RemainingCardsPage, needsStarts: false },
   operatingMaster: { page: OperatingMasterPage, needsStarts: true },
   commissionDaily: { page: CommissionDailyPage, needsStarts: true },
+  dailyReportSummary: { page: DailyReportSummaryPage, needsStarts: false },
   commissionDetail: { page: CommissionDetailPage, needsStarts: true },
 }
 
@@ -281,6 +285,7 @@ beforeEach(() => {
     month: raw.month ?? '2026-08',
     beforeDataStart: (raw.month ?? '2026-08') < '2026-07',
   }))
+  dailyReportSummary.getDailyReportSummary.mockResolvedValue([])
 })
 
 function mockOperatingMaster(stores: OperatingMasterStore[]) {
@@ -346,6 +351,7 @@ describe.each(KEYS)('报表页 %s · 入口控制流', (key) => {
       dailyOverview.getDailyOverview, operatingMaster.getOperatingMaster,
       commission.getCommissionDaily, commission.getCommissionDetail,
       reportActions.getRemainingCardsReport, frequencyActions.getCustomerFrequencyReport,
+      dailyReportSummary.getDailyReportSummary,
     ]
     const calls = dataMocks.flatMap((m) => m.mock.calls)
     expect(calls.length, '本页没有调用任何取数 action').toBeGreaterThan(0)

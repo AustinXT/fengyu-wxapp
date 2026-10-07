@@ -56,6 +56,11 @@ const ROUTE_LABELS: Record<string, string> = {
   "/data-center/product": "品项",
   // 经营明细报表（#367）：标题来自登记表，与页面 h1、菜单同源
   ...Object.fromEntries(DATA_CENTER_REPORT_LIST.map((report) => [report.path, report.title])),
+  "/data-center/operating-progress": "美容师目标进度表",
+  "/data-center/operating-store-progress": "门店目标进度表",
+  "/data-center/operating-region-progress": "区域目标进度表",
+  "/data-center/operating-targets": "经营目标填报",
+  "/data-center/operating-pk": "经营指标 PK 榜",
   "/permissions": "权限管理",
   "/messages": "消息中心",
   "/logs": "操作日志",

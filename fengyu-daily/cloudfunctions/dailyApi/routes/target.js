@@ -20,10 +20,14 @@ async function load(query, periodId, scope, scopeId, lock = false) {
 }
 async function read(ctx) {
   const payload = ctx.event.payload || {};
-  const [scope, resolved, periodRows] = await Promise.all([
-    targetScope(ctx.auth, payload, pg.query),
-    resolve(pg.query, payload),
-    pg.query('SELECT * FROM daily_operating_periods ORDER BY start_date DESC'),
+  const scope = await targetScope(ctx.auth, payload, pg.query);
+  const [resolved, periodRows] = await Promise.all([
+    resolve(pg.query, payload, ctx.auth, scope.regionId),
+    scope.storeId
+      ? pg.query(`SELECT p.* FROM daily_operating_periods p WHERE p.region_id IS NULL OR EXISTS(
+          SELECT 1 FROM daily_operating_period_stores ps WHERE ps.period_id=p.id AND ps.store_id=$1
+        ) ORDER BY p.start_date DESC`, [scope.storeId])
+      : pg.query('SELECT * FROM daily_operating_periods WHERE region_id IS NULL OR region_id=$1 ORDER BY start_date DESC', [scope.regionId]),
   ]);
   const [targetRow, reference] = resolved.period
     ? await Promise.all([
@@ -46,7 +50,7 @@ async function write(ctx, month) {
   const scope = await targetScope(ctx.auth, payload, pg.query);
   ctx.result = await pg.transaction(async (client) => {
     const query = async (sql, args) => (await client.query(sql, args)).rows;
-    const resolved = await resolve(query, { periodId: payload.periodId, date: v.today() });
+    const resolved = await resolve(query, { periodId: payload.periodId, date: v.today() }, ctx.auth, scope.regionId);
     const { period, week } = resolved;
     if (!period) throw Error('INVALID_STATE: 尚未配置经营周期');
     // 周期调整与目标更新共享行锁，避免提交到刚变更的周。
@@ -62,6 +66,21 @@ async function write(ctx, month) {
     let row;
     if (month) {
       const counts = validateCounts(payload);
+      const plan = payload.weekPlan && typeof payload.weekPlan === 'object' ? payload.weekPlan : null;
+      const plannedWeeks = {};
+      if (plan) {
+        for (const metric of ['sales', 'consumption', ...(counts ? countKeys : [])]) {
+          const value = metric === 'newCustomers' ? payload.newCustomers : payload[metric];
+          const firstThree = period.weeks.slice(0, 3).map((w) => {
+            const raw = plan[w.id]?.[metric];
+            if (raw === undefined || raw === '') throw Error('INVALID_PARAMS: 请补全前三周分摊目标');
+            return metric === 'sales' || metric === 'consumption' ? cents(raw) : count(raw);
+          });
+          const total = metric === 'sales' || metric === 'consumption' ? cents(value, true) : count(value);
+          weeklyTargets(total, firstThree, countKeys.includes(metric));
+          firstThree.forEach((amount, index) => { (plannedWeeks[period.weeks[index].id] ||= {})[metric] = amount; });
+        }
+      }
       if (old?.month_confirmed) {
         if (!counts || old.counts_month_confirmed) throw Error('INVALID_STATE: 本月目标已确认，不可修改');
         [row] = await query(`UPDATE daily_operating_targets SET visits=$4,new_customers=$5,projects=$6,
@@ -71,12 +90,13 @@ async function write(ctx, month) {
         return { ...resolved, ...scope, target: expand(row, period) };
       }
       const amounts = validateMonth(payload, scope.scope);
-      [row] = await query(`INSERT INTO daily_operating_targets(period_id,scope,scope_id,sales,consumption,penalty,month_confirmed)
-        VALUES($1,$2,$3,$4,$5,$6,true)
+      [row] = await query(`INSERT INTO daily_operating_targets(period_id,scope,scope_id,sales,consumption,penalty,month_confirmed,weeks)
+        VALUES($1,$2,$3,$4,$5,$6,true,$7::jsonb)
         ON CONFLICT(period_id,scope,scope_id) DO UPDATE SET sales=EXCLUDED.sales,consumption=EXCLUDED.consumption,
-          penalty=EXCLUDED.penalty,month_confirmed=true,version=daily_operating_targets.version+1,updated_at=NOW()
+          penalty=EXCLUDED.penalty,month_confirmed=true,weeks=CASE WHEN $7::jsonb IS NULL THEN daily_operating_targets.weeks ELSE EXCLUDED.weeks END,
+          version=daily_operating_targets.version+1,updated_at=NOW()
         WHERE NOT daily_operating_targets.month_confirmed RETURNING *`,
-      [period.id, scope.scope, scope.scopeId, amounts.sales, amounts.consumption, amounts.penalty]);
+      [period.id, scope.scope, scope.scopeId, amounts.sales, amounts.consumption, amounts.penalty, plan ? JSON.stringify(plannedWeeks) : null]);
       if (counts) [row] = await query(`UPDATE daily_operating_targets SET visits=$4,new_customers=$5,projects=$6,
         counts_month_confirmed=true WHERE period_id=$1 AND scope=$2 AND scope_id=$3 RETURNING *`,
       [period.id, scope.scope, scope.scopeId, counts.visits, counts.newCustomers, counts.projects]);

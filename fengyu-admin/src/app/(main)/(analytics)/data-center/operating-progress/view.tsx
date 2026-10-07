@@ -5,6 +5,8 @@ import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Pagination } from '@/components/ui/pagination'
 import { ExportButton } from '@/components/ui/export-button'
+import { Card } from '@/components/ui/card'
+import { ReportInfoBar } from '../_components/report/report-info-bar'
 import { actionErrorMessage } from '@/lib/action-error'
 import {
   getOperatingProgress,
@@ -38,20 +40,29 @@ function dates(start: string, end: string) {
   return out
 }
 type Data = Awaited<ReturnType<typeof getOperatingProgress>>
+type ProgressDimension = NonNullable<Filters['dimension']>
+const dimensionTitle: Record<ProgressDimension, string> = {
+  personal: '美容师目标进度表',
+  store: '门店目标进度表',
+  market: '区域目标进度表',
+}
 export function OperatingView({
   initial,
   pk = false,
+  dimension = 'personal',
 }: {
   initial: Data
   pk?: boolean
+  dimension?: ProgressDimension
 }) {
   const [data, setData] = useState(initial),
     [filters, setFilters] = useState<Filters>({
       ...initial.filters,
       periodId: initial.period?.id,
-      dimension: 'personal',
+      dimension,
     }),
-    [metric, setMetric] = useState<Metric | 'all'>('sales'),
+    [metric, setMetric] = useState<Metric | 'all'>(pk ? 'sales' : 'all'),
+    [layout, setLayout] = useState<'block' | 'matrix'>('block'),
     [view, setView] = useState<'week' | 'month'>('week'),
     [reverse, setReverse] = useState(false),
     [busy, setBusy] = useState(false),
@@ -87,8 +98,9 @@ export function OperatingView({
   async function load(next: Filters) {
     setBusy(true)
     try {
-      setData(await (pk ? getOperatingPk(next) : getOperatingProgress(next)))
-      setFilters(next)
+      const scoped = { ...next, dimension }
+      setData(await (pk ? getOperatingPk(scoped) : getOperatingProgress(scoped)))
+      setFilters(scoped)
       setPage(1)
     } catch (e) {
       toast.error(actionErrorMessage(e, '读取失败'))
@@ -96,7 +108,7 @@ export function OperatingView({
       setBusy(false)
     }
   }
-  const field = 'h-10 rounded-md border border-[var(--border)] bg-white px-3 text-sm'
+  const field = 'h-10 rounded-md border border-[var(--border)] bg-white px-3 text-sm text-[var(--foreground)]'
   const actual = (row: OperatingRow, key: Metric) => {
     const v = row.values[key]
     return view === 'week' ? v.weekDone : v.monthDone
@@ -195,28 +207,30 @@ export function OperatingView({
     URL.revokeObjectURL(url)
   }
   return (
-    <main className="space-y-5 p-6">
+    <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">
-          {pk ? '经营指标 PK 榜' : '经营目标进度'}
+        <h1 className="text-xl font-semibold text-[var(--foreground)]">
+          {pk ? '经营指标 PK 榜' : dimensionTitle[dimension]}
         </h1>
-        <div className="flex gap-4 text-sm text-[#C0322A]">
-          <Link href="/data-center/operating-targets">目标填报</Link>
+        <div className="flex flex-wrap gap-2 text-sm">
+          <Link className="rounded-md border border-[var(--border)] bg-white px-3 py-2 text-[var(--foreground)] hover:border-[var(--primary)] hover:text-[var(--primary)]" href="/data-center/operating-targets">目标填报</Link>
           <Link
+            className="rounded-md border border-[var(--border)] bg-white px-3 py-2 text-[var(--foreground)] hover:border-[var(--primary)] hover:text-[var(--primary)]"
             href={
               pk
                 ? '/data-center/operating-progress'
-                : '/data-center/operating-pk'
+              : '/data-center/operating-pk'
             }
           >
             {pk ? '目标进度' : 'PK 榜'}
           </Link>
           {data.canConfigure && (
-            <Link href="/settings/daily">周期与分班配置</Link>
+            <Link className="rounded-md border border-[var(--border)] bg-white px-3 py-2 text-[var(--foreground)] hover:border-[var(--primary)] hover:text-[var(--primary)]" href="/settings/daily">周期与分班配置</Link>
           )}
         </div>
       </div>
-      <div className="flex flex-wrap gap-3 rounded-xl border border-[var(--border)] bg-white p-4">
+      <Card className="flex flex-col gap-3 p-4">
+      <div className="flex flex-wrap gap-3">
         <select
           aria-label="经营月"
           className={field}
@@ -293,23 +307,10 @@ export function OperatingView({
             ))}
           </select>
         ) : (
-          <select
-            aria-label="统计对象"
-            className={field}
-            disabled={busy}
-            value={filters.dimension}
-            onChange={(e) =>
-              void load({
-                ...filters,
-                dimension: e.target.value as Filters['dimension'],
-                storeId: undefined,
-              })
-            }
-          >
-            <option value="personal">员工目标进度</option>
-            <option value="store">门店目标进度</option>
-            <option value="market">区域目标进度</option>
-          </select>
+          <div className={`${field} inline-flex items-center gap-2`} aria-label="统计对象">
+            <span className="text-[var(--muted-foreground)]">统计对象</span>
+            <span className="font-medium">{dimensionTitle[dimension]}</span>
+          </div>
         )}
         <input
           aria-label="筛选员工或对象"
@@ -327,47 +328,69 @@ export function OperatingView({
           label="导出当前结果"
         />
       </div>
-      <div className="flex flex-wrap items-center gap-3">
+      <div role="tablist" aria-label="成果周期" className="flex flex-wrap items-stretch gap-2 border-t border-[var(--border)] pt-3">
         {!pk && (
           <>
             <Button
+              role="tab"
+              aria-selected={view === 'week'}
               variant={view === 'week' ? 'default' : 'outline'}
               onClick={() => setView('week')}
             >
-              周成果表
+              <span className="text-left">周成果表<span className="block text-xs font-normal opacity-75">本周目标 · 每日达成</span></span>
             </Button>
             <Button
+              role="tab"
+              aria-selected={view === 'month'}
               variant={view === 'month' ? 'default' : 'outline'}
               onClick={() => setView('month')}
             >
-              月成果表
+              <span className="text-left">月成果表<span className="block text-xs font-normal opacity-75">本月目标 · 各周完成</span></span>
             </Button>
           </>
         )}
-        <select
-          className={field}
-          aria-label="指标"
-          value={metric}
-          onChange={(e) => {
-            setMetric(e.target.value as Metric | 'all')
-            setPage(1)
-          }}
-        >
-          {keys.map((k) => (
-            <option key={k} value={k}>
-              {labels[k]}（
-              {k === 'sales' || k === 'consumption'
-                ? '元'
-                : k === 'visits'
-                  ? '人次'
-                  : k === 'newCustomers'
-                    ? '人'
-                    : '次'}
-              ）
-            </option>
-          ))}
-          <option value="all">全指标</option>
-        </select>
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2" role="group" aria-label="指标">
+          <span className="mr-1 text-sm font-medium text-[var(--muted-foreground)]">指标</span>
+          <select
+            aria-label="指标"
+            className="sr-only"
+            value={metric}
+            onChange={(e) => {
+              const next = e.target.value as Metric | 'all'
+              setMetric(next)
+              if (next !== 'all') setLayout('block')
+              setPage(1)
+            }}
+          >
+            <option value="all">全指标</option>
+            {keys.map((key) => <option key={key} value={key}>{labels[key]}</option>)}
+          </select>
+          {(['all', ...keys] as Array<Metric | 'all'>).map((key) => {
+            const unit = key === 'all' ? `${keys.length} 项` : key === 'sales' || key === 'consumption' ? '元' : key === 'visits' ? '人次' : key === 'newCustomers' ? '人' : '次'
+            return (
+              <button
+                key={key}
+                type="button"
+                aria-pressed={metric === key}
+                onClick={() => {
+                  setMetric(key)
+                  if (key !== 'all') setLayout('block')
+                  setPage(1)
+                }}
+                className={`rounded-md border px-3 py-1.5 text-sm transition-colors ${metric === key ? 'border-[var(--primary)] bg-[#FFF0EE] font-medium text-[var(--primary)]' : 'border-[var(--border)] bg-white text-[var(--foreground)] hover:border-[var(--primary)]'}`}
+              >
+                <span className="block">{key === 'all' ? '全指标' : labels[key]}</span>
+                <span className="block text-xs opacity-70">{unit}</span>
+              </button>
+            )
+          })}
+        </div>
+        {!pk && metric === 'all' && (
+          <div className="flex items-center gap-1" role="group" aria-label="指标视图">
+            <Button variant={layout === 'block' ? 'default' : 'outline'} onClick={() => setLayout('block')}>折叠块</Button>
+            <Button variant={layout === 'matrix' ? 'default' : 'outline'} onClick={() => setLayout('matrix')}>对齐矩阵</Button>
+          </div>
+        )}
         {(view === 'week' || pk) && (
           <select
             aria-label="经营周"
@@ -389,15 +412,106 @@ export function OperatingView({
           </Button>
         )}
       </div>
-      <div className="text-sm text-gray-500">
-        {data.period
-          ? `${data.period.name} · ${data.period.start} 至 ${data.period.end}`
-          : '尚未配置经营周期'}{' '}
-        · 共 {rows.length} 个对象{busy ? ' · 正在更新…' : ''}
-      </div>
-      <div className="overflow-auto rounded-xl border border-[var(--border)] bg-white">
+      </Card>
+      <ReportInfoBar items={[
+        { label: '经营月', value: data.period ? `${data.period.name}（${data.period.start} 至 ${data.period.end}）` : '尚未配置经营周期' },
+        { label: '统计对象', value: `${rows.length} 个${busy ? ' · 正在更新…' : ''}` },
+      ]} />
+      {!pk && metric === 'all' && layout === 'matrix' ? (
+        <div className="overflow-auto rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--card)]">
+          <table className="w-full min-w-[1100px] whitespace-nowrap text-sm">
+            <thead className="bg-[#F8F9FB] text-[var(--muted-foreground)]">
+              <tr>
+                <th rowSpan={2} className="sticky left-0 z-20 border-b border-[var(--border)] bg-[#F8F9FB] px-3 py-3 text-left">名次</th>
+                <th rowSpan={2} className="sticky left-16 z-20 min-w-36 border-b border-[var(--border)] bg-[#F8F9FB] px-3 py-3 text-left">姓名／对象</th>
+                <th rowSpan={2} className="border-b border-[var(--border)] px-3 py-3 text-left">区域</th>
+                <th rowSpan={2} className="border-b border-[var(--border)] px-3 py-3 text-left">门店</th>
+                <th rowSpan={2} className="border-b border-[var(--border)] px-3 py-3 text-left">岗位</th>
+                {keys.map((key) => <th key={key} colSpan={3} className="border-b border-[var(--border)] px-3 py-2 text-center">{labels[key]}</th>)}
+                <th rowSpan={2} className="border-b border-[var(--border)] px-3 py-3 text-center">综合达标</th>
+              </tr>
+              <tr>
+                {keys.flatMap((key) => ['目标', '完成', '完成率'].map((sub) => <th key={`${key}-${sub}`} className="border-b border-[var(--border)] px-3 py-2 text-right">{sub}</th>))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.slice((page - 1) * 20, page * 20).map((row) => {
+                const achieved = keys.filter((key) => {
+                  const goal = target(row, key)
+                  return goal != null && goal > 0 && actual(row, key) >= goal
+                }).length
+                return (
+                  <tr key={`${row.scope}:${row.scopeId}`} className="border-t border-[var(--border)] hover:bg-[#FAFAFA]">
+                    <td className="sticky left-0 bg-white px-3 py-3">{row.rank}</td>
+                    <td className="sticky left-16 bg-white px-3 py-3 font-medium">{row.name}</td>
+                    <td className="px-3 py-3">{row.area || '未分配区域'}</td>
+                    <td className="px-3 py-3">{row.storeName || '—'}</td>
+                    <td className="px-3 py-3">{row.position || '—'}</td>
+                    {keys.flatMap((key) => {
+                      const goal = target(row, key)
+                      const done = actual(row, key)
+                      return [
+                        <td key={`${key}-target`} className="px-3 py-3 text-right">{amount(goal, key)}</td>,
+                        <td key={`${key}-done`} className="px-3 py-3 text-right">{amount(done, key)}</td>,
+                        <td key={`${key}-rate`} className="px-3 py-3 text-right">{rate(done, goal)}</td>,
+                      ]
+                    })}
+                    <td className="px-3 py-3 text-center font-medium">{achieved}/{keys.length}</td>
+                  </tr>
+                )
+              })}
+              {!rows.length && <tr><td colSpan={21} className="p-8 text-center text-[var(--muted-foreground)]">暂无授权范围内的数据</td></tr>}
+            </tbody>
+            {rows.length > 0 && <tfoot className="bg-[#F8F9FB] font-medium"><tr>
+              <td colSpan={5} className="px-3 py-3">合计（各指标独立小计）</td>
+              {keys.flatMap((key) => {
+                const goal = rows.reduce((sum, row) => sum + (target(row, key) || 0), 0)
+                const done = rows.reduce((sum, row) => sum + actual(row, key), 0)
+                return [
+                  <td key={`${key}-sum-target`} className="px-3 py-3 text-right">{amount(goal, key)}</td>,
+                  <td key={`${key}-sum-done`} className="px-3 py-3 text-right">{amount(done, key)}</td>,
+                  <td key={`${key}-sum-rate`} className="px-3 py-3 text-right">{rate(done, goal)}</td>,
+                ]
+              })}
+              <td className="px-3 py-3 text-center">—</td>
+            </tr></tfoot>}
+          </table>
+        </div>
+      ) : !pk && metric === 'all' ? (
+        <div className="space-y-3">
+          {keys.map((key) => {
+            const goalTotal = rows.reduce((sum, row) => sum + (target(row, key) || 0), 0)
+            const doneTotal = rows.reduce((sum, row) => sum + actual(row, key), 0)
+            return (
+              <details key={key} open={key === keys[0]} className="overflow-hidden rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--card)]">
+                <summary className="flex cursor-pointer list-none flex-wrap items-center gap-3 bg-[#F8F9FB] px-4 py-3 text-sm marker:hidden">
+                  <span className="font-semibold">{labels[key]} <span className="font-normal text-[var(--muted-foreground)]">{key === 'sales' || key === 'consumption' ? '元' : key === 'visits' ? '人次' : key === 'newCustomers' ? '人' : '次'}</span></span>
+                  <span className="text-[var(--muted-foreground)]">汇总：目标 {amount(goalTotal, key)} / 完成 {amount(doneTotal, key)}</span>
+                  <span className="ml-auto font-semibold">{rate(doneTotal, goalTotal)}</span>
+                </summary>
+                <div className="overflow-auto">
+                  <table className="w-full min-w-[900px] whitespace-nowrap text-sm">
+                    <thead className="text-[var(--muted-foreground)]"><tr>{['名次', '姓名／对象', '区域', '门店', '岗位', '目标', '实际完成', '完成率', '状态'].map((col) => <th key={col} className="border-b border-[var(--border)] px-3 py-3 text-left font-medium">{col}</th>)}</tr></thead>
+                    <tbody>
+                      {rows.slice((page - 1) * 20, page * 20).map((row) => {
+                        const goal = target(row, key)
+                        const done = actual(row, key)
+                        return <tr key={`${row.scope}:${row.scopeId}:${key}`} className="border-t border-[var(--border)] hover:bg-[#FAFAFA]">
+                          <td className="px-3 py-3">{row.rank}</td><td className="px-3 py-3 font-medium">{row.name}</td><td className="px-3 py-3">{row.area || '未分配区域'}</td><td className="px-3 py-3">{row.storeName || '—'}</td><td className="px-3 py-3">{row.position || '—'}</td><td className="px-3 py-3 text-right">{amount(goal, key)}</td><td className="px-3 py-3 text-right">{amount(done, key)}</td><td className="px-3 py-3 text-right">{rate(done, goal)}</td><td className="px-3 py-3">{goal == null ? '未设置' : goal === 0 ? '不计算完成率' : done >= goal ? '已达成' : '未达成'}</td>
+                        </tr>
+                      })}
+                      {!rows.length && <tr><td colSpan={9} className="p-8 text-center text-[var(--muted-foreground)]">暂无授权范围内的数据</td></tr>}
+                    </tbody>
+                  </table>
+                </div>
+              </details>
+            )
+          })}
+        </div>
+      ) : (
+      <div className="overflow-auto rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--card)]">
         <table className="w-full whitespace-nowrap text-sm">
-          <thead className="bg-gray-50">
+          <thead className="bg-[#F8F9FB] text-[var(--muted-foreground)]">
             <tr>
               {[
                 '名次',
@@ -432,7 +546,7 @@ export function OperatingView({
               ].map((c, i) => (
                 <th
                   key={i}
-                  className={`p-3 text-left ${i < 2 ? 'sticky bg-gray-50 ' + (i === 0 ? 'left-0 w-16' : 'left-16 min-w-36') : ''}`}
+                  className={`border-b border-[var(--border)] px-3 py-3 text-left font-medium ${i < 2 ? 'sticky bg-[#F8F9FB] ' + (i === 0 ? 'left-0 w-16' : 'left-16 min-w-36') : ''}`}
                 >
                   {c}
                 </th>
@@ -448,21 +562,21 @@ export function OperatingView({
                 return (
                   <tr
                     key={`${row.scope}:${row.scopeId}:${row.employeeId}:${key}`}
-                    className="border-t border-[var(--border)]"
+                    className="border-t border-[var(--border)] transition-colors hover:bg-[#FAFAFA]"
                   >
-                    <td className="sticky left-0 bg-white p-3">{row.rank}</td>
-                    <td className="sticky left-16 bg-white p-3">{row.name}</td>
-                    <td className="p-3">{row.area || '未分配区域'}</td>
-                    <td className="p-3">{row.storeName || '—'}</td>
-                    <td className="p-3">{row.position || '—'}</td>
-                    <td className="p-3">{row.scopeName}</td>
+                    <td className="sticky left-0 bg-white px-3 py-3">{row.rank}</td>
+                    <td className="sticky left-16 bg-white px-3 py-3 font-medium">{row.name}</td>
+                    <td className="px-3 py-3">{row.area || '未分配区域'}</td>
+                    <td className="px-3 py-3">{row.storeName || '—'}</td>
+                    <td className="px-3 py-3">{row.position || '—'}</td>
+                    <td className="px-3 py-3">{row.scopeName}</td>
                     {pk && (
                       <>
-                        <td className="p-3">{row.legion || '—'}</td>
-                        <td className="p-3">{row.mentor || '—'}</td>
+                        <td className="px-3 py-3">{row.legion || '—'}</td>
+                        <td className="px-3 py-3">{row.mentor || '—'}</td>
                       </>
                     )}
-                    <td className="p-3">{labels[key]}</td>
+                    <td className="px-3 py-3">{labels[key]}</td>
                     {pk ? (
                       <>
                         {[
@@ -473,18 +587,18 @@ export function OperatingView({
                           amount(v.monthDone, key),
                           rate(v.monthDone, v.monthTarget),
                         ].map((x, i) => (
-                          <td key={i} className="p-3 text-right">
+                          <td key={i} className="px-3 py-3 text-right">
                             {x}
                           </td>
                         ))}
                       </>
                     ) : (
                       <>
-                        <td className="p-3 text-right">{amount(t, key)}</td>
-                        <td className="p-3 text-right">{amount(done, key)}</td>
-                        <td className="p-3 text-right">{rate(done, t)}</td>
+                        <td className="px-3 py-3 text-right">{amount(t, key)}</td>
+                        <td className="px-3 py-3 text-right">{amount(done, key)}</td>
+                        <td className="px-3 py-3 text-right">{rate(done, t)}</td>
                         <td
-                          className={`p-3 ${t == null ? 'text-gray-500' : t > 0 && done >= t ? 'text-green-700' : 'text-amber-700'}`}
+                          className={`px-3 py-3 ${t == null ? 'text-gray-500' : t > 0 && done >= t ? 'text-green-700' : 'text-amber-700'}`}
                         >
                           {t == null
                             ? '未设置'
@@ -495,7 +609,7 @@ export function OperatingView({
                                 : '未达成'}
                         </td>
                         {columns.map((c) => (
-                          <td key={c} className="p-3 text-right">
+                          <td key={c} className="px-3 py-3 text-right">
                             {amount(breakdown(row, key, c), key)}
                           </td>
                         ))}
@@ -507,7 +621,7 @@ export function OperatingView({
             )}
             {!rows.length && (
               <tr>
-                <td colSpan={20} className="p-8 text-center text-gray-500">
+                <td colSpan={20} className="p-8 text-center text-[var(--muted-foreground)]">
                   暂无授权范围内的数据
                 </td>
               </tr>
@@ -515,12 +629,13 @@ export function OperatingView({
           </tbody>
         </table>
       </div>
+      )}
       <Pagination
         total={rows.length}
         page={page}
         pageSize={20}
         onPageChange={setPage}
       />
-    </main>
+    </div>
   )
 }

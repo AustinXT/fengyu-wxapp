@@ -72,6 +72,8 @@ const LIST_PAGE_GATES: Record<string, Clause[]> = {
   // 经营明细报表（#367）：SSR 闸门 = 各页 scope 数据源（兼任闸门）+ getDataStartDates（dashboard）。
   // 顾客明细 / 员工提成类的数据源是 withAllPermissions（dashboard + 专用权限点，同一角色授权）。
   '/data-center/operating-progress': ['data_center:dashboard'],
+  '/data-center/operating-store-progress': ['data_center:dashboard'],
+  '/data-center/operating-region-progress': ['data_center:dashboard'],
   '/data-center/operating-targets': ['data_center:dashboard'],
   '/data-center/operating-pk': ['data_center:dashboard'],
   '/data-center/daily-overview': ['data_center:dashboard'],
@@ -79,6 +81,7 @@ const LIST_PAGE_GATES: Record<string, Clause[]> = {
   '/data-center/remaining-cards': ['data_center:dashboard', 'data_center:customer_detail'],
   '/data-center/operating-master': ['data_center:dashboard'],
   '/data-center/commission-daily': ['data_center:dashboard', 'data_center:staff_commission'],
+  '/data-center/daily-report-summary': ['data_center:dashboard'],
   '/org': ['org:list'],
   '/stores': ['store:list'],
   '/merchants': ['merchant:list'], // 商户管理（admin + finance）；getMerchantsPaginated
