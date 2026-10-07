@@ -97,3 +97,21 @@
 - 归因：prod 已于 **2026-10-05 17:23** 有一次批量对齐（`sale_items` 8,366 行 + `service_items` 1,039 行，跨 20 个 SKU），与当日 17:19–17:23 的 4 个 SKU 生美标记修正同批；其后无新的 SKU/分类改动，10-05 之后新开的 296 行 `sale_items` 写入时即取当前值。
 - ⚠ 口径备注：`sale_items.is_shengmei` 在 #378 定为「**不回填**的开单快照（生美业绩口径）」；10-05 的批量对齐已把它改到与 SKU 当前值一致，与 #378 原口径相反。若需保留开单快照口径，须另行评估回退。
 - 本地验证（未连业务库）：临时 docker PG 全量 `db:migrate` + 夹具端到端 22 项断言通过（命中数、写入、幂等归零、NULL 源不覆盖、无 SKU 行回退、回滚恢复、漂移 CAS 默认拒绝 + `--allow-drift` 跳过）。`npm run db:test` 132 通过 / 0 失败。
+
+## 2026-10-06 顾客分类 / 会员标签全量重算（#257 + #524 口径）
+
+- 目标：按 #524（部分支付单、转换单的实际新增非体验实收参与入会判定）+ #257（双向同步，放弃只升不降）的新口径，对 prod 全量顾客做 `customer_type` → `member_level` 的离线重算，并补齐同一链条上的首次入会归因与升级单标记。
+- 执行人 Claude，2026-10-06；用户在本会话明确选择「三步全跑留台账」。目标库 118.178.196.26:5433/fengyu_wxapp。未操作 dev，未改 schema，无迁移。
+- 执行前状态：10-06 02:23 v1.17.23 换镜像后，03:02 每日 cron 已用新代码跑过一遍（`customerTypes` 更新 143 行；`memberLevels` 37 升级 / 0 降级 / 156 保级期内 / 1873 不变）。独立只读审计（`audit-customer-type-transitions.js` 真实 SQL，脚本自带 60s 超时在 prod 触发 57014，放宽到 900s 重跑）范围 5819 人、待变更 **0**，即分类侧当日已由 cron 对齐。
+- 备份：`~/backups/fengyu/fengyu_prod_pre_tagrecalc_20261006-132434.dump`（custom format，18.8 MB，mode 600；`lx-prod` 上用 PG16 `pg_dump` 生成后取回，远端临时文件已删）。
+- 执行顺序与结果（每步单独事务，前一步核验通过后才推进）：
+  1. `db/scripts/recalc-all-customer-types.js --apply` — `customer_type` 0 行 / `member_level` 0 行 / `became_member_at` 0 行；自检「会员客缺入会时间 0、非会员带等级 0」通过，COMMIT。
+  2. `db/scripts/recalc-became-member-at.js --apply` — 命中 2067 会员客，**更新 26 行**（dry-run 预示 25，期间有 1 行实时写入）；SELFCHECK 通过，COMMIT。
+  3. `db/scripts/backfill-membership-upgrade-doc-type.js --apply` — 命中 2067 单，**更新 722 单**（`document_type`→售前一次 352 单 + 补 `is_membership_upgrade` 443 单，有重叠）；「会员客但无达标单」异常由 4 归 0，COMMIT。
+- 收敛复核（`fengyu_ro` 只读 dry-run，三步全部再跑）：分类 0 / 0 / 0；入会时间「将变更 0 行」；升级单标记「需改 document_type 0 单、需补 flag 0 单」。两次独立快照结论一致。
+- 遗留（未处理，均为设计内或待拍板）：
+  - 6 位**非会员客仍带 `became_member_at`**：按 #257「降级不清历史归因」保留，脚本只告警不清理。再达标归因留 #257 E。
+  - 401 位会员客 `member_level` 为 NULL：逐人核对近 12 月净消费**全部 < 1990**，属滚动 12 月口径的正常结果。本会话已与用户确认「保持现状」，不按终身消费或下单时金额改判。
+  - `member_level` 有 156 人处在 150 天保级期内（现值高于滚动 12 月口径应得档位），为既有保级规则，非漏算。
+- 证据：`~/backups/fengyu/tagrecalc-20261006/{step1-recalc-all-customer-types,step2-recalc-became-member-at,step3-backfill-membership-upgrade-doc-type,step4-verify-dryruns}.log`（含含手机号的私有名单一律未入 git）。
+- 备注：本台账条目不自动授权后续回填；`became_member_at` 前移会重排会员报表的历史分布（2026-09-22 那轮已发生过同类效应，属预期）。
