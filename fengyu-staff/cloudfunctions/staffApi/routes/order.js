@@ -672,9 +672,11 @@ const RECALC_CUSTOMER_TYPE_CTE = `WITH membership_settings AS (
  * @param {string} clientUserId - client_wechat_users.user_id
  * @param {string} [saleOrderId] - 触发本次重算的订单（用于会员绑定校验）
  * @param {boolean} [allowDowngrade=false] - 是否允许降档（仅退款审批通道传 true）
+ * @returns {Promise<{from: string|null, to: string}|null>} 本次实际发生的档位变更；未写库（早退/
+ *   配置不可用/守卫挡住）**恒为 null**（不是 undefined），审计 detail 的 customerTypeChange 因而字段稳定。
  */
 async function recalcCustomerType(client, clientUserId, saleOrderId, allowDowngrade = false) {
-  if (!clientUserId) return
+  if (!clientUserId) return null
 
   // 已是最高级：默认通道无需重算；退款通道仍需重算（达标单退款后可能掉档）。
   //
@@ -689,7 +691,7 @@ async function recalcCustomerType(client, clientUserId, saleOrderId, allowDowngr
     'SELECT customer_type FROM client_wechat_users WHERE user_id = $1',
     [clientUserId]
   )
-  if (!allowDowngrade && cur.rows[0]?.customer_type === '会员客') return
+  if (!allowDowngrade && cur.rows[0]?.customer_type === '会员客') return null
 
   let threshold
   if (allowDowngrade) {
@@ -706,7 +708,7 @@ async function recalcCustomerType(client, clientUserId, saleOrderId, allowDowngr
       // 25P02 之类的晦涩错误失败、极难排障。与 admin 侧的同名判定保持一致。
       if (!(err instanceof Error) || err.message !== THRESHOLD_UNAVAILABLE_MSG) throw err
       console.warn('[order] 退款通道跳过顾客分类重算：会员门槛配置不可用')
-      return
+      return null
     }
   } else {
     threshold = await getMemberThreshold()

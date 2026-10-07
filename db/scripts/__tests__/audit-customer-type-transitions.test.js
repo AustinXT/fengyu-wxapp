@@ -19,7 +19,7 @@ test('全量差分识别升级与不变；#545 起降档被单调门挡住并单
   assert.equal(out.protectedBreakdown.length, 2)
   assert.equal(out.protectedBreakdown.find(b => b.level === '会员客').ordered30d, 1)
 })
-test('历史降级轨迹（真实降档行）仍能被 summarize 记录，不被单调门统计吞掉', () => {
+test('summarize 对降档行仍正确计数（防御性：#545 起 AUDIT_SQL 本身不会再产出此类行，保留以防单调门被移除时审计失明）', () => {
   const rows = [{ old_type: '会员客', new_type: '小美客', computed_type: '小美客', ordered_30d: true }]
   const out = summarize(rows)
   assert.equal(out.downgrades, 1); assert.equal(out.downgradesOrdered30d, 1)

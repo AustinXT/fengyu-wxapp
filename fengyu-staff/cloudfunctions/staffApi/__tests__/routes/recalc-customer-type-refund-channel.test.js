@@ -103,7 +103,7 @@ describe('recalcCustomerType — 退款通道（allowDowngrade=true）', () => {
 
   test('默认通道（allowDowngrade=false）：会员客早退，既不读阈值也不写', async () => {
     const client = buildClient({ currentType: '会员客', computedType: '小美客' })
-    await expect(recalcCustomerType(client, 'U1', 'O1')).resolves.toBeUndefined()
+    await expect(recalcCustomerType(client, 'U1', 'O1')).resolves.toBeNull()
     expect(updateOf(client)).toBeUndefined()
     expect(config.getMemberThresholdStrict).not.toHaveBeenCalled()
   })
@@ -119,7 +119,7 @@ describe('recalcCustomerType — 退款通道（allowDowngrade=true）', () => {
   test('阈值配置不可用 → 跳过本次分类重算：不写库、不抛错（不阻断退款审批）', async () => {
     config.getMemberThresholdStrict.mockRejectedValueOnce(new Error(config.THRESHOLD_UNAVAILABLE_MSG))
     const client = buildClient({ currentType: '会员客', computedType: '小美客' })
-    await expect(recalcCustomerType(client, 'U1', 'O1', true)).resolves.toBeUndefined()
+    await expect(recalcCustomerType(client, 'U1', 'O1', true)).resolves.toBeNull()
     expect(updateOf(client)).toBeUndefined()
   })
 

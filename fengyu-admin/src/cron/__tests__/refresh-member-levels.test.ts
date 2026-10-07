@@ -405,6 +405,55 @@ describe('cron-worker STEP 2 — refreshMemberLevels', () => {
       expect(sqlTexts.some((t) => t.includes('INSERT INTO messages'))).toBe(true)
     })
 
+    // R1 守卫成立的前提：processDowngrade 降档时把「降档前的高档」写进 old_member_level。
+    // 只有这样，次日 unchanged 分支里 isDowngrade(old_member_level, member_level) 才为真。
+    // 这里用真实序列「先升（初钻→星钻）后降（星钻→初钻）」把两段串起来，而不是手工构造行。
+    it('先升后降的真实序列：降档 UPDATE 写入 old_member_level=降档前等级，次日不补发礼包', async () => {
+      // —— 第一段：保级期已过的星钻会员，滚动消费回落 → processDowngrade 到初钻
+      mockExecute.mockResolvedValueOnce([
+        { value: JSON.stringify({ 初钻: { messageTitle: '初钻特权', messageBody: '感谢' } }) },
+      ])
+      mockExecute.mockResolvedValueOnce([
+        {
+          user_id: 'u-seq',
+          member_level: '星钻',
+          old_member_level: '初钻', // 上次跃迁是 初钻→星钻 的升级
+          member_level_locked_until: new Date(Date.now() - 10 * 86400000),
+          member_level_upgraded_at: new Date(Date.now() - 200 * 86400000),
+          became_member_at: new Date(Date.now() - 300 * 86400000),
+          spend: '0',
+        },
+      ])
+      mockExecute.mockResolvedValue([])
+      const first = await refreshMemberLevels(mockDb as never)
+      expect(first.downgradeCount).toBe(1)
+      const downSql = mockExecute.mock.calls.map((c) => sqlTextOf(c[0])).find((t) => t.includes('member_level_locked_until = NULL'))!
+      // 降档 UPDATE 必须把降档前的等级快照进 old_member_level（R1 守卫依赖它）
+      expect(downSql).toContain('old_member_level = member_level')
+
+      // —— 第二段：按第一段写入后的库状态（old=星钻、cur=初钻、upgraded_at 刚被刷新）跑次日 cron
+      mockExecute.mockReset()
+      mockDb.transaction.mockClear()
+      mockExecute.mockResolvedValueOnce([
+        { value: JSON.stringify({ 初钻: { messageTitle: '初钻特权', messageBody: '感谢' } }) },
+      ])
+      mockExecute.mockResolvedValueOnce([
+        {
+          user_id: 'u-seq',
+          member_level: '初钻',
+          old_member_level: '星钻', // = 第一段降档 UPDATE 写入的值
+          member_level_locked_until: null,
+          member_level_upgraded_at: new Date(), // processDowngrade 也会刷新它
+          became_member_at: new Date(Date.now() - 300 * 86400000),
+          spend: '0',
+        },
+      ])
+      const second = await refreshMemberLevels(mockDb as never)
+      expect(second.unchangedCount).toBe(1)
+      expect(mockDb.transaction).not.toHaveBeenCalled()
+      expect(mockExecute.mock.calls.some((c) => sqlTextOf(c[0]).includes('INSERT INTO messages'))).toBe(false)
+    })
+
     // R1 回归：processDowngrade 同样写 member_level_upgraded_at，只看「近 36h 升级过」
     // 会把刚被降档的人当成升级、补发「恭喜升级到初钻」礼包。此前降档终点是 NULL，
     // 被 `if (newLevel && …)` 短路才没暴露。
