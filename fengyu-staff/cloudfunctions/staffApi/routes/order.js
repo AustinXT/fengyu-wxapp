@@ -2779,12 +2779,13 @@ async function rollbackPendingConversionOnClose(client, saleOrderId, now) {
       `UPDATE sale_items
 SET paid_sessions = CASE
   WHEN sale_items.session_count IS NULL THEN NULL
+  WHEN op.sale_order_type = '寄存单' THEN sale_items.paid_sessions
   WHEN op.total_amount <= 0 THEN sale_items.session_count
   WHEN sale_items.sale_amount <= 0 THEN sale_items.session_count
   ELSE LEAST(sale_items.session_count, FLOOR(sale_items.received::numeric * sale_items.session_count / sale_items.sale_amount::numeric)::integer)
 END,
 updated_at = NOW()
-FROM (SELECT total_amount FROM sale_orders WHERE sale_order_id = $2) op
+FROM (SELECT total_amount, sale_order_type FROM sale_orders WHERE sale_order_id = $2) op
 WHERE sale_items.sale_item_id IN (
   SELECT out_item.ref_sale_item_id
     FROM sale_items out_item
@@ -3945,6 +3946,23 @@ async function createRefund(ctx) {
 
   try {
   await pg.transaction(async (client) => {
+    if (origOrder.sale_order_type === '寄存单') {
+      // 与转换保持原单→源行锁序；事务外退款定额只在锁内快照未变化时可提交。
+      const lockedOrder = await client.query('SELECT status FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE', [refSaleOrderId])
+      if (!lockedOrder.rows[0] || lockedOrder.rows[0].status !== origOrder.status) {
+        throw new Error('CONFLICT: 寄存单状态已变化，请刷新后重新发起退款')
+      }
+      const lockedItems = await client.query(
+        "SELECT * FROM sale_items WHERE sale_order_id = $1 AND item_direction = '购买' ORDER BY sale_item_id FOR UPDATE",
+        [refSaleOrderId],
+      )
+      const before = new Map(origItems.map((it) => [it.sale_item_id, it]))
+      const fields = ['remaining_sessions', 'paid_sessions', 'unit_real_price', 'session_count', 'quantity', 'picked_up_quantity', 'refunded_quantity', 'converted_quantity']
+      if (lockedItems.rows.length !== before.size || lockedItems.rows.some((it) => {
+        const old = before.get(it.sale_item_id)
+        return !old || fields.some((field) => String(old[field] ?? '') !== String(it[field] ?? ''))
+      })) throw new Error('CONFLICT: 寄存权益已变化，请刷新后重新发起退款')
+    }
     const sopRes = await client.query(
       `INSERT INTO sale_order_payments (
         sale_order_id, change_type, amount, payment_method, external_txn_id,
@@ -4216,7 +4234,8 @@ async function approveRefund(ctx) {
         const isHome = r.product_type === '家居产品'
         const isCard = r.product_type === '疗程卡'
         if (!isHome && !isCard) continue
-        const requested = isHome ? (homeRefundQty.get(r.sale_item_id) || 0) : 0
+        const checkQuantity = isHome || (isCard && sopRow.sale_order_type === '寄存单')
+        const requested = checkQuantity ? (homeRefundQty.get(r.sale_item_id) || 0) : 0
         const requestedOverpay = homeOverpayAmt.get(r.sale_item_id) || 0
         if (requested <= 0 && requestedOverpay <= 0) continue
         // 与 calculateUnusedQuantity 同口径：折抵可能带走了剩余已付的全部金额却只占用
@@ -4240,10 +4259,12 @@ async function approveRefund(ctx) {
           converted_amount: c ? c.converted_amount : null,
           converted_quantity: c ? c.converted_quantity : null,
         }
-        if (isHome) {
+        if (checkQuantity) {
           const refundable = calculateUnusedQuantity(lockedSrc)
           if (requested > refundable) {
-            throw new Error('CONFLICT: HOME_PRODUCT_REFUNDABLE_CHANGED: 家居产品可退数量已变化（可能已被转换折抵或提货），请刷新后重新发起退款')
+            throw new Error(isHome
+              ? 'CONFLICT: HOME_PRODUCT_REFUNDABLE_CHANGED: 家居产品可退数量已变化（可能已被转换折抵或提货），请刷新后重新发起退款'
+              : 'CONFLICT: CARD_REFUNDABLE_CHANGED: 寄存卡可退次数已变化（可能已被转换折抵或消费），请刷新后重新发起退款')
           }
         }
         // 余数同样按锁内新快照复核：申请时的 ¥50 余数可能已被折抵带走

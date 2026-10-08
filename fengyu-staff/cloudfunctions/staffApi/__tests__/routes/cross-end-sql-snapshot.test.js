@@ -3193,6 +3193,19 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
     )
   })
 
+  test('寄存转换关单保留 paid_sessions，审批须显式复核寄存卡可退次数', () => {
+    for (const file of [FILES.staffOrderJs, FILES.adminOrdersTs]) {
+      const src = stripComments(readFile(file))
+      const rollback = src.slice(src.indexOf('async function rollbackPendingConversionOnClose'))
+      expect(rollback, file).toContain("WHEN op.sale_order_type = '寄存单' THEN sale_items.paid_sessions")
+      expect(rollback, file).toContain('SELECT total_amount, sale_order_type FROM sale_orders')
+    }
+    for (const file of [FILES.staffOrderJs, FILES.adminRefundsTs]) {
+      expect(readFile(file), file).toContain('CARD_REFUNDABLE_CHANGED')
+      expect(readFile(file), file).toContain('const requested = checkQuantity ?')
+    }
+  })
+
   test('寄存退款后的转换锁内必须读取 paid_sessions，不能按物理余量回退', () => {
     for (const file of [FILES.staffOrderJs, FILES.adminOrdersTs]) {
       const src = stripComments(readFile(file))

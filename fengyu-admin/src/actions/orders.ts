@@ -721,12 +721,13 @@ async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string
       UPDATE sale_items
          SET paid_sessions = CASE
                WHEN sale_items.session_count IS NULL THEN NULL
+               WHEN op.sale_order_type = '寄存单' THEN sale_items.paid_sessions
                WHEN op.total_amount <= 0 THEN sale_items.session_count
                WHEN sale_items.sale_amount <= 0 THEN sale_items.session_count
                ELSE LEAST(sale_items.session_count, FLOOR(sale_items.received::numeric * sale_items.session_count / sale_items.sale_amount::numeric)::integer)
              END,
              updated_at = NOW()
-        FROM (SELECT total_amount FROM sale_orders WHERE sale_order_id = ${refOrderId}) op
+        FROM (SELECT total_amount, sale_order_type FROM sale_orders WHERE sale_order_id = ${refOrderId}) op
        WHERE sale_items.sale_item_id IN (
          SELECT out_item.ref_sale_item_id
            FROM sale_items out_item

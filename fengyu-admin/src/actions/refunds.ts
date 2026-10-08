@@ -1040,6 +1040,19 @@ export const createRefund = withPermission(
   let refundPaymentId: number
   try {
     refundPaymentId = await db.transaction(async (tx) => {
+      if (origOrder.saleOrderType === '寄存单') {
+        const lockedOrders = await tx.execute(sql`SELECT status FROM sale_orders WHERE sale_order_id = ${refSaleOrderId} FOR UPDATE`) as unknown as Array<{ status: string }>
+        if (!lockedOrders[0] || lockedOrders[0].status !== origOrder.status) {
+          throw new ApiError('CONFLICT', '寄存单状态已变化，请刷新后重新发起退款')
+        }
+        const lockedItems = await tx.execute(sql`SELECT * FROM sale_items WHERE sale_order_id = ${refSaleOrderId} AND item_direction = '购买' ORDER BY sale_item_id FOR UPDATE`) as unknown as Array<Record<string, unknown>>
+        const before = new Map(sourceItems.map((it) => [it.sale_item_id, it]))
+        const fields = ['remaining_sessions', 'paid_sessions', 'unit_real_price', 'session_count', 'quantity', 'picked_up_quantity', 'refunded_quantity'] as const
+        if (lockedItems.length !== before.size || lockedItems.some((it) => {
+          const old = before.get(it.sale_item_id as string)
+          return !old || fields.some((field) => String(old[field] ?? '') !== String(it[field] ?? ''))
+        })) throw new ApiError('CONFLICT', '寄存权益已变化，请刷新后重新发起退款')
+      }
       // 主流水：按整笔金额写一行 status='待审批'，approveRefund 时按拆分（储值卡+原通道）做实际扣减。
       // chk_sop_amount_sign 要求退款 amount<=0；0 元退项也走同一审批流水。
       const totalAmountSign = -adjustedRefundAmount
@@ -1363,7 +1376,8 @@ export const approveRefund = withPermission(
           const isHome = r.product_type === '家居产品'
           const isCard = r.product_type === '疗程卡'
           if (!isHome && !isCard) continue
-          const requested = isHome ? (homeRefundQty.get(r.sale_item_id as string) ?? 0) : 0
+          const checkQuantity = isHome || (isCard && pre.orderSaleOrderType === '寄存单')
+          const requested = checkQuantity ? (homeRefundQty.get(r.sale_item_id as string) ?? 0) : 0
           const requestedOverpay = homeOverpayAmt.get(r.sale_item_id as string) ?? 0
           if (requested <= 0 && requestedOverpay <= 0) continue
           // 与 calculateUnusedQuantity 同口径：折抵可能带走剩余已付的全部金额却只占用
@@ -1389,10 +1403,12 @@ export const approveRefund = withPermission(
             sales_category: null,
             service_fee: null,
           }
-          if (isHome) {
+          if (checkQuantity) {
             const refundable = calculateUnusedQuantity(lockedSrc)
             if (requested > refundable) {
-              throw new ApiError('CONFLICT', 'HOME_PRODUCT_REFUNDABLE_CHANGED: 家居产品可退数量已变化（可能已被转换折抵或提货），请刷新后重新发起退款')
+              throw new ApiError('CONFLICT', isHome
+                ? 'HOME_PRODUCT_REFUNDABLE_CHANGED: 家居产品可退数量已变化（可能已被转换折抵或提货），请刷新后重新发起退款'
+                : 'CARD_REFUNDABLE_CHANGED: 寄存卡可退次数已变化（可能已被转换折抵或消费），请刷新后重新发起退款')
             }
           }
           // 余数同样按锁内新快照复核：申请时的 ¥50 余数可能已被折抵带走
