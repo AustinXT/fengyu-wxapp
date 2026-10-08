@@ -3193,6 +3193,15 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
     )
   })
 
+  test('退款审批真实锁序为原单先于流水CAS，防申请唯一索引等待成环', () => {
+    for (const file of [FILES.staffOrderJs, FILES.adminRefundsTs]) {
+      const src = stripComments(readFile(file))
+      const begin = file === FILES.staffOrderJs ? src.indexOf('async function approveRefund(ctx)') : src.indexOf('cascade = await db.transaction')
+      const body = src.slice(begin)
+      expect(body.indexOf('SELECT sale_order_id FROM sale_orders'), file).toBeLessThan(body.indexOf('UPDATE sale_order_payments'))
+    }
+  })
+
   test('寄存转换关单保留 paid_sessions，审批须显式复核寄存卡可退次数', () => {
     for (const file of [FILES.staffOrderJs, FILES.adminOrdersTs]) {
       const src = stripComments(readFile(file))

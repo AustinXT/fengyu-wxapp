@@ -29,7 +29,7 @@ describe.skipIf(!url)('寄存退款后的转换：真实 PostgreSQL 复算', () 
       DROP SCHEMA IF EXISTS conversion_case CASCADE;
       CREATE SCHEMA conversion_case;
       SET search_path = conversion_case, public;
-      CREATE TABLE sale_orders (sale_order_id text PRIMARY KEY, sale_order_type text, status text, total_amount numeric DEFAULT 0);
+      CREATE TABLE sale_orders (sale_order_id text PRIMARY KEY, sale_order_type text, status text, total_amount numeric DEFAULT 0, received numeric DEFAULT 960, refunded_amount numeric DEFAULT 0, updated_at timestamp);
       CREATE TABLE sale_items (
         sale_item_id text PRIMARY KEY, sale_order_id text, ref_sale_item_id text,
         item_direction text DEFAULT '购买', product_type text DEFAULT '疗程卡',
@@ -38,7 +38,9 @@ describe.skipIf(!url)('寄存退款后的转换：真实 PostgreSQL 复算', () 
         refunded_quantity numeric DEFAULT 0, converted_quantity numeric DEFAULT 0,
         updated_at timestamp, unit_real_price numeric DEFAULT 80, sale_amount numeric DEFAULT 480, received numeric DEFAULT 480
       );
-      CREATE TABLE sale_order_payments (sale_order_id text, status text, change_type text, note text);
+      CREATE TABLE sale_order_payments (id bigserial PRIMARY KEY, sale_order_id text, status text, change_type text, note text,
+        amount numeric DEFAULT 0, paid_at timestamp, audit_employee_id text, audit_at timestamp, audit_remark text);
+      CREATE UNIQUE INDEX pending_refund ON sale_order_payments(sale_order_id) WHERE status = '待审批' AND change_type = '退款';
     `)
   })
   afterAll(async () => { if (client) { await client.query('DROP SCHEMA IF EXISTS conversion_case CASCADE'); await client.end() } })
@@ -130,6 +132,48 @@ describe.skipIf(!url)('寄存退款后的转换：真实 PostgreSQL 复算', () 
     const ctx = createManagerCtx({ refSaleOrderId: 'deposit', items: [{ saleItemId: 'B', refundQuantity: 6 }], refundReason: '退B' })
     await orderRoutes.createRefund(ctx)
     expect(writes.some((sql) => sql.includes('INSERT INTO sale_order_payments'))).toBe(true)
+  })
+  test('申请持原单锁与审批交错：唯一索引拒绝申请，无40P01死锁', async () => {
+    await client.query("INSERT INTO sale_order_payments (id, sale_order_id, status, change_type, amount) VALUES (1001, 'deposit', '待审批', '退款', -80)")
+    const approval = new Client({ connectionString: url })
+    await approval.connect()
+    let operation
+    try {
+      await approval.query('SET search_path = conversion_case, public')
+      await approval.query("SET statement_timeout = '3s'")
+      await client.query('BEGIN')
+      await client.query("SELECT sale_order_id FROM sale_orders WHERE sale_order_id = 'deposit' FOR UPDATE")
+      pg.query.mockResolvedValueOnce([{ id: 1001, sale_order_id: 'deposit', sale_order_type: '寄存单', store_id: 'store-001', status: '待审批', amount: -80, received: 960, refunded_amount: 0, payment_method: '线下' }])
+      let signalAttempt
+      const attempt = new Promise((resolve) => { signalAttempt = resolve })
+      pg.transaction.mockImplementationOnce(async (cb) => {
+        await approval.query('BEGIN')
+        try { return await cb({ query: async (sql, params) => {
+          if (sql.startsWith('SELECT sale_order_id FROM sale_orders')) signalAttempt()
+          const res = await approval.query(sql, params)
+          if (sql.includes('UPDATE sale_order_payments')) signalAttempt()
+          if (sql.includes('UPDATE sale_orders')) throw new Error('AFTER_PARENT_UPDATE')
+          return res
+        } }) } finally { await approval.query('ROLLBACK') }
+      })
+      const ctx = createManagerCtx({ paymentId: 1001 })
+      operation = orderRoutes.approveRefund(ctx)
+      // Attach rejection immediately; either side becoming a deadlock victim must fail the test.
+      const outcome = operation.then(() => null, (error) => error)
+      await Promise.race([attempt, outcome.then((error) => { throw error || new Error('审批没有锁尝试') })])
+      let insertError
+      try { await client.query("INSERT INTO sale_order_payments (id, sale_order_id, status, change_type) VALUES (1002, 'deposit', '待审批', '退款')") }
+      catch (error) { insertError = error }
+      await client.query('ROLLBACK')
+      expect(insertError?.code).toBe('23505')
+      const error = await outcome
+      expect(error?.message).toBe('AFTER_PARENT_UPDATE')
+      expect(error?.code).not.toBe('40P01')
+    } finally {
+      await client.query('ROLLBACK')
+      await approval.query('ROLLBACK')
+      await approval.end()
+    }
   })
   test('直接提交已退光行：真实复算后拒绝，事务未写订单、权益或余额', async () => {
     await seed(2, 4)

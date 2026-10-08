@@ -1234,6 +1234,8 @@ export const approveRefund = withPermission(
 
   try {
     cascade = await db.transaction(async (tx) => {
+      // 先原单、再退款流水 CAS；与寄存申请、转换统一锁序，避免唯一索引等待成环。
+      await tx.execute(sql`SELECT sale_order_id FROM sale_orders WHERE sale_order_id = ${refSaleOrderId} FOR UPDATE`)
       // paid_at / audit_at 写北京墙钟字面（见 lib/db-time）：原 new Date().toISOString() 落 UTC 字面早 8h。
 
       // 1) CAS 翻状态 + 同一条 UPDATE 写审批人：仅 '待审批' → '已支付'
@@ -1326,9 +1328,6 @@ export const approveRefund = withPermission(
       {
         // #182 锁序：先锁本单（sale_orders），再锁源行（sale_items）——与入账路径、
         // createConversionOrder、关单回滚统一为 sale_orders → sale_items，避免 40P01。
-        await tx.execute(sql`
-          SELECT sale_order_id FROM sale_orders WHERE sale_order_id = ${refSaleOrderId} FOR UPDATE
-        `)
         // 无条件锁：老退款单（无 note.items 且 ref_sale_item_id 为空）会让 homeRefundQty 为空，
         // 若因此跳过加锁就退回「createRefund 无锁定额 + cascade LEAST 静默封顶」的旧缺口。
         // 锁集必须覆盖本单**全部购买行**而非只锁家居子集：后续 cascadeRefund /

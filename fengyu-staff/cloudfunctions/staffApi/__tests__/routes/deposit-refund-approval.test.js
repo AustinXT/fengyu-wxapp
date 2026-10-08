@@ -39,10 +39,12 @@ describe('寄存疗程卡退款审批：锁内可退次数复核', () => {
       status: '待审批', amount: '-80', payment_method: '线下', received: 960, refunded_amount: 0,
       note: JSON.stringify({ items: [{ refSaleItemId: 'A', quantity: requested, refundAmount: 80 }] }),
     }])
+    const statements = []
     let committed = false, rolledBack = false
     pg.transaction.mockImplementationOnce(async (cb) => {
       try {
         const result = await cb({ query: async (sql) => {
+          statements.push(sql)
           if (sql.includes('AS net')) return { rows: [{ net: 960 }], rowCount: 1 }
           if (sql.includes('FROM sale_items') && sql.includes('ORDER BY sale_item_id') && sql.includes('FOR UPDATE')) return { rows: [{
             sale_item_id: 'A', product_type: '疗程卡', quantity: 1,
@@ -60,6 +62,8 @@ describe('寄存疗程卡退款审批：锁内可退次数复核', () => {
     if (allowed) {
       await approvalRoutes.approveRefund(ctx)
       expect(committed).toBe(true)
+      expect(statements[0]).toContain('FROM sale_orders')
+      expect(statements[0]).toContain('FOR UPDATE')
       expect(cascadeRefund).toHaveBeenCalledOnce()
       expect(recalcPaidSessionsForOrder).toHaveBeenCalledOnce()
     } else {

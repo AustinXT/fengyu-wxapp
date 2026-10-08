@@ -4081,6 +4081,8 @@ async function approveRefund(ctx) {
   const now = new Date()
 
   await pg.transaction(async (client) => {
+    // 与申请/转换统一为原单→退款流水→源行；必须在余额读取和退款 CAS 之前取锁。
+    await client.query('SELECT sale_order_id FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE', [refSaleOrderId])
     // G 复校：审批前重算可退余额（本笔仍待审批，SUM 已支付自动排除），防 create→approve 间余额变化导致超退。
     // create 时已校验，但其间回款/其它操作可能改变余额；in-flight 唯一约束保证本笔是唯一待审批。两端镜像 admin refunds.ts。
     const capNowRes = await client.query(
@@ -4176,10 +4178,6 @@ async function approveRefund(ctx) {
       // sale_orders → sale_order_payments，入账路径与 createConversion / 关单回滚都已统一为
       // 先锁 sale_orders；approveRefund 原本是 sale_items → sale_orders（后续 cascade /
       // recalcPaidSessionsForOrder 才更新订单行），与它们互为反向 → 40P01。
-      await client.query(
-        `SELECT sale_order_id FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE`,
-        [refSaleOrderId],
-      )
       // 无条件锁：老退款单（无 note.items 且 ref_sale_item_id 为空）会让 homeRefundQty 为空，
       // 若因此跳过加锁就退回「createRefund 无锁定额 + cascade LEAST 静默封顶」的旧缺口。
       // 行锁本身即可把并发折抵挡在审批之外，成本也只是一条即将被更新的行的锁。
