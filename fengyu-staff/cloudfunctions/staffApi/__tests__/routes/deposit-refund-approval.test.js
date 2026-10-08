@@ -25,6 +25,21 @@ for (const [id, previous] of saved) require.cache[id] = previous
 if (previousRoute) require.cache[routeId] = previousRoute
 else delete require.cache[routeId]
 
+describe('退款审批持锁资金上限', () => {
+  test('预查800、锁后余额200：拒绝500且不CAS流水', async () => {
+    pg.query.mockResolvedValueOnce([{ id: 1001, sale_order_id: 'sale', store_id: 'store-001', sale_order_type: '销售单', status: '待审批', amount: '-500', received: 800, refunded_amount: 0 }])
+    const statements = []
+    pg.transaction.mockImplementationOnce(async (cb) => cb({ query: async (sql) => {
+      statements.push(sql)
+      if (sql.includes('FOR UPDATE')) return { rows: [{ received: '200', refunded_amount: '0' }], rowCount: 1 }
+      if (sql.includes('AS net')) return { rows: [{ net: '200' }], rowCount: 1 }
+      return { rows: [], rowCount: 1 }
+    } }))
+    await expect(approvalRoutes.approveRefund(createManagerCtx({ paymentId: 1001 }))).rejects.toThrow('可退余额已变化')
+    expect(statements.some((sql) => sql.includes('UPDATE sale_order_payments'))).toBe(false)
+  })
+})
+
 describe('寄存疗程卡退款审批：锁内可退次数复核', () => {
   beforeEach(() => { cascadeRefund.mockClear(); recalcPaidSessionsForOrder.mockClear() })
   test.each([
@@ -45,6 +60,7 @@ describe('寄存疗程卡退款审批：锁内可退次数复核', () => {
       try {
         const result = await cb({ query: async (sql) => {
           statements.push(sql)
+          if (sql.includes('FROM sale_orders') && sql.includes('FOR UPDATE')) return { rows: [{ sale_order_id: 'deposit', received: '960', refunded_amount: '0' }], rowCount: 1 }
           if (sql.includes('AS net')) return { rows: [{ net: 960 }], rowCount: 1 }
           if (sql.includes('FROM sale_items') && sql.includes('ORDER BY sale_item_id') && sql.includes('FOR UPDATE')) return { rows: [{
             sale_item_id: 'A', product_type: '疗程卡', quantity: 1,

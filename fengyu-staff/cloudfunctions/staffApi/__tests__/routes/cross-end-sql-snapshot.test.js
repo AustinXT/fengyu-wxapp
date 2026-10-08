@@ -3193,12 +3193,30 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
     )
   })
 
+  test('审批CAS的金额/明细快照两端字面同义且未丢失', () => {
+    const staff = readFile(FILES.staffOrderJs).slice(readFile(FILES.staffOrderJs).indexOf('async function approveRefund(ctx)'))
+    const admin = readFile(FILES.adminRefundsTs).slice(readFile(FILES.adminRefundsTs).indexOf('cascade = await db.transaction'))
+    const staffSql = staff.match(/const cas = await client.query\(\s*`([\s\S]*?)`,/)[1]
+    const adminSql = admin.match(/const updRes = await tx.execute\(sql`([\s\S]*?)`\)/)[1]
+    const predicates = [staffSql, adminSql].map((sql) => normalizeSql(sql.slice(sql.indexOf('WHERE id ='))))
+    expect(predicates[0]).toBe(predicates[1])
+    for (const predicate of predicates) {
+      expect(predicate).toContain('AND amount = ?::numeric')
+      expect(predicate).toContain('AND note IS NOT DISTINCT FROM ?::text')
+    }
+    expect(staff).toContain('paymentId, sopRow.amount, sopRow.note ?? null]')
+    expect(adminSql).toContain('${pre.payment.amount}')
+    expect(adminSql).toContain('${pre.payment.note}')
+  })
+
   test('退款审批真实锁序为原单先于流水CAS，防申请唯一索引等待成环', () => {
     for (const file of [FILES.staffOrderJs, FILES.adminRefundsTs]) {
       const src = stripComments(readFile(file))
       const begin = file === FILES.staffOrderJs ? src.indexOf('async function approveRefund(ctx)') : src.indexOf('cascade = await db.transaction')
       const body = src.slice(begin)
-      expect(body.indexOf('SELECT sale_order_id FROM sale_orders'), file).toBeLessThan(body.indexOf('UPDATE sale_order_payments'))
+      const lock = body.indexOf('SELECT sale_order_id, received, refunded_amount FROM sale_orders')
+      expect(lock, file).toBeGreaterThanOrEqual(0)
+      expect(lock, file).toBeLessThan(body.indexOf('UPDATE sale_order_payments'))
     }
   })
 
