@@ -20,7 +20,8 @@ metadata:
 
 在 Codex 中用 `$issue-dev 70` 或自然语言调用；旧 `/issue-dev` 意图也照常处理。
 `.agents/skills` 已链接到 `.claude/skills`，维护这一份源文件即可，无须复制全局 skill。
-Codex 负责实现；外部 reviewer 固定 GLM-5.3[1M] + OpenCode、DeepSeek + Claude Code CLI。
+Codex 负责实现；外部 reviewer 固定 GLM-5.3[1M] + OpenCode、DeepSeek + dsh。
+禁止通过 Claude Code CLI 代理调用 DeepSeek 或其它模型；dsh 不可用时保留 draft，不回退到 Claude CLI。
 开发期间发现的维护建议落本地 backlog，不自动派生新 issue。
 
 维护期定位：**需求没做对是事故；质量闸门是放手让 AI 执行的前提，不是可裁剪的精益求精**。"不精益求精"只体现在：按验收归并交付、不做产品方向决策、不追求代码美学——验证与评审纪律一项不减。
@@ -213,7 +214,7 @@ PR body 固定结构（由 Codex 按实际结果整理）：
 
 ## 评审
 - Codex 四维自审：<invariant 与结论>
-- 独立双谱系：GLM-5.3[1M] / OpenCode + DeepSeek / Claude Code，最终 HEAD <SHA>，无未处理的范围内 P0/P1/P2
+- 独立双谱系：GLM-5.3[1M] / OpenCode + DeepSeek / dsh，最终 HEAD <SHA>，无未处理的范围内 P0/P1/P2
 - 范围外建议：<本地 backlog 路径与裁决，未自动建单>
 
 Refs #N

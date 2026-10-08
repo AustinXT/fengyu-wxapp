@@ -3137,7 +3137,9 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
     // 折抵数量表达式（疗程卡剩余次数 / 家居未结算件数）四处同源。
     // #154：家居那一支必须是**三列式** —— 只减 picked_up 会把已退款/已转换的件数当成还能
     // 折走，既撞 chk_sale_item_settled_le_quantity，也让已退款件数在候选里复活。
-    const QTY_EXPR = "CASE WHEN si.product_type = '疗程卡' THEN COALESCE(si.remaining_sessions, 0)"
+    const QTY_EXPR = "CASE WHEN si.product_type = '疗程卡' THEN CASE WHEN so.sale_order_type = '寄存单' AND si.paid_sessions IS NOT NULL"
+      + " THEN GREATEST(0, LEAST(COALESCE(si.remaining_sessions, 0), si.paid_sessions - GREATEST(0, COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0))))"
+      + " ELSE COALESCE(si.remaining_sessions, 0) END"
       + " ELSE GREATEST(0, si.quantity - (COALESCE(si.picked_up_quantity, 0)"
       + " + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0))) END"
     expect(
@@ -3159,6 +3161,55 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
     expect(staff, '已转走金额不得用件数 × 单价推算').not.toContain(
       'COALESCE(si.picked_up_quantity, 0) * si.unit_real_price::numeric)',
     )
+  })
+
+  test('审批CAS的金额/明细快照两端字面同义且未丢失', () => {
+    const staff = readFile(FILES.staffOrderJs).slice(readFile(FILES.staffOrderJs).indexOf('async function approveRefund(ctx)'))
+    const admin = readFile(FILES.adminRefundsTs).slice(readFile(FILES.adminRefundsTs).indexOf('cascade = await db.transaction'))
+    const staffSql = staff.match(/const cas = await client.query\(\s*`([\s\S]*?)`,/)[1]
+    const adminSql = admin.match(/const updRes = await tx.execute\(sql`([\s\S]*?)`\)/)[1]
+    const predicates = [staffSql, adminSql].map((sql) => normalizeSql(sql.slice(sql.indexOf('WHERE id ='))))
+    expect(predicates[0]).toBe(predicates[1])
+    for (const predicate of predicates) {
+      expect(predicate).toContain('AND amount = ?::numeric')
+      expect(predicate).toContain('AND note IS NOT DISTINCT FROM ?::text')
+    }
+    expect(staff).toContain('paymentId, sopRow.amount, sopRow.note ?? null]')
+    expect(adminSql).toContain('${pre.payment.amount}')
+    expect(adminSql).toContain('${pre.payment.note}')
+  })
+
+  test('退款审批真实锁序为原单先于流水CAS，防申请唯一索引等待成环', () => {
+    for (const file of [FILES.staffOrderJs, FILES.adminRefundsTs]) {
+      const src = stripComments(readFile(file))
+      const begin = file === FILES.staffOrderJs ? src.indexOf('async function approveRefund(ctx)') : src.indexOf('cascade = await db.transaction')
+      const body = src.slice(begin)
+      const lock = body.indexOf('SELECT sale_order_id, received, refunded_amount FROM sale_orders')
+      expect(lock, file).toBeGreaterThanOrEqual(0)
+      expect(lock, file).toBeLessThan(body.indexOf('UPDATE sale_order_payments'))
+    }
+  })
+
+  test('寄存转换关单保留 paid_sessions，审批须显式复核寄存卡可退次数', () => {
+    for (const file of [FILES.staffOrderJs, FILES.adminOrdersTs]) {
+      const src = stripComments(readFile(file))
+      const rollback = src.slice(src.indexOf('async function rollbackPendingConversionOnClose'))
+      expect(rollback, file).toContain("WHEN op.sale_order_type = '寄存单' THEN sale_items.paid_sessions")
+      expect(rollback, file).toContain('SELECT total_amount, sale_order_type FROM sale_orders')
+    }
+    for (const file of [FILES.staffOrderJs, FILES.adminRefundsTs]) {
+      expect(readFile(file), file).toContain('CARD_REFUNDABLE_CHANGED')
+      expect(readFile(file), file).toContain('const requested = checkQuantity ?')
+    }
+  })
+
+  test('寄存退款后的转换锁内必须读取 paid_sessions，不能按物理余量回退', () => {
+    for (const file of [FILES.staffOrderJs, FILES.adminOrdersTs]) {
+      const src = stripComments(readFile(file))
+      const held = src.match(/(?:const heldResult|const heldRows) = await [\s\S]*?FOR UPDATE OF si/)
+      expect(held, file).not.toBeNull()
+      expect(held[0], file).toContain('si.paid_sessions')
+    }
   })
 
   // ── #154 拆列后的三类守护 ──────────────────────────────────────────────

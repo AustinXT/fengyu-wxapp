@@ -47,7 +47,8 @@ gh pr list --state all --base dev --limit 1000 --json number,title,state,body,he
 不重复索要开跑确认。`--triage-only` 或“仅整理”只输出台账，不改业务代码/远端 issue。
 
 逐项走 issue-dev：隔离 worktree → 调研/澄清 → 实现 → 三层验证 → Codex 四维自审 →
-GLM-5.3[1M]/OpenCode + DeepSeek/Claude Code → PR base dev → 归档/回收。
+GLM-5.3[1M]/OpenCode + DeepSeek/dsh → PR base dev → 归档/回收。
+Codex 开发时禁止通过 Claude Code CLI 代理调用 DeepSeek 或其它模型；dsh 故障按 issue-dev 保留 draft。
 所有独立项基于最新 `origin/dev`，不堆叠未合并分支；依赖未合并先跳过依赖方。
 同文件的不同 PR 标建议合并顺序；迁移按 `db/rollout/README.md` 独立开发、集中集成，L2 数据命名空间、devtools 串行使用。
 需 DB 变更的条目登记迁移请求并继续代码验证/评审；未完成正式迁移的标「待迁移集成」并保留 worktree，可开 draft，不阻塞后续独立项发车。不得在业务开发期持迁移锁。
