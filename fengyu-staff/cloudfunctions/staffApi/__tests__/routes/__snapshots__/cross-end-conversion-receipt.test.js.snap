@@ -1,5 +1,18 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
+exports[`#548 四端权威欠款守卫 > conversionDebtSql 的完整查询四端相同且拒绝非法引用 1`] = `
+"COALESCE((SELECT SUM(GREATEST(0, debt_item.sale_amount::numeric - debt_item.received::numeric))
+ FROM sale_items debt_item
+ WHERE debt_item.sale_order_id = so.sale_order_id AND debt_item.item_direction = '转入'
+   AND NOT EXISTS (SELECT 1 FROM sale_order_payments debt_refund CROSS JOIN LATERAL jsonb_array_elements(
+     CASE WHEN jsonb_typeof(public.try_jsonb(debt_refund.note) -> 'items') = 'array'
+          THEN public.try_jsonb(debt_refund.note) -> 'items' ELSE '[]'::jsonb END) debt_part
+     WHERE debt_refund.sale_order_id = debt_item.sale_order_id AND debt_refund.change_type = '退款' AND debt_refund.status = '已支付'
+       AND debt_part ->> 'refSaleItemId' = debt_item.sale_item_id)
+   AND NOT EXISTS (SELECT 1 FROM sale_items debt_out JOIN sale_orders debt_order ON debt_order.sale_order_id = debt_out.sale_order_id
+     WHERE debt_out.ref_sale_item_id = debt_item.sale_item_id AND debt_out.item_direction = '转出' AND debt_order.status <> '已关闭')), 0)"
+`;
+
 exports[`#548 四端转换资产与现金增量SQL独立副本 > CONVERSION_RECEIPT_SQL 四端逐字相同 1`] = `
 "WITH refund_parts AS (
   SELECT elem ->> 'refSaleItemId' AS sale_item_id, sop.id,

@@ -494,7 +494,6 @@ async function refreshSpendingTier(client, clientUserId) {
        SELECT COALESCE(GREATEST(SUM(CASE WHEN sale_order_type = '转换单' THEN (received::numeric) - (refunded_amount::numeric) - ${retainedRefundFeeSql('sale_orders.sale_order_id')} ELSE GREATEST((received::numeric) - (refunded_amount::numeric) - ${retainedRefundFeeSql('sale_orders.sale_order_id')}, 0) END), 0), 0) AS total
        FROM sale_orders
        WHERE client_user_id = $1
-         AND status IN ('已支付', '已完成')
          AND sale_order_type IN ('销售单','转换单')
      ) t
      WHERE user_id = $1`,
@@ -4100,8 +4099,8 @@ const refundCapNow = Math.max(paymentsNetNow, Number(lockedOrder.received || 0) 
     }
 
     if (sopRow.sale_order_type === '转换单') {
-      const lockedOrder = await client.query('SELECT status FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE', [refSaleOrderId])
-      if (!['已支付', '部分支付', '已完成'].includes(lockedOrder.rows[0]?.status)) throw new Error('INVALID_STATE: 原转换单状态已变化')
+      const lockedStatusRows = await client.query('SELECT status FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE', [refSaleOrderId])
+      if (!['已支付', '部分支付', '已完成'].includes(lockedStatusRows.rows[0]?.status)) throw new Error('INVALID_STATE: 原转换单状态已变化')
       await client.query("SELECT sale_item_id FROM sale_items WHERE sale_order_id = $1 AND item_direction = '转入' ORDER BY sale_item_id FOR UPDATE", [refSaleOrderId])
       const current = await client.query(`SELECT si.*, GREATEST(0, si.received::numeric - ${retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true)}) AS received,
         COALESCE(si.picked_up_quantity, 0) AS picked_quantity,
@@ -4114,7 +4113,7 @@ const refundCapNow = Math.max(paymentsNetNow, Number(lockedOrder.received || 0) 
       const overpay = computeItemOverpayRemainders(current.rows)
       for (const it of note.items) {
         const row = available.get(it.refSaleItemId), qty = Number(it.quantity)
-        if (!row || !Number.isInteger(qty) || qty < 0 || qty > calculateUnusedQuantity(row)
+        if (!row || !Number.isFinite(Number(it.paidAmount)) || !Number.isFinite(Number(it.refundAmount)) || Number(it.refundAmount) < 0 || !Number.isInteger(qty) || qty < 0 || qty > calculateUnusedQuantity(row)
             || Math.abs(Number(it.paidAmount) - Number(row.received)) > 0.005
             || (row.product_type === '疗程卡' && qty > 0 && qty !== calculateUnusedQuantity(row))
             || Number(it.refundAmount) > Math.round((calculateUnusedQuantity(row) * Number(row.unit_real_price) + Number(overpay.get(row.sale_item_id) || 0)) * 100) / 100 + 0.001) {

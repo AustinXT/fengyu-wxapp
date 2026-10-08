@@ -1,5 +1,6 @@
-import { conversionDebtSql } from '@/lib/conversion-value'
 'use server'
+
+import { conversionDebtSql } from '@/lib/conversion-value'
 
 import { retainedRefundFeeSql } from '@/lib/refund-fee-sql'
 import { allocateRefundAccounting } from '@/lib/refund-accounting'
@@ -1254,8 +1255,8 @@ export const approveRefund = withPermission(
       // paid_at / audit_at 写北京墙钟字面（见 lib/db-time）：原 new Date().toISOString() 落 UTC 字面早 8h。
 
       if (pre.orderSaleOrderType === '转换单') {
-        const lockedOrder = (await tx.execute(sql`SELECT status FROM sale_orders WHERE sale_order_id = ${refSaleOrderId} FOR UPDATE`)) as unknown as Array<{ status: string }>
-        if (!['已支付', '部分支付', '已完成'].includes(lockedOrder[0]?.status)) throw new ApiError('INVALID_STATE', '原转换单状态已变化')
+        const lockedStatusRows = (await tx.execute(sql`SELECT status FROM sale_orders WHERE sale_order_id = ${refSaleOrderId} FOR UPDATE`)) as unknown as Array<{ status: string }>
+        if (!['已支付', '部分支付', '已完成'].includes(lockedStatusRows[0]?.status)) throw new ApiError('INVALID_STATE', '原转换单状态已变化')
         await tx.execute(sql`SELECT sale_item_id FROM sale_items WHERE sale_order_id = ${refSaleOrderId} AND item_direction = '转入' ORDER BY sale_item_id FOR UPDATE`)
         const currentItems = (await tx.execute(sql`
           SELECT si.*, GREATEST(0, si.received::numeric - ${sql.raw(retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true))}) AS received,
@@ -1273,7 +1274,7 @@ export const approveRefund = withPermission(
         for (const it of note.items) {
           const row = available.get(it.refSaleItemId)
           const qty = Number(it.quantity)
-          if (!row || !Number.isInteger(qty) || qty < 0 || qty > calculateUnusedQuantity(row)
+          if (!row || !Number.isFinite(Number(it.paidAmount)) || !Number.isFinite(Number(it.refundAmount)) || Number(it.refundAmount) < 0 || !Number.isInteger(qty) || qty < 0 || qty > calculateUnusedQuantity(row)
               || Math.abs(Number(it.paidAmount) - Number(row.received)) > 0.005
               || (row.product_type === '疗程卡' && qty > 0 && qty !== calculateUnusedQuantity(row))
               || Number(it.refundAmount) > Math.round((calculateUnusedQuantity(row) * Number(row.unit_real_price) + Number(overpay.get(row.sale_item_id) || 0)) * 100) / 100 + 0.001) {
@@ -2128,7 +2129,6 @@ async function refreshSpendingTierTx(
          SELECT COALESCE(GREATEST(SUM(CASE WHEN sale_order_type = '转换单' THEN (received::numeric) - (refunded_amount::numeric) - ${sql.raw(retainedRefundFeeSql('sale_orders.sale_order_id'))} ELSE GREATEST((received::numeric) - (refunded_amount::numeric) - ${sql.raw(retainedRefundFeeSql('sale_orders.sale_order_id'))}, 0) END), 0), 0) AS total
          FROM sale_orders
          WHERE client_user_id = ${clientUserId}
-           AND status IN ('已支付', '已完成')
            AND sale_order_type IN ('销售单','转换单')
        ) t
      WHERE user_id = ${clientUserId}

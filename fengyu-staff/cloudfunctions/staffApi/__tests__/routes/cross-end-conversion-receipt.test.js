@@ -19,3 +19,25 @@ describe('#548 四端转换资产与现金增量SQL独立副本', () => {
     const q=extract(file,'CONVERSION_RECEIPT_SQL');expect(q.replace('t.gross_value - $2::numeric','t.gross_value')).not.toBe(q)
   })
 })
+
+// 余额表达式也是四端合同，不能只守受领/权益写入。
+describe('#548 四端权威欠款守卫', () => {
+  test('conversionDebtSql 的完整查询四端相同且拒绝非法引用', () => {
+    const js = files.slice(0,3).map(file => require(path.join(root,file)))
+    const expected = js[0].conversionDebtSql('so.sale_order_id')
+    for (const module of js) {
+      expect(module.conversionDebtSql('so.sale_order_id')).toBe(expected)
+      expect(() => module.conversionDebtSql('so.sale_order_id;DROP TABLE sale_items')).toThrow('INVALID_PARAMS')
+    }
+    const ts = fs.readFileSync(path.join(root, files[3]),'utf8')
+    const body = ts.split('function conversionDebtSql')[1].match(/return `([\s\S]*?)`/)[1]
+    expect(body.replace(/\$\{orderExpression\}/g,'so.sale_order_id')).toBe(expected)
+    expect(expected).toMatchSnapshot()
+  })
+  test.each(files)('%s getConversionDebt 运行时调用同一余额表达式且取数转Number', file => {
+    const src = fs.readFileSync(path.join(root,file),'utf8').split('async function getConversionDebt')[1]
+    expect(src).toContain("conversionDebtSql('so.sale_order_id')")
+    expect(src).toContain('AS remaining FROM sale_orders so WHERE so.sale_order_id =')
+    expect(src).toContain('Number(')
+  })
+})

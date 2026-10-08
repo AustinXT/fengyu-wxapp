@@ -345,7 +345,6 @@ async function recomputeSpendingTierForUser(tx: Tx, clientUserId: string): Promi
          SELECT COALESCE(GREATEST(SUM(CASE WHEN sale_order_type = '转换单' THEN (received::numeric) - (refunded_amount::numeric) - ${sql.raw(retainedRefundFeeSql('sale_orders.sale_order_id'))} ELSE GREATEST((received::numeric) - (refunded_amount::numeric) - ${sql.raw(retainedRefundFeeSql('sale_orders.sale_order_id'))}, 0) END), 0), 0) AS total
          FROM sale_orders
          WHERE client_user_id = ${clientUserId}
-           AND status IN ('已支付', '已完成')
            AND sale_order_type IN ('销售单','转换单')
        ) t
      WHERE user_id = ${clientUserId}
