@@ -100,6 +100,26 @@ class ReviewTests(unittest.TestCase):
             self.assertEqual(result['status'], 'failed')
             self.assertIn('超时', result['error'])
 
+    def test_deepseek_regular_fd_without_installed_dsh(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root/'dsh-workspace').mkdir()
+            args = SimpleNamespace(out=root, cwd=root, timeout=5, deepseek_model='deepseek-flash')
+            code = 'import sys,json,os,stat; assert stat.S_ISREG(os.fstat(0).st_mode); data=sys.stdin.read(); print(json.dumps({"status":"complete","summary":data,"findings":[]}))'
+            packet = '无dsh也验证真正regular fd0：中文 `literal` $(literal)\n'*10000
+            with patch.object(r,'command',return_value=([r.sys.executable,'-c',code],r.os.environ.copy())):
+                result = r.run_one('deepseek',args,packet)
+            self.assertEqual(result['status'],'complete',result)
+            self.assertEqual(result['report']['summary'],packet)
+            self.assertEqual((root/'deepseek.stdin.txt').stat().st_mode & 0o777,0o600)
+
+    def test_project_entry_alias_targets_this_tracked_script(self):
+        root = Path(__file__).resolve().parents[5]
+        agent = root/'.agents/skills/issue-dev/scripts/dual_review.py'
+        actual = root/'.claude/skills/issue-dev/scripts/dual_review.py'
+        self.assertTrue(agent.samefile(actual))
+        self.assertTrue(actual.samefile(Path(r.__file__)))
+
     def test_dsh_nonzero_exit_cannot_pass_even_with_valid_stdout(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
