@@ -214,7 +214,7 @@ Page({
       let remaining;
       if (isRepayment) {
         if (orderData.orderType === '转换单') {
-          remaining = Math.max(0, Number(orderData.conversionRemainingPayable || 0));
+          remaining = Math.max(0, Number(orderData.conversionRemainingPayable ?? (totalAmount - received)));
         } else {
           const scanItems: any[] = Array.isArray(data.items) ? data.items : [];
           if (scanItems.length === 0) {

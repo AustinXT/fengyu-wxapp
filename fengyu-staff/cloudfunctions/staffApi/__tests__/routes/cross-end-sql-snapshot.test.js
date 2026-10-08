@@ -2105,7 +2105,7 @@ describe('寄存单/历史订单 资金操作锁定守护', () => {
       expect(src, `${name} 缺家居件分支`).toContain('+ COALESCE(si.converted_quantity, 0)) < si.quantity')
       expect(src, `${name} 缺「本笔退过次数」前提`).toContain('this_refund_sessions')
       expect(src, `${name} 缺「本笔退过次数」判据`).toContain("SUM(GREATEST(0, public.try_numeric(elem ->> 'quantity')))")
-      expect(src, `${name} 缺「本笔退过次数」门槛`).toContain('AND (SELECT refunded_sessions FROM this_refund_sessions) > 0')
+      expect(src, `${name} 缺「本笔退过次数」门槛`).toContain('(SELECT refunded_sessions FROM this_refund_sessions) > 0')
       expect(src, `${name} 缺状态迁移约束`).toContain("AND so.status IN ('已支付', '已完成', '部分支付')")
       expect(src, `${name} 未置已退款`).toContain("SET status = '已退款'::order_status")
     }

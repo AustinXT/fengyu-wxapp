@@ -1,4 +1,4 @@
-const { settlePointsSafe } = require('../utils/points')
+const { settlePointsSafe, consumePointBatches } = require('../utils/points')
 const { retainedRefundFeeSql } = require('../utils/refund-fee-sql')
 const { allocateRefundAccounting, remapLegacyOverpay } = require('../utils/refund-accounting')
 const { computeItemOverpayRemainders } = require('../utils/refund')

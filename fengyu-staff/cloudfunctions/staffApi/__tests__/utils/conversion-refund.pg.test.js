@@ -3,6 +3,7 @@ const { Client } = require('pg')
 const { recalcPaidSessionsForOrder } = require('../../utils/paid-sessions')
 const { CONVERSION_RECEIPT_SQL, getConversionDebt } = require('../../utils/conversion-value')
 const { cascadeRefund } = require('../../helpers/refund-cascade')
+const { grantPointBatch } = require('../../utils/points')
 const { buildRefundDetails, calculateUnusedQuantity } = require('../../utils/refund')
 const { allocateRefundAccounting } = require('../../utils/refund-accounting')
 const run = process.env.ISSUE548_PG_URL ? describe : describe.skip
@@ -96,6 +97,15 @@ run('#548 隔离 PG 转换退款（真实级联与权益重算）', () => {
     expect(Number(rows[1].received)).toBe(500)
     expect(Number((await c.query("SELECT refunded_amount FROM sale_orders WHERE sale_order_id='C548'")).rows[0].refunded_amount)).toBe(451)
     expect(Number((await c.query("SELECT amount FROM sale_payment_item_receipts WHERE sale_order_id='C548'")).rows[0].amount)).toBe(-451)
+  })
+  test('全部退款后原已发消费积分冲销，旧单现金和权益仍不回滚',async()=>{
+    const [row]=await setup()
+    const tx=(await c.query("INSERT INTO point_transactions(user_id,ref_order_id,type,amount) VALUES('T548','O548','消费赠送',8) RETURNING id")).rows[0]
+    await grantPointBatch(c,{userId:'T548',pointTransactionId:tx.id,type:'消费赠送',amount:8,refOrderId:'O548'})
+    await refund(row)
+    expect(Number((await c.query("SELECT points_balance FROM client_wechat_users WHERE user_id='T548'")).rows[0].points_balance)).toBe(0)
+    expect(Number((await c.query("SELECT SUM(amount) AS net FROM point_transactions WHERE user_id='T548' AND type IN ('消费赠送','消费冲销')")).rows[0].net)).toBe(0)
+    expect(Number((await c.query("SELECT refunded_amount FROM sale_orders WHERE sale_order_id='O548'")).rows[0].refunded_amount)).toBe(0)
   })
   test('四项两分分摊无负尾差且合计守恒',async()=>{
     const rows=await setup({old:0.02,cash:0,amounts:[1,1,1,1]});expect(rows.map(r=>Number(r.received))).toEqual([0.01,0,0.01,0]);expect(rows.reduce((n,r)=>n+Number(r.received),0)).toBe(0.02)

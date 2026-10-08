@@ -1999,12 +1999,7 @@ async function qrcode(ctx) {
       if (String(locked.lakala_out_order_no || '').trim()) {
         throw new Error('CONFLICT: ONLINE_PAYMENT_INTENT_ACTIVE: 已有进行中的在线回款，请勿重复出码')
       }
-      const remainingPayable = Math.max(0, roundMoney(
-        Number(locked.total_amount || 0)
-          - Number(locked.received || 0)
-          + Number(locked.refunded_amount || 0)
-          - Number(locked.pending_prepaid_card_amount || 0)
-      ))
+      const remainingPayable = await getConversionDebt(client, saleOrderId)
       if (roundedPaymentAmount > remainingPayable + 0.001) {
         throw new Error('INVALID_PARAMS: 本次在线回款金额不能超过订单欠款')
       }

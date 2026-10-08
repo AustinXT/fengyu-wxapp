@@ -128,7 +128,7 @@ export const FULL_REFUND_ZERO_AMOUNT_PAID_SESSIONS_SQL = `WITH full_refund_zero_
 
 /**
  * STEP 1.6：转换单转入行按已兑现价值重建 received。
- * 已兑现价值 = 转出旧卡价值 + 本单净到账，且封顶转入总价；多行按 sale_amount
+ * 未退行按「旧资产 + 毛到账 − 冻结已付份额」封顶分摊；退行固定首次已付份额减累计净退款。多行按 sale_amount
  * 权重、以累计比例的相邻边界差分摊（每行非负且 Σ 精确等于 target）。这样待支付/部分支付
  * 转换单不会因创建时写入完整转入金额而提前解锁全部次数，结清时又恰好恢复完整转入价值。
  */

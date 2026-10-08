@@ -138,6 +138,7 @@ function makeClientQueryMock(_defaultResult) {
 // confirmOffline 的订单/明细/payment 分类读取已收进同一事务。旧用例仍用 pg.query
 // 队列声明这些权威快照；此包装器只负责把三类锁内读取桥接到该队列，其余 SQL 继续交给各用例自定义。
 function makeConfirmOfflineQuery(handler = async (sql) => defaultQueryResult(sql)) {
+  let lockedSnapshot
   return vi.fn(async (sql, params) => {
     const isOrderLock = typeof sql === 'string'
       && sql.includes('SELECT *')
@@ -152,7 +153,11 @@ function makeConfirmOfflineQuery(handler = async (sql) => defaultQueryResult(sql
     if (isOrderLock || isItemRead || isPaymentKindRead) {
       const rows = await pg.query(sql, params)
       const normalizedRows = Array.isArray(rows) ? rows : []
+      if (isOrderLock) lockedSnapshot = normalizedRows[0]
       return { rows: normalizedRows, rowCount: normalizedRows.length }
+    }
+    if (sql.includes('AS remaining FROM sale_orders so') && lockedSnapshot?.sale_order_type === '转换单') {
+      return { rows: [{ remaining: Number(lockedSnapshot.total_amount || 0) - Number(lockedSnapshot.received || 0) }], rowCount: 1 }
     }
     return handler(sql, params)
   })
@@ -3461,6 +3466,7 @@ describe('order.qrcode', () => {
             rowCount: 1,
           }
         }
+        if (sql.includes('AS remaining FROM sale_orders so')) return { rows: [{ remaining: 1500 }], rowCount: 1 }
         if (sql.includes('SET first_payment_amount = $1')) {
           return { rows: [], rowCount: 1 }
         }
@@ -3477,6 +3483,7 @@ describe('order.qrcode', () => {
         first_payment_amount: '500', is_experience_conversion: false,
       }])
       .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ remaining: 1500 }])
 
     await orderRoutes.qrcode(ctx)
 
