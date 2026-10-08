@@ -54,7 +54,7 @@ DeepSeek 使用 dsh 原生适配器，固定 provider `deepseek-official` 和 en
 （未设置 DSH_HOME 时为 `~/.dsh/.credentials.yaml`）。不读取 Claude 设置或 Anthropic 凭证。
 脚本在本轮输出目录生成专用 dsh profile 与空工作目录，显式挂载最小插件集合和空工具注册表；
 不加载用户 profile/patch/settings、仓库指令、工具插件或 MCP，不使用 Claude CLI。
-`dsh --profile headless review` 通过可信本地 patch 从 stdin 读取 packet；调用层以权限600的普通文件连接fd0，避开Node同步读大管道的EAGAIN，不截断输入、不把正文放进argv或配置。DeepSeek默认输出预算131072 token（`--deepseek-max-output`可显式调整），计入1M总上下文，避免默认256000输出预留挤占大型代码输入。stdout 为完整 JSON
+`dsh --profile headless review` 通过可信本地 patch 从 stdin 读取 packet；dsh调用层以权限600的普通文件连接fd0，避开Node同步读大管道的EAGAIN；OpenCode保留原有管道输入，`REVIEW_LIVE_GLM_STDIN_TEST=1`可显式执行真实GLM随机标记大输入回归（普通CI跳过该远端用例），不截断输入、不把正文放进argv或配置。DeepSeek默认输出预算131072 token（`--deepseek-max-output`可显式调整），计入1M总上下文，避免默认256000输出预留挤占大型代码输入。stdout 为完整 JSON
 回复，脚本严格校验 schema 和进程退出码。会话记录留在本轮 `dsh-home/sessions/`。
 不会改全局 dsh / Claude / Codex 配置。OpenCode 用已有 GLM provider 凭证，禁工具权限、
 自动分享和插件。参见 [OpenCode CLI](https://opencode.ai/docs/cli/)、[权限](https://opencode.ai/docs/permissions/)。

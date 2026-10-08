@@ -38,6 +38,12 @@ introduced=本次引入，acceptance=验收缺口，existing=既有缺陷，sugg
 INSTRUCTION += "\n输出评审数据，不是 schema 文档；顶层只能 status/summary/findings，禁止 type/additionalProperties/properties/required 等描述键。结构示例：{\"status\":\"incomplete\",\"summary\":\"缺少材料\",\"findings\":[]}。例子不预设结论，必须按实际材料填 complete/incomplete 和 findings。\n"
 
 
+def write_private(path, content):
+    with path.open("w") as stream:
+        os.fchmod(stream.fileno(), 0o600)
+        stream.write(content)
+
+
 def git(cwd, *args):
     return subprocess.check_output(["git", "-C", str(cwd), *args], text=True)
 
@@ -156,11 +162,13 @@ def run_one(lineage, args, packet):
             os.fchmod(writer.fileno(), 0o600)
             writer.write(packet)
         with input_path.open("r") as stdin, (args.out / (lineage + ".stdout.jsonl")).open("w") as stdout, (args.out / (lineage + ".stderr.log")).open("w") as stderr:
+            os.fchmod(stdout.fileno(), 0o600)
+            os.fchmod(stderr.fileno(), 0o600)
             cwd = args.out / "dsh-workspace" if lineage == "deepseek" else args.cwd
-            proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=stdin,
+            proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=stdin if lineage == "deepseek" else subprocess.PIPE,
                                     stdout=stdout, stderr=stderr, text=True, start_new_session=True)
             try:
-                proc.communicate(timeout=args.timeout)
+                proc.communicate(None if lineage == "deepseek" else packet, timeout=args.timeout)
             except subprocess.TimeoutExpired:
                 os.killpg(proc.pid, signal.SIGTERM)
                 try:
@@ -176,7 +184,7 @@ def run_one(lineage, args, packet):
         result.update(status=report["status"], report=report)
     except (OSError, ValueError) as exc:
         result["error"] = str(exc)
-    (args.out / (lineage + ".json")).write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
+    write_private(args.out / (lineage + ".json"), json.dumps(result, ensure_ascii=False, indent=2) + "\n")
     return result
 
 
@@ -213,8 +221,9 @@ def main():
             parser.error("交付 diff 为空")
         content = args.context.read_text() + "\n\n完整交付 diff：\n" + diff
     packet = INSTRUCTION + f"\nHEAD={head}\nBASE={base}\n\n" + content
-    args.out.mkdir(parents=True, exist_ok=False)
-    (args.out / "packet.md").write_text(packet)
+    args.out.mkdir(parents=True, exist_ok=False, mode=0o700)
+    args.out.chmod(0o700)
+    write_private(args.out / "packet.md", packet)
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(lambda name: run_one(name, args, packet), ["glm", "deepseek"]))
     unchanged = head == git(args.cwd, "rev-parse", "HEAD").strip() and before == git(args.cwd, "status", "--porcelain")
@@ -223,7 +232,7 @@ def main():
     code = 3 if not valid else (2 if findings else 0)
     summary = {"head": head, "base": base, "packet_sha256": hashlib.sha256(packet.encode()).hexdigest(),
                "probe": args.probe, "workspace_unchanged": unchanged, "exit_code": code, "results": results}
-    (args.out / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n")
+    write_private(args.out / "summary.json", json.dumps(summary, ensure_ascii=False, indent=2) + "\n")
     print(json.dumps({"out": str(args.out), "exit_code": code,
                       "statuses": {r["lineage"]: r["status"] for r in results}}, ensure_ascii=False))
     return code
