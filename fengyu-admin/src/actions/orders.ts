@@ -721,12 +721,13 @@ async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string
       UPDATE sale_items
          SET paid_sessions = CASE
                WHEN sale_items.session_count IS NULL THEN NULL
+               WHEN op.sale_order_type = '寄存单' THEN sale_items.paid_sessions
                WHEN op.total_amount <= 0 THEN sale_items.session_count
                WHEN sale_items.sale_amount <= 0 THEN sale_items.session_count
                ELSE LEAST(sale_items.session_count, FLOOR(sale_items.received::numeric * sale_items.session_count / sale_items.sale_amount::numeric)::integer)
              END,
              updated_at = NOW()
-        FROM (SELECT total_amount FROM sale_orders WHERE sale_order_id = ${refOrderId}) op
+        FROM (SELECT total_amount, sale_order_type FROM sale_orders WHERE sale_order_id = ${refOrderId}) op
        WHERE sale_items.sale_item_id IN (
          SELECT out_item.ref_sale_item_id
            FROM sale_items out_item
@@ -6025,6 +6026,7 @@ export const createConversionOrder = withPermission(
           si.product_type,
           si.session_count,
           si.remaining_sessions,
+          si.paid_sessions,
           si.quantity,
           si.picked_up_quantity,
           si.refunded_quantity,
@@ -6218,13 +6220,16 @@ export const createConversionOrder = withPermission(
           if (reserved > 0) {
             throw new ApiError('INVALID_STATE', 'CARD_RESERVED: 所选项目有服务进行中，请先完成或取消服务单后再折抵')
           }
-          qty = rem
+          // Model X 不减退款次数的物理余量；寄存卡只折仍有效的已付未用次数。
+          qty = row.sale_order_type === '寄存单' && row.paid_sessions != null
+            ? Math.max(0, Math.min(rem, Number(row.paid_sessions) - Math.max(0, Number(row.session_count ?? 0) - rem)))
+            : rem
           const deliveredCents = Math.max(0, Number(row.session_count ?? 0) - rem) * unitCents
           const remainingPaidCents = Math.max(
             0,
             toCents(row.received) - deliveredCents - toCents(row.home_converted_amount),
           )
-          lineAmount = isDepositOrGift ? (unitCents * rem) / 100 : remainingPaidCents / 100
+          lineAmount = isDepositOrGift ? (unitCents * qty) / 100 : remainingPaidCents / 100
         } else {
           // 金额沿用 homeDeductible 的「剩余已付」；**件数不再取它的提货口径**，
           // 整行退出带走全部未结算件（折后可提 = min(0, …) = 0，守恒仍成立）。

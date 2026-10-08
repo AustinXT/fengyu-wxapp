@@ -3614,6 +3614,38 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     purchaseLimit: null, marketScope: null,
   }]
 
+  it.each([
+    { remaining: 2, paid: 4, expected: 0 },
+    { remaining: 5, paid: 4, expected: 3 },
+    { remaining: 5, paid: 6, expected: 5 },
+    { remaining: 5, paid: null, expected: 5 },
+  ])('寄存卡退款后仅转换有效权益：$remaining / $paid → $expected', async ({ remaining, paid, expected }) => {
+    const inserted: any[] = []
+    mockConvTx({
+      heldRows: [{
+        ...homeHeldRow(), sale_item_id: 'card-1', product_type: '疗程卡',
+        sale_order_type: '寄存单', session_count: 6, remaining_sessions: remaining,
+        paid_sessions: paid, unit_real_price: '80', received: '320',
+      }],
+      skuRows: homeSkuRows,
+      onInsertOrder: (v) => inserted.push(v),
+      onInsertItem: (v) => inserted.push(v),
+    })
+    const result = await createConversionOrder(baseConvData)
+    if (expected === 0) {
+      expect(result.success).toBe(false)
+      expect(result.message).toContain('没有可折抵的已付金额')
+      expect(inserted).toEqual([])
+    } else {
+      expect(result.success).toBe(true)
+      const out = inserted.find((v) => v.itemDirection === '转出')
+      expect(out.quantity).toBe(expected)
+      expect(out.saleAmount).toBe((-expected * 80).toFixed(2))
+      // 只扣仍有效的次数，退款留下的物理余量不再次变成消费。
+      expect(6 - (remaining - expected)).toBeLessThanOrEqual(paid ?? 6)
+    }
+  })
+
   it('家居按「剩余已付」折抵：1000 − 已提 3 × 100 = 700 → 7 盒 / ¥700', async () => {
     const inserted: any[] = []
     mockConvTx({

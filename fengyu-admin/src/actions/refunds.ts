@@ -2,6 +2,7 @@
 
 import { retainedRefundFeeSql } from '@/lib/refund-fee-sql'
 import { allocateRefundAccounting } from '@/lib/refund-accounting'
+import { recomputeCustomerTypeOnRefund } from '@/lib/recompute-customer-tags'
 
 import { db } from '@/db'
 import { rowsAffected } from '@/lib/pg-rows'
@@ -91,6 +92,8 @@ export interface RefundableItem {
 
 export interface GetRefundableResult {
   items: RefundableItem[]
+  /** 原单类型；前端 0 元退项闸门据此判定寄存单（与服务端 isZeroCashPaidSessionRefund 同源） */
+  saleOrderType: string
   origTotalAmount: number
   origPrepaidCardAmount: number
   origPaymentMethod: PaymentMethod
@@ -373,8 +376,11 @@ export const getRefundable = withAnyPermission(
   if (!order) {
     throw new Error('NOT_FOUND: 原订单不存在或无权访问')
   }
-  if (order.saleOrderType !== '销售单') {
-    throw new Error('INVALID_STATE: 仅销售单支持退款')
+  // 2026-10-06（#543）：放开寄存单退款（仅「退款」一项；回款/改实收仍锁，见 orders.ts 回款拦截）。
+  // 寄存单 total_amount 恒 0、行级 received 由「寄存单初始化实收」回款行聚合，
+  // 可退次数 = min(remaining, paid_sessions - 已消费)，可退额 = unit_real_price × 未消耗次数。
+  if (order.saleOrderType !== '销售单' && order.saleOrderType !== '寄存单') {
+    throw new Error('INVALID_STATE: 仅销售单/寄存单支持退款')
   }
   if (!['已支付', '已完成', '部分支付'].includes(order.status)) {
     throw new Error(`INVALID_STATE: 当前状态"${order.status}"不允许退款`)
@@ -457,6 +463,7 @@ export const getRefundable = withAnyPermission(
 
   return {
     items,
+    saleOrderType: order.saleOrderType,
     origTotalAmount: Number(order.totalAmount),
     origPrepaidCardAmount: Number(order.prepaidCardAmount),
     origPaymentMethod: order.paymentMethod as PaymentMethod,
@@ -748,7 +755,9 @@ export const createRefund = withPermission(
   if (origOrder.legacySource === 'workfine') {
     return { success: false, error: { code: 'INVALID_STATE', message: '历史订单不支持退款' } }
   }
-  if (origOrder.saleOrderType !== '销售单') {
+  // 2026-10-06（#543）：寄存单与销售单同样支持退款；充值单走员工端充值卡入口，
+  // 内部单/转换单仍不支持。两端镜像 staffApi routes/order.js。
+  if (origOrder.saleOrderType !== '销售单' && origOrder.saleOrderType !== '寄存单') {
     if (origOrder.saleOrderType === '充值单') {
       return {
         success: false,
@@ -758,7 +767,7 @@ export const createRefund = withPermission(
         },
       }
     }
-    return { success: false, error: { code: 'INVALID_STATE', message: '仅销售单支持退款' } }
+    return { success: false, error: { code: 'INVALID_STATE', message: '仅销售单/寄存单支持退款' } }
   }
   if (!['已支付', '已完成', '部分支付'].includes(origOrder.status)) {
     return {
@@ -815,6 +824,7 @@ export const createRefund = withPermission(
     .where(and(eq(saleItems.saleOrderId, refSaleOrderId), eq(saleItems.itemDirection, '购买'))))
     .map(({ item, rightsReceived, pickedQuantity, convertedAmount, convertedQuantity }) => ({
       ...item,
+      physicalConvertedQuantity: item.convertedQuantity,
       received: rightsReceived,
       pickedQuantity: Number(pickedQuantity ?? 0),
       convertedAmount,
@@ -904,7 +914,7 @@ export const createRefund = withPermission(
   if (isHandlingFeeInvalidForRefund(refundDetails, fee)) {
     return { success: false, error: { code: 'INVALID_PARAMS', message: '手续费不能超过单次服务价格' } }
   }
-  const isZeroCashItemRefund = isZeroCashPaidSessionRefund(refundDetails, fee, totalRefund)
+  const isZeroCashItemRefund = isZeroCashPaidSessionRefund(refundDetails, fee, totalRefund, origOrder.saleOrderType)
   let finalRefundAmount = Math.max(0, Math.round((totalRefund - fee) * 100) / 100)
   if (finalRefundAmount <= 0 && !isZeroCashItemRefund) {
     return { success: false, error: { code: 'INVALID_STATE', message: '无可退项' } }
@@ -1031,6 +1041,21 @@ export const createRefund = withPermission(
   let refundPaymentId: number
   try {
     refundPaymentId = await db.transaction(async (tx) => {
+      if (origOrder.saleOrderType === '寄存单') {
+        const lockedOrders = await tx.execute(sql`SELECT status FROM sale_orders WHERE sale_order_id = ${refSaleOrderId} FOR UPDATE`) as unknown as Array<{ status: string }>
+        if (!lockedOrders[0] || lockedOrders[0].status !== origOrder.status) {
+          throw new ApiError('CONFLICT', '寄存单状态已变化，请刷新后重新发起退款')
+        }
+        const lockedItems = await tx.execute(sql`SELECT * FROM sale_items WHERE sale_order_id = ${refSaleOrderId} AND item_direction = '购买' ORDER BY sale_item_id FOR UPDATE`) as unknown as Array<Record<string, unknown>>
+        const before = new Map(sourceItems.map((it) => [it.sale_item_id, it]))
+        const physicalConverted = new Map(origRows.map((r) => [r.saleItemId, r.physicalConvertedQuantity]))
+        const fields = ['remaining_sessions', 'paid_sessions', 'unit_real_price', 'session_count', 'quantity', 'picked_up_quantity', 'refunded_quantity'] as const
+        if (lockedItems.length !== before.size || lockedItems.some((it) => {
+          const old = before.get(it.sale_item_id as string)
+          return !old || fields.some((field) => String(old[field] ?? '') !== String(it[field] ?? ''))
+            || String(physicalConverted.get(it.sale_item_id as string) ?? '') !== String(it.converted_quantity ?? '')
+        })) throw new ApiError('CONFLICT', '寄存权益已变化，请刷新后重新发起退款')
+      }
       // 主流水：按整笔金额写一行 status='待审批'，approveRefund 时按拆分（储值卡+原通道）做实际扣减。
       // chk_sop_amount_sign 要求退款 amount<=0；0 元退项也走同一审批流水。
       const totalAmountSign = -adjustedRefundAmount
@@ -1073,6 +1098,9 @@ export const createRefund = withPermission(
       console.error('[createRefund] notifyRefundCreated failed:', notifyErr)
     }
   } catch (err: unknown) {
+    if (err instanceof ApiError) {
+      return { success: false, error: { code: err.prefix, message: businessErrorMessage(err, '退款申请失败，请刷新后重试') } }
+    }
     const msg = err instanceof Error ? err.message : String(err)
     // 修复（Bug S）：drizzle 0.45 把 pg 错误码包进 err.cause；用 pgErrorCode/pgErrorConstraint 读取，否则永不命中 → 落 UNKNOWN
     if (pgErrorCode(err) === '23505' && pgErrorConstraint(err) === 'uq_sop_status_audit') {
@@ -1178,17 +1206,6 @@ export const approveRefund = withPermission(
   const refSaleOrderId = pre.payment.saleOrderId
   const refundAmount = Math.abs(Number(pre.payment.amount || 0))
 
-  // G 复校：审批前重算可退余额（本笔仍待审批，SUM 已支付自动排除），防 create→approve 间余额变化导致超退。两端镜像 staff order.js。
-  const capNowRes = await db.execute<{ net: string }>(sql`
-    SELECT COALESCE(SUM(amount), 0)::numeric AS net FROM sale_order_payments
-    WHERE sale_order_id = ${refSaleOrderId} AND status = '已支付'
-  `)
-  const paymentsNetNow = Number((capNowRes as unknown as Array<{ net: string | number }>)[0]?.net || 0)
-  const refundCapNow = Math.max(paymentsNetNow, Number(pre.orderReceived || 0) - Number(pre.orderRefundedAmount || 0))
-  if (refundAmount > refundCapNow + 0.001) {
-    return { success: false, error: { code: 'INVALID_STATE', message: '订单可退余额已变化，请刷新后重新发起退款' } }
-  }
-
   const origPrepaidCardAmount = Number(pre.orderPrepaidCardAmount || 0)
   const origTotalAmount = Number(pre.orderTotalAmount || 0)
   const { refundByCard, refundByOrigin } = splitRefundByOriginalPayment(
@@ -1197,6 +1214,8 @@ export const approveRefund = withPermission(
     origTotalAmount,
   )
 
+  // 寄存单退款终态是否本次落地（进 refund.approve 审计 detail；见事务内注释）
+  let depositMarkedRefunded = false
   let cascade = {
     voidedAllocations: 0,
     voidedCommissions: 0,
@@ -1208,6 +1227,19 @@ export const approveRefund = withPermission(
 
   try {
     cascade = await db.transaction(async (tx) => {
+      // 先原单、再退款流水 CAS；与寄存申请、转换统一锁序，避免唯一索引等待成环。
+      const lockedOrders = await tx.execute(sql`SELECT sale_order_id, received, refunded_amount FROM sale_orders WHERE sale_order_id = ${refSaleOrderId} FOR UPDATE`) as unknown as Array<{ received: string | number; refunded_amount: string | number }>
+      const lockedOrder = lockedOrders[0]
+      if (!lockedOrder) throw new ApiError('NOT_FOUND', 'REFUND_ORDER_MISSING: 原销售单不存在')
+      // G：原单与资金上限必须来自同一持锁事务，不能使用事务外预查的金额。
+      const capNowRes = await tx.execute(sql`
+        SELECT COALESCE(SUM(amount), 0)::numeric AS net FROM sale_order_payments
+        WHERE sale_order_id = ${refSaleOrderId} AND status = '已支付'
+      `) as unknown as Array<{ net: string | number }>
+      const refundCapNow = Math.max(Number(capNowRes[0]?.net || 0), Number(lockedOrder.received || 0) - Number(lockedOrder.refunded_amount || 0))
+      if (refundAmount > refundCapNow + 0.001) {
+        throw new ApiError('INVALID_STATE', 'REFUND_BALANCE_CHANGED: 订单可退余额已变化，请刷新后重新发起退款')
+      }
       // paid_at / audit_at 写北京墙钟字面（见 lib/db-time）：原 new Date().toISOString() 落 UTC 字面早 8h。
 
       // 1) CAS 翻状态 + 同一条 UPDATE 写审批人：仅 '待审批' → '已支付'
@@ -1218,6 +1250,8 @@ export const approveRefund = withPermission(
                audit_employee_id = ${session.employeeId},
                audit_at = ${nowTs()}
          WHERE id = ${idNum} AND status = '待审批'
+           AND amount = ${pre.payment.amount}::numeric
+           AND note IS NOT DISTINCT FROM ${pre.payment.note}::text
       `)
       if (rowsAffected(updRes) === 0) {
         throw new ApiError('CONFLICT', 'CONCURRENT_CHANGED: 退款状态已变更，请刷新后重试')
@@ -1300,9 +1334,6 @@ export const approveRefund = withPermission(
       {
         // #182 锁序：先锁本单（sale_orders），再锁源行（sale_items）——与入账路径、
         // createConversionOrder、关单回滚统一为 sale_orders → sale_items，避免 40P01。
-        await tx.execute(sql`
-          SELECT sale_order_id FROM sale_orders WHERE sale_order_id = ${refSaleOrderId} FOR UPDATE
-        `)
         // 无条件锁：老退款单（无 note.items 且 ref_sale_item_id 为空）会让 homeRefundQty 为空，
         // 若因此跳过加锁就退回「createRefund 无锁定额 + cascade LEAST 静默封顶」的旧缺口。
         // 锁集必须覆盖本单**全部购买行**而非只锁家居子集：后续 cascadeRefund /
@@ -1346,13 +1377,14 @@ export const approveRefund = withPermission(
         const consumedById = new Map(consumedRows.map((c) => [c.sale_item_id as string, c]))
         for (const r of Array.from(lockedRows as unknown as Iterable<Record<string, unknown>>)) {
           // #182：疗程卡也要进来做**余数**复核（与 staff order.js 的 approveRefund 逐行对齐）。
-          // 疗程卡可退次数由 cascadeRefund + recalcPaidSessionsForOrder 的 D3 守护把关，
-          // 但 overpay 余数（received > sale_amount 的多收零头）现在可以被转换单折走，
+          // 寄存疗程卡可退次数也在锁内复核，不能依赖转换耗尽分支的 D3 兜底；
+          // overpay 余数（received > sale_amount 的多收零头）现在可以被转换单折走，
           // 申请时合法的余数可能在审批前已经没了——漏这一段就能「折一次再退一次」。
           const isHome = r.product_type === '家居产品'
           const isCard = r.product_type === '疗程卡'
           if (!isHome && !isCard) continue
-          const requested = isHome ? (homeRefundQty.get(r.sale_item_id as string) ?? 0) : 0
+          const checkQuantity = isHome || (isCard && pre.orderSaleOrderType === '寄存单')
+          const requested = checkQuantity ? (homeRefundQty.get(r.sale_item_id as string) ?? 0) : 0
           const requestedOverpay = homeOverpayAmt.get(r.sale_item_id as string) ?? 0
           if (requested <= 0 && requestedOverpay <= 0) continue
           // 与 calculateUnusedQuantity 同口径：折抵可能带走剩余已付的全部金额却只占用
@@ -1378,10 +1410,12 @@ export const approveRefund = withPermission(
             sales_category: null,
             service_fee: null,
           }
-          if (isHome) {
+          if (checkQuantity) {
             const refundable = calculateUnusedQuantity(lockedSrc)
             if (requested > refundable) {
-              throw new ApiError('CONFLICT', 'HOME_PRODUCT_REFUNDABLE_CHANGED: 家居产品可退数量已变化（可能已被转换折抵或提货），请刷新后重新发起退款')
+              throw new ApiError('CONFLICT', isHome
+                ? 'HOME_PRODUCT_REFUNDABLE_CHANGED: 家居产品可退数量已变化（可能已被转换折抵或提货），请刷新后重新发起退款'
+                : 'CARD_REFUNDABLE_CHANGED: 寄存卡可退次数已变化（可能已被转换折抵或消费），请刷新后重新发起退款')
             }
           }
           // 余数同样按锁内新快照复核：申请时的 ¥50 余数可能已被折抵带走
@@ -1410,11 +1444,89 @@ export const approveRefund = withPermission(
       // 若新 paid_sessions < 已消费次数，抛 CONFLICT 阻止退款
       await recalcPaidSessionsForOrder(tx, refSaleOrderId)
       await reconcileAllocationStatusAfterRefund(tx, refSaleOrderId)
-      await reconcileOrderStatusAfterRefund(tx, refSaleOrderId)
+      // 寄存单不改订单状态（2026-10-06 #543）：reconcileOrderStatusAfterRefund 用
+      // sale_payment_item_receipts 统计 refunded，而寄存单该表恒零行、sale_amount 又是**标价快照**，
+      // 会被判成 received < retained_value → 把「已支付」误改成「部分支付」，
+      // 让 total_amount=0 的寄存单掉进欠款/催款口径（寄存单 received>0 是历史实收，不是欠款）。
+      if (pre.orderSaleOrderType !== '寄存单') {
+        await reconcileOrderStatusAfterRefund(tx, refSaleOrderId)
+      } else {
 
-      // 6) 重算顾客历史消费档位
+      // 寄存单退款终态（2026-10-06 追加口径）：走不到 reconcileOrderStatusAfterRefund（理由见上），
+      // 因此这里单独判定「该卡已无可用权益」并置「已退款」。
+      // ⚠ 状态语义跨类型不同：销售单的「已退款」= 钱全退清（reconcileOrderStatusAfterRefund 按
+      //   逐行 refunded>=sale_amount 判定）；寄存单的「已退款」= **可退权益退光**（部分消耗后退卡时
+      //   已消费那部分本就不退钱，refunded_amount 永远小于 received）。寄存单本就不进金额口径
+      //   （`sale_order_type IN ('销售单','转换单')`），故不会污染报表。
+      // 「无可用权益」逐行判据：
+      //   ① 非次数卡（session_count IS NULL，即家居寄存件）→ 物理剩余 = quantity − (已提货+已退款+已转换)。
+      //      **刻意不含** calculateUnusedQuantity 的「剩余已付」金额封顶：判据更宽 ⇒ 只会漏置终态、
+      //      不会误置（保守方向）。
+      //   ② 次数卡历史行（paid_sessions IS NULL）→ 回退 remaining_sessions（与 calculateUnusedQuantity 同口径）。
+      //   ③ 次数卡 → 已付未用 = paid_sessions − 已消费次数(session_count − remaining_sessions)。
+      // 「本次审批这笔退款**确实退了次数**（note.items[].quantity > 0）」是必需条件，否则一张
+      // **自然消耗殆尽**（remaining=0、从未退过款）的寄存单也满足「无可用权益」而被误判成已退款。
+      // 用**本笔**而不是「本单历史上任一笔」：排除「曾退过次数 → 剩余被自然消耗殆尽 → 之后又审批一笔
+      // 纯余数退款」的灰区（那种单的钱并没有全退，不该翻终态）。
+        const depositRefundedRes = await tx.execute(sql`
+          WITH deposit_items AS (
+            SELECT CASE
+                     WHEN si.session_count IS NULL
+                       THEN (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0)
+                             + COALESCE(si.converted_quantity, 0)) < si.quantity
+                     WHEN si.paid_sessions IS NULL
+                       THEN COALESCE(si.remaining_sessions, 0) > 0
+                     ELSE COALESCE(si.paid_sessions, 0)
+                          > GREATEST(0, si.session_count - COALESCE(si.remaining_sessions, 0))
+                   END AS has_usable_right
+              FROM sale_items si
+             WHERE si.sale_order_id = ${refSaleOrderId}
+               AND si.item_direction = '购买'
+          ),
+          this_refund_sessions AS (
+            SELECT COALESCE(SUM(GREATEST(0, public.try_numeric(elem ->> 'quantity'))), 0) AS refunded_sessions
+              FROM sale_order_payments sop
+              CROSS JOIN LATERAL jsonb_array_elements(
+                CASE WHEN jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'
+                     THEN public.try_jsonb(sop.note) -> 'items' ELSE '[]'::jsonb END
+              ) elem
+             WHERE sop.id = ${idNum}
+               AND sop.sale_order_id = ${refSaleOrderId}
+               AND sop.change_type = '退款'
+               AND sop.status = '已支付'
+          )
+          UPDATE sale_orders so
+             SET status = '已退款'::order_status,
+                 updated_at = NOW()
+           WHERE so.sale_order_id = ${refSaleOrderId}
+             AND so.status IN ('已支付', '已完成', '部分支付')
+             AND EXISTS (SELECT 1 FROM deposit_items)
+             AND NOT EXISTS (SELECT 1 FROM deposit_items di WHERE di.has_usable_right)
+             AND (SELECT refunded_sessions FROM this_refund_sessions) > 0
+        `)
+        if (rowsAffected(depositRefundedRes) > 0) {
+          depositMarkedRefunded = true
+        }
+      }
+
+      // 6) 重算顾客历史消费档位 + 顾客分类。
+      // 退款抹掉该单的达标贡献 → 按剩余有效订单重算 customer_type 并**允许降档**（#524 第 5 条）。
+      // #545 起其余通道（每日 cron / 离线 / 历史审核 / 收款）一律只升不降，降档只由退款通道产生。
       if (pre.orderClientUserId) {
         await refreshSpendingTierTx(tx, pre.orderClientUserId)
+        const typeChange = await recomputeCustomerTypeOnRefund(tx, pre.orderClientUserId)
+        if (typeChange) {
+          // 退款是唯一放行降档的通道，掉档会立刻收走会员价与生日/感恩权益 —— 必须留审计。
+          // （member_level 变更既有 customer.memberLevelChange，分类变更此前全渠道无日志。）
+          await logOperation(
+            session,
+            'customer.customerTypeChange',
+            'customer',
+            pre.orderClientUserId,
+            { from: typeChange.from, to: typeChange.to, trigger: 'refund', refundPaymentId: idNum },
+            tx,
+          )
+        }
       }
 
       // 7) 通知发起人审批通过（Bug C；自审降噪）
@@ -1432,6 +1544,12 @@ export const approveRefund = withPermission(
     })
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
+    if (msg.includes('REFUND_ORDER_MISSING')) {
+      return { success: false, error: { code: 'NOT_FOUND', message: '原销售单不存在' } }
+    }
+    if (msg.includes('REFUND_BALANCE_CHANGED')) {
+      return { success: false, error: { code: 'INVALID_STATE', message: '订单可退余额已变化，请刷新后重新发起退款' } }
+    }
     if (msg.includes('CONCURRENT_CHANGED')) {
       return { success: false, error: { code: 'CONFLICT', message: '退款状态已变更，请刷新后重试' } }
     }
@@ -1453,6 +1571,9 @@ export const approveRefund = withPermission(
     if (msg.includes('OVERPAY_REFUNDABLE_CHANGED')) {
       return { success: false, error: { code: 'CONFLICT', message: '可退余数已变化（可能已被转换折抵），请刷新后重新发起退款' } }
     }
+    if (msg.includes('CARD_REFUNDABLE_CHANGED')) {
+      return { success: false, error: { code: 'CONFLICT', message: '寄存卡可退次数已变化（可能已被转换折抵或消费），请刷新后重新发起退款' } }
+    }
     if (msg.includes('HOME_PRODUCT_REFUNDABLE_CHANGED')) {
       return { success: false, error: { code: 'CONFLICT', message: '家居产品可退数量已变化（可能已被转换折抵或提货），请刷新后重新发起退款' } }
     }
@@ -1468,6 +1589,8 @@ export const approveRefund = withPermission(
     refundByCard: refundByCard.toFixed(2),
     refundByOrigin: refundByOrigin.toFixed(2),
     cascade,
+    // true = 本次审批把寄存单置为「已退款」终态（该单已无可用权益）
+    ...(depositMarkedRefunded ? { depositMarkedRefunded: true } : {}),
   })
 
   revalidatePath('/refunds')

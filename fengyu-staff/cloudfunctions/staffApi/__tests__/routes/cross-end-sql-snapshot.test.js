@@ -96,6 +96,7 @@ const FILES = {
   // SUMMARY v3 §2 #14 — cascadeRefund 双端副本 + 触发点
   staffRefundCascadeJs: path.resolve(__dirname, '../../helpers/refund-cascade.js'),
   adminRefundCascadeTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/refund-cascade.ts'),
+  adminRefundFormTsx: path.resolve(__dirname, '../../../../../fengyu-admin/src/components/orders/refund-form.tsx'),
   adminRefundsTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/refunds.ts'),
   adminAllocationsTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/allocations.ts'),
 
@@ -666,7 +667,9 @@ describe('SUMMARY v3 §2 #14：refund-cascade 双端 5 通道覆盖守护', () =
         expect(src, `${name} 缺退款全额映射守卫`).toMatch(/mappedTotalCents !== requestedTotalCents/)
         expect(src, `${name} 缺按超额容量分配 overpay`).toMatch(/allocateCentsByWeight/)
         expect(src, `${name} 不应把 OVERPAY 限制在已选退款商品`).not.toMatch(/selectedItemIds/)
-        expect(src, `${name} 通道 1 未使用映射后的 receipt 列表`).toMatch(/const receiptRefundItems = await buildReceiptRefundItems/)
+        // #543：通道 1 对寄存单豁免（该单无任何正向 receipt，映射必抛），其它类型仍须走映射后的列表
+        expect(src, `${name} 通道 1 未使用映射后的 receipt 列表`).toMatch(/const receiptRefundItems = skipReceiptReversal/)
+        expect(src, `${name} 通道 1 未调用 receipt 映射 helper`).toMatch(/await buildReceiptRefundItems\(/)
       }
     })
     test('两端通道 1 不再软删原分配行（保留正数行，报表 SUM 自动净额化）', () => {
@@ -873,14 +876,49 @@ describe('SUMMARY v3 §2 #14：cascadeRefund 触发点防回归', () => {
     expect(src).toMatch(/await\s+cascadeRefund\s*\(\s*client\s*,/)
   })
 
-  test('staff approveRefund 与 admin 一致：退款只刷新 spending_tier，不执行只升不降的结算重算', () => {
+  test('#545 退款通道必须严格读取会员门槛：兜底阈值会写出不可逆的错误降档', () => {
+    const src = readFile(FILES.staffOrderJs)
+    const config = readFile(path.resolve(__dirname, '../../utils/config.js'))
+    // 严格读取存在且配置非法时抛错（不兜底）
+    expect(config).toContain('async function getMemberThresholdStrict')
+    expect(config).toContain("const THRESHOLD_UNAVAILABLE_MSG = 'INVALID_STATE: 会员门槛配置不可用")
+    expect(config).toMatch(/!Number\.isFinite\(v\) \|\| v <= 0[\s\S]{0,120}throw new Error\(THRESHOLD_UNAVAILABLE_MSG\)/)
+    expect(config).toMatch(/getMemberThresholdStrict,/)
+    expect(config).toMatch(/THRESHOLD_UNAVAILABLE_MSG,/)
+    // allowDowngrade 分支走严格读取，且只吞「配置不可用」这一类错误（查询级错误必须 rethrow，
+    // 否则事务已 abort、后续语句会以 25P02 之类的晦涩错误失败）
+    expect(src).toMatch(/if \(allowDowngrade\) \{[\s\S]*?getMemberThresholdStrict\(client\)[\s\S]*?catch[\s\S]*?err\.message !== THRESHOLD_UNAVAILABLE_MSG\) throw err[\s\S]*?return/)
+    // 只升通道继续用带兜底的 getMemberThreshold（配置异常最坏是漏升，次日 cron 纠正）
+    expect(src).toContain('threshold = await getMemberThreshold()')
+  })
+
+  test('#545 退款通道跳过 #301 入会绑定门禁（否则退款可被无关文案拦死，且与 admin 漂移）', () => {
+    const src = readFile(FILES.staffOrderJs)
+    expect(src).toMatch(/if \(newType === '会员客' && !allowDowngrade\) \{/)
+  })
+
+  test('#545 退款通道的降档写入依赖前置行锁：refreshSpendingTier 必须排在 recalcCustomerType 之前', () => {
+    const src = readFile(FILES.staffOrderJs)
+    const approveBody = src.slice(
+      src.indexOf('async function approveRefund(ctx)'),
+      src.indexOf('async function rejectRefund(ctx)'),
+    )
+    const tierIdx = approveBody.indexOf('await refreshSpendingTier(client, sopRow.client_user_id)')
+    const recalcIdx = approveBody.indexOf('await recalcCustomerType(client, sopRow.client_user_id, refSaleOrderId, true)')
+    expect(tierIdx).toBeGreaterThan(-1)
+    expect(recalcIdx).toBeGreaterThan(tierIdx)
+  })
+
+  test('staff approveRefund 与 admin 一致：退款刷新 spending_tier，并显式放行分类降档（#545）', () => {
     const src = readFile(FILES.staffOrderJs)
     const approveBody = src.slice(
       src.indexOf('async function approveRefund(ctx)'),
       src.indexOf('async function rejectRefund(ctx)'),
     )
     expect(approveBody).toContain('await refreshSpendingTier(client, sopRow.client_user_id)')
-    expect(approveBody).not.toMatch(/await\s+recalcCustomerType\s*\(/)
+    // #545：退款抹掉该单达标贡献 → 须按剩余有效订单重算分类，且是全仓唯一允许降档的通道
+    expect(approveBody).toMatch(/await\s+recalcCustomerType\(\s*client,\s*sopRow\.client_user_id,[^)]*,\s*true\s*\)/)
+    // 会员等级仍只升不降（下限初钻，档位回落留给每日 cron 的 150 天保级期）
     expect(approveBody).not.toMatch(/await\s+recalcMemberLevel\s*\(/)
   })
 })
@@ -1271,6 +1309,60 @@ describe("ticket 2026-05-19 paid_sessions 重算 SQL 四端字节同义守护", 
       expect(paidSessionsSqls.payNotify).toMatch(pattern)
       expect(paidSessionsSqls.adminTs).toMatch(pattern)
       expect(paidSessionsSqls.scriptFix).toMatch(pattern)
+    })
+
+    test("五端必须有寄存单专属兜底：total_amount<=0 / sale_amount<=0 且 sale_order_type='寄存单' → 扣已退次数（#543）", () => {
+      // 寄存单 total_amount 恒 0 ⇒ 永远落在兜底分支上。若不扣 rights.refunded_sessions，
+      // 部分消耗的寄存单「退款不退次数」（分支 2 full_refund 只覆盖「零消费全退」）。
+      // 刻意用 op.sale_order_type 收窄到寄存单：非寄存单零金额行保持原 «= session_count»（零回归）。
+      const orderLevel = /op\.total_amount\s*<=\s*0\s+AND\s+op\.sale_order_type\s*=\s*'寄存单'\s*THEN\s*GREATEST\(0,\s*sale_items\.session_count\s*-\s*rights\.refunded_sessions\)/i
+      const lineLevel = /sale_items\.sale_amount\s*<=\s*0\s+AND\s+op\.sale_order_type\s*=\s*'寄存单'\s*THEN\s*GREATEST\(0,\s*sale_items\.session_count\s*-\s*rights\.refunded_sessions\)/i
+      for (const [name, sql] of Object.entries(paidSessionsSqls)) {
+        expect(sql, `${name} 缺寄存单订单级兜底`).toMatch(orderLevel)
+        expect(sql, `${name} 缺寄存单行级兜底`).toMatch(lineLevel)
+      }
+      // 非寄存单零金额行必须仍是原样全付（零回归承诺的守护）
+      expect(paidSessionsSqls.staff).toMatch(/WHEN op\.total_amount <= 0 THEN sale_items\.session_count/)
+      expect(paidSessionsSqls.staff).toMatch(/WHEN sale_items\.sale_amount <= 0 THEN sale_items\.session_count/)
+      // op 子查询必须带出 sale_order_type，否则上面的谓词无从判定
+      for (const [name, sql] of Object.entries(paidSessionsSqls)) {
+        expect(sql, `${name} op 子查询缺 sale_order_type`).toMatch(/SELECT total_amount, sale_order_type FROM sale_orders/i)
+      }
+    })
+
+    test("admin lib 的三对「导出常量 / 执行内联」副本必须归一化等价（防只改常量不改执行体）", () => {
+      // 踩过的坑（#543 round-3 P0）：admin/src/lib/paid-sessions.ts 里每个 SQL 都有**两份**——
+      //   · 导出常量 `XXX_SQL`（占位符 $1，**只供跨端快照比对**，不执行）
+      //   · recalcPaidSessionsForOrder 内的 sql`` 内联副本（占位符 ${var}，**真正执行的那份**）
+      // 只改常量不改内联 ⇒ 快照全绿但真库执行旧 SQL（round-3 实测解析期 42703，
+      // admin 全部退款审批事务回滚、流水永滞「待审批」，波及**所有**订单类型）。
+      // 故逐对做**归一化逐字比对**：任一方向的单边修改都立即变红。
+      const src = readFile(FILES.adminPaidSessionsTs)
+      // 锚点必须是**语句头**（WITH ...），不能取 SQL 中段的特征串：取中段会漏掉它之前的整段 CTE 前缀
+      // （refund_rights/rights 的 retained / overpay / refunded_sessions / full_refund 定义），
+      // 那样只改内联副本的前缀仍能绕过 —— 与 round-3 P0 同一攻击面。
+      const pairs = [
+        'WITH refund_rights AS (',
+        'WITH full_refund_zero_items AS (',
+        'WITH conversion_order AS (',
+      ]
+      for (const marker of pairs) {
+        const bodies = []
+        let idx = -1
+        while ((idx = src.indexOf(marker, idx + 1)) !== -1) {
+          const end = src.indexOf('`', idx)
+          expect(end, `${marker} 第 ${bodies.length + 1} 份未以反引号结束`).toBeGreaterThan(idx)
+          bodies.push(normalizeSql(src.slice(idx, end)))
+        }
+        expect(bodies.length, `${marker} 的副本份数从 2 变了，请同步本守护`).toBe(2)
+        expect(bodies[1], `${marker}: 执行内联副本与导出常量不等价（改一份漏另一份会真库跑旧 SQL）`).toBe(bodies[0])
+      }
+      // 附加：改到的寄存单分支与 op 子查询必须两份都在（等价性已隐含，此处给出可读定位）
+      const segs = src.split('paid_sessions = CASE').slice(1)
+      for (const [i, seg] of segs.entries()) {
+        expect(seg, `admin 第 ${i + 1} 份 paid_sessions 公式缺寄存单专属分支`).toMatch(/op\.sale_order_type = '寄存单'/)
+        expect(seg, `admin 第 ${i + 1} 份公式的 op 子查询缺 sale_order_type`).toMatch(/SELECT total_amount, sale_order_type FROM sale_orders/)
+      }
     })
 
     test("五端 paid_sessions 不再除以订单级 total（无 NULLIF(op.total)；分母为 sale_amount + 行级 <=0 兜底）", () => {
@@ -1997,17 +2089,24 @@ describe('寄存单实际单价重算 SQL 双端字节同义守护', () => {
 //   admin recordPayment 因并行 migration 0062 暂不可跑 smoke，靠此源码守护兜底）。
 // ─────────────────────────────────────────────────────────────────────────────
 describe('寄存单/历史订单 资金操作锁定守护', () => {
-  let staffOrder, adminOrders, adminRefunds
+  let staffOrder, adminOrders, adminRefunds, staffCascade, adminCascade, adminRefundForm
   beforeAll(() => {
     staffOrder = readFile(FILES.staffOrderJs)
     adminOrders = readFile(FILES.adminOrdersTs)
     adminRefunds = readFile(FILES.adminRefundsTs)
+    staffCascade = readFile(FILES.staffRefundCascadeJs)
+    adminCascade = readFile(FILES.adminRefundCascadeTs)
+    adminRefundForm = readFile(FILES.adminRefundFormTsx)
   })
 
-  test('staff order.js 含 仅销售单退款白名单（Bug L）+ 寄存单/历史订单 回款拦截', () => {
-    // Bug L：退款改正向白名单（仅销售单），原「寄存单不支持退款」黑名单已被「仅销售单支持退款」取代
-    expect(staffOrder).toContain('仅销售单支持退款')
+  test('staff order.js 含 销售单/寄存单退款白名单（Bug L + #543）+ 寄存单/历史订单 回款拦截', () => {
+    // Bug L：退款改正向白名单（原「寄存单不支持退款」黑名单已被白名单取代）。
+    // #543（2026-10-06）：寄存单**加入**退款白名单——只放开「退款」，回款/改实收仍锁。
+    expect(staffOrder).toContain("origOrder.sale_order_type !== '销售单' && origOrder.sale_order_type !== '寄存单'")
+    expect(staffOrder).toContain('仅销售单/寄存单支持退款')
     expect(staffOrder).toContain('历史订单不支持退款')
+    expect(staffOrder).toContain('充值卡退款请在')
+    // 回款仍锁（寄存单「只放开退款」的边界，勿被顺手放开）
     expect(staffOrder).toContain('寄存单不支持回款')
     expect(staffOrder).toContain('历史订单不支持回款')
   })
@@ -2017,9 +2116,79 @@ describe('寄存单/历史订单 资金操作锁定守护', () => {
     expect(adminOrders).toContain('历史订单不支持回款')
   })
 
-  test('admin createRefund 含 历史订单/仅销售单 退款拦截（寄存单走"仅销售单"通用拒绝）', () => {
+  test('admin getRefundable/createRefund 含 销售单/寄存单退款白名单（#543）+ 历史订单拦截', () => {
     expect(adminRefunds).toContain('历史订单不支持退款')
-    expect(adminRefunds).toContain('仅销售单支持退款')
+    expect(adminRefunds).toContain("order.saleOrderType !== '销售单' && order.saleOrderType !== '寄存单'")
+    expect(adminRefunds).toContain("origOrder.saleOrderType !== '销售单' && origOrder.saleOrderType !== '寄存单'")
+    expect(adminRefunds).toContain('仅销售单/寄存单支持退款')
+  })
+
+  test('两端寄存单全额退款后置「已退款」终态（#543 追加口径）', () => {
+    // 寄存单不走 reconcileOrderStatusAfterRefund，故终态由两端 approveRefund 内独立 SQL 判定。
+    // 判据三件套必须同时在位：① 逐行镜像 calculateUnusedQuantity 的三分支；② 必须发生过「退次数」，
+    // 否则自然消耗殆尽的寄存单（remaining=0、未退过款）会被误判成已退款；③ 只在已支付/已完成上迁移。
+    for (const [name, src] of [['staff', staffOrder], ['admin', adminRefunds]]) {
+      expect(src, `${name} 缺寄存单终态 SQL`).toContain("deposit_items")
+      expect(src, `${name} 缺「无可用权益」三分支`).toContain('AS has_usable_right')
+      expect(src, `${name} 缺次数卡分支`).toMatch(/COALESCE\(si\.paid_sessions, 0\)\s*\n?\s*> GREATEST\(0, si\.session_count - COALESCE\(si\.remaining_sessions, 0\)\)/)
+      expect(src, `${name} 缺历史行回退 remaining 分支`).toContain('THEN COALESCE(si.remaining_sessions, 0) > 0')
+      expect(src, `${name} 缺家居件分支`).toContain('+ COALESCE(si.converted_quantity, 0)) < si.quantity')
+      expect(src, `${name} 缺「本笔退过次数」前提`).toContain('this_refund_sessions')
+      expect(src, `${name} 缺「本笔退过次数」判据`).toContain("SUM(GREATEST(0, public.try_numeric(elem ->> 'quantity')))")
+      expect(src, `${name} 缺「本笔退过次数」门槛`).toContain('AND (SELECT refunded_sessions FROM this_refund_sessions) > 0')
+      expect(src, `${name} 缺状态迁移约束`).toContain("AND so.status IN ('已支付', '已完成', '部分支付')")
+      expect(src, `${name} 未置已退款`).toContain("SET status = '已退款'::order_status")
+    }
+    // 终态只对寄存单生效，不得外溢（两端变量名不同：staff 用 sopRow，admin 用 pre）
+    expect(staffOrder, 'staff 终态未挂在寄存单分支上').toContain("sopRow.sale_order_type !== '寄存单'")
+    expect(adminRefunds, 'admin 终态未挂在寄存单分支上').toContain("pre.orderSaleOrderType !== '寄存单'")
+  })
+
+  test('两端通道 1 豁免以「本单无 receipt」为前置（fail-safe，不静默跳过冲销）', () => {
+    for (const [name, src] of [['staff', staffCascade], ['admin', adminCascade]]) {
+      expect(src, `${name} 缺 has_receipts 探测`).toContain('AS has_receipts')
+      expect(src, `${name} 豁免未绑 receipt 前提`).toContain(
+        'const skipReceiptReversal = isDepositOrder && orderTypeRows[0]?.has_receipts !== true',
+      )
+    }
+  })
+
+  test('两端寄存单终态 SQL 必须归一化等价（防单边改判据 / 只改一份）', () => {
+    // 与 paid-sessions 的「常量 vs 执行内联」同源风险：终态 SQL 在两端各一份，
+    // 关键字型断言挡不住 `<` 改 `<=`、漏 COALESCE、状态表少一项这类细粒度漂移。
+    const grab = (src) => {
+      const i = src.indexOf('WITH deposit_items AS (')
+      const j = src.indexOf('`', i)
+      return normalizeSql(src.slice(i, j))
+    }
+    const a = grab(adminRefunds)
+    const b = grab(staffOrder)
+    expect(a).toContain('has_usable_right')
+    expect(b).toBe(a)
+  })
+
+  test('admin 退款表单的 0 元退项闸必须与后端同源（读 getRefundable 下发的 saleOrderType，不硬编码）', () => {
+    // 前端有一份 isZeroCashPaidSessionRefund 的内联复刻（refund-form.tsx）。订单类型必须由
+    // getRefundable 下发，且寄存单放宽条件与后端一致；漂移会造成「UI 拦、后端放行」或反之。
+    expect(adminRefundForm).toContain('res.saleOrderType')
+    expect(adminRefundForm).toContain("const isDepositOrder = saleOrderType === '寄存单'")
+    expect(adminRefundForm).toContain('isDepositSessionRefund')
+    expect(adminRefunds).toContain('saleOrderType: order.saleOrderType')
+  })
+
+  test('两种「只放开退款」的边界：回款拦截与「改实收已整端移除」仍被守护', () => {
+    expect(adminOrders).toContain('寄存单不支持回款')
+    expect(staffCascade || staffOrder).toBeTruthy()
+    // updateDepositReceived 不得复活（见本文件「两端 updateDepositReceived 已移除」守护）
+    expect(staffOrder).not.toMatch(/async function updateDepositReceived/)
+    expect(adminOrders).not.toMatch(/export const updateDepositReceived/)
+  })
+
+  test('两端 approveRefund 对寄存单跳过 reconcileOrderStatusAfterRefund（#543：寄存单不是欠款）', () => {
+    // 该函数用 sale_payment_item_receipts 统计 refunded，寄存单该表恒零行、sale_amount 又是标价快照，
+    // 会把「已支付」误改成「部分支付」，让 total_amount=0 的寄存单掉进欠款/催收口径。
+    expect(adminRefunds).toContain("pre.orderSaleOrderType !== '寄存单'")
+    expect(staffOrder).toContain("sopRow.sale_order_type !== '寄存单'")
   })
 })
 
@@ -2998,7 +3167,9 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
     // 折抵数量表达式（疗程卡剩余次数 / 家居未结算件数）四处同源。
     // #154：家居那一支必须是**三列式** —— 只减 picked_up 会把已退款/已转换的件数当成还能
     // 折走，既撞 chk_sale_item_settled_le_quantity，也让已退款件数在候选里复活。
-    const QTY_EXPR = "CASE WHEN si.product_type = '疗程卡' THEN COALESCE(si.remaining_sessions, 0)"
+    const QTY_EXPR = "CASE WHEN si.product_type = '疗程卡' THEN CASE WHEN so.sale_order_type = '寄存单' AND si.paid_sessions IS NOT NULL"
+      + " THEN GREATEST(0, LEAST(COALESCE(si.remaining_sessions, 0), si.paid_sessions - GREATEST(0, COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0))))"
+      + " ELSE COALESCE(si.remaining_sessions, 0) END"
       + " ELSE GREATEST(0, si.quantity - (COALESCE(si.picked_up_quantity, 0)"
       + " + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0))) END"
     expect(
@@ -3020,6 +3191,55 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
     expect(staff, '已转走金额不得用件数 × 单价推算').not.toContain(
       'COALESCE(si.picked_up_quantity, 0) * si.unit_real_price::numeric)',
     )
+  })
+
+  test('审批CAS的金额/明细快照两端字面同义且未丢失', () => {
+    const staff = readFile(FILES.staffOrderJs).slice(readFile(FILES.staffOrderJs).indexOf('async function approveRefund(ctx)'))
+    const admin = readFile(FILES.adminRefundsTs).slice(readFile(FILES.adminRefundsTs).indexOf('cascade = await db.transaction'))
+    const staffSql = staff.match(/const cas = await client.query\(\s*`([\s\S]*?)`,/)[1]
+    const adminSql = admin.match(/const updRes = await tx.execute\(sql`([\s\S]*?)`\)/)[1]
+    const predicates = [staffSql, adminSql].map((sql) => normalizeSql(sql.slice(sql.indexOf('WHERE id ='))))
+    expect(predicates[0]).toBe(predicates[1])
+    for (const predicate of predicates) {
+      expect(predicate).toContain('AND amount = ?::numeric')
+      expect(predicate).toContain('AND note IS NOT DISTINCT FROM ?::text')
+    }
+    expect(staff).toContain('paymentId, sopRow.amount, sopRow.note ?? null]')
+    expect(adminSql).toContain('${pre.payment.amount}')
+    expect(adminSql).toContain('${pre.payment.note}')
+  })
+
+  test('退款审批真实锁序为原单先于流水CAS，防申请唯一索引等待成环', () => {
+    for (const file of [FILES.staffOrderJs, FILES.adminRefundsTs]) {
+      const src = stripComments(readFile(file))
+      const begin = file === FILES.staffOrderJs ? src.indexOf('async function approveRefund(ctx)') : src.indexOf('cascade = await db.transaction')
+      const body = src.slice(begin)
+      const lock = body.indexOf('SELECT sale_order_id, received, refunded_amount FROM sale_orders')
+      expect(lock, file).toBeGreaterThanOrEqual(0)
+      expect(lock, file).toBeLessThan(body.indexOf('UPDATE sale_order_payments'))
+    }
+  })
+
+  test('寄存转换关单保留 paid_sessions，审批须显式复核寄存卡可退次数', () => {
+    for (const file of [FILES.staffOrderJs, FILES.adminOrdersTs]) {
+      const src = stripComments(readFile(file))
+      const rollback = src.slice(src.indexOf('async function rollbackPendingConversionOnClose'))
+      expect(rollback, file).toContain("WHEN op.sale_order_type = '寄存单' THEN sale_items.paid_sessions")
+      expect(rollback, file).toContain('SELECT total_amount, sale_order_type FROM sale_orders')
+    }
+    for (const file of [FILES.staffOrderJs, FILES.adminRefundsTs]) {
+      expect(readFile(file), file).toContain('CARD_REFUNDABLE_CHANGED')
+      expect(readFile(file), file).toContain('const requested = checkQuantity ?')
+    }
+  })
+
+  test('寄存退款后的转换锁内必须读取 paid_sessions，不能按物理余量回退', () => {
+    for (const file of [FILES.staffOrderJs, FILES.adminOrdersTs]) {
+      const src = stripComments(readFile(file))
+      const held = src.match(/(?:const heldResult|const heldRows) = await [\s\S]*?FOR UPDATE OF si/)
+      expect(held, file).not.toBeNull()
+      expect(held[0], file).toContain('si.paid_sessions')
+    }
   })
 
   // ── #154 拆列后的三类守护 ──────────────────────────────────────────────

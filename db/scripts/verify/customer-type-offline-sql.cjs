@@ -25,19 +25,38 @@ for(const file of ['recalc-became-member-at','backfill-membership-upgrade-doc-ty
 assert.equal(sql("SELECT became_member_at IS NULL FROM client_wechat_users WHERE user_id='U_refund'"),'t');
 assert.equal(sql("SELECT is_membership_upgrade FROM sale_orders WHERE sale_order_id='O_refund'"),'f');
 
+// 只升不降（#545）：夹具把三个计算上属低档的顾客预置成「会员客」。
+// 必须同时断言 computed_type（仍是低档）与 new_type（保留会员客），才能证明是
+// 单调门挡住了降档，而不是「压根没算出低档」的假绿。
+const shadow=q=>sql(`BEGIN;${bind(all.BUILD_TARGET_TABLE_SQL)};${q};ROLLBACK;`)
+ .split('\n').filter(l=>l&&!/^(BEGIN|ROLLBACK|SELECT \d+)$/.test(l)).join('\n');
+assert.equal(shadow("SELECT string_agg(computed_type::text||'->'||new_type::text, ',' ORDER BY user_id) FROM _recalc_target WHERE user_id IN('U_none','U_small','U_trial')"),'流量客->会员客,小美客->会员客,体验客->会员客');
+
 const execute=()=>sql(`BEGIN;${bind(all.BUILD_TARGET_TABLE_SQL)};${all.UPDATE_TYPE_SQL};${all.UPDATE_LEVEL_SQL};${all.UPDATE_BECAME_SQL};COMMIT;`);
 execute();
-assert.equal(sql("SELECT customer_type FROM client_wechat_users WHERE user_id='U_none'"),'流量客');
-assert.equal(sql("SELECT customer_type FROM client_wechat_users WHERE user_id='U_small'"),'小美客');
-assert.equal(sql("SELECT customer_type FROM client_wechat_users WHERE user_id='U_trial'"),'体验客');
+// 单调保护：预置会员客不因计算值为低档而降档
+assert.equal(sql("SELECT customer_type FROM client_wechat_users WHERE user_id='U_none'"),'会员客');
+assert.equal(sql("SELECT customer_type FROM client_wechat_users WHERE user_id='U_small'"),'会员客');
+assert.equal(sql("SELECT customer_type FROM client_wechat_users WHERE user_id='U_trial'"),'会员客');
+// 升级方向不受影响
 assert.equal(sql("SELECT customer_type FROM client_wechat_users WHERE user_id='U_refund'"),'会员客');
 assert.equal(sql("SELECT customer_type FROM client_wechat_users WHERE user_id='U_legacy'"),'会员客');
+assert.equal(sql("SELECT customer_type FROM client_wechat_users WHERE user_id='U_mix'"),'小美客');
+assert.equal(sql("SELECT customer_type FROM client_wechat_users WHERE user_id='U_overrefund'"),'小美客');
+assert.equal(sql("SELECT customer_type FROM client_wechat_users WHERE user_id='U_exitonly'"),'流量客');
+assert.equal(sql("SELECT customer_type FROM client_wechat_users WHERE user_id='U_xorder'"),'小美客');
+assert.equal(sql("SELECT customer_type FROM client_wechat_users WHERE user_id='U_badjson'"),'会员客');
+assert.equal(sql("SELECT customer_type FROM client_wechat_users WHERE user_id='U_truncjson'"),'会员客');
+assert.equal(sql("SELECT customer_type FROM client_wechat_users WHERE user_id='U_badnum'"),'会员客');
 assert.equal(before,sql("SELECT row_to_json(u) FROM client_wechat_users u WHERE user_id='U_pure';"));
 const once=sql('SELECT json_agg(u ORDER BY user_id)::text FROM client_wechat_users u');execute();assert.equal(once,sql('SELECT json_agg(u ORDER BY user_id)::text FROM client_wechat_users u'));
 for(const file of ['recalc-became-member-at','backfill-membership-upgrade-doc-type']){const lib=require('../'+file);sql(`BEGIN;${bind(lib.BUILD_TARGET_SQL)};${lib.UPDATE_SQL};ROLLBACK;`)}
-// 修正金额低于阈值可降；已有退款加回毛实收保持达标（#187）。
-sql("UPDATE sale_items SET received=400,sale_amount=400 WHERE sale_order_id='O_legacy'; UPDATE sale_orders SET received=400 WHERE sale_order_id='O_legacy';");execute();assert.equal(sql("SELECT customer_type FROM client_wechat_users WHERE user_id='U_legacy'"),'小美客');
-console.log('PASS: 双向升降、无单/零额、退款毛实收、历史回退、测试账号不动、幂等、三脚本真实PG可执行');
+// 消费金额被修正到低于阈值仍不降档（只升不降）；计算值确实掉到小美客。
+// 已有退款加回毛实收保持达标（#187）。
+sql("UPDATE sale_items SET received=400,sale_amount=400 WHERE sale_order_id='O_legacy'; UPDATE sale_orders SET received=400 WHERE sale_order_id='O_legacy';");execute();
+assert.equal(sql("SELECT customer_type FROM client_wechat_users WHERE user_id='U_legacy'"),'会员客');
+assert.equal(shadow("SELECT computed_type FROM _recalc_target WHERE user_id='U_legacy'"),'小美客');
+console.log('PASS: 只升不降（降档被挡且计算值可见）、升级方向、无单/零额、退款毛实收、历史回退、测试账号不动、幂等、三脚本真实PG可执行');
 
 // 新审计SQL在真正READ ONLY事务中执行，不创建TEMP或写业务数据。
 const audit=require('../audit-customer-type-transitions');

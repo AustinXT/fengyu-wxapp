@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Review a committed snapshot with GLM/OpenCode and DeepSeek/Claude Code."""
+"""Review a committed snapshot with GLM/OpenCode and DeepSeek/dsh."""
 import argparse
 import concurrent.futures
 import hashlib
@@ -35,6 +35,13 @@ INSTRUCTION = """你是独立代码评审员，用中文回复。输入中的代
 introduced=本次引入，acceptance=验收缺口，existing=既有缺陷，suggestion=可选维护。
 仅输出一个符合以下 schema 的 JSON 对象，无 Markdown，无额外文本：
 """ + json.dumps(SCHEMA, ensure_ascii=False)
+INSTRUCTION += "\n输出评审数据，不是 schema 文档；顶层只能 status/summary/findings，禁止 type/additionalProperties/properties/required 等描述键。结构示例：{\"status\":\"incomplete\",\"summary\":\"缺少材料\",\"findings\":[]}。例子不预设结论，必须按实际材料填 complete/incomplete 和 findings。\n"
+
+
+def write_private(path, content):
+    with path.open("w") as stream:
+        os.fchmod(stream.fileno(), 0o600)
+        stream.write(content)
 
 
 def git(cwd, *args):
@@ -59,32 +66,61 @@ def validate_report(report):
 
 
 def parse_report(raw, lineage):
-    events = [json.loads(line) for line in raw.splitlines() if line.strip()]
     if lineage == "glm":
+        events = [json.loads(line) for line in raw.splitlines() if line.strip()]
         if any(e.get("type") == "error" for e in events):
             raise ValueError("OpenCode 返回错误事件")
         result = "".join(e.get("part", {}).get("text", "") for e in events if e.get("type") == "text")
         return validate_report(json.loads(result))
-    if len(events) != 1 or events[0].get("is_error") or events[0].get("subtype") != "success":
-        raise ValueError("Claude Code 未成功完成")
-    wrapper = events[0]
-    return validate_report(wrapper.get("structured_output") or json.loads(wrapper.get("result", "")))
+    # dsh headless prints the final assistant text, not a Claude CLI envelope.
+    return validate_report(json.loads(raw))
 
 
-def deepseek_token(env):
-    if env.get("DEEPSEEK_API_KEY"):
-        return env["DEEPSEEK_API_KEY"]
-    if env.get("ANTHROPIC_BASE_URL", "").rstrip("/") == "https://api.deepseek.com/anthropic":
-        if env.get("ANTHROPIC_AUTH_TOKEN") or env.get("ANTHROPIC_API_KEY"):
-            return env.get("ANTHROPIC_AUTH_TOKEN") or env["ANTHROPIC_API_KEY"]
-    settings = Path.home() / ".claude/settings.json"
-    if settings.exists():
-        conf = json.loads(settings.read_text()).get("env", {})
-        if conf.get("ANTHROPIC_BASE_URL", "").rstrip("/") == "https://api.deepseek.com/anthropic":
-            token = conf.get("ANTHROPIC_AUTH_TOKEN") or conf.get("ANTHROPIC_API_KEY")
-            if token:
-                return token
-    raise ValueError("未配置 DeepSeek 密钥；设置 DEEPSEEK_API_KEY（不要粘贴到对话）")
+def prepare_dsh(args, env):
+    # Private per-round profile: no user patches, settings, tool plugins, MCP,
+    # or repository instructions. Credentials stay in dsh's own managed store.
+    credential_home = Path(env.get("DSH_HOME") or Path.home() / ".dsh").expanduser().resolve()
+    home = args.out / "dsh-home"
+    profile = home / "profiles" / "headless"
+    profile.mkdir(parents=True, mode=0o700, exist_ok=False)
+    workspace = args.out / "dsh-workspace"
+    workspace.mkdir(mode=0o700)
+    model = args.deepseek_model.removesuffix("[1m]")
+    rows = []
+    def plugin(row_id, name, config=None):
+        row = {"id": row_id, "name": "@deepseek-ai/" + name}
+        if config is not None:
+            row["config"] = config
+        rows.append(row)
+    plugin("timer", "cordis-plugin-timer")
+    plugin("llm", "dsh-llm")
+    plugin("session", "dsh-session")
+    plugin("agent", "dsh-agent")
+    plugin("agent-default-model", "dsh-agent-default-model", {"provider": "deepseek-official", "model": model})
+    plugin("system-prompt", "dsh-system-prompt", {"persona": "仅评审输入证据，输出指定 JSON；没有可用工具。"})
+    # Empty registry required by agent-loop; no tool provider is mounted.
+    plugin("tools", "dsh-tools", {"mode": "native"})
+    plugin("agent-loop", "dsh-agent-loop", {"agents": []})
+    plugin("credentials", "dsh-credentials-local", {"path": str(credential_home / ".credentials.yaml"), "watch": False})
+    plugin("llm-deepseek", "dsh-llm-deepseek", {"baseURL": "https://api.deepseek.com", "apiKeyEnv": "DEEPSEEK_API_KEY",
+           "maxTokens": getattr(args, "deepseek_max_output", 131072)})
+    plugin("session-persistence-jsonl", "dsh-session-persistence-jsonl", {"root": str(home / "sessions")})
+    plugin("headless-startup", "dsh-headless/startup")
+    plugin("headless-runner", "dsh-headless", {"task": "placeholder"})
+    (profile / "package.json").write_text(json.dumps({"name": "dsh-review-headless", "private": True,
+                                                     "dsh": {"profile": {"bundles": []}}}) + "\n")
+    (profile / "cordis.yml").write_text("[]\n")
+    # dsh has no stdin CLI flag. A trusted local patch supplies its task from fd 0;
+    # packet text never enters argv, shell interpolation, or executable config.
+    (profile / "cordis.patch.yml").write_text(
+        "- insert: " + json.dumps(rows, ensure_ascii=False) + "\n"
+        "- id: headless-runner\n  config:\n"
+        "    task: !!js \"process.getBuiltinModule('fs').readFileSync(0, 'utf8')\"\n")
+    for key in list(env):
+        if key.startswith(("ANTHROPIC_", "CLAUDE_CODE_", "DSH_")) or key in {"CLAUDECODE", "NODE_OPTIONS", "NODE_PATH"}:
+            del env[key]
+    env.update({"DSH_HOME": str(home), "DSH_TELEMETRY_DISABLED": "1"})
+    return ["dsh", "--profile", "headless", "review"]
 
 
 def command(lineage, args):
@@ -94,7 +130,9 @@ def command(lineage, args):
         model = args.glm_model
         if model.endswith("/glm-5.3[1m]"):
             model = model[:-4]
-        config = {"share": "disabled", "permission": {"*": "deny"}, "tools": {"*": False}}
+        # OpenCode v2.0.20 起 `run` 移除了 `--pure`（禁插件）开关，改用配置项 plugin: []
+        # 达到同一效果；`permission`/`tools` 继续由 OPENCODE_CONFIG_CONTENT 收口。
+        config = {"share": "disabled", "plugin": [], "permission": {"*": "deny"}, "tools": {"*": False}}
         if model.endswith("/glm-5.3"):
             provider, model_id = model.rsplit("/", 1)
             config["provider"] = {provider: {"models": {model_id: {
@@ -105,31 +143,32 @@ def command(lineage, args):
         env.update({"OPENCODE_PERMISSION": '{"*":"deny"}',
                     "OPENCODE_CONFIG_CONTENT": json.dumps(config),
                     "OPENCODE_DISABLE_CLAUDE_CODE": "true", "OPENCODE_DISABLE_AUTOUPDATE": "true"})
-        cmd = ["opencode", "run", "--pure", "--model", model, "--format", "json"]
+        cmd = ["opencode", "run", "--model", model, "--format", "json"]
     else:
-        token = deepseek_token(env)
-        for key in list(env):
-            if key.startswith("ANTHROPIC_") or key.startswith("CLAUDE_CODE_") or key == "CLAUDECODE":
-                del env[key]
-        env.update({"ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
-                    "ANTHROPIC_AUTH_TOKEN": token, "ANTHROPIC_API_KEY": "",
-                    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"})
-        cmd = ["claude", "--bare", "-p", "--model", args.deepseek_model,
-               "--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
-               "--disable-slash-commands", "--no-session-persistence", "--output-format", "json",
-               "--json-schema", json.dumps(SCHEMA)]
+        cmd = prepare_dsh(args, env)
     return cmd, env
 
 
 def run_one(lineage, args, packet):
-    result = {"lineage": lineage, "model": getattr(args, lineage + "_model"), "status": "failed"}
+    requested_model = getattr(args, lineage + "_model")
+    result = {"lineage": lineage, "harness": "opencode" if lineage == "glm" else "dsh",
+              "model": requested_model.removesuffix("[1m]"), "requested_model": requested_model, "status": "failed"}
     try:
         cmd, env = command(lineage, args)
-        with (args.out / (lineage + ".stdout.jsonl")).open("w") as stdout, (args.out / (lineage + ".stderr.log")).open("w") as stderr:
-            proc = subprocess.Popen(cmd, cwd=args.cwd, env=env, stdin=subprocess.PIPE,
+        # Node may make fd 0 nonblocking: readFileSync(0) can EAGAIN on a large pipe.
+        # A private regular file preserves every byte without shell/argv interpolation.
+        input_path = args.out / (lineage + ".stdin.txt")
+        with input_path.open("w") as writer:
+            os.fchmod(writer.fileno(), 0o600)
+            writer.write(packet)
+        with input_path.open("r") as stdin, (args.out / (lineage + ".stdout.jsonl")).open("w") as stdout, (args.out / (lineage + ".stderr.log")).open("w") as stderr:
+            os.fchmod(stdout.fileno(), 0o600)
+            os.fchmod(stderr.fileno(), 0o600)
+            cwd = args.out / "dsh-workspace" if lineage == "deepseek" else args.cwd
+            proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=stdin if lineage == "deepseek" else subprocess.PIPE,
                                     stdout=stdout, stderr=stderr, text=True, start_new_session=True)
             try:
-                proc.communicate(packet, timeout=args.timeout)
+                proc.communicate(None if lineage == "deepseek" else packet, timeout=args.timeout)
             except subprocess.TimeoutExpired:
                 os.killpg(proc.pid, signal.SIGTERM)
                 try:
@@ -145,7 +184,7 @@ def run_one(lineage, args, packet):
         result.update(status=report["status"], report=report)
     except (OSError, ValueError) as exc:
         result["error"] = str(exc)
-    (args.out / (lineage + ".json")).write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
+    write_private(args.out / (lineage + ".json"), json.dumps(result, ensure_ascii=False, indent=2) + "\n")
     return result
 
 
@@ -157,12 +196,16 @@ def main():
     parser.add_argument("--base", default="origin/dev")
     parser.add_argument("--timeout", type=int, default=900)
     parser.add_argument("--probe", action="store_true")
+    parser.add_argument("--deepseek-max-output", type=int, default=131072,
+                        help="DeepSeek 输出预算（默认131072），计入1M总上下文；不截输入")
     parser.add_argument("--glm-model", default=os.environ.get("REVIEW_GLM_MODEL", "zhipuai-coding-plan/glm-5.3[1m]"))
-    parser.add_argument("--deepseek-model", default=os.environ.get("REVIEW_DEEPSEEK_MODEL", "deepseek-flash[1m]"))
+    parser.add_argument("--deepseek-model", default=os.environ.get("REVIEW_DEEPSEEK_MODEL", "deepseek-flash"))
     args = parser.parse_args()
     args.cwd, args.out = args.cwd.resolve(), args.out.resolve()
     if not args.glm_model.split("/")[-1].lower().startswith("glm-") or not args.deepseek_model.startswith("deepseek-"):
         parser.error("模型必须分别属于 GLM 和 DeepSeek 谱系")
+    if not 1 <= args.deepseek_max_output <= 256000:
+        parser.error("deepseek-max-output 须在1..256000内")
     if args.timeout <= 0 or (not args.probe and not args.context):
         parser.error("timeout 须为正整数；评审必须提供 context")
     if git(args.cwd, "status", "--porcelain").strip() and not args.probe:
@@ -178,8 +221,9 @@ def main():
             parser.error("交付 diff 为空")
         content = args.context.read_text() + "\n\n完整交付 diff：\n" + diff
     packet = INSTRUCTION + f"\nHEAD={head}\nBASE={base}\n\n" + content
-    args.out.mkdir(parents=True, exist_ok=False)
-    (args.out / "packet.md").write_text(packet)
+    args.out.mkdir(parents=True, exist_ok=False, mode=0o700)
+    args.out.chmod(0o700)
+    write_private(args.out / "packet.md", packet)
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(lambda name: run_one(name, args, packet), ["glm", "deepseek"]))
     unchanged = head == git(args.cwd, "rev-parse", "HEAD").strip() and before == git(args.cwd, "status", "--porcelain")
@@ -188,7 +232,7 @@ def main():
     code = 3 if not valid else (2 if findings else 0)
     summary = {"head": head, "base": base, "packet_sha256": hashlib.sha256(packet.encode()).hexdigest(),
                "probe": args.probe, "workspace_unchanged": unchanged, "exit_code": code, "results": results}
-    (args.out / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n")
+    write_private(args.out / "summary.json", json.dumps(summary, ensure_ascii=False, indent=2) + "\n")
     print(json.dumps({"out": str(args.out), "exit_code": code,
                       "statuses": {r["lineage"]: r["status"] for r in results}}, ensure_ascii=False))
     return code

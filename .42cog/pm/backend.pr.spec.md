@@ -504,7 +504,7 @@
 | `name` | varchar(50) \| null | 顾客姓名 |
 | `bound_store_id` | text \| null | FK → `stores.store_id`（顾客端主动绑定的门店） |
 | `bound_employee_id` | varchar(50) \| null | 所属美容师 |
-| *档案字段* | *各类型* | `gender`、`member_level`、`customer_source`、`category`、`birthday`、`occupation`、`is_married`、`wechat_name`、`skin_type`、`improvement_focus`、`skin_issue`、`wellness_preference`、`notes`（均 nullable） |
+| *档案字段* | *各类型* | `gender`、`customer_source`、`category`、`birthday`、`occupation`、`is_married`、`wechat_name`、`skin_type`、`improvement_focus`、`skin_issue`、`wellness_preference`、`notes`（均 nullable）；`member_level` nullable 但**会员客下限为初钻**（仅非会员客可为 NULL，见 §25） |
 | `last_login_at` | timestamp \| null | 最近登录时间 |
 
 > **索引**: `UNIQUE(openid) WHERE openid IS NOT NULL`、`UNIQUE(phone) WHERE phone IS NOT NULL`、`UNIQUE(customer_id) WHERE customer_id IS NOT NULL`、`INDEX(bound_store_id)`
@@ -908,7 +908,9 @@ login 返回中包含 `permissions` 字段：
     - 转换单只认已支付首次收款、回款或实际扣卡产生的 receipt 新增实收，按转入行的体验属性拆分。旧版含转出负数/转入资产正数的 signed receipt 先求该次净新增，再按转入权重及累计边界分币分配；新版增量 receipt 直接累计。旧卡资产、零补差、尚未实际扣减的储值卡金额不计入，转换链不得重复计旧资产。异常 receipt 不以转入面额兜底。
     - `EXISTS(某单 non_trial ≥ system_configs.new_member_threshold)` → 会员客；否则存在非体验正数 → 小美客；否则存在体验正数 → 体验客；否则流量客。
     - 体验 500 + 非体验 1600、两张各 1000 的单、三张各 1980 的单，在阈值 1990 时均不入会。
-    - 实时收款只升级；每日、历史审核和离线按计算值双向对齐。保留 #257 的历史等级/入会时间与再达标处理，不另行重定义。
+    - **只升不降（#545，推翻 #257 的双向对齐）**：目标档位 = max(现值, 计算值)，档位序 流量客 < 体验客 < 小美客 < 会员客。实时收款、每日 cron、历史审核与离线补算一律只升级，口径/算法修正导致的档位下降不生效。
+    - **退款是唯一放行降档的通道**：已退款订单退出达标判定后，按剩余有效订单重算并允许降档（#524 第 5 条），由退款审批事务内即时完成（staffApi `order.approveRefund` / admin `refunds.ts`），不依赖次日 cron；降档不清历史 `became_member_at` 与升级单标记。
+    - 会员客的 `member_level` 后续按滚动 12 个月净消费重算，**下限为最低档「初钻」，不允许为 NULL**（非会员客仍为 NULL）；`new_member_threshold` 自此只参与 customer_type 的入会判定，不再参与等级判定。
     - 完整 receipt 的订单按实际款项 `paid_at`、唯一 ID 累计，取首次非体验实收跨阈值时间；所有达标单按该时间和订单 ID 确定首笔，入会时间与升级单归因同源。部分支付父单 `paid_at=NULL` 不回退开单时间。无 receipt 的已支付/已完成历史销售单沿用 `COALESCE(paid_at,created_at)`；不完整事实单在只读审计列出，不能伪造时间。
     - 部分退款沿用毛实收；原单全额退款进入已退款后整单退出计算。
     - 首次达标仍遵守 #301 人工所属员工门禁；已成功支付回调不因门禁拒绝入账。充值到账、分享礼等结清副作用维持原触发时点。

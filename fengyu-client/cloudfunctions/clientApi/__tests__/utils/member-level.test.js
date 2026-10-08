@@ -66,8 +66,9 @@ describe('determineMemberLevel 阈值（与 db/utils/member-level.ts 一致）',
     [30000, '粉钻'],
     [10000, '星钻'],
     [1990, '初钻'],
-    [1989, null],
-    [0, null],
+    // #545：会员客等级下限 = 初钻，低于门槛不再返回 null
+    [1989, '初钻'],
+    [0, '初钻'],
   ])('spend=%i → %s', (spend, expected) => {
     expect(determineMemberLevel(spend, 1990)).toBe(expected)
   })

@@ -85,7 +85,13 @@ test('批量等级阈值与cron等级纯函数逐档一致', () => {
   const rules = [...cron.matchAll(/if \(spend >= (\d+)\) return '([^']+)'/g)]
   assert.equal(rules.length, 4)
   for (const [, amount, name] of rules) assert.ok(new RegExp(`>=\\s*${amount}\\s+THEN\\s+'${name}'`).test(batch))
-  assert.ok(batch.includes("WHEN COALESCE(s.spend, 0) >= (SELECT v FROM threshold) THEN '初钻'"))
+  // 第 5 档（#545）：会员客等级下限 = 初钻 —— 批量 SQL 的内层 CASE 用 ELSE 兜底，
+  // cron 纯函数的末分支同为 '初钻'。取「会员客内层 CASE」这一段（到它自己的 END 为止），
+  // 外层 ELSE NULL 属于「非会员客一律 NULL」，不在本断言范围内。
+  const start = batch.indexOf('WHEN spend >= 100000')
+  const levelCase = batch.slice(start, batch.indexOf('END', start))
+  assert.ok(levelCase.includes("ELSE '初钻'"))
+  assert.ok(!levelCase.includes('NULL'))
 })
 
 

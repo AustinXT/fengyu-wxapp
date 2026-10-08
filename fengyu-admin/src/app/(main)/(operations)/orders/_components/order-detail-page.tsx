@@ -280,11 +280,11 @@ export default function OrderDetailPageClient({
   const [performanceAttributionDialogOpen, setPerformanceAttributionDialogOpen] = useState(false);
   const [paymentAttributionTarget, setPaymentAttributionTarget] = useState<SaleOrderPayment | null>(null);
 
-  // 退款按钮仅对销售单 + 非历史订单 + 已支付/已完成/部分支付 可见
+  // 退款按钮对销售单 + 寄存单（#543，2026-10-06 放开寄存单退款）+ 非历史订单 + 已支付/已完成/部分支付 可见
   // （历史订单是 sale_order_type='销售单' 但 legacySource='workfine'，必须显式排除，否则按钮会露出）
   const canShowRefund =
     canRefund &&
-    order.saleOrderType === "销售单" &&
+    (order.saleOrderType === "销售单" || order.saleOrderType === "寄存单") &&
     !isWorkfineLegacy(order.legacySource) &&
     (order.status === "已支付" || order.status === "已完成" || order.status === "部分支付");
 

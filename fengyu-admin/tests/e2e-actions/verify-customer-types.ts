@@ -1,4 +1,4 @@
-/** #257 C 私有PostgreSQL行为回归；不读取业务库连接，临时容器唯一命名且finally清理。 */
+/** #545（推翻 #257）私有PostgreSQL行为回归：全量通道只升不降、退款通道唯一放行降档；不读取业务库连接，临时容器唯一命名且finally清理。 */
 import assert from 'node:assert/strict'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { execFileSync } from 'node:child_process'
@@ -36,23 +36,29 @@ try {
     const [type,level] = psql("SELECT customer_type || '|' || member_level FROM client_wechat_users WHERE user_id='U_legacy'").split('|')
     assert.equal(resolveUnitPrice({price:1000,specialPrice:600},isMember(type,level)).realUnit,expected)
   }
-  const {recomputeCustomerTagsInTx} = await import('../../src/lib/recompute-customer-tags')
+  const {recomputeCustomerTagsInTx, recomputeCustomerTypeOnRefund} = await import('../../src/lib/recompute-customer-tags')
   const testBefore = psql("SELECT row_to_json(u) FROM client_wechat_users u WHERE user_id='U_pure'")
   await refreshCustomerTypes(db)
-  for(const [id,type] of [['U_none','流量客'],['U_small','小美客'],['U_trial','体验客'],['U_refund','会员客'],['U_legacy','会员客']]) assert.equal(psql(`SELECT customer_type FROM client_wechat_users WHERE user_id='${id}'`),type)
+  // 只升不降：夹具把 U_none/U_small/U_trial 预置成会员客（计算上是低档），全量重算不得降档
+  for(const [id,type] of [['U_none','会员客'],['U_small','会员客'],['U_trial','会员客'],['U_refund','会员客'],['U_legacy','会员客']]) assert.equal(psql(`SELECT customer_type FROM client_wechat_users WHERE user_id='${id}'`),type)
   assert.equal(psql("SELECT became_member_at IS NOT NULL FROM client_wechat_users WHERE user_id='U_refund'"),'t')
   assert.equal(psql("SELECT is_membership_upgrade FROM sale_orders WHERE sale_order_id='O_refund'"),'t')
   assert.equal(psql("SELECT row_to_json(u) FROM client_wechat_users u WHERE user_id='U_pure'"),testBefore)
   const once = psql('SELECT json_agg(u ORDER BY user_id)::text FROM client_wechat_users u')
   assert.equal((await refreshCustomerTypes(db)).updated,0)
   assert.equal(psql('SELECT json_agg(u ORDER BY user_id)::text FROM client_wechat_users u'),once)
+  // 消费被修正到低于阈值 → 历史审核通道（全量语义）只升不降，必须保持会员客，会员价不变
   psql("UPDATE sale_orders SET received=400 WHERE sale_order_id='O_legacy'")
   const beforeHistory = psql("SELECT json_build_array(member_level,became_member_at,(SELECT is_membership_upgrade FROM sale_orders WHERE sale_order_id='O_legacy')) FROM client_wechat_users WHERE user_id='U_legacy'")
-  const changed = await db.transaction(tx=>recomputeCustomerTagsInTx(tx,'U_legacy'))
-  assert.deepEqual(changed.customerTypeChanged,{from:'会员客',to:'小美客'})
+  assert.equal((await db.transaction(tx=>recomputeCustomerTagsInTx(tx,'U_legacy'))).customerTypeChanged,null)
+  assert.equal(psql("SELECT customer_type FROM client_wechat_users WHERE user_id='U_legacy'"),'会员客')
+  assertMemberPrice(600)
+  assert.equal((await db.transaction(tx=>recomputeCustomerTagsInTx(tx,'U_legacy'))).customerTypeChanged,null)
+  // 退款通道是唯一放行降档的入口：同一数据下允许降到小美客，但不清历史归因/会费价资格口径
+  assert.deepEqual(await db.transaction(tx=>recomputeCustomerTypeOnRefund(tx,'U_legacy')),{from:'会员客',to:'小美客'})
   assertMemberPrice(1000)
   assert.equal(psql("SELECT json_build_array(member_level,became_member_at,(SELECT is_membership_upgrade FROM sale_orders WHERE sale_order_id='O_legacy')) FROM client_wechat_users WHERE user_id='U_legacy'"),beforeHistory)
-  assert.equal((await db.transaction(tx=>recomputeCustomerTagsInTx(tx,'U_legacy'))).customerTypeChanged,null)
+  assert.equal(await db.transaction(tx=>recomputeCustomerTypeOnRefund(tx,'U_legacy')),null)
   const {grantBirthdayBenefits} = await import('../../src/cron/steps/grant-birthday-benefits')
   const {grantThanksgivingBenefits} = await import('../../src/cron/steps/grant-thanksgiving-benefits')
   psql("INSERT INTO system_configs VALUES('birthday_benefits','{}'),('thanksgiving_benefits','{}'); UPDATE client_wechat_users SET birthday='2026-07-20' WHERE user_id='U_legacy'; INSERT INTO service_orders VALUES('U_legacy','已完成','2026-07-20');")
@@ -65,25 +71,28 @@ try {
   assert.equal((await grantBirthdayBenefits(db,ctx)).total,1)
   assert.equal((await grantThanksgivingBenefits(db,ctx)).total,1)
   // 真实并发：快照之后另一连接写入合法分类，旧批量重算必须40001整体回滚。
+  // 载体用 U_refund（快照时流量客 → 批量目标会员客，属候选行）；#545 起 U_legacy 被单调门
+  // 保护、批量目标恒等于现值，不再是候选行，所以不能再拿它做冲突载体。
   psql("UPDATE sale_orders SET received=400 WHERE sale_order_id='O_legacy'; UPDATE client_wechat_users SET customer_type='流量客',became_member_at=NULL WHERE user_id='U_refund'; UPDATE sale_orders SET is_membership_upgrade=false WHERE sale_order_id='O_refund';")
   const withRace = {
     transaction: (fn: Parameters<typeof db.transaction>[0], options: Parameters<typeof db.transaction>[1]) => db.transaction(async tx => {
       await tx.execute(sql`SELECT customer_type FROM client_wechat_users WHERE user_id='U_legacy'`)
-      await db.execute(sql`UPDATE client_wechat_users SET customer_type='体验客',updated_at=NOW() WHERE user_id='U_legacy'`)
+      await db.execute(sql`UPDATE client_wechat_users SET customer_type='体验客',updated_at=NOW() WHERE user_id='U_refund'`)
       return fn(tx)
     }, options),
   } as typeof db
   await assert.rejects(()=>refreshCustomerTypes(withRace), (e: any)=>e.code==='40001'||e.cause?.code==='40001')
-  assert.equal(psql("SELECT customer_type FROM client_wechat_users WHERE user_id='U_legacy'"),'体验客')
-  assert.equal(psql("SELECT customer_type FROM client_wechat_users WHERE user_id='U_refund'"),'流量客')
+  // 整批回滚：并发写入的体验客被保留，未被批量的会员客目标覆盖；历史字段同样未被批量改动
+  assert.equal(psql("SELECT customer_type FROM client_wechat_users WHERE user_id='U_refund'"),'体验客')
+  assert.equal(psql("SELECT customer_type FROM client_wechat_users WHERE user_id='U_legacy'"),'会员客')
   assert.equal(psql("SELECT became_member_at IS NULL FROM client_wechat_users WHERE user_id='U_refund'"),'t')
   assert.equal(psql("SELECT is_membership_upgrade FROM sale_orders WHERE sale_order_id='O_refund'"),'f')
   psql("UPDATE sale_orders SET received=3000 WHERE sale_order_id='O_legacy'")
   await refreshCustomerTypes(db)
   psql("UPDATE system_configs SET value='0'  WHERE key='new_member_threshold'")
   await assert.rejects(()=>refreshCustomerTypes(db),/会员门槛/)
-  assert.equal((await db.transaction(tx=>recomputeCustomerTagsInTx(tx,'U_legacy'))).customerTypeChanged,null)
-  console.log('PASS: 真实cron+helper双向、退款毛实收、无单、customerTypes步骤测试整行保护、同日幂等、历史字段保留、降级无会员价/生日/感恩资格、再达标恢复资格、并发40001整体回滚、阈值拒绝/审核跳过分类')
+  assert.equal((await db.transaction(tx=>recomputeCustomerTagsInTx(tx,'U_exitonly'))).customerTypeChanged,null)
+  console.log('PASS: 真实cron+helper只升不降（含低档计算被单调门挡住）、退款通道唯一放行降档、退款毛实收、无单、customerTypes步骤测试整行保护、同日幂等、降档保留历史字段、降级无会员价/生日/感恩资格、再达标恢复资格、并发40001整体回滚、阈值拒绝/审核跳过分类')
 } finally {
   const g = globalThis as typeof globalThis & {pgClient?: {end:()=>Promise<void>}}
   if(g.pgClient) await g.pgClient.end()

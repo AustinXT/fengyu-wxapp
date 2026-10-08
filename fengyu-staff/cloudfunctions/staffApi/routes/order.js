@@ -18,7 +18,7 @@ const { assertMembershipBinding } = require('../utils/membership-binding')
 const { requireStaffBound, requireManager, isCurrentStoreManager } = require('../middleware/auth')
 const { assertOrderInScope, isStoreInScope, restrictToBoundEmployee, buildBundleMarketScopeFilter, buildNormalSkuMarketScopeFilter } = require('../utils/scope')
 const { generateWxacode, uploadToCloudStorage, effectiveEnvVersion, versionPathSuffix } = require('../utils/wxacode')
-const { getMemberThreshold, getPointsToYuanRate, getPointsDeductionMaxRate } = require('../utils/config')
+const { getMemberThreshold, getMemberThresholdStrict, THRESHOLD_UNAVAILABLE_MSG, getPointsToYuanRate, getPointsDeductionMaxRate } = require('../utils/config')
 // 充值卡剥离 SKU 化（2026-05-20）：充值识别改为 sale_orders.sale_order_type='充值单'，
 // 不再依赖虚拟 SKU ID 或 product_name 正则解析面值。
 const { settlePointsSafe, grantPointBatch, consumePointBatches } = require('../utils/points')
@@ -659,28 +659,64 @@ const RECALC_CUSTOMER_TYPE_CTE = `WITH membership_settings AS (
 )`
 
 /**
- * 根据已支付/已完成订单历史，重算顾客类型（只升不降）
+ * 根据已支付/已完成订单历史，重算顾客类型
  * 阈值从 system_configs.new_member_threshold 读取
  * 跃迁为"会员客"时同步写入 became_member_at = COALESCE(首笔达标单 paid_at, created_at)（非检测时刻 NOW()）。
- * TODO: 将来若开放"会员客→非会员客"降级路径，需同步 UPDATE became_member_at = NULL。
+ *
+ * #545（推翻 #257）：默认**只升不降** —— 口径/算法修正导致的档位下降不生效。
+ * 唯退款审批通道传 allowDowngrade=true：已退款订单抹掉达标贡献后须按剩余有效订单即时降档
+ * （#524 第 5 条），该场景由退款事务自己承担，不依赖次日 cron。
+ * 降档不清 became_member_at、不撤 is_membership_upgrade 标记（历史保留）。
+ *
  * @param {object} client - pg 事务客户端
  * @param {string} clientUserId - client_wechat_users.user_id
+ * @param {string} [saleOrderId] - 触发本次重算的订单（用于会员绑定校验）
+ * @param {boolean} [allowDowngrade=false] - 是否允许降档（仅退款审批通道传 true）
+ * @returns {Promise<{from: string|null, to: string}|null>} 本次实际发生的档位变更；未写库（早退/
+ *   配置不可用/守卫挡住）**恒为 null**（不是 undefined），审计 detail 的 customerTypeChange 因而字段稳定。
  */
-async function recalcCustomerType(client, clientUserId, saleOrderId) {
-  if (!clientUserId) return
+async function recalcCustomerType(client, clientUserId, saleOrderId, allowDowngrade = false) {
+  if (!clientUserId) return null
 
-  // 已是最高级，无需重算
+  // 已是最高级：默认通道无需重算；退款通道仍需重算（达标单退款后可能掉档）。
+  //
+  // ⚠️ 隐性前提（**只对 allowDowngrade=true 的退款调用点成立**）：本函数读现值不加行锁，
+  // 降档写入近乎盲写，其正确性依赖「同一事务里已先有一条写 client_wechat_users 的语句」把
+  // 该行锁住 —— 退款路径的 refreshSpendingTier 正好在它之前，从而与并发的另一笔退款/收款
+  // 串行化（`cross-end-sql-snapshot.test.js` 钉住这个先后顺序）。
+  // 三条收款路径不满足该前提（它们在 refreshSpendingTier **之前**调用本函数），但那些路径
+  // allowDowngrade=false、最多只做升级：竞争输了也只是漏升，次日 cron 会用正确数据重算。
+  // （admin 侧 recomputeCustomerTypeOnRefund 自带 FOR NO KEY UPDATE，不依赖调用顺序。）
   const cur = await client.query(
     'SELECT customer_type FROM client_wechat_users WHERE user_id = $1',
     [clientUserId]
   )
-  if (cur.rows[0]?.customer_type === '会员客') return
+  if (!allowDowngrade && cur.rows[0]?.customer_type === '会员客') return null
 
-  const threshold = await getMemberThreshold()
+  let threshold
+  if (allowDowngrade) {
+    // 退款是唯一放行降档的通道，阈值必须严格读取：getMemberThreshold 在配置异常时兜底
+    // FALLBACK_THRESHOLD，会按一个与真实门槛无关的数写出**不可逆的错误降档**。
+    // 配置不可用时跳过本次分类重算、不阻断退款审批本身 —— 与 admin
+    // recomputeCustomerTypeOnRefund 的「捕获后 return null」同语义。
+    try {
+      // 传 client：复用本事务连接，不在事务内经连接池二次借连接
+      threshold = await getMemberThresholdStrict(client)
+    } catch (err) {
+      // 只吞「配置不可用」这一类业务错误（查询本身成功、事务未被 abort，跳过是安全的）。
+      // 查询级/连接级错误必须 rethrow：事务已进入 aborted 状态，继续跑后续语句只会以
+      // 25P02 之类的晦涩错误失败、极难排障。与 admin 侧的同名判定保持一致。
+      if (!(err instanceof Error) || err.message !== THRESHOLD_UNAVAILABLE_MSG) throw err
+      console.warn('[order] 退款通道跳过顾客分类重算：会员门槛配置不可用')
+      return null
+    }
+  } else {
+    threshold = await getMemberThreshold()
+  }
 
-  // 九处 SQL 独立副本（staffApi routes/order.js + clientApi routes/order.js + payNotify index.js
-  // + admin actions/orders.ts + admin lib/recompute-customer-tags.ts + db/scripts/recalc-all-customer-types.js
-  // + db/scripts/recalc-became-member-at.js + db/scripts/backfill-membership-upgrade-doc-type.js）。
+  // 九处 SQL 独立副本：staffApi routes/order.js + clientApi routes/order.js + payNotify index.js
+  // + admin actions/orders.ts + admin lib/recompute-customer-tags.ts + admin cron/steps/refresh-customer-types.ts
+  // + db/scripts/{recalc-all-customer-types, recalc-became-member-at, backfill-membership-upgrade-doc-type}.js。
   // 修改时必须同步其余八处；一致性由 staffApi
   // __tests__/routes/recalc-customer-type-sql.test.js 守护，任一处漂移立即触发测试失败。
   //
@@ -704,7 +740,12 @@ async function recalcCustomerType(client, clientUserId, saleOrderId) {
   )
 
   const newType = typeResult.rows[0].computed_type
-  if (newType === '会员客') {
+  // #301 入会绑定门禁只在**首次入会**路径生效：它不是退款审批该管的事，
+  // 且下游全量通道（每日 cron、离线脚本、admin helper）都没有这道闸。
+  // 退款通道刻意跳过它 —— 否则「档案漂移态（库里非会员客、无 became_member_at、
+  // 未绑员工）＋ 一笔部分退款」会让整笔退款审批被一句与退款无关的绑定文案拦死，
+  // 同时与 admin `recomputeCustomerTypeOnRefund`（无等价断言）形成两端行为漂移。
+  if (newType === '会员客' && !allowDowngrade) {
     const currentOrder = await client.query(
       `${RECALC_CUSTOMER_TYPE_CTE} SELECT EXISTS (
          SELECT 1 FROM order_amounts WHERE sale_order_id = $3 AND non_trial >= $2
@@ -717,16 +758,23 @@ async function recalcCustomerType(client, clientUserId, saleOrderId) {
     `UPDATE client_wechat_users
      SET customer_type = $2::customer_type, updated_at = NOW()
      WHERE user_id = $1
-       AND (CASE customer_type
-              WHEN '流量客' THEN 0 WHEN '体验客' THEN 1
-              WHEN '小美客' THEN 2 WHEN '会员客' THEN 3
-            END)
+       AND (
+         (CASE customer_type
+            WHEN '流量客' THEN 0 WHEN '体验客' THEN 1
+            WHEN '小美客' THEN 2 WHEN '会员客' THEN 3
+          END)
          < (CASE $2::customer_type
-              WHEN '流量客' THEN 0 WHEN '体验客' THEN 1
-              WHEN '小美客' THEN 2 WHEN '会员客' THEN 3
-            END)
+            WHEN '流量客' THEN 0 WHEN '体验客' THEN 1
+            WHEN '小美客' THEN 2 WHEN '会员客' THEN 3
+          END)
+         -- #545：默认只升不降；仅退款审批通道（$3=true）允许降到计算档位。
+         -- 降档分支排除甲方测试账号（与 admin helper / cron / 离线脚本同口径）；
+         -- 升级分支不加，保持与 clientApi / payNotify 副本的实时 UPDATE 一致。
+         OR ($3::boolean AND customer_type IS DISTINCT FROM $2::customer_type
+             AND name IS DISTINCT FROM '谢廷(测试)')
+       )
      RETURNING customer_type`,
-    [clientUserId, newType]
+    [clientUserId, newType, allowDowngrade === true]
   )
 
   // 若本次 UPDATE 实际将顾客升级为“会员客”，became_member_at 记为确立会员资格的首笔达标单时间
@@ -758,6 +806,12 @@ async function recalcCustomerType(client, clientUserId, saleOrderId) {
       [clientUserId, threshold]
     )
   }
+
+  // 返回本次实际发生的档位变更（未写库时为 null），供调用方写审计 —— 退款是唯一放行降档
+  // 的通道，掉档会立刻收走会员价与生日/感恩权益，必须留痕。
+  return updateResult.rowCount > 0
+    ? { from: cur.rows[0]?.customer_type ?? null, to: newType }
+    : null
 }
 
 /**
@@ -2725,12 +2779,13 @@ async function rollbackPendingConversionOnClose(client, saleOrderId, now) {
       `UPDATE sale_items
 SET paid_sessions = CASE
   WHEN sale_items.session_count IS NULL THEN NULL
+  WHEN op.sale_order_type = '寄存单' THEN sale_items.paid_sessions
   WHEN op.total_amount <= 0 THEN sale_items.session_count
   WHEN sale_items.sale_amount <= 0 THEN sale_items.session_count
   ELSE LEAST(sale_items.session_count, FLOOR(sale_items.received::numeric * sale_items.session_count / sale_items.sale_amount::numeric)::integer)
 END,
 updated_at = NOW()
-FROM (SELECT total_amount FROM sale_orders WHERE sale_order_id = $2) op
+FROM (SELECT total_amount, sale_order_type FROM sale_orders WHERE sale_order_id = $2) op
 WHERE sale_items.sale_item_id IN (
   SELECT out_item.ref_sale_item_id
     FROM sale_items out_item
@@ -3681,16 +3736,18 @@ async function createRefund(ctx) {
   if (origOrders.length === 0) throw new Error('INVALID_PARAMS: 原订单状态不允许退款')
   const origOrder = origOrders[0]
 
-  // 修复（Bug L）：改正向白名单——仅销售单支持退款。原黑名单只挡寄存单/legacy，漏了内部单/转换单/充值单。
-  // 两端镜像 admin refunds.ts。充值卡退款走员工端「充值卡」入口（card.createRefund，扣 prepaid_cards.balance）。
+  // 修复（Bug L）：改正向白名单——原黑名单只挡寄存单/legacy，漏了内部单/转换单/充值单。
+  // 2026-10-06（#543）：寄存单改为**放行**（仅「退款」一项；回款/改实收仍锁，见 createRepayment /
+  // 仅 admin 的 updateDepositReceived 已整端移除）。两端镜像 admin refunds.ts。
+  // 充值卡退款走员工端「充值卡」入口（card.createRefund，扣 prepaid_cards.balance）。
   if (origOrder.legacy_source === 'workfine') {
     throw new Error('INVALID_STATE: 历史订单不支持退款')
   }
-  if (origOrder.sale_order_type !== '销售单') {
+  if (origOrder.sale_order_type !== '销售单' && origOrder.sale_order_type !== '寄存单') {
     if (origOrder.sale_order_type === '充值单') {
       throw new Error('INVALID_STATE: 充值卡退款请在「充值卡」入口发起')
     }
-    throw new Error('INVALID_STATE: 仅销售单支持退款')
+    throw new Error('INVALID_STATE: 仅销售单/寄存单支持退款')
   }
 
   // in-flight 唯一性：同一原单仅允许一笔 '待审批' 退款（DB 上有 partial unique uq_sop_status_audit 兜底）
@@ -3720,7 +3777,7 @@ async function createRefund(ctx) {
   // 查原单明细（构建 + 校验未使用数量）
   const origItems = await pg.query(
     // #145/#153：可退数量受「剩余已付」封顶，需要 pickup_records 与转出行聚合（见 utils/refund.js）
-    `SELECT si.*,
+    `SELECT si.*, si.converted_quantity AS physical_converted_quantity,
             GREATEST(0, si.received::numeric - ${retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true)}) AS received,
             COALESCE((SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr
                        WHERE pr.sale_item_id = si.sale_item_id), 0)::int AS picked_quantity,
@@ -3787,7 +3844,7 @@ async function createRefund(ctx) {
   if (isHandlingFeeInvalidForRefund(refundDetails, fee)) {
     throw new Error('INVALID_PARAMS: 手续费不能超过单次服务价格')
   }
-  const isZeroCashItemRefund = isZeroCashPaidSessionRefund(refundDetails, fee, totalRefund)
+  const isZeroCashItemRefund = isZeroCashPaidSessionRefund(refundDetails, fee, totalRefund, origOrder.sale_order_type)
   let finalRefundAmount = Math.max(0, Math.round((totalRefund - fee) * 100) / 100)
   if (finalRefundAmount <= 0 && !isZeroCashItemRefund) {
     throw new Error('INVALID_STATE: 无可退项')
@@ -3889,6 +3946,24 @@ async function createRefund(ctx) {
 
   try {
   await pg.transaction(async (client) => {
+    if (origOrder.sale_order_type === '寄存单') {
+      // 与转换保持原单→源行锁序；事务外退款定额只在锁内快照未变化时可提交。
+      const lockedOrder = await client.query('SELECT status FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE', [refSaleOrderId])
+      if (!lockedOrder.rows[0] || lockedOrder.rows[0].status !== origOrder.status) {
+        throw new Error('CONFLICT: 寄存单状态已变化，请刷新后重新发起退款')
+      }
+      const lockedItems = await client.query(
+        "SELECT * FROM sale_items WHERE sale_order_id = $1 AND item_direction = '购买' ORDER BY sale_item_id FOR UPDATE",
+        [refSaleOrderId],
+      )
+      const before = new Map(origItems.map((it) => [it.sale_item_id, it]))
+      const fields = ['remaining_sessions', 'paid_sessions', 'unit_real_price', 'session_count', 'quantity', 'picked_up_quantity', 'refunded_quantity']
+      if (lockedItems.rows.length !== before.size || lockedItems.rows.some((it) => {
+        const old = before.get(it.sale_item_id)
+        return !old || fields.some((field) => String(old[field] ?? '') !== String(it[field] ?? ''))
+          || String(old.physical_converted_quantity ?? '') !== String(it.converted_quantity ?? '')
+      })) throw new Error('CONFLICT: 寄存权益已变化，请刷新后重新发起退款')
+    }
     const sopRes = await client.query(
       `INSERT INTO sale_order_payments (
         sale_order_id, change_type, amount, payment_method, external_txn_id,
@@ -4006,6 +4081,10 @@ async function approveRefund(ctx) {
   const now = new Date()
 
   await pg.transaction(async (client) => {
+    // 与申请/转换统一为原单→退款流水→源行；必须在余额读取和退款 CAS 之前取锁。
+    const lockedOrderRes = await client.query('SELECT sale_order_id, received, refunded_amount FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE', [refSaleOrderId])
+    const lockedOrder = lockedOrderRes.rows[0]
+    if (!lockedOrder) throw new Error('NOT_FOUND: 原销售单不存在')
     // G 复校：审批前重算可退余额（本笔仍待审批，SUM 已支付自动排除），防 create→approve 间余额变化导致超退。
     // create 时已校验，但其间回款/其它操作可能改变余额；in-flight 唯一约束保证本笔是唯一待审批。两端镜像 admin refunds.ts。
     const capNowRes = await client.query(
@@ -4014,7 +4093,7 @@ async function approveRefund(ctx) {
       [refSaleOrderId]
     )
     const paymentsNetNow = Number(capNowRes.rows[0]?.net || 0)
-    const refundCapNow = Math.max(paymentsNetNow, Number(sopRow.received || 0) - Number(sopRow.refunded_amount || 0))
+    const refundCapNow = Math.max(paymentsNetNow, Number(lockedOrder.received || 0) - Number(lockedOrder.refunded_amount || 0))
     if (refundAbs > refundCapNow + 0.001) {
       throw new Error('INVALID_STATE: 订单可退余额已变化，请刷新后重新发起退款')
     }
@@ -4024,11 +4103,13 @@ async function approveRefund(ctx) {
       `UPDATE sale_order_payments
           SET status = '已支付', paid_at = $1,
               audit_employee_id = $2, audit_at = $1, audit_remark = $3
-        WHERE id = $4 AND status = '待审批'`,
-      [now, ctx.auth.staffWfId, auditRemark || null, paymentId]
+        WHERE id = $4 AND status = '待审批'
+          AND amount = $5::numeric
+          AND note IS NOT DISTINCT FROM $6::text`,
+      [now, ctx.auth.staffWfId, auditRemark || null, paymentId, sopRow.amount, sopRow.note ?? null]
     )
     if (cas.rowCount !== 1) {
-      throw new Error('INVALID_STATE: 退款流水状态已变更，请刷新后重试')
+      throw new Error('CONFLICT: 退款流水状态或明细已变更，请刷新后重新审批')
     }
 
     // 2. 重算 sale_orders.refunded_amount = -SUM(已支付退款)（Bug F：累加→重算，幂等、自愈，对齐 admin/schema 不变量）
@@ -4101,10 +4182,6 @@ async function approveRefund(ctx) {
       // sale_orders → sale_order_payments，入账路径与 createConversion / 关单回滚都已统一为
       // 先锁 sale_orders；approveRefund 原本是 sale_items → sale_orders（后续 cascade /
       // recalcPaidSessionsForOrder 才更新订单行），与它们互为反向 → 40P01。
-      await client.query(
-        `SELECT sale_order_id FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE`,
-        [refSaleOrderId],
-      )
       // 无条件锁：老退款单（无 note.items 且 ref_sale_item_id 为空）会让 homeRefundQty 为空，
       // 若因此跳过加锁就退回「createRefund 无锁定额 + cascade LEAST 静默封顶」的旧缺口。
       // 行锁本身即可把并发折抵挡在审批之外，成本也只是一条即将被更新的行的锁。
@@ -4154,13 +4231,14 @@ async function approveRefund(ctx) {
       )
       const consumedById = new Map(consumedRes.rows.map((c) => [c.sale_item_id, c]))
       for (const r of lockedRows.rows) {
-        // #182：疗程卡也要进来做**余数**复核。疗程卡的可退次数由 cascadeRefund +
-        // recalcPaidSessionsForOrder 的 D3 守护把关，但 overpay 余数（received > sale_amount
+        // #182：疗程卡也要进来做**余数**复核。寄存疗程卡的可退次数同样在锁内显式复核，
+        // 不能依赖转换耗尽分支的 D3 兜底；overpay 余数（received > sale_amount
         // 的多收零头）现在可以被转换单折走，申请时合法的余数可能在审批前已经没了。
         const isHome = r.product_type === '家居产品'
         const isCard = r.product_type === '疗程卡'
         if (!isHome && !isCard) continue
-        const requested = isHome ? (homeRefundQty.get(r.sale_item_id) || 0) : 0
+        const checkQuantity = isHome || (isCard && sopRow.sale_order_type === '寄存单')
+        const requested = checkQuantity ? (homeRefundQty.get(r.sale_item_id) || 0) : 0
         const requestedOverpay = homeOverpayAmt.get(r.sale_item_id) || 0
         if (requested <= 0 && requestedOverpay <= 0) continue
         // 与 calculateUnusedQuantity 同口径：折抵可能带走了剩余已付的全部金额却只占用
@@ -4184,10 +4262,12 @@ async function approveRefund(ctx) {
           converted_amount: c ? c.converted_amount : null,
           converted_quantity: c ? c.converted_quantity : null,
         }
-        if (isHome) {
+        if (checkQuantity) {
           const refundable = calculateUnusedQuantity(lockedSrc)
           if (requested > refundable) {
-            throw new Error('CONFLICT: HOME_PRODUCT_REFUNDABLE_CHANGED: 家居产品可退数量已变化（可能已被转换折抵或提货），请刷新后重新发起退款')
+            throw new Error(isHome
+              ? 'CONFLICT: HOME_PRODUCT_REFUNDABLE_CHANGED: 家居产品可退数量已变化（可能已被转换折抵或提货），请刷新后重新发起退款'
+              : 'CONFLICT: CARD_REFUNDABLE_CHANGED: 寄存卡可退次数已变化（可能已被转换折抵或消费），请刷新后重新发起退款')
           }
         }
         // 余数同样按锁内新快照复核：申请时的 ¥50 余数可能已被折抵带走
@@ -4210,18 +4290,84 @@ async function approveRefund(ctx) {
       refundReason: sopRow.refund_reason || '退款审批通过',
     })
 
+    // 寄存单退款终态是否本次落地（进 order.approveRefund 审计 detail；见下 else 分支）
+    let depositMarkedRefunded = false
+
     // 4.1 paid_sessions 重算（ticket 2026-05-19，D3=A）：refunded_amount 增长 → settled 下降
     // 若新 paid_sessions < 已消费次数(session_count - remaining_sessions)，抛 CONFLICT 阻止退款
     await recalcPaidSessionsForOrder(client, refSaleOrderId)
     await reconcileAllocationStatusAfterRefund(client, refSaleOrderId)
-    await reconcileOrderStatusAfterRefund(client, refSaleOrderId)
+    // 寄存单不改订单状态（2026-10-06 #543）：reconcileOrderStatusAfterRefund 用
+    // sale_payment_item_receipts 统计 refunded，而寄存单该表恒零行、sale_amount 又是**标价快照**，
+    // 会被判成 received < retained_value → 把「已支付」误改成「部分支付」，
+    // 让 total_amount=0 的寄存单掉进欠款/催款口径。两端镜像 admin refunds.ts。
+    if (sopRow.sale_order_type !== '寄存单') {
+      await reconcileOrderStatusAfterRefund(client, refSaleOrderId)
+    } else {
+      // 寄存单退款终态（2026-10-06 追加口径）：走不到 reconcileOrderStatusAfterRefund（理由见上），
+      // 因此这里单独判定「该卡已无可用权益」并置「已退款」。
+      // ⚠ 状态语义跨类型不同：销售单的「已退款」= 钱全退清（reconcileOrderStatusAfterRefund 按
+      //   逐行 refunded>=sale_amount 判定）；寄存单的「已退款」= **可退权益退光**（部分消耗后退卡时
+      //   已消费那部分本就不退钱，refunded_amount 永远小于 received）。寄存单本就不进金额口径
+      //   （`sale_order_type IN ('销售单','转换单')`），故不会污染报表。
+      // 「无可用权益」逐行判据：
+      //   ① 非次数卡（session_count IS NULL，即家居寄存件）→ 物理剩余 = quantity − (已提货+已退款+已转换)。
+      //      **刻意不含** calculateUnusedQuantity 的「剩余已付」金额封顶：判据更宽 ⇒ 只会漏置终态、
+      //      不会误置（保守方向）。
+      //   ② 次数卡历史行（paid_sessions IS NULL）→ 回退 remaining_sessions（与 calculateUnusedQuantity 同口径）。
+      //   ③ 次数卡 → 已付未用 = paid_sessions − 已消费次数(session_count − remaining_sessions)。
+      // 「本次审批这笔退款**确实退了次数**（note.items[].quantity > 0）」是必需条件，否则一张
+      // **自然消耗殆尽**（remaining=0、从未退过款）的寄存单也满足「无可用权益」而被误判成已退款。
+      // 用**本笔**而不是「本单历史上任一笔」：排除「曾退过次数 → 剩余被自然消耗殆尽 → 之后又审批一笔
+      // 纯余数退款」的灰区（那种单的钱并没有全退，不该翻终态）。
+      const depositRefundedRes = await client.query(`
+        WITH deposit_items AS (
+          SELECT CASE
+                   WHEN si.session_count IS NULL
+                     THEN (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0)
+                           + COALESCE(si.converted_quantity, 0)) < si.quantity
+                   WHEN si.paid_sessions IS NULL
+                     THEN COALESCE(si.remaining_sessions, 0) > 0
+                   ELSE COALESCE(si.paid_sessions, 0)
+                        > GREATEST(0, si.session_count - COALESCE(si.remaining_sessions, 0))
+                 END AS has_usable_right
+            FROM sale_items si
+           WHERE si.sale_order_id = $1
+             AND si.item_direction = '购买'
+        ),
+        this_refund_sessions AS (
+          SELECT COALESCE(SUM(GREATEST(0, public.try_numeric(elem ->> 'quantity'))), 0) AS refunded_sessions
+            FROM sale_order_payments sop
+            CROSS JOIN LATERAL jsonb_array_elements(
+              CASE WHEN jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'
+                   THEN public.try_jsonb(sop.note) -> 'items' ELSE '[]'::jsonb END
+            ) elem
+           WHERE sop.id = $2
+             AND sop.sale_order_id = $1
+             AND sop.change_type = '退款'
+             AND sop.status = '已支付'
+        )
+        UPDATE sale_orders so
+           SET status = '已退款'::order_status,
+               updated_at = NOW()
+         WHERE so.sale_order_id = $1
+           AND so.status IN ('已支付', '已完成', '部分支付')
+           AND EXISTS (SELECT 1 FROM deposit_items)
+           AND NOT EXISTS (SELECT 1 FROM deposit_items di WHERE di.has_usable_right)
+           AND (SELECT refunded_sessions FROM this_refund_sessions) > 0
+      `, [refSaleOrderId, paymentId])
+      depositMarkedRefunded = (depositRefundedRes.rowCount || 0) > 0
+    }
 
-    // 5. 退款只会降低净消费，这里仅重算允许随净额下降的 spending_tier。
-    // recalcCustomerType / recalcMemberLevel 都是“只升不降”的支付结算逻辑，
-    // 在退款审批中不会产生有效变更，反而会延长事务并增加云函数超时风险。
+    // 5. 退款抹掉该单的达标贡献 → 按剩余有效订单重算顾客分类，并**允许降档**（#524 第 5 条）。
+    // #545 起其余通道（每日 cron / 离线 / 历史审核 / 收款）一律只升不降，降档只由这里产生，
+    // 故必须显式传 allowDowngrade=true；否则退款后顾客会永久保留会员客身份。
+    // recalcMemberLevel 仍只升不降——会员等级下限为初钻，档位回落由每日 cron 在 150 天保级期后处理。
     // 与 admin approveRefund 保持一致。
+    let customerTypeChange = null
     if (sopRow.client_user_id) {
       await refreshSpendingTier(client, sopRow.client_user_id)
+      customerTypeChange = await recalcCustomerType(client, sopRow.client_user_id, refSaleOrderId, true)
     }
 
     // 6. 写 operation_logs（审计）
@@ -4231,6 +4377,10 @@ async function approveRefund(ctx) {
       refundAbs,
       paymentMethod: sopRow.payment_method,
       cascade: cascadeResult,
+      // true = 本次审批把寄存单置为「已退款」终态（该单已无可用权益）
+      depositMarkedRefunded,
+      // 本次退款连带改写的顾客分类（#545：唯一放行降档的通道，掉档会收走会员价与会员权益）
+      customerTypeChange,
     })
 
     // 通知发起人审批通过（Bug C；自审降噪：审批人=发起人则跳过）
@@ -4912,6 +5062,7 @@ async function createConversion(ctx) {
               si.product_type,
               si.session_count,
               si.remaining_sessions,
+              si.paid_sessions,
               si.quantity,
               -- ⚠ 这里刻意不取 refunded_quantity / converted_quantity：staff 的折抵额度由下方
               -- deductibleResult 的 SQL 整体算出（hp LATERAL 已按三列判未结算），JS 侧不参与计算。
@@ -4949,6 +5100,8 @@ async function createConversion(ctx) {
     // 两笔并发折抵会各自读到 converted_amount=0，把同一批已付价值折两遍（物理件数守卫拦不住）。
     // ⚠ #182 起**疗程卡也走这条复算**：折抵额改「剩余已付」后同样依赖转出行聚合，
     //   留在候选查询里算会和家居犯同一个并发错误。
+    // 寄存次卡退款按 Model X 保留物理 remaining_sessions；折抵仅扣已付未用权益，
+    // 留下已退款的物理余量，使 (session_count - remaining_sessions) <= paid_sessions 继续成立。
     const deductibleResult = await tx.query(
       `SELECT si.sale_item_id,
               -- 注销权益 Q：折抵 = 整行退出，一次带走该行**全部**剩余权益（#182）。
@@ -4956,15 +5109,21 @@ async function createConversion(ctx) {
               -- #154：家居「未结算件数」= quantity − (已提货 + 已退款 + 已转换)。只减 picked_up
               -- 会把已退款/已转换的件数当成还能折走，撞 chk_sale_item_settled_le_quantity。
               CASE WHEN si.product_type = '疗程卡'
-                   THEN COALESCE(si.remaining_sessions, 0)
+                   THEN CASE WHEN so.sale_order_type = '寄存单' AND si.paid_sessions IS NOT NULL
+                          THEN GREATEST(0, LEAST(COALESCE(si.remaining_sessions, 0),
+                            si.paid_sessions - GREATEST(0, COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0))))
+                          ELSE COALESCE(si.remaining_sessions, 0) END
                    ELSE GREATEST(0, si.quantity - (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))
               END AS deductible_quantity,
-              -- 折抵额 A：寄存单与 0 元赠品行没有「实收」可言，维持物理口径（原价 × 剩余权益）；
+              -- 折抵额 A：寄存单按有效未用权益、0 元赠品按物理权益估值（单次价 × 可转次数）；
               -- 其余一律「剩余已付」——付多少折多少，含不足一整次/一整件的余数。
               CASE WHEN so.sale_order_type = '寄存单' OR si.sale_amount <= 0
                    THEN si.unit_real_price::numeric * (
                      CASE WHEN si.product_type = '疗程卡'
-                          THEN COALESCE(si.remaining_sessions, 0)
+                          THEN CASE WHEN so.sale_order_type = '寄存单' AND si.paid_sessions IS NOT NULL
+                          THEN GREATEST(0, LEAST(COALESCE(si.remaining_sessions, 0),
+                            si.paid_sessions - GREATEST(0, COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0))))
+                          ELSE COALESCE(si.remaining_sessions, 0) END
                           ELSE GREATEST(0, si.quantity - (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))
                      END
                    )
@@ -5997,13 +6156,19 @@ async function customerHeldCards(ctx) {
      LEFT JOIN LATERAL (
        SELECT
          CASE WHEN si.product_type = '疗程卡'
-              THEN COALESCE(si.remaining_sessions, 0)
+              THEN CASE WHEN so.sale_order_type = '寄存单' AND si.paid_sessions IS NOT NULL
+                          THEN GREATEST(0, LEAST(COALESCE(si.remaining_sessions, 0),
+                            si.paid_sessions - GREATEST(0, COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0))))
+                          ELSE COALESCE(si.remaining_sessions, 0) END
               ELSE GREATEST(0, si.quantity - (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))
          END AS deductible_quantity,
          CASE WHEN so.sale_order_type = '寄存单' OR si.sale_amount <= 0
               THEN si.unit_real_price::numeric * (
                 CASE WHEN si.product_type = '疗程卡'
-                     THEN COALESCE(si.remaining_sessions, 0)
+                     THEN CASE WHEN so.sale_order_type = '寄存单' AND si.paid_sessions IS NOT NULL
+                          THEN GREATEST(0, LEAST(COALESCE(si.remaining_sessions, 0),
+                            si.paid_sessions - GREATEST(0, COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0))))
+                          ELSE COALESCE(si.remaining_sessions, 0) END
                      ELSE GREATEST(0, si.quantity - (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))
                 END
               )
@@ -7696,5 +7861,6 @@ Object.defineProperty(module.exports, '__testables__', {
     resolveCustomerOrderMarketScope,
     buildCustomerOrderMarketScopeFilter,
     pickupAmountSnapshot,
+    recalcCustomerType,
   },
 })

@@ -469,6 +469,21 @@ describe('getCustomerHeldCards — 数据映射', () => {
     ;(isInScope as any).mockReturnValue(true)
   })
 
+  it.each([
+    { paidSessions: 4, remainingSessions: 5, expected: 3 },
+    { paidSessions: 6, remainingSessions: 5, expected: 5 },
+    { paidSessions: null, remainingSessions: 5, expected: 5 },
+  ])('寄存卡候选不把退款物理余量计入折抵：$paidSessions → $expected', async ({ paidSessions, remainingSessions, expected }) => {
+    mockSelectRows([{
+      saleItemId: 'deposit-card', productType: '疗程卡', saleOrderType: '寄存单',
+      sessionCount: 6, remainingSessions, paidSessions, unitRealPrice: '80',
+    }])
+    const [row] = await getCustomerHeldCards('user-1', 'store-1')
+    expect(row.remainingQty).toBe(expected)
+    expect(row.deductibleAmount).toBe((expected * 80).toFixed(2))
+    expect(row.remainingSessions).toBe(remainingSessions)
+  })
+
   it('疗程卡：deductibleAmount = unitRealPrice × remainingSessions，remainingQty=null', async () => {
     mockSelectRows([{
       saleItemId: 'si-1',

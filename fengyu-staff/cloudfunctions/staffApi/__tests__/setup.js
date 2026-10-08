@@ -34,6 +34,10 @@ require.cache[wxacodePath] = { id: wxacodePath, filename: wxacodePath, loaded: t
 const configPath = require.resolve('../utils/config')
 const mockConfig = {
   getMemberThreshold: vi.fn(async () => 1980),
+  // #545：退款通道严格读取（配置不可用抛错、不兜底）。mock 默认返回有效阈值；
+  // 常量须与 utils/config.js 同字面（捕获方按它精确匹配「配置不可用」）。
+  getMemberThresholdStrict: vi.fn(async () => 1980),
+  THRESHOLD_UNAVAILABLE_MSG: 'INVALID_STATE: 会员门槛配置不可用，停止顾客分类重算',
   getPointsToYuanRate: vi.fn(async () => 0.01),
   getPointsDeductionMaxRate: vi.fn(async () => 0.03),
   invalidateCache: vi.fn(),
