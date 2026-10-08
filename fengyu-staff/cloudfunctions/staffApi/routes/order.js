@@ -5038,6 +5038,7 @@ async function createConversion(ctx) {
               si.product_type,
               si.session_count,
               si.remaining_sessions,
+              si.paid_sessions,
               si.quantity,
               -- ⚠ 这里刻意不取 refunded_quantity / converted_quantity：staff 的折抵额度由下方
               -- deductibleResult 的 SQL 整体算出（hp LATERAL 已按三列判未结算），JS 侧不参与计算。
@@ -5075,6 +5076,8 @@ async function createConversion(ctx) {
     // 两笔并发折抵会各自读到 converted_amount=0，把同一批已付价值折两遍（物理件数守卫拦不住）。
     // ⚠ #182 起**疗程卡也走这条复算**：折抵额改「剩余已付」后同样依赖转出行聚合，
     //   留在候选查询里算会和家居犯同一个并发错误。
+    // 寄存次卡退款按 Model X 保留物理 remaining_sessions；折抵仅扣已付未用权益，
+    // 留下已退款的物理余量，使 (session_count - remaining_sessions) <= paid_sessions 继续成立。
     const deductibleResult = await tx.query(
       `SELECT si.sale_item_id,
               -- 注销权益 Q：折抵 = 整行退出，一次带走该行**全部**剩余权益（#182）。
@@ -5082,15 +5085,21 @@ async function createConversion(ctx) {
               -- #154：家居「未结算件数」= quantity − (已提货 + 已退款 + 已转换)。只减 picked_up
               -- 会把已退款/已转换的件数当成还能折走，撞 chk_sale_item_settled_le_quantity。
               CASE WHEN si.product_type = '疗程卡'
-                   THEN COALESCE(si.remaining_sessions, 0)
+                   THEN CASE WHEN so.sale_order_type = '寄存单' AND si.paid_sessions IS NOT NULL
+                          THEN GREATEST(0, LEAST(COALESCE(si.remaining_sessions, 0),
+                            si.paid_sessions - GREATEST(0, COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0))))
+                          ELSE COALESCE(si.remaining_sessions, 0) END
                    ELSE GREATEST(0, si.quantity - (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))
               END AS deductible_quantity,
-              -- 折抵额 A：寄存单与 0 元赠品行没有「实收」可言，维持物理口径（原价 × 剩余权益）；
+              -- 折抵额 A：寄存单按有效未用权益、0 元赠品按物理权益估值（单次价 × 可转次数）；
               -- 其余一律「剩余已付」——付多少折多少，含不足一整次/一整件的余数。
               CASE WHEN so.sale_order_type = '寄存单' OR si.sale_amount <= 0
                    THEN si.unit_real_price::numeric * (
                      CASE WHEN si.product_type = '疗程卡'
-                          THEN COALESCE(si.remaining_sessions, 0)
+                          THEN CASE WHEN so.sale_order_type = '寄存单' AND si.paid_sessions IS NOT NULL
+                          THEN GREATEST(0, LEAST(COALESCE(si.remaining_sessions, 0),
+                            si.paid_sessions - GREATEST(0, COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0))))
+                          ELSE COALESCE(si.remaining_sessions, 0) END
                           ELSE GREATEST(0, si.quantity - (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))
                      END
                    )
@@ -6123,13 +6132,19 @@ async function customerHeldCards(ctx) {
      LEFT JOIN LATERAL (
        SELECT
          CASE WHEN si.product_type = '疗程卡'
-              THEN COALESCE(si.remaining_sessions, 0)
+              THEN CASE WHEN so.sale_order_type = '寄存单' AND si.paid_sessions IS NOT NULL
+                          THEN GREATEST(0, LEAST(COALESCE(si.remaining_sessions, 0),
+                            si.paid_sessions - GREATEST(0, COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0))))
+                          ELSE COALESCE(si.remaining_sessions, 0) END
               ELSE GREATEST(0, si.quantity - (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))
          END AS deductible_quantity,
          CASE WHEN so.sale_order_type = '寄存单' OR si.sale_amount <= 0
               THEN si.unit_real_price::numeric * (
                 CASE WHEN si.product_type = '疗程卡'
-                     THEN COALESCE(si.remaining_sessions, 0)
+                     THEN CASE WHEN so.sale_order_type = '寄存单' AND si.paid_sessions IS NOT NULL
+                          THEN GREATEST(0, LEAST(COALESCE(si.remaining_sessions, 0),
+                            si.paid_sessions - GREATEST(0, COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0))))
+                          ELSE COALESCE(si.remaining_sessions, 0) END
                      ELSE GREATEST(0, si.quantity - (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))
                 END
               )

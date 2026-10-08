@@ -3167,7 +3167,9 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
     // 折抵数量表达式（疗程卡剩余次数 / 家居未结算件数）四处同源。
     // #154：家居那一支必须是**三列式** —— 只减 picked_up 会把已退款/已转换的件数当成还能
     // 折走，既撞 chk_sale_item_settled_le_quantity，也让已退款件数在候选里复活。
-    const QTY_EXPR = "CASE WHEN si.product_type = '疗程卡' THEN COALESCE(si.remaining_sessions, 0)"
+    const QTY_EXPR = "CASE WHEN si.product_type = '疗程卡' THEN CASE WHEN so.sale_order_type = '寄存单' AND si.paid_sessions IS NOT NULL"
+      + " THEN GREATEST(0, LEAST(COALESCE(si.remaining_sessions, 0), si.paid_sessions - GREATEST(0, COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0))))"
+      + " ELSE COALESCE(si.remaining_sessions, 0) END"
       + " ELSE GREATEST(0, si.quantity - (COALESCE(si.picked_up_quantity, 0)"
       + " + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0))) END"
     expect(
@@ -3189,6 +3191,15 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
     expect(staff, '已转走金额不得用件数 × 单价推算').not.toContain(
       'COALESCE(si.picked_up_quantity, 0) * si.unit_real_price::numeric)',
     )
+  })
+
+  test('寄存退款后的转换锁内必须读取 paid_sessions，不能按物理余量回退', () => {
+    for (const file of [FILES.staffOrderJs, FILES.adminOrdersTs]) {
+      const src = stripComments(readFile(file))
+      const held = src.match(/(?:const heldResult|const heldRows) = await [\s\S]*?FOR UPDATE OF si/)
+      expect(held, file).not.toBeNull()
+      expect(held[0], file).toContain('si.paid_sessions')
+    }
   })
 
   // ── #154 拆列后的三类守护 ──────────────────────────────────────────────

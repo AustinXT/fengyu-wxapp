@@ -6025,6 +6025,7 @@ export const createConversionOrder = withPermission(
           si.product_type,
           si.session_count,
           si.remaining_sessions,
+          si.paid_sessions,
           si.quantity,
           si.picked_up_quantity,
           si.refunded_quantity,
@@ -6218,13 +6219,16 @@ export const createConversionOrder = withPermission(
           if (reserved > 0) {
             throw new ApiError('INVALID_STATE', 'CARD_RESERVED: 所选项目有服务进行中，请先完成或取消服务单后再折抵')
           }
-          qty = rem
+          // Model X 不减退款次数的物理余量；寄存卡只折仍有效的已付未用次数。
+          qty = row.sale_order_type === '寄存单' && row.paid_sessions != null
+            ? Math.max(0, Math.min(rem, Number(row.paid_sessions) - Math.max(0, Number(row.session_count ?? 0) - rem)))
+            : rem
           const deliveredCents = Math.max(0, Number(row.session_count ?? 0) - rem) * unitCents
           const remainingPaidCents = Math.max(
             0,
             toCents(row.received) - deliveredCents - toCents(row.home_converted_amount),
           )
-          lineAmount = isDepositOrGift ? (unitCents * rem) / 100 : remainingPaidCents / 100
+          lineAmount = isDepositOrGift ? (unitCents * qty) / 100 : remainingPaidCents / 100
         } else {
           // 金额沿用 homeDeductible 的「剩余已付」；**件数不再取它的提货口径**，
           // 整行退出带走全部未结算件（折后可提 = min(0, …) = 0，守恒仍成立）。
