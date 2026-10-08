@@ -20,10 +20,11 @@
  *     1. member_level 限滚动 12 个月（paid_at >= NOW()-12m）；spending_tier 是终身累计，
  *        **不加时间过滤**——这样 WorkFine 同步的历史已完成单（paid_at 全为 NULL）也计入，
  *        正符合「历史消费档位」语义。
- *     2. member_level 初钻下界取 system_configs.new_member_threshold；spending_tier
- *        最低非 '<1990' 档下界取枚举字面量 1990。
+ *     2. spending_tier 最低非 '<1990' 档下界取枚举字面量 1990。（member_level 自 #545 起
+ *        下限为「初钻」、不再引用 new_member_threshold，两者的下界口径已解耦。）
  *
- *   分档阈值（与 member_level 的 5 档阈值数值一致，仅多一个 1990 下界）：
+ *   分档阈值（上四档下界 1w/3w/6w/10w 与 member_level 数值一致；最低非 '<1990' 档下界固定 1990，
+ *   与 member_level 已解耦 —— #545 起会员客等级下限为初钻，不再引用 new_member_threshold）：
  *     >= 100000 → '10W+'
  *     >= 60000  → '6-10W'
  *     >= 30000  → '3-6W'

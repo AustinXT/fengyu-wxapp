@@ -4,7 +4,7 @@ import { resolve } from 'node:path'
 import { readFileSync } from 'node:fs'
 import { customerTypeBatchSql, refreshCustomerTypes, CUSTOMER_TYPE_AMOUNTS_SQL } from '../steps/refresh-customer-types'
 
-describe('#257 C 每日分类重算', () => {
+describe('#545 每日分类重算（只升不降，推翻 #257）', () => {
   it.each([[], [{value:''}], [{value:'  '}], [{value:'0'}], [{value:'Infinity'}], [{value:'no'}]].map(rows => ({rows})))('阈值不可用时拒绝写入 %j', async ({rows}) => {
     const execute = vi.fn().mockResolvedValue(rows)
     await expect(refreshCustomerTypes({transaction: (fn: Function) => fn({execute})} as never)).rejects.toThrow('会员门槛')
@@ -21,6 +21,14 @@ describe('#257 C 每日分类重算', () => {
     expect(q.sql).not.toContain('SET member_level')
     expect(q.sql).toContain('COALESCE(u.became_member_at, c.first_qualified_at)')
     expect(q.sql).toContain('SET is_membership_upgrade = true')
+    // #545：目标档位是 max(现值, 计算值) —— 单调包裹存在，且分类结果列改名为 computed_type
+    // （只读中间量），写入列 new_type 由 monotonic CTE 产出。
+    expect(q.sql).toContain('monotonic AS (')
+    expect(q.sql).toContain('END::customer_type AS computed_type')
+    expect(q.sql).toContain('FROM monotonic c')
+    for (const lvl of ["WHEN '流量客' THEN 0", "WHEN '体验客' THEN 1", "WHEN '小美客' THEN 2", "WHEN '会员客' THEN 3"]) {
+      expect(q.sql).toContain(lvl)
+    }
   })
   it('金额CTE与离线脚本独立副本逐字对齐', () => {
     const src = readFileSync(resolve(__dirname, '../../../../db/scripts/recalc-all-customer-types.js'),'utf8')

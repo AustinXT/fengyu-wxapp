@@ -85,11 +85,22 @@ export function shouldGrantMemberUpgradeBenefits(
   return wasRecentlyBecameMember(becameMemberAt, ctx)
 }
 
+/**
+ * 等级未变时是否仍应幂等补发升级礼包（覆盖「支付链路已即时升级、礼包留给 cron」的场景）。
+ *
+ * #545 修复：上次跃迁若是**降档**，不得走补发。`processDowngrade` 也会写
+ * `member_level_upgraded_at = NOW()`，只看「近 36h 内升级过」会把刚被降档的人误判成升级，
+ * 次日 cron 给他补发「恭喜升级」的消息/积分/券。此前降档终点是 NULL、被调用点的
+ * `if (newLevel && …)` 短路才没暴露；下限改初钻（以及 黑钻→金钻 这类非空降档）会必然触发。
+ */
 function shouldRetryUnchangedUpgradeBenefits(
+  currentLevel: string | null,
   oldMemberLevel: string | null,
   becameMemberAt: Date | string | null,
   ctx?: CronContext,
 ): boolean {
+  // old_member_level 记录的是「本次跃迁之前」的等级：它高于现值 ⇒ 上次是降档。
+  if (isDowngrade(oldMemberLevel as never, currentLevel as never)) return false
   if (oldMemberLevel) return true
   return wasRecentlyBecameMember(becameMemberAt, ctx)
 }
@@ -165,7 +176,7 @@ export async function refreshMemberLevels(
           newLevel &&
           benefitsConfig?.[newLevel] &&
           wasRecentlyUpgraded(row.member_level_upgraded_at, ctx) &&
-          shouldRetryUnchangedUpgradeBenefits(row.old_member_level, row.became_member_at, ctx)
+          shouldRetryUnchangedUpgradeBenefits(row.member_level, row.old_member_level, row.became_member_at, ctx)
         ) {
           await db.transaction(async (tx) => {
             await grantUpgradeBenefits(tx, row.user_id, newLevel, benefitsConfig[newLevel], ctx)

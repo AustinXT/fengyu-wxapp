@@ -2,6 +2,7 @@
 
 import { retainedRefundFeeSql } from '@/lib/refund-fee-sql'
 import { allocateRefundAccounting } from '@/lib/refund-accounting'
+import { recomputeCustomerTypeOnRefund } from '@/lib/recompute-customer-tags'
 
 import { db } from '@/db'
 import { rowsAffected } from '@/lib/pg-rows'
@@ -1485,9 +1486,24 @@ export const approveRefund = withPermission(
         }
       }
 
-      // 6) 重算顾客历史消费档位
+      // 6) 重算顾客历史消费档位 + 顾客分类。
+      // 退款抹掉该单的达标贡献 → 按剩余有效订单重算 customer_type 并**允许降档**（#524 第 5 条）。
+      // #545 起其余通道（每日 cron / 离线 / 历史审核 / 收款）一律只升不降，降档只由退款通道产生。
       if (pre.orderClientUserId) {
         await refreshSpendingTierTx(tx, pre.orderClientUserId)
+        const typeChange = await recomputeCustomerTypeOnRefund(tx, pre.orderClientUserId)
+        if (typeChange) {
+          // 退款是唯一放行降档的通道，掉档会立刻收走会员价与生日/感恩权益 —— 必须留审计。
+          // （member_level 变更既有 customer.memberLevelChange，分类变更此前全渠道无日志。）
+          await logOperation(
+            session,
+            'customer.customerTypeChange',
+            'customer',
+            pre.orderClientUserId,
+            { from: typeChange.from, to: typeChange.to, trigger: 'refund', refundPaymentId: idNum },
+            tx,
+          )
+        }
       }
 
       // 7) 通知发起人审批通过（Bug C；自审降噪）

@@ -18,7 +18,7 @@ import { retainedRefundFeeSql } from './refund-fee-sql'
  * （fengyu-staff/cloudfunctions/staffApi/__tests__/routes/recalc-customer-type-sql.test.js）。
  */
 
-import { sql } from 'drizzle-orm'
+import { sql, type SQL } from 'drizzle-orm'
 import { db } from '@/db'
 import { getCustomerTypeThreshold, CUSTOMER_TYPE_THRESHOLD_UNAVAILABLE } from '@/cron/steps/refresh-customer-types'
 import { rowsAffected } from '@/lib/pg-rows'
@@ -81,14 +81,18 @@ async function recomputeCustomerStatusForUser(tx: Tx, clientUserId: string): Pro
 }
 
 /**
- * 段 2：customer_type 双向对齐（#257 C）。实时四路径仍只升级。
- *
- * 九处 SQL 镜像副本：五处单客入口 + cron（staffApi order.js + clientApi order.js + payNotify index.js
- * + admin orders.ts + 本 helper）逐字一致，三个 db/scripts 批量脚本（recalc-all-customer-types.js
- * + recalc-became-member-at.js + backfill-membership-upgrade-doc-type.js + admin cron refresh-customer-types.ts）结构对齐。
- * SQL 字面必须与其余八处一致；守护测试：
- * fengyu-staff/cloudfunctions/staffApi/__tests__/routes/recalc-customer-type-sql.test.js
+ * 顾客档位序（只升不降的比较基准）：流量客 < 体验客 < 小美客 < 会员客。
+ * 与实时四端 UPDATE、cron `CUSTOMER_TYPE_RANK_CASE`、db 离线脚本 `TYPE_RANK_CASE` 同序。
+ * 写成同一个表达式插值两次，避免两侧漂移；`<` 比较在任一侧为 NULL 时不命中，
+ * 即未知档位 fail closed（不写）。
  */
+const rankCase = (expr: SQL) => sql`
+  CASE ${expr}
+    WHEN '流量客' THEN 0 WHEN '体验客' THEN 1
+    WHEN '小美客' THEN 2 WHEN '会员客' THEN 3
+  END
+`
+
 /**
  * 顾客分类跃迁的订单级金额 CTE（#187）。产出每张已结清销售单的
  * non_trial / trial = 非体验 / 体验行的毛实收合计（received 净额 + 该行逐项退款额）。
@@ -212,9 +216,19 @@ const recalcCustomerTypeCte = (clientUserId: string, threshold: number) => sql`W
   FROM membership_amounts a CROSS JOIN membership_settings cfg
 )`
 
+/**
+ * 段 2：customer_type 只升不降（#545，推翻 #257 的双向对齐）。实时四路径同样是只升级。
+ *
+ * 九处 SQL 镜像副本：staffApi routes/order.js + clientApi routes/order.js + payNotify index.js
+ * + admin actions/orders.ts + 本 helper + admin cron/steps/refresh-customer-types.ts
+ * + db/scripts/{recalc-all-customer-types, recalc-became-member-at, backfill-membership-upgrade-doc-type}.js。
+ * 前五处逐字一致，后四处结构对齐。SQL 字面必须与其余八处一致；守护测试：
+ * fengyu-staff/cloudfunctions/staffApi/__tests__/routes/recalc-customer-type-sql.test.js
+ */
 async function recomputeCustomerTypeForUser(
   tx: Tx,
   clientUserId: string,
+  allowDowngrade = false,
 ): Promise<{ from: string | null; to: string | null } | null> {
   const curRes = await tx.execute(sql`
     SELECT customer_type FROM client_wechat_users WHERE user_id = ${clientUserId}
@@ -223,19 +237,28 @@ async function recomputeCustomerTypeForUser(
   const curRows = curRes as unknown as Array<{ customer_type: string }>
   const oldType = curRows[0]?.customer_type ?? null
   if (!curRows[0]) return null
+  // #545（推翻 #257）：只升不降。会员客是档位顶格，max(现值, 计算值) 恒等于现值，
+  // 早退既是最廉价的等价表达，也免掉一次金额 CTE。仅退款通道（allowDowngrade=true）例外。
+  if (!allowDowngrade && oldType === '会员客') return null
 
   let threshold: number
   try {
     threshold = await getCustomerTypeThreshold(tx)
   } catch (error) {
     if (!(error instanceof Error) || error.message !== CUSTOMER_TYPE_THRESHOLD_UNAVAILABLE) throw error
-    // 配置无效不做分类写入；保留原审核可用性，待修正配置后每日重算补齐。
+    // 配置无效不做分类写入；保留原审核可用性。
+    // ⚠️ 本函数同时服务两条通道，「事后补齐」只对其中一条成立：
+    //   · 历史审核（allowDowngrade=false，只升）：修正配置后每日 cron 会补上漏掉的升级；
+    //   · 退款（allowDowngrade=true，降档）：#545 起 cron 只升不降，**不会**补上漏掉的降档，
+    //     漏降的顾客会保留会员客身份直到下一次退款事件。取舍是「漏降优于错降」，
+    //     配置不可用是不该发生的态，靠本 warn + cron 的阈值告警暴露。
     console.warn('[customer-tags] skipped classification: invalid member threshold')
     return null
   }
 
   // 九处 SQL 镜像副本，修改时必须同步其余八处（staffApi order.js + clientApi order.js + payNotify index.js
-  // + admin orders.ts + 本文件 + db/scripts/recalc-all-customer-types.js + db/scripts/recalc-became-member-at.js）；
+  // + admin orders.ts + 本文件 + admin cron/steps/refresh-customer-types.ts
+  // + db/scripts/{recalc-all-customer-types, recalc-became-member-at, backfill-membership-upgrade-doc-type}.js）；
   // 一致性由 recalc-customer-type-sql.test.js 守护。
   // #187（2026-09-18）：按单笔订单的非体验部分毛实收判定（received 净额 + 逐项退款额），落地 Q5.2 决策。
   const typeRes = await tx.execute(sql`
@@ -257,6 +280,12 @@ async function recomputeCustomerTypeForUser(
      WHERE user_id = ${clientUserId}
        AND name IS DISTINCT FROM '谢廷(测试)'
        AND customer_type IS DISTINCT FROM ${newType}::customer_type
+       AND (
+         (${rankCase(sql`customer_type`)})
+         < (${rankCase(sql`${newType}::customer_type`)})
+         -- #545：默认只升不降；仅退款审批通道（allowDowngrade=true）允许降到计算档位。
+         OR ${allowDowngrade}::boolean
+       )
      RETURNING customer_type
   `)
   const updRowCount = rowsAffected(updRes)
@@ -450,6 +479,21 @@ export async function recomputeCustomerTagsInTx(
     customerTypeChanged: typeChanged,
     spendingTierUpdated: tierUpdated,
   }
+}
+
+/**
+ * 退款审批通道专用入口（#524 第 5 条 / #545）。
+ *
+ * 已退款订单退出达标判定后，须按剩余有效订单重算 customer_type 并**允许降档**——
+ * 这是全仓唯一放行降档的通道（每日 cron / 离线 / 历史审核 / 收款一律只升不降）。
+ * 与 staffApi `order.approveRefund` 里传 allowDowngrade=true 的 recalcCustomerType 同语义。
+ */
+export async function recomputeCustomerTypeOnRefund(
+  tx: Tx,
+  clientUserId: string,
+): Promise<{ from: string | null; to: string | null } | null> {
+  if (!clientUserId) return null
+  return recomputeCustomerTypeForUser(tx, clientUserId, true)
 }
 
 /**

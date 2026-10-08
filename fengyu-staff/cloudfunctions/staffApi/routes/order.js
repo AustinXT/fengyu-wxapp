@@ -18,7 +18,7 @@ const { assertMembershipBinding } = require('../utils/membership-binding')
 const { requireStaffBound, requireManager, isCurrentStoreManager } = require('../middleware/auth')
 const { assertOrderInScope, isStoreInScope, restrictToBoundEmployee, buildBundleMarketScopeFilter, buildNormalSkuMarketScopeFilter } = require('../utils/scope')
 const { generateWxacode, uploadToCloudStorage, effectiveEnvVersion, versionPathSuffix } = require('../utils/wxacode')
-const { getMemberThreshold, getPointsToYuanRate, getPointsDeductionMaxRate } = require('../utils/config')
+const { getMemberThreshold, getMemberThresholdStrict, THRESHOLD_UNAVAILABLE_MSG, getPointsToYuanRate, getPointsDeductionMaxRate } = require('../utils/config')
 // 充值卡剥离 SKU 化（2026-05-20）：充值识别改为 sale_orders.sale_order_type='充值单'，
 // 不再依赖虚拟 SKU ID 或 product_name 正则解析面值。
 const { settlePointsSafe, grantPointBatch, consumePointBatches } = require('../utils/points')
@@ -659,28 +659,64 @@ const RECALC_CUSTOMER_TYPE_CTE = `WITH membership_settings AS (
 )`
 
 /**
- * 根据已支付/已完成订单历史，重算顾客类型（只升不降）
+ * 根据已支付/已完成订单历史，重算顾客类型
  * 阈值从 system_configs.new_member_threshold 读取
  * 跃迁为"会员客"时同步写入 became_member_at = COALESCE(首笔达标单 paid_at, created_at)（非检测时刻 NOW()）。
- * TODO: 将来若开放"会员客→非会员客"降级路径，需同步 UPDATE became_member_at = NULL。
+ *
+ * #545（推翻 #257）：默认**只升不降** —— 口径/算法修正导致的档位下降不生效。
+ * 唯退款审批通道传 allowDowngrade=true：已退款订单抹掉达标贡献后须按剩余有效订单即时降档
+ * （#524 第 5 条），该场景由退款事务自己承担，不依赖次日 cron。
+ * 降档不清 became_member_at、不撤 is_membership_upgrade 标记（历史保留）。
+ *
  * @param {object} client - pg 事务客户端
  * @param {string} clientUserId - client_wechat_users.user_id
+ * @param {string} [saleOrderId] - 触发本次重算的订单（用于会员绑定校验）
+ * @param {boolean} [allowDowngrade=false] - 是否允许降档（仅退款审批通道传 true）
+ * @returns {Promise<{from: string|null, to: string}|null>} 本次实际发生的档位变更；未写库（早退/
+ *   配置不可用/守卫挡住）**恒为 null**（不是 undefined），审计 detail 的 customerTypeChange 因而字段稳定。
  */
-async function recalcCustomerType(client, clientUserId, saleOrderId) {
-  if (!clientUserId) return
+async function recalcCustomerType(client, clientUserId, saleOrderId, allowDowngrade = false) {
+  if (!clientUserId) return null
 
-  // 已是最高级，无需重算
+  // 已是最高级：默认通道无需重算；退款通道仍需重算（达标单退款后可能掉档）。
+  //
+  // ⚠️ 隐性前提（**只对 allowDowngrade=true 的退款调用点成立**）：本函数读现值不加行锁，
+  // 降档写入近乎盲写，其正确性依赖「同一事务里已先有一条写 client_wechat_users 的语句」把
+  // 该行锁住 —— 退款路径的 refreshSpendingTier 正好在它之前，从而与并发的另一笔退款/收款
+  // 串行化（`cross-end-sql-snapshot.test.js` 钉住这个先后顺序）。
+  // 三条收款路径不满足该前提（它们在 refreshSpendingTier **之前**调用本函数），但那些路径
+  // allowDowngrade=false、最多只做升级：竞争输了也只是漏升，次日 cron 会用正确数据重算。
+  // （admin 侧 recomputeCustomerTypeOnRefund 自带 FOR NO KEY UPDATE，不依赖调用顺序。）
   const cur = await client.query(
     'SELECT customer_type FROM client_wechat_users WHERE user_id = $1',
     [clientUserId]
   )
-  if (cur.rows[0]?.customer_type === '会员客') return
+  if (!allowDowngrade && cur.rows[0]?.customer_type === '会员客') return null
 
-  const threshold = await getMemberThreshold()
+  let threshold
+  if (allowDowngrade) {
+    // 退款是唯一放行降档的通道，阈值必须严格读取：getMemberThreshold 在配置异常时兜底
+    // FALLBACK_THRESHOLD，会按一个与真实门槛无关的数写出**不可逆的错误降档**。
+    // 配置不可用时跳过本次分类重算、不阻断退款审批本身 —— 与 admin
+    // recomputeCustomerTypeOnRefund 的「捕获后 return null」同语义。
+    try {
+      // 传 client：复用本事务连接，不在事务内经连接池二次借连接
+      threshold = await getMemberThresholdStrict(client)
+    } catch (err) {
+      // 只吞「配置不可用」这一类业务错误（查询本身成功、事务未被 abort，跳过是安全的）。
+      // 查询级/连接级错误必须 rethrow：事务已进入 aborted 状态，继续跑后续语句只会以
+      // 25P02 之类的晦涩错误失败、极难排障。与 admin 侧的同名判定保持一致。
+      if (!(err instanceof Error) || err.message !== THRESHOLD_UNAVAILABLE_MSG) throw err
+      console.warn('[order] 退款通道跳过顾客分类重算：会员门槛配置不可用')
+      return null
+    }
+  } else {
+    threshold = await getMemberThreshold()
+  }
 
-  // 九处 SQL 独立副本（staffApi routes/order.js + clientApi routes/order.js + payNotify index.js
-  // + admin actions/orders.ts + admin lib/recompute-customer-tags.ts + db/scripts/recalc-all-customer-types.js
-  // + db/scripts/recalc-became-member-at.js + db/scripts/backfill-membership-upgrade-doc-type.js）。
+  // 九处 SQL 独立副本：staffApi routes/order.js + clientApi routes/order.js + payNotify index.js
+  // + admin actions/orders.ts + admin lib/recompute-customer-tags.ts + admin cron/steps/refresh-customer-types.ts
+  // + db/scripts/{recalc-all-customer-types, recalc-became-member-at, backfill-membership-upgrade-doc-type}.js。
   // 修改时必须同步其余八处；一致性由 staffApi
   // __tests__/routes/recalc-customer-type-sql.test.js 守护，任一处漂移立即触发测试失败。
   //
@@ -704,7 +740,12 @@ async function recalcCustomerType(client, clientUserId, saleOrderId) {
   )
 
   const newType = typeResult.rows[0].computed_type
-  if (newType === '会员客') {
+  // #301 入会绑定门禁只在**首次入会**路径生效：它不是退款审批该管的事，
+  // 且下游全量通道（每日 cron、离线脚本、admin helper）都没有这道闸。
+  // 退款通道刻意跳过它 —— 否则「档案漂移态（库里非会员客、无 became_member_at、
+  // 未绑员工）＋ 一笔部分退款」会让整笔退款审批被一句与退款无关的绑定文案拦死，
+  // 同时与 admin `recomputeCustomerTypeOnRefund`（无等价断言）形成两端行为漂移。
+  if (newType === '会员客' && !allowDowngrade) {
     const currentOrder = await client.query(
       `${RECALC_CUSTOMER_TYPE_CTE} SELECT EXISTS (
          SELECT 1 FROM order_amounts WHERE sale_order_id = $3 AND non_trial >= $2
@@ -717,16 +758,23 @@ async function recalcCustomerType(client, clientUserId, saleOrderId) {
     `UPDATE client_wechat_users
      SET customer_type = $2::customer_type, updated_at = NOW()
      WHERE user_id = $1
-       AND (CASE customer_type
-              WHEN '流量客' THEN 0 WHEN '体验客' THEN 1
-              WHEN '小美客' THEN 2 WHEN '会员客' THEN 3
-            END)
+       AND (
+         (CASE customer_type
+            WHEN '流量客' THEN 0 WHEN '体验客' THEN 1
+            WHEN '小美客' THEN 2 WHEN '会员客' THEN 3
+          END)
          < (CASE $2::customer_type
-              WHEN '流量客' THEN 0 WHEN '体验客' THEN 1
-              WHEN '小美客' THEN 2 WHEN '会员客' THEN 3
-            END)
+            WHEN '流量客' THEN 0 WHEN '体验客' THEN 1
+            WHEN '小美客' THEN 2 WHEN '会员客' THEN 3
+          END)
+         -- #545：默认只升不降；仅退款审批通道（$3=true）允许降到计算档位。
+         -- 降档分支排除甲方测试账号（与 admin helper / cron / 离线脚本同口径）；
+         -- 升级分支不加，保持与 clientApi / payNotify 副本的实时 UPDATE 一致。
+         OR ($3::boolean AND customer_type IS DISTINCT FROM $2::customer_type
+             AND name IS DISTINCT FROM '谢廷(测试)')
+       )
      RETURNING customer_type`,
-    [clientUserId, newType]
+    [clientUserId, newType, allowDowngrade === true]
   )
 
   // 若本次 UPDATE 实际将顾客升级为“会员客”，became_member_at 记为确立会员资格的首笔达标单时间
@@ -758,6 +806,12 @@ async function recalcCustomerType(client, clientUserId, saleOrderId) {
       [clientUserId, threshold]
     )
   }
+
+  // 返回本次实际发生的档位变更（未写库时为 null），供调用方写审计 —— 退款是唯一放行降档
+  // 的通道，掉档会立刻收走会员价与生日/感恩权益，必须留痕。
+  return updateResult.rowCount > 0
+    ? { from: cur.rows[0]?.customer_type ?? null, to: newType }
+    : null
 }
 
 /**
@@ -4281,12 +4335,15 @@ async function approveRefund(ctx) {
       depositMarkedRefunded = (depositRefundedRes.rowCount || 0) > 0
     }
 
-    // 5. 退款只会降低净消费，这里仅重算允许随净额下降的 spending_tier。
-    // recalcCustomerType / recalcMemberLevel 都是“只升不降”的支付结算逻辑，
-    // 在退款审批中不会产生有效变更，反而会延长事务并增加云函数超时风险。
+    // 5. 退款抹掉该单的达标贡献 → 按剩余有效订单重算顾客分类，并**允许降档**（#524 第 5 条）。
+    // #545 起其余通道（每日 cron / 离线 / 历史审核 / 收款）一律只升不降，降档只由这里产生，
+    // 故必须显式传 allowDowngrade=true；否则退款后顾客会永久保留会员客身份。
+    // recalcMemberLevel 仍只升不降——会员等级下限为初钻，档位回落由每日 cron 在 150 天保级期后处理。
     // 与 admin approveRefund 保持一致。
+    let customerTypeChange = null
     if (sopRow.client_user_id) {
       await refreshSpendingTier(client, sopRow.client_user_id)
+      customerTypeChange = await recalcCustomerType(client, sopRow.client_user_id, refSaleOrderId, true)
     }
 
     // 6. 写 operation_logs（审计）
@@ -4298,6 +4355,8 @@ async function approveRefund(ctx) {
       cascade: cascadeResult,
       // true = 本次审批把寄存单置为「已退款」终态（该单已无可用权益）
       depositMarkedRefunded,
+      // 本次退款连带改写的顾客分类（#545：唯一放行降档的通道，掉档会收走会员价与会员权益）
+      customerTypeChange,
     })
 
     // 通知发起人审批通过（Bug C；自审降噪：审批人=发起人则跳过）
@@ -7763,5 +7822,6 @@ Object.defineProperty(module.exports, '__testables__', {
     resolveCustomerOrderMarketScope,
     buildCustomerOrderMarketScopeFilter,
     pickupAmountSnapshot,
+    recalcCustomerType,
   },
 })

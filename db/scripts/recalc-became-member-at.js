@@ -24,7 +24,7 @@
  *   backfill-membership-upgrade-doc-type 的「选跃迁那一刻的单」语义），守卫会与
  *   旧 became_member_at 形成循环依赖。
  *
- * #257 A+B：仅对当前会员客且有达标单者维护归因；先执行分类双向对齐，再执行本脚本；排除甲方测试账号。
+ * #257 A+B（#545 起分类侧改为只升不降）：仅对当前会员客且有达标单者维护归因；先执行分类对齐，再执行本脚本；排除甲方测试账号。
  * 仅维护仍达标者的既有首次达标归因，不清空降级者的历史归因；再达标定义留待 E。
  *
  * 幂等：UPDATE WHERE became_member_at IS DISTINCT FROM new_became，二次运行命中 0 行。

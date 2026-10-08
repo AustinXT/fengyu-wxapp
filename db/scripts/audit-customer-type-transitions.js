@@ -8,7 +8,7 @@ const { BUILD_TARGET_TABLE_SQL, FETCH_THRESHOLD_SQL } = require('./recalc-all-cu
 const rank = { 流量客: 0, 体验客: 1, 小美客: 2, 会员客: 3 }
 const TARGET_SELECT = BUILD_TARGET_TABLE_SQL.replace(/^\s*CREATE TEMP TABLE _recalc_target ON COMMIT DROP AS\s*/, '')
 const AUDIT_SQL = `WITH target AS (${TARGET_SELECT})
-SELECT t.user_id, u.name, u.phone, t.old_type, t.new_type,
+SELECT t.user_id, u.name, u.phone, t.old_type, t.new_type, t.computed_type,
        t.old_became, t.first_qualified_at, t.first_qualified_order,
        first_order.sale_order_type AS qualifying_order_type,
        first_order.status AS qualifying_order_status,
@@ -28,9 +28,19 @@ SELECT t.user_id, u.name, u.phone, t.old_type, t.new_type,
  ORDER BY t.user_id`
 function summarize(rows) {
   const transitions = new Map()
-  let changed = 0, down = 0, recentDown = 0
+  const protectedByMonotonic = new Map()
+  let changed = 0, down = 0, recentDown = 0, protectedCount = 0
   for (const r of rows) {
-    if (!Object.hasOwn(rank, r.old_type) || !Object.hasOwn(rank, r.new_type)) throw new Error('未知顾客档位，拒绝输出不完整审计')
+    if (!Object.hasOwn(rank, r.old_type) || !Object.hasOwn(rank, r.new_type) || !Object.hasOwn(rank, r.computed_type)) throw new Error('未知顾客档位，拒绝输出不完整审计')
+    // #545：只升不降下 changed 恒为升级；「计算档位低于现值、被单调门挡住」的人单列。
+    // 不列出来的话，口径反转后这份审计只剩一个恒 0 的 downgrades，看不出保护了多少人。
+    if (r.old_type !== r.computed_type && r.new_type === r.old_type) {
+      protectedCount++
+      const key = `${r.old_type}（计算 ${r.computed_type}）`
+      const item = protectedByMonotonic.get(key) || { level: r.old_type, computed: r.computed_type, count: 0, ordered30d: 0 }
+      item.count++; if (r.ordered_30d) item.ordered30d++
+      protectedByMonotonic.set(key, item)
+    }
     if (r.old_type === r.new_type) continue
     changed++
     const key = `${r.old_type} → ${r.new_type}`
@@ -40,7 +50,8 @@ function summarize(rows) {
     if (rank[r.old_type] > rank[r.new_type]) { down++; if (r.ordered_30d) recentDown++ }
   }
   return { scope: rows.length, changed, unchanged: rows.length - changed, downgrades: down,
-    downgradesOrdered30d: recentDown, transitions: [...transitions.values()] }
+    downgradesOrdered30d: recentDown, transitions: [...transitions.values()],
+    protectedByMonotonic: protectedCount, protectedBreakdown: [...protectedByMonotonic.values()] }
 }
 // 真实父目录检查可挡住把备份路径软链进仓库；wx+0600保护旧证据和文件权限。
 function writePrivateReport(outPath, report) {

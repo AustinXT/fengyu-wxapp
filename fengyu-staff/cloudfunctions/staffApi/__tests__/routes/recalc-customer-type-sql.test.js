@@ -683,20 +683,40 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
 })
 
 
-// #257：金额/归因镜像保持原有守护，方向按实时与离线分开；C 已补实际每日调度与helper双向。
-describe('#257 顾客分类方向守护', () => {
+// #545（推翻 #257）：方向反转 —— 全量通道只升不降（目标档位 = max(现值, 计算值)），
+// 降档只由退款审批通道显式放开（#524 第 5 条「已退款订单抹掉达标贡献」）。
+// 金额与归因的镜像守护不变。
+describe('#545 顾客分类方向守护', () => {
   for (const [label, file] of RUNTIME_FILES.filter(([, file]) => file !== ADMIN_RECOMPUTE_TS)) {
-    test(`${label} 实时写路径只能升级`, () => {
+    test(`${label} 实时写路径默认只能升级`, () => {
       const src = fs.readFileSync(file, 'utf8')
       expect(src).toMatch(/CASE customer_type[\s\S]*?END\)\s*< \(CASE/)
     })
   }
-  test('B 离线分类预览与更新均双向（不得残留 rank 保护）', () => {
+  test('#545 退款通道显式放开降档：仅 staffApi 副本带 $3 布尔逃生口', () => {
+    const staff = fs.readFileSync(STAFF_ORDER_JS, 'utf8')
+    expect(staff).toContain('allowDowngrade = false')
+    // 逃生口只放行降档分支，并排除甲方测试账号（与 admin helper / cron / 离线脚本同口径）
+    expect(staff).toMatch(/OR \(\$3::boolean AND customer_type IS DISTINCT FROM \$2::customer_type\s+AND name IS DISTINCT FROM '谢廷\(测试\)'\)/)
+    // 会员客早退必须被 allowDowngrade 豁免，否则退款后永远降不下去
+    expect(staff).toContain("if (!allowDowngrade && cur.rows[0]?.customer_type === '会员客') return")
+    for (const [label, file] of RUNTIME_FILES.filter(
+      ([, f]) => f !== ADMIN_RECOMPUTE_TS && f !== STAFF_ORDER_JS,
+    )) {
+      expect(fs.readFileSync(file, 'utf8'), `${label} 不得出现降档逃生口`).not.toContain('allowDowngrade')
+    }
+  })
+  test('B 离线分类只升不降（必须带 rank 保护与 computed_type 只读分裂）', () => {
     const src = fs.readFileSync(SCRIPT_RECALC_ALL_TYPES, 'utf8')
     expect(src).toContain('WHERE old_type IS DISTINCT FROM new_type')
     expect(src).toContain('AND u.customer_type IS DISTINCT FROM t.new_type')
-    expect(src).not.toContain('TYPE_RANK_CASE')
-    expect(src).not.toMatch(/CASE u\.customer_type/)
+    expect(src).toContain('TYPE_RANK_CASE')
+    expect(src).toMatch(/WHEN '流量客' THEN 0 WHEN '体验客' THEN 1/)
+    // new_type 必须是 max(现值, 计算值)；computed_type 只读输出，不参与 UPDATE。
+    // 判据写成「计算值 > 现值才升级」，rank 为 NULL 时落 ELSE 保留现值（fail closed）。
+    expect(src).toContain('END::customer_type AS computed_type')
+    expect(src).toContain('END::customer_type AS new_type')
+    expect(src).toMatch(/>\s*\(\$\{TYPE_RANK_CASE\('old_type'\)\}\)/)
   })
   for (const [label, file] of [
     ['all-types', SCRIPT_RECALC_ALL_TYPES], ['became', SCRIPT_RECALC_BECAME_MEMBER],
@@ -710,10 +730,15 @@ describe('#257 顾客分类方向守护', () => {
       else expect(build).toContain("u.customer_type = '会员客'")
     })
   }
-  test('C：admin重算helper能降级且会员客不能早退', () => {
+  test('C：admin重算helper会员客必须早退（只升不降），且退款入口显式放行降档', () => {
     const src = fs.readFileSync(ADMIN_RECOMPUTE_TS, 'utf8')
-    expect(src).not.toMatch(/if \(oldType === '会员客'\) return null/)
+    expect(src).toMatch(/if \(!allowDowngrade && oldType === '会员客'\) return null/)
     expect(src).toMatch(/customer_type (?:<>|IS DISTINCT FROM)/)
+    // rank 守卫由本文件 rankCase 助手插值（两侧同一表达式，避免漂移），与实时四端同序
+    expect(src).toContain('const rankCase =')
+    expect(src).toMatch(/rankCase\(sql`customer_type`\)/)
+    expect(src).toMatch(/rankCase\(sql`\$\{newType\}::customer_type`\)/)
+    expect(src).toContain('recomputeCustomerTypeOnRefund')
   })
 })
 

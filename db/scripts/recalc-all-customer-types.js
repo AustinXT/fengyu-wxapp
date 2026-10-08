@@ -19,12 +19,15 @@
  *     4. 否则 ⇒ 流量客
  *   （#187 2026-09-18：判定金额从 total_amount 换成毛实收 = sale_items.received 净额
  *    + 该行逐项退款额，按 sale_amount 封顶；无明细行的历史单回退订单级 received。）
- *   按计算值双向对齐 customer_type（#257）；甲方测试账号「谢廷(测试)」排除。
- *   member_level 与已有 became_member_at 不因降档清空；再达标归因留待 E 阶段。
+ *   **只升不降**（#545 推翻 #257）：目标档位 = max(现值, 计算值)，档位序
+ *   流量客 < 体验客 < 小美客 < 会员客。口径/算法修正导致的档位下降不生效；
+ *   「已退款订单抹掉达标贡献」由退款审批通道即时重算承担，不依赖本脚本。
+ *   甲方测试账号「谢廷(测试)」排除。
  *
  * 同事务额外维护：
- *   - 会员客升级行：member_level 仅在原值为 NULL 时按滚动 12 个月净消费写入
- *     初始等级（黑/金/粉/星/初钻），与 cron-worker determineMemberLevel 同源。
+ *   - 会员客行：member_level 仅在原值为 NULL 时按滚动 12 个月净消费写入
+ *     初始等级（黑/金/粉/星/初钻），与 cron-worker determineMemberLevel 同源；
+ *     低于门槛不再留 NULL，兜底最低档「初钻」（#545）。
  *   - became_member_at 仅在原值为 NULL 时写入 first_qualified_at（首笔达标单
  *     实际跨阈值时间；无receipt历史已结清销售单才回退父单时间，与归因脚本同源）。
  *   - 不发消息 / 积分 / 优惠券（与 cron-worker.processUpgrade 区别在此；理由：历史存量发"恭喜
@@ -43,7 +46,7 @@
  *   先在dev 库 101.34.242.103:5433/fengyu_wxapp 跑 --apply 验证；生产库 118.178.196.26:5433/fengyu_wxapp 再跑一次（必跑）。两端均 5433/fengyu_wxapp，仅 IP 区分。
  *
  * 幂等：
- *   - customer_type 双向同步；二次运行时已是目标态的不再 UPDATE。
+ *   - customer_type 只升不降；二次运行时已是目标态的不再 UPDATE。
  *   - member_level / became_member_at 仅在原 NULL 时写入；不覆盖历史值。
  */
 
@@ -68,6 +71,16 @@ SELECT value::numeric AS v
   FROM system_configs
  WHERE key = 'new_member_threshold'
  LIMIT 1
+`
+
+// 顾客档位序（只升不降的比较基准）：流量客 < 体验客 < 小美客 < 会员客。
+// 与实时四端的 UPDATE 守卫 `(CASE customer_type … END) < (CASE $2 … END)` 同序，
+// 一致性由 staffApi __tests__/routes/recalc-customer-type-sql.test.js 守护。
+const TYPE_RANK_CASE = (expr) => `
+  CASE ${expr}
+    WHEN '流量客' THEN 0 WHEN '体验客' THEN 1
+    WHEN '小美客' THEN 2 WHEN '会员客' THEN 3
+  END
 `
 
 // 把 recalcCustomerType + member-level 判定 + 首次达阈值时间一次性算出来，
@@ -233,36 +246,58 @@ spend_12m AS (
      AND paid_at >= (NOW() - INTERVAL '12 months')
      AND client_user_id IS NOT NULL
    GROUP BY client_user_id
+), classified AS (
+  SELECT u.user_id,
+         u.customer_type    AS old_type,
+         u.member_level     AS old_level,
+         u.became_member_at AS old_became,
+         CASE
+           WHEN m.user_id IS NOT NULL THEN '会员客'
+           WHEN x.user_id IS NOT NULL THEN '小美客'
+           WHEN t.user_id IS NOT NULL THEN '体验客'
+           ELSE '流量客'
+         END::customer_type AS computed_type,
+         COALESCE(s.spend, 0) AS spend,
+         m.first_qualified_at, m.first_qualified_order
+    FROM client_wechat_users u
+    LEFT JOIN member_first m ON m.user_id = u.user_id
+    LEFT JOIN xiaomei_users x ON x.user_id = u.user_id
+    LEFT JOIN tiyan_users  t ON t.user_id = u.user_id
+    LEFT JOIN spend_12m    s ON s.user_id = u.user_id
+   WHERE u.name IS DISTINCT FROM '谢廷(测试)'
+), targeted AS (
+  -- 只升不降（#545）：目标档位 = max(现值, 计算值)。现值更高时保留现值，使
+  -- 「口径/算法修正」不产生降档。computed_type 只读输出，供 dry-run 与审计观察
+  -- 「若无单调门会有多少人掉档」；不参与任何 UPDATE。
+  SELECT user_id, old_type, old_level, old_became, computed_type, spend,
+         -- 写成「计算值严格高于现值才升级」而非「现值 >= 计算值就保留」：后者在 rank 为
+         -- NULL（未知档位）时会落 ELSE 分支、静默按低档降级；本写法在同样情形下比较结果为
+         -- NULL → 落 ELSE 保留现值，fail closed。当前 customer_type 是闭合 4 值 enum、rank
+         -- 不可能为 NULL，这是给「将来加第 5 档」留的安全方向。
+         CASE
+           WHEN (${TYPE_RANK_CASE('computed_type')}) > (${TYPE_RANK_CASE('old_type')})
+             THEN computed_type
+           ELSE old_type
+         END::customer_type AS new_type,
+         first_qualified_at, first_qualified_order
+    FROM classified
 )
-SELECT u.user_id,
-       u.customer_type AS old_type,
-       u.member_level  AS old_level,
-       u.became_member_at AS old_became,
+SELECT user_id, old_type, old_level, old_became, computed_type, new_type,
        CASE
-         WHEN m.user_id IS NOT NULL THEN '会员客'
-         WHEN x.user_id IS NOT NULL THEN '小美客'
-         WHEN t.user_id IS NOT NULL THEN '体验客'
-         ELSE '流量客'
-       END::customer_type AS new_type,
-       CASE
-         WHEN m.user_id IS NOT NULL THEN
+         WHEN new_type = '会员客' THEN
+           -- #545：会员客等级下限 = 初钻，低于门槛不再留 NULL。
+           -- 故 new_member_threshold 自此不再影响 member_level（只影响 customer_type）。
            CASE
-             WHEN COALESCE(s.spend, 0) >= 100000 THEN '黑钻'
-             WHEN COALESCE(s.spend, 0) >= 60000  THEN '金钻'
-             WHEN COALESCE(s.spend, 0) >= 30000  THEN '粉钻'
-             WHEN COALESCE(s.spend, 0) >= 10000  THEN '星钻'
-             WHEN COALESCE(s.spend, 0) >= (SELECT v FROM threshold) THEN '初钻'
-             ELSE NULL
+             WHEN spend >= 100000 THEN '黑钻'
+             WHEN spend >= 60000  THEN '金钻'
+             WHEN spend >= 30000  THEN '粉钻'
+             WHEN spend >= 10000  THEN '星钻'
+             ELSE '初钻'
            END
          ELSE NULL
        END::member_level AS new_level,
-       m.first_qualified_at, m.first_qualified_order
-  FROM client_wechat_users u
-  LEFT JOIN member_first m ON m.user_id = u.user_id
-  LEFT JOIN xiaomei_users x ON x.user_id = u.user_id
-  LEFT JOIN tiyan_users  t ON t.user_id = u.user_id
-  LEFT JOIN spend_12m    s ON s.user_id = u.user_id
- WHERE u.name IS DISTINCT FROM '谢廷(测试)'
+       first_qualified_at, first_qualified_order
+  FROM targeted
 `
 
 const PREVIEW_TRANSITIONS_SQL = `
@@ -271,6 +306,18 @@ SELECT old_type, new_type, COUNT(*)::int AS cnt
  WHERE old_type IS DISTINCT FROM new_type
  GROUP BY old_type, new_type
  ORDER BY old_type, new_type
+`
+
+// 只升不降可见性（#545）：列出「计算档位低于现值、被单调门挡住」的人。
+// 这些行不会被 UPDATE；保留该视图是为了让 dry-run 仍能回答
+// 「若无单调门会有多少 / 哪些人掉档」，也是口径反转的回归证据。
+const PREVIEW_PROTECTED_SQL = `
+SELECT old_type, computed_type, COUNT(*)::int AS cnt
+  FROM _recalc_target
+ WHERE old_type IS DISTINCT FROM computed_type
+   AND new_type = old_type
+ GROUP BY old_type, computed_type
+ ORDER BY old_type, computed_type
 `
 
 const PREVIEW_LEVEL_SQL = `
@@ -291,7 +338,9 @@ SELECT COUNT(*)::int AS cnt
    AND first_qualified_at IS NOT NULL
 `
 
-// #257：离线通道双向对齐，目标态不变时不写；实时路径仍只负责升级。
+// #545：离线通道只升不降（目标档位已在 _recalc_target.new_type 取 max），
+// 目标态不变时不写。「已退款订单抹掉达标贡献」不由本脚本承担——它走退款审批
+// 通道的即时重算（staffApi routes/order.js / admin actions/refunds.ts）。
 const UPDATE_TYPE_SQL = `
 UPDATE client_wechat_users u
    SET customer_type = t.new_type,
@@ -327,6 +376,14 @@ UPDATE client_wechat_users u
 const SELFCHECK_SQL = `
 SELECT
   (SELECT COUNT(*) FROM client_wechat_users WHERE customer_type = '会员客' AND became_member_at IS NULL AND name IS DISTINCT FROM '谢廷(测试)')::int AS member_no_became,
+  -- 其中「可修复却没修上」的子集：_recalc_target 里有首次达标时间、入会时间却仍为空。
+  -- 理论上 UPDATE_BECAME_SQL 之后恒为 0；只有它才构成 CLI 的硬失败。其余（无任何达标订单的
+  -- 人工会员 / WorkFine 历史档案）无从补齐 —— #545 起单调门会把这类人保留为会员客
+  -- （#257 时代会被降级、不会触发本自检），不能因此回滚整批补算。
+  (SELECT COUNT(*) FROM client_wechat_users u JOIN _recalc_target t ON t.user_id = u.user_id
+     WHERE u.customer_type = '会员客' AND u.became_member_at IS NULL AND t.first_qualified_at IS NOT NULL)::int AS member_no_became_fixable,
+  -- #545：会员客等级下限为初钻，重算后不应再有会员客缺失等级。
+  (SELECT COUNT(*) FROM client_wechat_users WHERE customer_type = '会员客' AND member_level IS NULL AND name IS DISTINCT FROM '谢廷(测试)')::int AS member_no_level,
   (SELECT COUNT(*) FROM client_wechat_users WHERE customer_type != '会员客' AND member_level IS NOT NULL)::int AS nonmember_with_level
 `
 
@@ -382,7 +439,7 @@ async function main() {
       : client.query(`WITH _recalc_target AS (${targetSelect}) ${query}`, [threshold])
 
     const transitions = await queryTarget(PREVIEW_TRANSITIONS_SQL)
-    log(`customer_type 待双向对齐分布:`)
+    log(`customer_type 待升级分布（只升不降）:`)
     let totalChanged = 0
     for (const r of transitions.rows) {
       log(`  ${r.old_type} → ${r.new_type}: ${r.cnt}`)
@@ -390,11 +447,19 @@ async function main() {
     }
     log(`  合计待 UPDATE customer_type: ${totalChanged} 行`)
 
+    const protectedRows = await queryTarget(PREVIEW_PROTECTED_SQL)
+    let totalProtected = 0
+    for (const r of protectedRows.rows) totalProtected += r.cnt
+    log(`被单调门挡住的降档（计算档位低于现值、本次不写）: ${totalProtected} 人`)
+    for (const r of protectedRows.rows) {
+      log(`  ${r.old_type}（计算为 ${r.computed_type}）: ${r.cnt}`)
+    }
+
     const levels = await queryTarget(PREVIEW_LEVEL_SQL)
     log(`member_level 初始化分布（会员客 ∩ old_level=NULL）:`)
     let totalLevel = 0
     for (const r of levels.rows) {
-      log(`  ${r.new_level || 'NULL（消费<阈值，跳过）'}: ${r.cnt}`)
+      log(`  ${r.new_level}: ${r.cnt}`)
       totalLevel += r.cnt
     }
     log(`  合计待 UPDATE member_level: ${totalLevel} 行`)
@@ -421,10 +486,19 @@ async function main() {
     log(`  UPDATE became_member_at: ${r3.rowCount} 行`)
 
     const check = await client.query(SELFCHECK_SQL)
-    const { member_no_became, nonmember_with_level } = check.rows[0]
-    log(`自检: 会员客∧became=NULL=${member_no_became}; 非会员客∧member_level≠NULL=${nonmember_with_level}`)
-    if (Number(member_no_became) > 0) {
-      log('✗ 自检失败：仍有会员客缺失 became_member_at（不应发生）')
+    const { member_no_became, member_no_became_fixable, member_no_level, nonmember_with_level } = check.rows[0]
+    log(`自检: 会员客∧became=NULL=${member_no_became}（其中可修复未修=${member_no_became_fixable}）; 会员客∧level=NULL=${member_no_level}; 非会员客∧member_level≠NULL=${nonmember_with_level}`)
+    if (Number(member_no_became) > Number(member_no_became_fixable)) {
+      log(`⚠ ${Number(member_no_became) - Number(member_no_became_fixable)} 位会员客无任何达标订单、无从补齐入会时间（人工会员/历史档案，已保留会员客），不阻断补算，请核查`)
+    }
+    if (Number(member_no_became_fixable) > 0) {
+      log('✗ 自检失败：仍有可修复的会员客缺失 became_member_at（不应发生）')
+      await client.query('ROLLBACK')
+      process.exitCode = 1
+      return
+    }
+    if (Number(member_no_level) > 0) {
+      log('✗ 自检失败：仍有会员客缺失 member_level（下限初钻后不应发生）')
       await client.query('ROLLBACK')
       process.exitCode = 1
       return
@@ -450,4 +524,4 @@ if (require.main === module) {
   })
 }
 
-module.exports = { recalcCustomerTypesInTransaction, BUILD_TARGET_TABLE_SQL, PREVIEW_TRANSITIONS_SQL, UPDATE_TYPE_SQL, UPDATE_LEVEL_SQL, UPDATE_BECAME_SQL, FETCH_THRESHOLD_SQL }
+module.exports = { recalcCustomerTypesInTransaction, BUILD_TARGET_TABLE_SQL, TYPE_RANK_CASE, PREVIEW_TRANSITIONS_SQL, PREVIEW_PROTECTED_SQL, UPDATE_TYPE_SQL, UPDATE_LEVEL_SQL, UPDATE_BECAME_SQL, FETCH_THRESHOLD_SQL }

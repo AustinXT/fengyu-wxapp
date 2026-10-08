@@ -31,6 +31,12 @@ let _deductRateCachedUpdatedAt = null
 let _deductRateLastCheckAt = 0
 
 /**
+ * 会员门槛配置不可用的错误文案。抛错方（getMemberThresholdStrict）与捕获方
+ * （routes/order.js 的退款通道）共用同一常量，避免靠字符串字面量匹配时漂移。
+ */
+const THRESHOLD_UNAVAILABLE_MSG = 'INVALID_STATE: 会员门槛配置不可用，停止顾客分类重算'
+
+/**
  * 获取会员门槛（单位：元）。
  * @returns {Promise<number>}
  */
@@ -66,6 +72,31 @@ async function getMemberThreshold() {
 
   // 查询失败或 DB 无该 key / 无效 value → 兜底但不写缓存（下次重试）
   return FALLBACK_THRESHOLD
+}
+
+/**
+ * 严格读取会员门槛：缺失 / 非法 / 查询失败一律抛错，**不兜底**。
+ *
+ * 仅供「全仓唯一放行降档」的退款通道使用（`order.approveRefund` → `recalcCustomerType(…, true)`）。
+ * `getMemberThreshold` 的 FALLBACK_THRESHOLD 兜底对只升不降的收款链路无害（最坏是漏升，
+ * 次日 cron 会用正确阈值纠正），但在退款通道会按一个与真实门槛无关的数**写出不可逆的降档**。
+ * admin 侧 `recomputeCustomerTypeOnRefund` 同样是「配置不可用则跳过」，两端语义靠这里对齐。
+ *
+ * @param {object} [client] - 已开的 pg 事务客户端；传入时复用该连接，避免在事务内经连接池
+ *   二次借连接（池 max 5，并发退款时可能把池借空而自锁）。不传则走池。
+ * @returns {Promise<number>}
+ */
+async function getMemberThresholdStrict(client) {
+  const sql = "SELECT value FROM system_configs WHERE key = 'new_member_threshold'"
+  // 两条路径的返回形状不同：`pg.query` 已解包成行数组；事务客户端的 `client.query` 返回
+  // pg 的 QueryResult（行在 `.rows`）。统一成行数组再取值 —— 对 client 结果直接 rows[0]
+  // 会恒为 undefined，让退款通道把正常配置误判成「不可用」并静默跳过降档。
+  const rows = client ? (await client.query(sql)).rows : await pg.query(sql)
+  const v = rows[0] ? Number(rows[0].value) : NaN
+  if (!Number.isFinite(v) || v <= 0) {
+    throw new Error(THRESHOLD_UNAVAILABLE_MSG)
+  }
+  return v
 }
 
 /**
@@ -189,6 +220,8 @@ if (_ttlTimer && typeof _ttlTimer.unref === 'function') {
 
 module.exports = {
   getMemberThreshold,
+  getMemberThresholdStrict,
+  THRESHOLD_UNAVAILABLE_MSG,
   getPointsToYuanRate,
   getPointsDeductionMaxRate,
   invalidateCache,

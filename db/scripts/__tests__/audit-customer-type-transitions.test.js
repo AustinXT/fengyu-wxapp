@@ -3,20 +3,33 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const { execFileSync, spawnSync } = require('node:child_process')
 const { summarize, AUDIT_SQL } = require('../audit-customer-type-transitions')
-test('全量差分同时识别升、降、不变；近30天下单只计降档且只计一次', () => {
+test('全量差分识别升级与不变；#545 起降档被单调门挡住并单列 protected', () => {
   const rows = [
-    { old_type: '会员客', new_type: '小美客', ordered_30d: true },
-    { old_type: '小美客', new_type: '流量客', ordered_30d: false },
-    { old_type: '流量客', new_type: '会员客', ordered_30d: true },
-    { old_type: '会员客', new_type: '会员客', ordered_30d: true },
+    // 只升不降：计算小美客但现值会员客 → new_type 保留会员客，计入 protected
+    { old_type: '会员客', new_type: '会员客', computed_type: '小美客', ordered_30d: true },
+    { old_type: '小美客', new_type: '小美客', computed_type: '流量客', ordered_30d: false },
+    { old_type: '流量客', new_type: '会员客', computed_type: '会员客', ordered_30d: true },
+    { old_type: '会员客', new_type: '会员客', computed_type: '会员客', ordered_30d: true },
   ]
   const out = summarize(rows)
-  assert.equal(out.scope, 4); assert.equal(out.changed, 3); assert.equal(out.unchanged, 1)
-  assert.equal(out.downgrades, 2); assert.equal(out.downgradesOrdered30d, 1)
-  assert.equal(out.transitions.length, 3)
+  assert.equal(out.scope, 4); assert.equal(out.changed, 1); assert.equal(out.unchanged, 3)
+  assert.equal(out.downgrades, 0); assert.equal(out.downgradesOrdered30d, 0)
+  assert.equal(out.transitions.length, 1)
+  assert.equal(out.protectedByMonotonic, 2)
+  assert.equal(out.protectedBreakdown.length, 2)
+  assert.equal(out.protectedBreakdown.find(b => b.level === '会员客').ordered30d, 1)
+})
+test('summarize 对降档行仍正确计数（防御性：#545 起 AUDIT_SQL 本身不会再产出此类行，保留以防单调门被移除时审计失明）', () => {
+  const rows = [{ old_type: '会员客', new_type: '小美客', computed_type: '小美客', ordered_30d: true }]
+  const out = summarize(rows)
+  assert.equal(out.downgrades, 1); assert.equal(out.downgradesOrdered30d, 1)
+  assert.equal(out.protectedByMonotonic, 0)
 })
 test('未知旧档位拒绝出部分名单', () => {
-  assert.throws(() => summarize([{ old_type: '未知', new_type: '会员客' }]), /未知顾客档位/)
+  assert.throws(() => summarize([{ old_type: '未知', new_type: '会员客', computed_type: '会员客' }]), /未知顾客档位/)
+})
+test('未知计算档位同样拒绝出部分名单', () => {
+  assert.throws(() => summarize([{ old_type: '会员客', new_type: '会员客', computed_type: '未知' }]), /未知顾客档位/)
 })
 test('只读审计CLI拒绝apply，不能误执行数据治理', () => {
   const r = spawnSync(process.execPath, [require.resolve('../audit-customer-type-transitions'), '--apply'], { encoding: 'utf8', env: { ...process.env, DATABASE_URL: 'postgresql://unused' } })

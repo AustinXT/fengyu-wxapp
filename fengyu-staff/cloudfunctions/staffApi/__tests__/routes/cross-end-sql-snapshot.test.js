@@ -876,14 +876,49 @@ describe('SUMMARY v3 §2 #14：cascadeRefund 触发点防回归', () => {
     expect(src).toMatch(/await\s+cascadeRefund\s*\(\s*client\s*,/)
   })
 
-  test('staff approveRefund 与 admin 一致：退款只刷新 spending_tier，不执行只升不降的结算重算', () => {
+  test('#545 退款通道必须严格读取会员门槛：兜底阈值会写出不可逆的错误降档', () => {
+    const src = readFile(FILES.staffOrderJs)
+    const config = readFile(path.resolve(__dirname, '../../utils/config.js'))
+    // 严格读取存在且配置非法时抛错（不兜底）
+    expect(config).toContain('async function getMemberThresholdStrict')
+    expect(config).toContain("const THRESHOLD_UNAVAILABLE_MSG = 'INVALID_STATE: 会员门槛配置不可用")
+    expect(config).toMatch(/!Number\.isFinite\(v\) \|\| v <= 0[\s\S]{0,120}throw new Error\(THRESHOLD_UNAVAILABLE_MSG\)/)
+    expect(config).toMatch(/getMemberThresholdStrict,/)
+    expect(config).toMatch(/THRESHOLD_UNAVAILABLE_MSG,/)
+    // allowDowngrade 分支走严格读取，且只吞「配置不可用」这一类错误（查询级错误必须 rethrow，
+    // 否则事务已 abort、后续语句会以 25P02 之类的晦涩错误失败）
+    expect(src).toMatch(/if \(allowDowngrade\) \{[\s\S]*?getMemberThresholdStrict\(client\)[\s\S]*?catch[\s\S]*?err\.message !== THRESHOLD_UNAVAILABLE_MSG\) throw err[\s\S]*?return/)
+    // 只升通道继续用带兜底的 getMemberThreshold（配置异常最坏是漏升，次日 cron 纠正）
+    expect(src).toContain('threshold = await getMemberThreshold()')
+  })
+
+  test('#545 退款通道跳过 #301 入会绑定门禁（否则退款可被无关文案拦死，且与 admin 漂移）', () => {
+    const src = readFile(FILES.staffOrderJs)
+    expect(src).toMatch(/if \(newType === '会员客' && !allowDowngrade\) \{/)
+  })
+
+  test('#545 退款通道的降档写入依赖前置行锁：refreshSpendingTier 必须排在 recalcCustomerType 之前', () => {
+    const src = readFile(FILES.staffOrderJs)
+    const approveBody = src.slice(
+      src.indexOf('async function approveRefund(ctx)'),
+      src.indexOf('async function rejectRefund(ctx)'),
+    )
+    const tierIdx = approveBody.indexOf('await refreshSpendingTier(client, sopRow.client_user_id)')
+    const recalcIdx = approveBody.indexOf('await recalcCustomerType(client, sopRow.client_user_id, refSaleOrderId, true)')
+    expect(tierIdx).toBeGreaterThan(-1)
+    expect(recalcIdx).toBeGreaterThan(tierIdx)
+  })
+
+  test('staff approveRefund 与 admin 一致：退款刷新 spending_tier，并显式放行分类降档（#545）', () => {
     const src = readFile(FILES.staffOrderJs)
     const approveBody = src.slice(
       src.indexOf('async function approveRefund(ctx)'),
       src.indexOf('async function rejectRefund(ctx)'),
     )
     expect(approveBody).toContain('await refreshSpendingTier(client, sopRow.client_user_id)')
-    expect(approveBody).not.toMatch(/await\s+recalcCustomerType\s*\(/)
+    // #545：退款抹掉该单达标贡献 → 须按剩余有效订单重算分类，且是全仓唯一允许降档的通道
+    expect(approveBody).toMatch(/await\s+recalcCustomerType\(\s*client,\s*sopRow\.client_user_id,[^)]*,\s*true\s*\)/)
+    // 会员等级仍只升不降（下限初钻，档位回落留给每日 cron 的 150 天保级期）
     expect(approveBody).not.toMatch(/await\s+recalcMemberLevel\s*\(/)
   })
 })

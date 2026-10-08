@@ -3,8 +3,10 @@
  *
  * 与 [member-level-rules](memory:project_member_level_rules) 一致：
  *   - 黑钻 ≥ 100000、金钻 ≥ 60000、粉钻 ≥ 30000、星钻 ≥ 10000
- *   - 初钻 ≥ system_configs.new_member_threshold（默认 1980，运行时由 getMemberThreshold 注入）
- *   - 低于初钻门槛 → null
+ *   - 其余一律落在下限档「初钻」（#545：会员客的 member_level 不允许为 NULL）
+ *
+ * 因此 `threshold`（system_configs.new_member_threshold）自此不参与等级判定，
+ * 只用于 customer_type 的入会判定；入参保留是为了与各端调用点同签名。
  *
  * 升降级判定基于序数：null < 初钻 < 星钻 < 粉钻 < 金钻 < 黑钻
  */
@@ -22,13 +24,12 @@ export const LEVEL_RANK: Record<string, number> = {
   黑钻: 5,
 }
 
-export function determineMemberLevel(spend: number, threshold: number): MemberLevel | null {
+export function determineMemberLevel(spend: number, threshold: number): MemberLevel {
   if (spend >= 100000) return '黑钻'
   if (spend >= 60000) return '金钻'
   if (spend >= 30000) return '粉钻'
   if (spend >= 10000) return '星钻'
-  if (spend >= threshold) return '初钻'
-  return null
+  return '初钻'
 }
 
 export function isUpgrade(from: MemberLevel | null, to: MemberLevel | null): boolean {
