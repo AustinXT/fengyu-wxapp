@@ -83,7 +83,7 @@ export function Sidebar({ collapsed, onToggle, session }: SidebarProps) {
           'group relative flex items-center gap-3 rounded-[var(--radius)] py-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2',
           nested ? 'px-3 pl-10' : 'px-3',
           active
-            ? 'bg-[#FFF0EE] font-medium text-[var(--primary)]'
+            ? 'bg-[var(--accent)] font-medium text-[var(--primary)]'
             : 'text-[#666666] hover:bg-[var(--muted)] hover:text-[var(--foreground)]',
           collapsed && 'justify-center px-0',
         )}
@@ -139,7 +139,7 @@ export function Sidebar({ collapsed, onToggle, session }: SidebarProps) {
                 className={cn(
                   'group flex w-full items-center gap-3 rounded-[var(--radius)] px-3 py-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2',
                   active
-                    ? 'bg-[#FFF0EE] font-medium text-[var(--primary)]'
+                    ? 'bg-[var(--accent)] font-medium text-[var(--primary)]'
                     : 'text-[#555555] hover:bg-[var(--muted)] hover:text-[var(--foreground)]',
                   collapsed && 'justify-center px-0',
                 )}
@@ -187,7 +187,7 @@ export function Sidebar({ collapsed, onToggle, session }: SidebarProps) {
                         className={cn(
                           'flex items-center gap-2 rounded-[var(--radius)] px-2 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]',
                           activeChild
-                            ? 'bg-[#FFF0EE] font-medium text-[var(--primary)]'
+                            ? 'bg-[var(--accent)] font-medium text-[var(--primary)]'
                             : 'text-[#555555] hover:bg-[var(--muted)] hover:text-[var(--foreground)]',
                         )}
                       >

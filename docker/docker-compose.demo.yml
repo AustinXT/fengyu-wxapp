@@ -26,6 +26,12 @@ services:
       - ./data/runtime:/var/lib/lxcoding/runtime
     depends_on:
       demo-postgres: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "node", "-e", "const sql=require('postgres')(process.env.DATABASE_URL,{max:1,connect_timeout:3}); sql`SELECT 1`.then(()=>fetch('http://127.0.0.1:3000/login')).then(r=>{if(!r.ok)throw Error('HTTP');}).then(()=>sql.end()).catch(()=>process.exit(1));"]
+      interval: 10s
+      timeout: 8s
+      start_period: 20s
+      retries: 10
     restart: unless-stopped
     mem_limit: 768m
     networks: [demo]
@@ -43,5 +49,6 @@ services:
     mem_limit: 512m
     networks: [demo]
 networks:
-  demo:
-    internal: true
+  # 独立 bridge 与已有业务容器不共享网络；外部调用由 demo-runtime 禁止真实凭据。
+  # internal 网络会取消端口发布，因此用户入口使用常规独立 bridge。
+  demo: {}

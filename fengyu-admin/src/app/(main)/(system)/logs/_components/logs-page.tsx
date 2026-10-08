@@ -145,7 +145,7 @@ const fieldLabels: Record<string, string> = {
   boundStoreId: "绑定门店", boundEmployeeId: "绑定美容师",
   // 系统配置
   newMemberThreshold: "新客阈值", orderTimeout: "订单超时",
-  bannerImages: "轮播图", fengyuguanImage: "凤御馆图",
+  bannerImages: "轮播图", fengyuguanImage: "品牌介绍图",
   // 状态流转 context
   customerName: "顾客", totalAmount: "金额", clientName: "顾客",
   employeeName: "美容师", appointmentTime: "预约时间",

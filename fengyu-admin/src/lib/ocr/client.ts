@@ -158,8 +158,8 @@ function hasAnyValue(values: Record<string, unknown>) {
 export async function recognizeBusinessLicense(file: UploadFileLike): Promise<BusinessLicenseOcrResult> {
   if (ocrMode() !== "real") {
     return {
-      merBlisName: "南昌凤御美容服务有限公司",
-      merRegName: "南昌凤御美容服务有限公司",
+      merBlisName: "LX CODING 演示美容服务有限公司",
+      merRegName: "LX CODING 演示美容服务有限公司",
       merBlis: "91360103TEST00002X",
       merRegAddr: "江西省南昌市红谷滩区会展路 999 号",
       larName: "陈小燕",

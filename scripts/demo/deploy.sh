@@ -35,6 +35,8 @@ ssh lx-test "cd '$REMOTE'; chmod 600 *.env; docker compose --env-file compose.en
 ssh -o ExitOnForwardFailure=yes -N -L 127.0.0.1:58096:127.0.0.1:8096 lx-test &
 TUNNEL_PID=$!
 trap 'kill "$TUNNEL_PID" 2>/dev/null || true' EXIT
+sleep 1
+kill -0 "$TUNNEL_PID" || { echo '演示数据库 SSH 隧道未建立，停止初始化'; exit 1; }
 export DATABASE_URL="postgresql://lxcoding_demo:$DEMO_DB_PASSWORD@127.0.0.1:58096/lxcoding_demo"
 node scripts/demo/bootstrap.mjs
 node scripts/demo/seed.mjs

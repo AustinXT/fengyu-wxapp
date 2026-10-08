@@ -1536,7 +1536,7 @@ function buildEContractContent(data: OnboardingApplicationInput) {
     A121: data.merchantData.merRegDistCode,
     // 按凤御门店入网规则，接入平台法律主体随当前营业执照主体自动带入。
     A122: subjectName,
-    A123: eContractConfig("LAKALA_ECONTRACT_PLATFORM_NAME", "凤御美业"),
+    A123: eContractConfig("LAKALA_ECONTRACT_PLATFORM_NAME", "LX CODING 美业"),
     A124: now.getFullYear(), A125: now.getMonth() + 1, A126: now.getDate(),
     B1: now.getFullYear(), B2: now.getMonth() + 1, B3: "是",
     B8: subjectName,

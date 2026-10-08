@@ -32,7 +32,7 @@ export default async function LakalaGuidePage({ params }: { params: Promise<{ ch
       <div className="mx-auto max-w-5xl space-y-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <p className="text-sm font-medium text-[#C7352D]">凤御美业 · 拉卡拉认证指南</p>
+            <p className="text-sm font-medium text-[#C7352D]">LX CODING 美业 · 拉卡拉认证指南</p>
             <h1 className="mt-1 text-2xl font-bold">{guide.title}</h1>
             <p className="mt-1 text-sm text-[#777777]">本页面不需要后台账号，可直接发给门店法人查看。</p>
           </div>

@@ -14,9 +14,6 @@ import { saveSettings, type SystemSettings, type RechargeCardConfigInput, type C
 import RechargeConfigForm from "./recharge-config-form"
 import ConsumeAgreementForm from "./consume-agreement-form"
 
-const CDN_BASE =
-  "https://636c-cloud1-3gpht4b01ff88838-1406056527.tcb.qcloud.la"
-
 interface SettingsPageProps {
   initialSettings: SystemSettings
   rechargeCardConfig: RechargeCardConfigInput
@@ -33,7 +30,7 @@ export default function SettingsPageClient({ initialSettings, rechargeCardConfig
 
   const [bannerImages, setBannerImages] = useState<string[]>(initialSettings.bannerImages)
   const [fengyuguanImage, setFengyuguanImage] = useState(
-    initialSettings.fengyuguanImage || `${CDN_BASE}/images/fengyuguan.jpg`
+    initialSettings.fengyuguanImage || ''
   )
   const [serviceHotline, setServiceHotline] = useState(initialSettings.serviceHotline)
   const [pointsDeductionMaxRate, setPointsDeductionMaxRate] = useState(initialSettings.pointsDeductionMaxRate)
