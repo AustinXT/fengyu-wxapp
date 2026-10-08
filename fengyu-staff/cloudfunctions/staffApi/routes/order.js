@@ -3777,7 +3777,7 @@ async function createRefund(ctx) {
   // 查原单明细（构建 + 校验未使用数量）
   const origItems = await pg.query(
     // #145/#153：可退数量受「剩余已付」封顶，需要 pickup_records 与转出行聚合（见 utils/refund.js）
-    `SELECT si.*,
+    `SELECT si.*, si.converted_quantity AS physical_converted_quantity,
             GREATEST(0, si.received::numeric - ${retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true)}) AS received,
             COALESCE((SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr
                        WHERE pr.sale_item_id = si.sale_item_id), 0)::int AS picked_quantity,
@@ -3957,10 +3957,11 @@ async function createRefund(ctx) {
         [refSaleOrderId],
       )
       const before = new Map(origItems.map((it) => [it.sale_item_id, it]))
-      const fields = ['remaining_sessions', 'paid_sessions', 'unit_real_price', 'session_count', 'quantity', 'picked_up_quantity', 'refunded_quantity', 'converted_quantity']
+      const fields = ['remaining_sessions', 'paid_sessions', 'unit_real_price', 'session_count', 'quantity', 'picked_up_quantity', 'refunded_quantity']
       if (lockedItems.rows.length !== before.size || lockedItems.rows.some((it) => {
         const old = before.get(it.sale_item_id)
         return !old || fields.some((field) => String(old[field] ?? '') !== String(it[field] ?? ''))
+          || String(old.physical_converted_quantity ?? '') !== String(it.converted_quantity ?? '')
       })) throw new Error('CONFLICT: 寄存权益已变化，请刷新后重新发起退款')
     }
     const sopRes = await client.query(
@@ -4228,8 +4229,8 @@ async function approveRefund(ctx) {
       )
       const consumedById = new Map(consumedRes.rows.map((c) => [c.sale_item_id, c]))
       for (const r of lockedRows.rows) {
-        // #182：疗程卡也要进来做**余数**复核。疗程卡的可退次数由 cascadeRefund +
-        // recalcPaidSessionsForOrder 的 D3 守护把关，但 overpay 余数（received > sale_amount
+        // #182：疗程卡也要进来做**余数**复核。寄存疗程卡的可退次数同样在锁内显式复核，
+        // 不能依赖转换耗尽分支的 D3 兜底；overpay 余数（received > sale_amount
         // 的多收零头）现在可以被转换单折走，申请时合法的余数可能在审批前已经没了。
         const isHome = r.product_type === '家居产品'
         const isCard = r.product_type === '疗程卡'

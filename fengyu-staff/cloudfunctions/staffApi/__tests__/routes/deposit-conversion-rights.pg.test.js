@@ -90,7 +90,7 @@ describe.skipIf(!url)('寄存退款后的转换：真实 PostgreSQL 复算', () 
     pg.query.mockImplementation(async (sql) => {
       if (sql.includes('SELECT store_id')) return [{ store_id: 'store-001' }]
       if (sql.includes('SELECT * FROM sale_orders')) return [{ sale_order_id: 'deposit', sale_order_type: '寄存单', status: '已支付', received: 960, refunded_amount: 0 }]
-      if (sql.includes('SELECT si.*')) return (await client.query('SELECT * FROM sale_items')).rows.map((r) => ({ ...r, unit_price: 80, picked_quantity: 0, converted_amount: 0, converted_quantity: 0 }))
+      if (sql.includes('SELECT si.*')) return (await client.query('SELECT * FROM sale_items')).rows.map((r) => ({ ...r, unit_price: 80, picked_quantity: 0, converted_amount: 0, physical_converted_quantity: r.converted_quantity, converted_quantity: 0 }))
       if (sql.includes('AS net')) return [{ net: 960 }]
       return []
     })
@@ -112,6 +112,24 @@ describe.skipIf(!url)('寄存退款后的转换：真实 PostgreSQL 复算', () 
     await expect(operation).rejects.toThrow('寄存权益已变化')
     expect(writes).toEqual([])
     } finally { await conversion.query('ROLLBACK'); await conversion.end() }
+  })
+  test('A已转换的聚合次数不冒充物理列，B无并发变化时仍可发起退款', async () => {
+    await seed(2, 4)
+    pg.query.mockImplementation(async (sql) => {
+      if (sql.includes('SELECT store_id')) return [{ store_id: 'store-001' }]
+      if (sql.includes('SELECT * FROM sale_orders')) return [{ sale_order_id: 'deposit', sale_order_type: '寄存单', status: '已支付', received: 960, refunded_amount: 160 }]
+      if (sql.includes('SELECT si.*')) return (await client.query('SELECT * FROM sale_items')).rows.map((r) => ({ ...r, unit_price: 80, picked_quantity: 0, converted_amount: r.sale_item_id === 'A' ? 240 : 0, physical_converted_quantity: r.converted_quantity, converted_quantity: r.sale_item_id === 'A' ? 3 : 0 }))
+      if (sql.includes('AS net')) return [{ net: 800 }]
+      return []
+    })
+    const writes = []
+    pg.transaction.mockImplementationOnce(async (cb) => cb({ query: async (sql, params) => {
+      if (/^\s*(?:INSERT|UPDATE|DELETE)\b/.test(sql)) { writes.push(sql); return { rows: [{ id: 1 }], rowCount: 1 } }
+      return client.query(sql, params)
+    } }))
+    const ctx = createManagerCtx({ refSaleOrderId: 'deposit', items: [{ saleItemId: 'B', refundQuantity: 6 }], refundReason: '退B' })
+    await orderRoutes.createRefund(ctx)
+    expect(writes.some((sql) => sql.includes('INSERT INTO sale_order_payments'))).toBe(true)
   })
   test('直接提交已退光行：真实复算后拒绝，事务未写订单、权益或余额', async () => {
     await seed(2, 4)

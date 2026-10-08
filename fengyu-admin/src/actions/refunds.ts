@@ -1047,10 +1047,12 @@ export const createRefund = withPermission(
         }
         const lockedItems = await tx.execute(sql`SELECT * FROM sale_items WHERE sale_order_id = ${refSaleOrderId} AND item_direction = '购买' ORDER BY sale_item_id FOR UPDATE`) as unknown as Array<Record<string, unknown>>
         const before = new Map(sourceItems.map((it) => [it.sale_item_id, it]))
+        const physicalConverted = new Map(origRows.map((r) => [r.item.saleItemId, r.item.convertedQuantity]))
         const fields = ['remaining_sessions', 'paid_sessions', 'unit_real_price', 'session_count', 'quantity', 'picked_up_quantity', 'refunded_quantity'] as const
         if (lockedItems.length !== before.size || lockedItems.some((it) => {
           const old = before.get(it.sale_item_id as string)
           return !old || fields.some((field) => String(old[field] ?? '') !== String(it[field] ?? ''))
+            || String(physicalConverted.get(it.sale_item_id as string) ?? '') !== String(it.converted_quantity ?? '')
         })) throw new ApiError('CONFLICT', '寄存权益已变化，请刷新后重新发起退款')
       }
       // 主流水：按整笔金额写一行 status='待审批'，approveRefund 时按拆分（储值卡+原通道）做实际扣减。
@@ -1370,8 +1372,8 @@ export const approveRefund = withPermission(
         const consumedById = new Map(consumedRows.map((c) => [c.sale_item_id as string, c]))
         for (const r of Array.from(lockedRows as unknown as Iterable<Record<string, unknown>>)) {
           // #182：疗程卡也要进来做**余数**复核（与 staff order.js 的 approveRefund 逐行对齐）。
-          // 疗程卡可退次数由 cascadeRefund + recalcPaidSessionsForOrder 的 D3 守护把关，
-          // 但 overpay 余数（received > sale_amount 的多收零头）现在可以被转换单折走，
+          // 寄存疗程卡可退次数也在锁内复核，不能依赖转换耗尽分支的 D3 兜底；
+          // overpay 余数（received > sale_amount 的多收零头）现在可以被转换单折走，
           // 申请时合法的余数可能在审批前已经没了——漏这一段就能「折一次再退一次」。
           const isHome = r.product_type === '家居产品'
           const isCard = r.product_type === '疗程卡'
