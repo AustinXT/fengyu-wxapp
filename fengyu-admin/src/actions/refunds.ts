@@ -824,6 +824,7 @@ export const createRefund = withPermission(
     .where(and(eq(saleItems.saleOrderId, refSaleOrderId), eq(saleItems.itemDirection, '购买'))))
     .map(({ item, rightsReceived, pickedQuantity, convertedAmount, convertedQuantity }) => ({
       ...item,
+      physicalConvertedQuantity: item.convertedQuantity,
       received: rightsReceived,
       pickedQuantity: Number(pickedQuantity ?? 0),
       convertedAmount,
@@ -893,6 +894,9 @@ export const createRefund = withPermission(
     refundDetails = built.refundDetails
     totalRefund = built.totalRefund
   } catch (err: unknown) {
+    if (err instanceof ApiError) {
+      return { success: false, error: { code: err.prefix, message: err.message.slice(err.prefix.length + 2) } }
+    }
     const msg = err instanceof Error ? err.message : String(err)
     if (msg.startsWith('INVALID_PARAMS:')) {
       return { success: false, error: { code: 'INVALID_PARAMS', message: msg.replace(/^INVALID_PARAMS:\s*/, '') } }
@@ -1047,7 +1051,7 @@ export const createRefund = withPermission(
         }
         const lockedItems = await tx.execute(sql`SELECT * FROM sale_items WHERE sale_order_id = ${refSaleOrderId} AND item_direction = '购买' ORDER BY sale_item_id FOR UPDATE`) as unknown as Array<Record<string, unknown>>
         const before = new Map(sourceItems.map((it) => [it.sale_item_id, it]))
-        const physicalConverted = new Map(origRows.map((r) => [r.item.saleItemId, r.item.convertedQuantity]))
+        const physicalConverted = new Map(origRows.map((r) => [r.saleItemId, r.physicalConvertedQuantity]))
         const fields = ['remaining_sessions', 'paid_sessions', 'unit_real_price', 'session_count', 'quantity', 'picked_up_quantity', 'refunded_quantity'] as const
         if (lockedItems.length !== before.size || lockedItems.some((it) => {
           const old = before.get(it.sale_item_id as string)
