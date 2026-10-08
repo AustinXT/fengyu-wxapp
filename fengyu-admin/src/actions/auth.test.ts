@@ -351,7 +351,7 @@ describe('login — 认证 + 锁定（PG 持久化）', () => {
     expect(db.delete).toHaveBeenCalledWith(loginAttempts)
     expect(deleteWhere).toHaveBeenCalled()
     expect(mockCookieStore.set).toHaveBeenCalledWith(
-      'fy-admin-token',
+      'lxcoding-demo-token',
       'mock-jwt-token',
       expect.objectContaining({ httpOnly: true, sameSite: 'lax', path: '/' }),
     )
@@ -402,7 +402,7 @@ describe('logout', () => {
     await logout()
 
     expect(mockCookieStore.set).toHaveBeenCalledWith(
-      'fy-admin-token',
+      'lxcoding-demo-token',
       '',
       expect.objectContaining({ httpOnly: true, sameSite: 'lax', path: '/', maxAge: 0 }),
     )
@@ -455,7 +455,7 @@ describe('changePassword — 密码变更 + JWT 重签', () => {
     expect(hash).toHaveBeenCalledWith('newSecure123', 12)
     expect(db.update).toHaveBeenCalled()
     expect(mockCookieStore.set).toHaveBeenCalledWith(
-      'fy-admin-token', 'mock-jwt-token', expect.anything(),
+      'lxcoding-demo-token', 'mock-jwt-token', expect.anything(),
     )
   })
 })

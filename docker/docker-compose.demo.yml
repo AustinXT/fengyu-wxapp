@@ -1,0 +1,47 @@
+name: lxcoding-demo
+services:
+  demo-postgres:
+    image: postgres:16-bookworm
+    container_name: lxcoding-demo-postgres
+    env_file: postgres.env
+    command: ["postgres", "-c", "timezone=Asia/Shanghai", "-c", "max_connections=40"]
+    ports: ["127.0.0.1:8096:5432"]
+    volumes: ["./data/postgres:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lxcoding_demo -d lxcoding_demo"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    mem_limit: 512m
+    networks: [demo]
+  admin:
+    image: ${DEMO_IMAGE:?请指定演示镜像}
+    container_name: lxcoding-demo-admin
+    env_file: admin.env
+    ports: ["8094:3000"]
+    volumes:
+      - ./data/uploads:/var/lib/lxcoding/uploads
+      - ./data/private-uploads:/var/lib/lxcoding/private-uploads
+      - ./data/runtime:/var/lib/lxcoding/runtime
+    depends_on:
+      demo-postgres: { condition: service_healthy }
+    restart: unless-stopped
+    mem_limit: 768m
+    networks: [demo]
+  export-worker:
+    image: ${DEMO_IMAGE:?请指定演示镜像}
+    container_name: lxcoding-demo-export-worker
+    env_file: admin.env
+    command: ["node", "--conditions=react-server", "export-worker.mjs"]
+    volumes:
+      - ./data/uploads:/var/lib/lxcoding/uploads
+      - ./data/runtime:/var/lib/lxcoding/runtime
+    depends_on:
+      demo-postgres: { condition: service_healthy }
+    restart: unless-stopped
+    mem_limit: 512m
+    networks: [demo]
+networks:
+  demo:
+    internal: true

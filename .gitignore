@@ -95,3 +95,5 @@ notes/backlog/
 fengyu-daily/miniprogram/**/*.js
 fengyu-daily/miniprogram/**/*.js.map
 fengyu-daily/cloudfunctions/dailyApi/utils/test-binding.json
+# 演示环境的本地发布配置包含独立密钥，不进入版本库。
+.tmp/lxcoding-demo-release/

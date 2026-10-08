@@ -92,9 +92,9 @@ export default function LoginPage() {
     <div className="w-full max-w-md">
       {/* Header */}
       <div className="mb-8 text-center">
-        <Image src={logoFull} alt="凤御美业" width={150} height={58} className="mx-auto mb-4" priority />
-        <h1 className="text-2xl font-bold text-[var(--foreground)]">凤御美业管理后台</h1>
-        <div className="mx-auto mt-3 h-0.5 w-16 bg-[var(--primary)]" />
+        <Image src={logoFull} alt="LX CODING" width={240} height={27} className="mx-auto mb-4" priority />
+        <h1 className="text-2xl font-bold text-[var(--foreground)]">LX CODING 美业管理</h1>
+        <p className="mt-3 text-sm text-[var(--muted-foreground)]">演示环境 · 所有业务数据均为虚构</p>
       </div>
 
       {/* Login Card */}

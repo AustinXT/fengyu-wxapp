@@ -6,7 +6,6 @@ import { usePathname } from 'next/navigation'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ChevronDown, ChevronsLeft, ChevronsRight } from 'lucide-react'
 import logoFull from '../../../public/logo.png'
-import logoIcon from '../../../public/logo-icon.png'
 import { cn } from '@/lib/utils'
 import { getMenuItemForPath, getMenuParentForPath, getVisibleMenuItems, isMenuParent, type MenuItem } from '@/lib/menu'
 import { getRoleLabel } from '@/lib/auth'
@@ -110,9 +109,9 @@ export function Sidebar({ collapsed, onToggle, session }: SidebarProps) {
     >
       <div className="flex h-14 items-center border-b border-[var(--border)] px-4">
         {collapsed ? (
-          <Image src={logoIcon} alt="凤御美业" width={30} height={32} className="mx-auto" priority />
+          <span className="mx-auto text-lg font-bold tracking-tight text-[var(--primary)]" aria-label="LX CODING">LX</span>
         ) : (
-          <Image src={logoFull} alt="凤御美业" width={93} height={36} priority />
+          <Image src={logoFull} alt="LX CODING" width={168} height={19} priority />
         )}
       </div>
 

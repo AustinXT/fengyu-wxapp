@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { jwtVerify } from 'jose'
 import { JWT_SECRET } from '@/lib/jwt-secret'
 
-const COOKIE_NAME = 'fy-admin-token'
+const COOKIE_NAME = 'lxcoding-demo-token'
 
 function deleteSessionCookie(response: NextResponse) {
   const domain = process.env.COOKIE_DOMAIN?.trim()

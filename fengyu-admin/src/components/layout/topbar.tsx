@@ -62,6 +62,7 @@ export function Topbar({ collapsed, onToggle, session }: TopbarProps) {
         )}
       </button>
 
+      <span className="ml-3 rounded-full bg-[var(--accent)] px-3 py-1 text-xs text-[var(--primary)]">演示环境 · 虚构数据</span>
       {/* Center: spacer */}
       <div className="flex-1" />
 

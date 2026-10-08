@@ -1,6 +1,8 @@
 import cloudbase from "@cloudbase/node-sdk"
 import type fs from "node:fs"
 import { ApiError } from "@/lib/api-error"
+import { assertExternalAvailable } from '@/lib/demo-runtime'
+import { writeDemoFile, demoFileUrl, deleteDemoFile, readDemoFile } from '@/lib/demo-storage'
 
 // dev/prod 共用当前 CloudBase 存储桶；CDN 基址由部署配置注入。
 export const CDN_BASE =
@@ -29,6 +31,7 @@ function cloudFileId(cloudPath: string): string {
 }
 
 function getApp() {
+  assertExternalAvailable()
   if (!app) {
     app = cloudbase.init({
       env: process.env.CLOUDBASE_ENV_ID!,
@@ -40,6 +43,7 @@ function getApp() {
 }
 
 function getStaffApp() {
+  assertExternalAvailable()
   if (!staffApp) {
     const env = process.env.STAFF_ENV_ID?.trim()
     if (!env) throw new ApiError("INVALID_STATE", "Staff CloudBase 环境未配置")
@@ -61,6 +65,7 @@ export async function uploadFile(
   fileContent: Buffer | fs.ReadStream,
   cloudPath: string
 ): Promise<string> {
+  if (process.env.DEMO_MODE === '1') return writeDemoFile(fileContent, cloudPath)
   const app = getApp()
   const result = await app.uploadFile({
     cloudPath,
@@ -85,6 +90,7 @@ export async function uploadFile(
 
 /** 获取 CloudBase Storage 文件的短期下载地址。调用方应先完成权限校验。 */
 export async function getTempFileUrl(cloudPath: string): Promise<string> {
+  if (process.env.DEMO_MODE === '1') return demoFileUrl(cloudPath, true)
   const app = getApp()
   const result = await app.getTempFileURL({
     fileList: [cloudFileId(cloudPath)],
@@ -104,6 +110,16 @@ export async function reuploadToFixedPath(
   sourceUrl: string,
   targetPath: string
 ): Promise<void> {
+  if (process.env.DEMO_MODE === '1') {
+    const url = new URL(sourceUrl, process.env.DEMO_PUBLIC_ORIGIN)
+    const origin = new URL(process.env.DEMO_PUBLIC_ORIGIN || 'http://101.34.242.103:8094')
+    if (url.origin !== origin.origin || !url.pathname.startsWith('/api/demo-files/')) {
+      throw new ApiError('INVALID_PARAMS', '演示环境只支持本地上传的图片')
+    }
+    const key = decodeURIComponent(url.pathname.slice('/api/demo-files/'.length))
+    if (key !== targetPath) await writeDemoFile(await readDemoFile(key), targetPath)
+    return
+  }
   const cleanUrl = sourceUrl.split("?")[0]
   // 整 URL 比对当前环境桶：仅当源已是「本环境桶 + 目标路径」才跳过。
   // 只比路径后缀会漏判跨桶（如 dev→prod）场景，导致 prod 桶永远拿不到文件。
@@ -120,6 +136,10 @@ export async function reuploadToFixedPath(
 export async function deleteByCloudPaths(
   cloudPaths: string[]
 ): Promise<void> {
+  if (process.env.DEMO_MODE === '1') {
+    for (const key of cloudPaths) await deleteDemoFile(key)
+    return
+  }
   if (cloudPaths.length === 0) return
   const app = getApp()
   const fileList = cloudPaths.map(cloudFileId)

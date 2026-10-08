@@ -76,7 +76,7 @@ function post(
     method: 'POST',
     body: fd,
   })
-  req.cookies.set('fy-admin-token', 'valid')
+  req.cookies.set('lxcoding-demo-token', 'valid')
   return POST(req)
 }
 
@@ -112,7 +112,7 @@ describe('POST /api/upload 分辨率闸门', () => {
       method: 'POST',
       body: fd,
     })
-    req.cookies.set('fy-admin-token', 'valid')
+    req.cookies.set('lxcoding-demo-token', 'valid')
 
     expect((await POST(req)).status).toBe(200)
     const cloudPath = mocks.uploadFile.mock.calls[0][1] as string

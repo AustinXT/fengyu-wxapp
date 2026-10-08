@@ -1,6 +1,7 @@
 import { writeSync } from 'node:fs'
 import { drizzle } from 'drizzle-orm/postgres-js'
 import postgres from 'postgres'
+import { assertDemoRuntime } from '@/lib/demo-runtime'
 
 const globalForDb = globalThis as unknown as {
   pgClient: ReturnType<typeof postgres> | undefined
@@ -51,5 +52,6 @@ export const db = drizzle(client)
 
 // postgres.js 懒建连：运行时启动探测先触发 ParameterStatus，构建阶段不调用。
 export async function initializeDatabase(): Promise<void> {
+  assertDemoRuntime()
   await client`SELECT 1`
 }

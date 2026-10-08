@@ -3,9 +3,9 @@
 
 @theme inline {
   /* Brand */
-  --color-brand: oklch(0.52 0.17 25);       /* #C0322A */
-  --color-brand-hover: oklch(0.46 0.17 25);  /* #A82B24 */
-  --color-brand-light: oklch(0.96 0.03 25);  /* #FFF0EE */
+  --color-brand: oklch(0.48 0.10 295);       /* #5D5294 */
+  --color-brand-hover: oklch(0.42 0.10 295);  /* #A82B24 */
+  --color-brand-light: oklch(0.95 0.02 295);  /* #F1EEFA */
   --color-brand-warm: oklch(0.95 0.02 70);   /* #F5F2EE */
 
   /* Status */
@@ -38,19 +38,19 @@
   --card-foreground: #1A1A1A;
   --popover: #FFFFFF;
   --popover-foreground: #1A1A1A;
-  --primary: #C0322A;
+  --primary: #5D5294;
   --primary-foreground: #FFFFFF;
   --secondary: #F5F2EE;
   --secondary-foreground: #1A1A1A;
   --muted: #F5F5F5;
   --muted-foreground: #666666;
-  --accent: #FFF0EE;
-  --accent-foreground: #C0322A;
+  --accent: #F1EEFA;
+  --accent-foreground: #5D5294;
   --destructive: #D94040;
   --destructive-foreground: #FFFFFF;
   --border: #E8E8E8;
   --input: #E8E8E8;
-  --ring: #C0322A;
+  --ring: #5D5294;
   --radius: 0.5rem;
 }
 

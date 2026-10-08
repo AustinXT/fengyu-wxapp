@@ -18,7 +18,7 @@ import { logOperation } from '@/lib/operation-log'
 import type { AuthSession, RoleType } from '@/lib/types'
 import { nowTs } from '@/lib/db-time'
 
-const COOKIE_NAME = 'fy-admin-token'
+const COOKIE_NAME = 'lxcoding-demo-token'
 const JWT_EXPIRES = '24h'
 const COOKIE_MAX_AGE = 24 * 60 * 60 // 24h
 
