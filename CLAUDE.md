@@ -90,6 +90,13 @@ bun fengyu-staff/tests/e2e-miniprogram/run-all.mjs                   # staff L3 
 
 ## 自主工作流
 
+### Codex 独立评审
+
+- Codex 开发时，独立双谱系评审使用 **GLM / OpenCode + DeepSeek / dsh**。
+- **禁止通过 Claude Code CLI 代理调用 DeepSeek 或其它模型**，也不得作为评审故障的回退路径。
+- 项目调用入口为 `.agents/skills/issue-dev/scripts/dual_review.py`；两路须审同一最终 HEAD，
+  没有未处理的范围内 P0/P1/P2 才能放行。dsh 不可用时保留 draft，报告缺口。
+
 ### 编码后自检（每次修改代码后必做）
 
 1. **admin 代码**：修改 `fengyu-admin/src/` 后，立即运行 `cd fengyu-admin && npx tsc --noEmit` 检查类型错误，有错误就在同一轮修复

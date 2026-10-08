@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Review a committed snapshot with GLM/OpenCode and DeepSeek/Claude Code."""
+"""Review a committed snapshot with GLM/OpenCode and DeepSeek/dsh."""
 import argparse
 import concurrent.futures
 import hashlib
@@ -59,32 +59,60 @@ def validate_report(report):
 
 
 def parse_report(raw, lineage):
-    events = [json.loads(line) for line in raw.splitlines() if line.strip()]
     if lineage == "glm":
+        events = [json.loads(line) for line in raw.splitlines() if line.strip()]
         if any(e.get("type") == "error" for e in events):
             raise ValueError("OpenCode 返回错误事件")
         result = "".join(e.get("part", {}).get("text", "") for e in events if e.get("type") == "text")
         return validate_report(json.loads(result))
-    if len(events) != 1 or events[0].get("is_error") or events[0].get("subtype") != "success":
-        raise ValueError("Claude Code 未成功完成")
-    wrapper = events[0]
-    return validate_report(wrapper.get("structured_output") or json.loads(wrapper.get("result", "")))
+    # dsh headless prints the final assistant text, not a Claude CLI envelope.
+    return validate_report(json.loads(raw))
 
 
-def deepseek_token(env):
-    if env.get("DEEPSEEK_API_KEY"):
-        return env["DEEPSEEK_API_KEY"]
-    if env.get("ANTHROPIC_BASE_URL", "").rstrip("/") == "https://api.deepseek.com/anthropic":
-        if env.get("ANTHROPIC_AUTH_TOKEN") or env.get("ANTHROPIC_API_KEY"):
-            return env.get("ANTHROPIC_AUTH_TOKEN") or env["ANTHROPIC_API_KEY"]
-    settings = Path.home() / ".claude/settings.json"
-    if settings.exists():
-        conf = json.loads(settings.read_text()).get("env", {})
-        if conf.get("ANTHROPIC_BASE_URL", "").rstrip("/") == "https://api.deepseek.com/anthropic":
-            token = conf.get("ANTHROPIC_AUTH_TOKEN") or conf.get("ANTHROPIC_API_KEY")
-            if token:
-                return token
-    raise ValueError("未配置 DeepSeek 密钥；设置 DEEPSEEK_API_KEY（不要粘贴到对话）")
+def prepare_dsh(args, env):
+    # Private per-round profile: no user patches, settings, tool plugins, MCP,
+    # or repository instructions. Credentials stay in dsh's own managed store.
+    credential_home = Path(env.get("DSH_HOME") or Path.home() / ".dsh").expanduser().resolve()
+    home = args.out / "dsh-home"
+    profile = home / "profiles" / "headless"
+    profile.mkdir(parents=True, mode=0o700, exist_ok=False)
+    workspace = args.out / "dsh-workspace"
+    workspace.mkdir(mode=0o700)
+    model = args.deepseek_model.removesuffix("[1m]")
+    rows = []
+    def plugin(row_id, name, config=None):
+        row = {"id": row_id, "name": "@deepseek-ai/" + name}
+        if config is not None:
+            row["config"] = config
+        rows.append(row)
+    plugin("timer", "cordis-plugin-timer")
+    plugin("llm", "dsh-llm")
+    plugin("session", "dsh-session")
+    plugin("agent", "dsh-agent")
+    plugin("agent-default-model", "dsh-agent-default-model", {"provider": "deepseek-official", "model": model})
+    plugin("system-prompt", "dsh-system-prompt", {"persona": "仅评审输入证据，输出指定 JSON；没有可用工具。"})
+    # Empty registry required by agent-loop; no tool provider is mounted.
+    plugin("tools", "dsh-tools", {"mode": "native"})
+    plugin("agent-loop", "dsh-agent-loop", {"agents": []})
+    plugin("credentials", "dsh-credentials-local", {"path": str(credential_home / ".credentials.yaml"), "watch": False})
+    plugin("llm-deepseek", "dsh-llm-deepseek", {"baseURL": "https://api.deepseek.com", "apiKeyEnv": "DEEPSEEK_API_KEY"})
+    plugin("session-persistence-jsonl", "dsh-session-persistence-jsonl", {"root": str(home / "sessions")})
+    plugin("headless-startup", "dsh-headless/startup")
+    plugin("headless-runner", "dsh-headless", {"task": "placeholder"})
+    (profile / "package.json").write_text(json.dumps({"name": "dsh-review-headless", "private": True,
+                                                     "dsh": {"profile": {"bundles": []}}}) + "\n")
+    (profile / "cordis.yml").write_text("[]\n")
+    # dsh has no stdin CLI flag. A trusted local patch supplies its task from fd 0;
+    # packet text never enters argv, shell interpolation, or executable config.
+    (profile / "cordis.patch.yml").write_text(
+        "- insert: " + json.dumps(rows, ensure_ascii=False) + "\n"
+        "- id: headless-runner\n  config:\n"
+        "    task: !!js \"process.getBuiltinModule('fs').readFileSync(0, 'utf8')\"\n")
+    for key in list(env):
+        if key.startswith(("ANTHROPIC_", "CLAUDE_CODE_", "DSH_")) or key in {"CLAUDECODE", "NODE_OPTIONS", "NODE_PATH"}:
+            del env[key]
+    env.update({"DSH_HOME": str(home), "DSH_TELEMETRY_DISABLED": "1"})
+    return ["dsh", "--profile", "headless", "review"]
 
 
 def command(lineage, args):
@@ -109,26 +137,19 @@ def command(lineage, args):
                     "OPENCODE_DISABLE_CLAUDE_CODE": "true", "OPENCODE_DISABLE_AUTOUPDATE": "true"})
         cmd = ["opencode", "run", "--model", model, "--format", "json"]
     else:
-        token = deepseek_token(env)
-        for key in list(env):
-            if key.startswith("ANTHROPIC_") or key.startswith("CLAUDE_CODE_") or key == "CLAUDECODE":
-                del env[key]
-        env.update({"ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
-                    "ANTHROPIC_AUTH_TOKEN": token, "ANTHROPIC_API_KEY": "",
-                    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"})
-        cmd = ["claude", "--bare", "-p", "--model", args.deepseek_model,
-               "--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
-               "--disable-slash-commands", "--no-session-persistence", "--output-format", "json",
-               "--json-schema", json.dumps(SCHEMA)]
+        cmd = prepare_dsh(args, env)
     return cmd, env
 
 
 def run_one(lineage, args, packet):
-    result = {"lineage": lineage, "model": getattr(args, lineage + "_model"), "status": "failed"}
+    requested_model = getattr(args, lineage + "_model")
+    result = {"lineage": lineage, "harness": "opencode" if lineage == "glm" else "dsh",
+              "model": requested_model.removesuffix("[1m]"), "requested_model": requested_model, "status": "failed"}
     try:
         cmd, env = command(lineage, args)
         with (args.out / (lineage + ".stdout.jsonl")).open("w") as stdout, (args.out / (lineage + ".stderr.log")).open("w") as stderr:
-            proc = subprocess.Popen(cmd, cwd=args.cwd, env=env, stdin=subprocess.PIPE,
+            cwd = args.out / "dsh-workspace" if lineage == "deepseek" else args.cwd
+            proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=subprocess.PIPE,
                                     stdout=stdout, stderr=stderr, text=True, start_new_session=True)
             try:
                 proc.communicate(packet, timeout=args.timeout)
@@ -160,7 +181,7 @@ def main():
     parser.add_argument("--timeout", type=int, default=900)
     parser.add_argument("--probe", action="store_true")
     parser.add_argument("--glm-model", default=os.environ.get("REVIEW_GLM_MODEL", "zhipuai-coding-plan/glm-5.3[1m]"))
-    parser.add_argument("--deepseek-model", default=os.environ.get("REVIEW_DEEPSEEK_MODEL", "deepseek-flash[1m]"))
+    parser.add_argument("--deepseek-model", default=os.environ.get("REVIEW_DEEPSEEK_MODEL", "deepseek-flash"))
     args = parser.parse_args()
     args.cwd, args.out = args.cwd.resolve(), args.out.resolve()
     if not args.glm_model.split("/")[-1].lower().startswith("glm-") or not args.deepseek_model.startswith("deepseek-"):
