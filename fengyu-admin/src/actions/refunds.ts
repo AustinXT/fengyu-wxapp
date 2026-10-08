@@ -1563,6 +1563,9 @@ export const approveRefund = withPermission(
     if (msg.includes('OVERPAY_REFUNDABLE_CHANGED')) {
       return { success: false, error: { code: 'CONFLICT', message: '可退余数已变化（可能已被转换折抵），请刷新后重新发起退款' } }
     }
+    if (msg.includes('CARD_REFUNDABLE_CHANGED')) {
+      return { success: false, error: { code: 'CONFLICT', message: '寄存卡可退次数已变化（可能已被转换折抵或消费），请刷新后重新发起退款' } }
+    }
     if (msg.includes('HOME_PRODUCT_REFUNDABLE_CHANGED')) {
       return { success: false, error: { code: 'CONFLICT', message: '家居产品可退数量已变化（可能已被转换折抵或提货），请刷新后重新发起退款' } }
     }

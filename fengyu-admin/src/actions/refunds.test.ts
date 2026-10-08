@@ -60,12 +60,14 @@ vi.mock('@/lib/permissions', () => ({
   scopeCondition: vi.fn(() => undefined),
   isInScope: vi.fn(() => true),
 }))
+vi.mock('@/lib/scope-assert', () => ({ assertOrderInScope: vi.fn(async () => {}) }))
 vi.mock('@/lib/operation-log', () => ({ logOperation: vi.fn() }))
 vi.mock('@/lib/member-threshold', () => ({ getMemberThreshold: vi.fn(async () => 1990) }))
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }))
 vi.mock('@/lib/system-config', () => ({ getPointsToYuanRate: vi.fn(async () => 0.01) }))
 
-import { estimateRefundOverdraft, createRefund } from './refunds'
+import { estimateRefundOverdraft, createRefund, approveRefund } from './refunds'
+import { ApiError } from '@/lib/api-error'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 
@@ -338,5 +340,29 @@ describe('createRefund — 寄存申请的真实取数展开与锁内复核', ()
       expect(inserted[0].refSaleItemId).toBe('B')
       expect(inserted[0].amount).toBe('-480.00')
     }
+  })
+})
+
+
+describe('approveRefund — 寄存次数冲突返回契约', () => {
+  it('CARD_REFUNDABLE_CHANGED 回传 CONFLICT 和重新发起提示', async () => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    const q: any = {}
+    for (const name of ['from', 'leftJoin', 'where', 'limit']) q[name] = () => q
+    q.then = (resolve: any, reject: any) => Promise.resolve([{
+      payment: { id: 1001, saleOrderId: 'deposit', changeType: '退款', status: '待审批', amount: '-80' },
+      orderStoreId: 'store-1', orderSaleOrderType: '寄存单', orderReceived: '960', orderRefundedAmount: '0',
+      orderTotalAmount: '0', orderPrepaidCardAmount: '0',
+    }]).then(resolve, reject)
+    ;(db.select as any).mockReturnValue(q)
+    ;(db.execute as any).mockResolvedValue([{ net: '960' }])
+    ;(db.transaction as any).mockRejectedValue(new ApiError('CONFLICT', 'CARD_REFUNDABLE_CHANGED: 寄存卡可退次数已变化，请刷新后重新发起退款'))
+    const result = await approveRefund(1001)
+    expect(result.success).toBe(false)
+    if (result.success) throw new Error('预期次数冲突')
+    expect(result.error.code).toBe('CONFLICT')
+    expect(result.error.message).toContain('请刷新后重新发起退款')
+    expect(result.error.message).not.toContain('稍后重试')
   })
 })
