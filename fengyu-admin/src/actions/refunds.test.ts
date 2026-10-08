@@ -46,7 +46,7 @@ vi.mock('drizzle-orm', () => ({
   desc: vi.fn(),
   asc: vi.fn(),
   inArray: vi.fn(),
-  sql: Object.assign(vi.fn(() => ({ as: vi.fn().mockReturnValue({ type: 'sql-as' }) })), { raw: vi.fn(), join: vi.fn(() => ({})) }),
+  sql: Object.assign(vi.fn((strings: TemplateStringsArray) => ({ __sqlText: strings.join('?'), as: vi.fn().mockReturnValue({ type: 'sql-as' }) })), { raw: vi.fn(), join: vi.fn(() => ({})) }),
 }))
 
 vi.mock('drizzle-orm/pg-core', () => ({
@@ -60,12 +60,14 @@ vi.mock('@/lib/permissions', () => ({
   scopeCondition: vi.fn(() => undefined),
   isInScope: vi.fn(() => true),
 }))
+vi.mock('@/lib/scope-assert', () => ({ assertOrderInScope: vi.fn(async () => {}) }))
 vi.mock('@/lib/operation-log', () => ({ logOperation: vi.fn() }))
 vi.mock('@/lib/member-threshold', () => ({ getMemberThreshold: vi.fn(async () => 1990) }))
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }))
 vi.mock('@/lib/system-config', () => ({ getPointsToYuanRate: vi.fn(async () => 0.01) }))
 
-import { estimateRefundOverdraft } from './refunds'
+import { estimateRefundOverdraft, createRefund, approveRefund } from './refunds'
+import { ApiError } from '@/lib/api-error'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 
@@ -276,5 +278,91 @@ describe('estimateRefundOverdraft', () => {
     expect(result.currentBenefitsValue).toBe(0)
     expect(result.benefitValueDiff).toBe(0)
     expect(result.suggestedOverdraftDeduction).toBe(0)
+  })
+})
+
+
+describe('createRefund — 寄存申请的真实取数展开与锁内复核', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+  it.each([false, true])('同单A已转换，B快照变化=%s', async (changed) => {
+    const item = (id: string, remaining: number, paid: number) => ({
+      saleItemId: id, productName: id, productType: '疗程卡', sessionCount: 6,
+      remainingSessions: remaining, paidSessions: paid, unitPrice: '80', unitRealPrice: '80',
+      quantity: 1, saleAmount: '480', received: id === 'A' ? '320' : '480',
+      pickedUpQuantity: 0, refundedQuantity: 0, convertedQuantity: 0, serviceFee: '0',
+    })
+    const a = item('A', 2, 4), b = item('B', 6, 6)
+    const selects = [
+      [{ saleOrderId: 'deposit', saleOrderType: '寄存单', status: '已支付', received: '960', refundedAmount: '160', totalAmount: '0', paymentMethod: '线下' }],
+      [],
+      [
+        { item: a, rightsReceived: '320', pickedQuantity: 0, convertedAmount: '240', convertedQuantity: 3 },
+        { item: b, rightsReceived: '480', pickedQuantity: 0, convertedAmount: '0', convertedQuantity: 0 },
+      ],
+    ]
+    let index = 0
+    ;(db.select as any).mockImplementation(() => {
+      const rows = selects[index++] ?? []
+      const q: any = {}
+      for (const name of ['from', 'where', 'limit', 'leftJoin', 'innerJoin', 'orderBy']) q[name] = () => q
+      q.then = (resolve: any, reject: any) => Promise.resolve(rows).then(resolve, reject)
+      return q
+    })
+    ;(db.execute as any).mockImplementation(async (q: any) => q.__sqlText.includes('AS net') ? [{ net: '800' }] : [])
+    const inserted: any[] = []
+    ;(db.transaction as any).mockImplementation(async (cb: any) => cb({
+      execute: async (q: any) => {
+        if (q.__sqlText.includes('SELECT status')) return [{ status: '已支付' }]
+        return [a, b].map((it) => ({
+          sale_item_id: it.saleItemId, remaining_sessions: it.saleItemId === 'B' && changed ? 5 : it.remainingSessions,
+          paid_sessions: it.paidSessions, unit_real_price: it.unitRealPrice, session_count: 6,
+          quantity: 1, picked_up_quantity: 0, refunded_quantity: 0, converted_quantity: 0,
+        }))
+      },
+      insert: () => ({ values: (v: any) => {
+        inserted.push(v)
+        return { returning: async () => [{ id: 1001 }] }
+      } }),
+    }))
+    const result = await createRefund({ refSaleOrderId: 'deposit', refundReason: '退B', items: [{ saleItemId: 'B', refundQuantity: 6 }] })
+    if (changed) {
+      expect(result.success).toBe(false)
+      if (result.success) throw new Error('预期锁内冲突')
+      expect(result.error.code).toBe('CONFLICT')
+      expect(result.error.message).toContain('寄存权益已变化')
+      expect(inserted).toEqual([])
+    } else {
+      expect(result.success).toBe(true)
+      expect(inserted).toHaveLength(1)
+      expect(inserted[0].refSaleItemId).toBe('B')
+      expect(inserted[0].amount).toBe('-480.00')
+    }
+  })
+})
+
+
+describe('approveRefund — 寄存次数冲突返回契约', () => {
+  it('CARD_REFUNDABLE_CHANGED 回传 CONFLICT 和重新发起提示', async () => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    const q: any = {}
+    for (const name of ['from', 'leftJoin', 'where', 'limit']) q[name] = () => q
+    q.then = (resolve: any, reject: any) => Promise.resolve([{
+      payment: { id: 1001, saleOrderId: 'deposit', changeType: '退款', status: '待审批', amount: '-80' },
+      orderStoreId: 'store-1', orderSaleOrderType: '寄存单', orderReceived: '960', orderRefundedAmount: '0',
+      orderTotalAmount: '0', orderPrepaidCardAmount: '0',
+    }]).then(resolve, reject)
+    ;(db.select as any).mockReturnValue(q)
+    ;(db.execute as any).mockResolvedValue([{ net: '960' }])
+    ;(db.transaction as any).mockRejectedValue(new ApiError('CONFLICT', 'CARD_REFUNDABLE_CHANGED: 寄存卡可退次数已变化，请刷新后重新发起退款'))
+    const result = await approveRefund(1001)
+    expect(result.success).toBe(false)
+    if (result.success) throw new Error('预期次数冲突')
+    expect(result.error.code).toBe('CONFLICT')
+    expect(result.error.message).toContain('请刷新后重新发起退款')
+    expect(result.error.message).not.toContain('稍后重试')
   })
 })

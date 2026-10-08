@@ -909,6 +909,9 @@ export const getCustomerHeldCards = withPermission(
   return rows.map((r) => {
     const isHomeProduct = r.productType === '家居产品'
     const remSess = r.remainingSessions ?? 0
+    const convertibleSessions = r.saleOrderType === '寄存单' && r.paidSessions != null
+      ? Math.max(0, Math.min(remSess, Number(r.paidSessions) - Math.max(0, Number(r.sessionCount ?? 0) - remSess)))
+      : remSess
     const home = homeDeductible({
       saleOrderType: r.saleOrderType,
       quantity: r.quantity ?? 0,
@@ -929,14 +932,14 @@ export const getCustomerHeldCards = withPermission(
       toCents(r.received) - cardDeliveredCents - toCents(r.homeConvertedAmount),
     )
     const cardAmount = isDepositOrGift
-      ? (toCents(r.unitRealPrice) * remSess) / 100
+      ? (toCents(r.unitRealPrice) * convertibleSessions) / 100
       : cardRemainingPaidCents / 100
     // #154：家居「未结算件数」= quantity − (已提货 + 已退款 + 已转换)。只减 picked_up 会把
     // 已退款/已转换过的件数当成还能折走，折抵会撞 chk_sale_item_settled_le_quantity 或超卖。
     const remainingQty = isHomeProduct
       ? Math.max(0, (r.quantity ?? 0)
           - ((r.pickedUpQuantity ?? 0) + (r.refundedQuantity ?? 0) + (r.convertedQuantity ?? 0)))
-      : remSess
+      : convertibleSessions
     return {
       saleItemId: r.saleItemId,
       saleItemGroupId: r.saleItemGroupId ?? null,
