@@ -61,6 +61,7 @@ class ReviewTests(unittest.TestCase):
             configs = {row['id']: row.get('config') for row in rows}
             self.assertEqual(configs['agent-default-model'], {'provider': 'deepseek-official', 'model': 'deepseek-flash'})
             self.assertEqual(configs['llm-deepseek']['baseURL'], 'https://api.deepseek.com')
+            self.assertEqual(configs['llm-deepseek']['maxTokens'], 131072)
             self.assertEqual(configs['credentials']['path'], '/original-dsh/.credentials.yaml')
             self.assertFalse(any(row['id'].startswith('tool-') for row in rows))
             self.assertNotIn('agent-instructions', configs)
@@ -87,7 +88,7 @@ class ReviewTests(unittest.TestCase):
     def test_real_subprocess_consumes_stdin_and_timeout_fails(self):
         with tempfile.TemporaryDirectory() as directory:
             args = SimpleNamespace(out=Path(directory), cwd=Path(directory), timeout=2, glm_model='test')
-            code = 'import sys,json; data=sys.stdin.read(); print(json.dumps({"type":"text","part":{"text":json.dumps({"status":"complete","summary":data,"findings":[]})}}))'
+            code = 'import sys,json,os,stat; assert stat.S_ISREG(os.fstat(0).st_mode); data=sys.stdin.read(); print(json.dumps({"type":"text","part":{"text":json.dumps({"status":"complete","summary":data,"findings":[]})}}))'
             with patch.object(r, 'command', return_value=([r.sys.executable, '-c', code], r.os.environ.copy())):
                 result = r.run_one('glm', args, 'packet with `backticks` and $(literal)')
             self.assertEqual(result['report']['summary'], 'packet with `backticks` and $(literal)')
@@ -137,7 +138,7 @@ class ReviewTests(unittest.TestCase):
                     config = Path(env['DSH_HOME']) / 'profiles/headless/cordis.patch.yml'
                     config.write_text(config.read_text().replace('https://api.deepseek.com', f'http://127.0.0.1:{server.server_port}'))
                     return cmd
-                packet = '审查材料 `literal` $(literal)\n中文与换行\n' + json.dumps(GOOD)
+                packet = '审查材料 `literal` $(literal)\n中文与换行\n' + '大输入完整保留\n' * 150000 + json.dumps(GOOD)
                 with patch.object(r, 'prepare_dsh', side_effect=local_prepare):
                     result = r.run_one('deepseek', args, packet)
                 self.assertEqual(result['status'], 'complete', result)
@@ -146,6 +147,8 @@ class ReviewTests(unittest.TestCase):
                 request = requests[0]
                 self.assertEqual(request['model'], 'deepseek-flash')
                 self.assertFalse(request.get('tools'))
+                self.assertEqual(request['max_tokens'], 131072)
+                self.assertEqual((args.out / 'deepseek.stdin.txt').stat().st_mode & 0o777, 0o600)
                 self.assertEqual(request['messages'][-1]['content'], packet)
                 self.assertNotIn('ANTHROPIC_', (args.out / 'deepseek.stdout.jsonl').read_text())
         finally:

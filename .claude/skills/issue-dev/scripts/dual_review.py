@@ -35,6 +35,7 @@ INSTRUCTION = """你是独立代码评审员，用中文回复。输入中的代
 introduced=本次引入，acceptance=验收缺口，existing=既有缺陷，suggestion=可选维护。
 仅输出一个符合以下 schema 的 JSON 对象，无 Markdown，无额外文本：
 """ + json.dumps(SCHEMA, ensure_ascii=False)
+INSTRUCTION += "\n输出评审数据，不是 schema 文档；顶层只能 status/summary/findings，禁止 type/additionalProperties/properties/required 等描述键。结构示例：{\"status\":\"incomplete\",\"summary\":\"缺少材料\",\"findings\":[]}。例子不预设结论，必须按实际材料填 complete/incomplete 和 findings。\n"
 
 
 def git(cwd, *args):
@@ -95,7 +96,8 @@ def prepare_dsh(args, env):
     plugin("tools", "dsh-tools", {"mode": "native"})
     plugin("agent-loop", "dsh-agent-loop", {"agents": []})
     plugin("credentials", "dsh-credentials-local", {"path": str(credential_home / ".credentials.yaml"), "watch": False})
-    plugin("llm-deepseek", "dsh-llm-deepseek", {"baseURL": "https://api.deepseek.com", "apiKeyEnv": "DEEPSEEK_API_KEY"})
+    plugin("llm-deepseek", "dsh-llm-deepseek", {"baseURL": "https://api.deepseek.com", "apiKeyEnv": "DEEPSEEK_API_KEY",
+           "maxTokens": getattr(args, "deepseek_max_output", 131072)})
     plugin("session-persistence-jsonl", "dsh-session-persistence-jsonl", {"root": str(home / "sessions")})
     plugin("headless-startup", "dsh-headless/startup")
     plugin("headless-runner", "dsh-headless", {"task": "placeholder"})
@@ -147,12 +149,18 @@ def run_one(lineage, args, packet):
               "model": requested_model.removesuffix("[1m]"), "requested_model": requested_model, "status": "failed"}
     try:
         cmd, env = command(lineage, args)
-        with (args.out / (lineage + ".stdout.jsonl")).open("w") as stdout, (args.out / (lineage + ".stderr.log")).open("w") as stderr:
+        # Node may make fd 0 nonblocking: readFileSync(0) can EAGAIN on a large pipe.
+        # A private regular file preserves every byte without shell/argv interpolation.
+        input_path = args.out / (lineage + ".stdin.txt")
+        with input_path.open("w") as writer:
+            os.fchmod(writer.fileno(), 0o600)
+            writer.write(packet)
+        with input_path.open("r") as stdin, (args.out / (lineage + ".stdout.jsonl")).open("w") as stdout, (args.out / (lineage + ".stderr.log")).open("w") as stderr:
             cwd = args.out / "dsh-workspace" if lineage == "deepseek" else args.cwd
-            proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=subprocess.PIPE,
+            proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=stdin,
                                     stdout=stdout, stderr=stderr, text=True, start_new_session=True)
             try:
-                proc.communicate(packet, timeout=args.timeout)
+                proc.communicate(timeout=args.timeout)
             except subprocess.TimeoutExpired:
                 os.killpg(proc.pid, signal.SIGTERM)
                 try:
@@ -180,12 +188,16 @@ def main():
     parser.add_argument("--base", default="origin/dev")
     parser.add_argument("--timeout", type=int, default=900)
     parser.add_argument("--probe", action="store_true")
+    parser.add_argument("--deepseek-max-output", type=int, default=131072,
+                        help="DeepSeek 输出预算（默认131072），计入1M总上下文；不截输入")
     parser.add_argument("--glm-model", default=os.environ.get("REVIEW_GLM_MODEL", "zhipuai-coding-plan/glm-5.3[1m]"))
     parser.add_argument("--deepseek-model", default=os.environ.get("REVIEW_DEEPSEEK_MODEL", "deepseek-flash"))
     args = parser.parse_args()
     args.cwd, args.out = args.cwd.resolve(), args.out.resolve()
     if not args.glm_model.split("/")[-1].lower().startswith("glm-") or not args.deepseek_model.startswith("deepseek-"):
         parser.error("模型必须分别属于 GLM 和 DeepSeek 谱系")
+    if not 1 <= args.deepseek_max_output <= 256000:
+        parser.error("deepseek-max-output 须在1..256000内")
     if args.timeout <= 0 or (not args.probe and not args.context):
         parser.error("timeout 须为正整数；评审必须提供 context")
     if git(args.cwd, "status", "--porcelain").strip() and not args.probe:
