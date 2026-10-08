@@ -39,3 +39,12 @@ test('门店按经营月快照选择区域周期，并在无区域周期时回�
   const fallback = await resolve(async () => [global], { date: '2026-07-06' }, { storeId: 's2' });
   assert.equal(fallback.period.id, 'global');
 });
+
+test('可变周数：一周、五周及31周，拒绝空周和超过31周', () => {
+  const p = { start: '2028-01-01', end: '2028-01-31', weeks: [{ id: 'single', start: '2028-01-01', end: '2028-01-31' }] };
+  assert.equal(weekForDate(p, '2028-01-31').id, 'single');
+  p.weeks = Array.from({ length: 31 }, (_, i) => ({ id: 'w' + i, start: `2028-01-${String(i + 1).padStart(2, '0')}`, end: `2028-01-${String(i + 1).padStart(2, '0')}` }));
+  assert.equal(weekForDate(p, '2028-01-31').id, 'w30');
+  assert.throws(() => validatePeriod({ ...p, weeks: [] }));
+  assert.throws(() => validatePeriod({ ...p, weeks: [...p.weeks, p.weeks[0]] }));
+});

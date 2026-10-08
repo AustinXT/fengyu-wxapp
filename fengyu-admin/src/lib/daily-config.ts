@@ -6,14 +6,14 @@ const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '请输入有效日期').re
 export const dailyPeriodInput = z.object({
   id: z.string().min(1).max(30), name: z.string().trim().min(1).max(60),
   start: date, end: date, version: z.number().int().nonnegative(),
-  weeks: z.array(z.object({ id: z.string().min(1).max(30), name: z.string().trim().min(1).max(30), start: date, end: date })).length(4),
+  weeks: z.array(z.object({ id: z.string().min(1).max(30), name: z.string().trim().min(1).max(30), start: date, end: date })).min(1).max(31),
 }).superRefine((p, ctx) => {
   let expected = Date.parse(p.start + 'T12:00:00Z')
   const end = Date.parse(p.end + 'T12:00:00Z'), ids = new Set<string>()
   for (const w of p.weeks) {
     const a = Date.parse(w.start + 'T12:00:00Z'), b = Date.parse(w.end + 'T12:00:00Z')
     if (ids.has(w.id) || a !== expected || a > b || b > end) {
-      ctx.addIssue({ code: 'custom', message: '四个经营周须连续、无重叠地覆盖经营月，且编号唯一' }); return
+      ctx.addIssue({ code: 'custom', message: '经营周须连续、无重叠地覆盖经营月，且编号唯一' }); return
     }
     ids.add(w.id); expected = b + 86400000
   }
@@ -35,7 +35,7 @@ const point = z.object({ monthOffset: z.union([z.literal(-1), z.literal(0), z.li
 export const dailyCyclePattern = z.object({
   start: point,
   end: point,
-  weeks: z.array(z.object({ id: z.string().min(1).max(30), name: z.string().trim().min(1).max(30), start: point, end: point })).length(4),
+  weeks: z.array(z.object({ id: z.string().min(1).max(30), name: z.string().trim().min(1).max(30), start: point, end: point })).min(1).max(31),
 })
 export const dailyPeriodTemplateInput = z.object({
   id: z.string().min(1).max(50), regionId: z.string().min(1).max(100).nullable(),

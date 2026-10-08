@@ -3,13 +3,13 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const { participantObjects } = require('../utils/operating-objects');
-const period = { id: 'p1', start: '2026-10-01', end: '2026-10-28', weeks: [
-  { id: 'w1', start: '2026-10-01', end: '2026-10-07' },
-] };
+const period = { id: 'p1', start: '2026-10-01', end: '2026-10-28', weeks: [0,1,2,3].map(i=>({id:'w'+(i+1),name:'第'+(i+1)+'周',start:'2026-10-'+String(i*7+1).padStart(2,'0'),end:'2026-10-'+String(i*7+7).padStart(2,'0')})) };
 const assignments = ['s1', 's2'].map(store_id => ({ store_id, class_id: 'c1', legion: '红军' }));
 function handlers() {
   const module = { exports: {} };
   const query = async (sql, args) => {
+    if(sql.includes('FROM daily_operating_periods'))return [{...period,start_date:period.start,end_date:period.end,month_key:'2026-10',region_id:null,name:'202610'}];
+    if(sql.includes('FROM daily_operating_period_stores'))return [];
     if (sql.includes('FROM daily_pk_classes')) {
       const allowed = sql.includes('WHERE c.id=$1') ? args[2] : args[1];
       if (!allowed.includes('s1') && !allowed.includes('s2')) return [];
@@ -17,17 +17,18 @@ function handlers() {
       return [{ id: 'c1', name: '跨店班级' }];
     }
     if (sql.includes('FROM daily_pk_stores')) {
-      assert.equal(args[0], 'p1');
-      assert.ok(args[1] === 'c1' || args[1].includes('c1'));
+      assert.ok(args[0] === 'c1' || args[0].includes('c1'));
       return assignments;
     }
     if (sql.includes('FROM daily_operating_targets')) return [];
     throw Error(sql);
   };
   vm.runInNewContext(fs.readFileSync(require.resolve('../routes/pk'), 'utf8'), {
-    module, require(name) {
+    module, require: load,
+  });
+  function load(name) {
       if (name === '../db/pg') return { query };
-      if (name === './period') return { resolve: async () => ({ date: '2026-10-07', period, week: period.weeks[0] }) };
+      if (name === './period') return { normalize:require('../routes/period').normalize, resolve: async () => ({ date: '2026-10-07', period, week: period.weeks[0] }) };
       if (name === './target') return { expand: value => value };
       if (name === '../utils/operating-visibility') return { visibleStores: async auth => auth.stores };
       if (name === '../utils/operating-objects') return {
@@ -45,15 +46,16 @@ function handlers() {
             { scope: 'personal', id: 'e1', date: '2026-10-07', sales: 10000 }];
         }, marketNewCustomers: async () => [],
       };
+      if(name==='../utils/query-with-jit-disabled')return {query};
+      if(name==='../utils/pk-board'){const board={exports:{}};vm.runInNewContext(fs.readFileSync(require.resolve('../utils/pk-board'),'utf8'),{module:board,require:n=>load(n.startsWith('./')?'../utils/'+n.slice(2):n==='../routes/period'?'./period':n==='../routes/target'?'./target':n)});return board.exports;}
       return require(name);
-    },
-  });
+  }
   return module.exports;
 }
 test('同班员工、店长和管理者看到一致的全班人数、完成值与排名，其他班级仍拒绝访问', async () => {
   const pk = handlers(), boards = [], lists = [];
   for (const stores of [['s1'], ['s2'], ['s1', 's2']]) {
-    const ctx = { auth: { stores }, event: { payload: { classId: 'c1', metric: 'sales' } } };
+    const ctx = { auth: { stores }, event: { payload: { classId: 'c1', metric: 'sales',date:'2026-10-07' } } };
     await pk.classes(ctx); lists.push(JSON.stringify(ctx.result.classes));
     assert.equal(ctx.result.classes[0].members, 2);
     assert.equal(ctx.result.classes[0].stores, 2);

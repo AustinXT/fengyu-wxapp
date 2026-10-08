@@ -31,7 +31,7 @@ export async function deployWechat(rc) {
     const readback=path.join(ROOT,'_tmp','daily-deploy','readback');
     fs.rmSync(readback,{recursive:true,force:true});
     run(['cloud','functions','download','--env',DAILY_ENV,'--name','dailyApiDev','--path',readback]);
-    const files=['index.js','routes/auth.js','routes/report.js','routes/metrics.js','utils/operating-series.js','utils/query-with-jit-disabled.js','utils/phone-auth.js','utils/test-binding.js','utils/permission-matrix.js','utils/report-scope.js','routes/management.js','db/pg.js'];
+    const files=['utils/daily-calendar-auto.js','utils/pk-month.js','utils/pk-board.js','routes/pk.js','index.js','routes/auth.js','routes/report.js','routes/metrics.js','utils/operating-series.js','utils/query-with-jit-disabled.js','utils/phone-auth.js','utils/test-binding.js','utils/permission-matrix.js','utils/report-scope.js','routes/management.js','db/pg.js'];
     if(fs.existsSync(path.join(directory,'utils/test-binding.json')))files.push('utils/test-binding.json');
     for (const file of files) {
       const actual=path.join(readback,file);

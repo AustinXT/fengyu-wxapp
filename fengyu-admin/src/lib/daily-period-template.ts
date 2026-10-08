@@ -61,3 +61,17 @@ export function patternFromPeriod(period: DailyPeriodInput, monthKey: string): D
     weeks: period.weeks.map((week) => ({ id: week.id, name: week.name, start: point(week.start), end: point(week.end) })),
   }
 }
+
+export function validateDailyCyclePattern(pattern: DailyCyclePattern) {
+  // 覆盖普通年、闰年及跨年衔接，避免只验证当前月而保存短月失效的规则。
+  let previous: DailyPeriodInput | null = null
+  for (let index = 0; index < 25; index++) {
+    const date = new Date(Date.UTC(2027, index, 1))
+    const month = `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`
+    const period = buildDailyPeriod(month, pattern, 'preview')
+    if (previous && Date.parse(period.start) - Date.parse(previous.end) !== 86400000) {
+      throw Error('INVALID_PARAMS: 长期规则生成的相邻经营月须连续、无重叠，请调整经营月起止日')
+    }
+    previous = period
+  }
+}

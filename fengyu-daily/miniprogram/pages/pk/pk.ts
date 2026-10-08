@@ -2,7 +2,7 @@ import { callApi, showError, today } from '../../utils/cloud';
 interface Period { id: string; name: string; start: string; end: string }
 interface Values { weekTarget: number | null; weekDone: number; monthTarget: number | null; monthDone: number }
 type Metric = 'sales' | 'consumption';
-interface Row { employeeId: string; name: string; area: string; storeName: string; legion: string; group: string; mentor: string; rank: number; sales: Values; consumption: Values; visits: Values; newCustomers: Values; projects: Values }
+interface Row { periodStart: string; periodEnd: string; weekStart: string; weekEnd: string; employeeId: string; name: string; area: string; storeName: string; legion: string; group: string; mentor: string; rank: number; sales: Values; consumption: Values; visits: Values; newCustomers: Values; projects: Values }
 const formatValue = (metric: Metric, n: number | null) => n === null ? '未设置' : metric === 'sales' || metric === 'consumption' ? (n / 100).toFixed(2) : String(n);
 const rate = (done: number, target: number | null) => target && target > 0 ? (done / target * 100).toFixed(1) + '%' : '—';
 Page({
@@ -15,7 +15,7 @@ Page({
     this.setData({ loading: true, ready: false });
     try {
       if (!this.data.periods.length) {
-        const data = await callApi<{ periods: Period[]; period: Period | null }>('period.list');
+        const data = await callApi<{ periods: Period[]; period: Period | null }>('pk.classes');
         this.setData({ periods: data.periods, periodIndex: Math.max(0, data.periods.findIndex((p) => p.id === data.period?.id)) });
       }
       const periodId = this.data.periods[this.data.periodIndex]?.id;

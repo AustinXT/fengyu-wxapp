@@ -130,3 +130,18 @@ test('日报版本冲突、已提交保存限制仍生效，提交仍冻结指�
   assert.deepEqual(ctx.result.report.metric_snapshot.guidance,{mentor:null,peer:null});
   const draft=reportRoute(null);await draft.route.save(draft.ctx(0));assert.equal(draft.captures(),0);
 });
+
+test('目标页按实际周数展示，只让最后一周自动取余额', async()=>{
+  for(const count of [1,5]) {
+    const weeks=Array.from({length:count},(_,i)=>({id:'v'+i,name:'周'+(i+1),start:'2026-10-01',end:'2026-10-31'}));
+    const period={id:'variable',start:'2026-10-01',end:'2026-10-31',weeks};
+    for(let current=0;current<count;current++) {
+      const h=page('goal',async()=>({period,week:weeks[current],periods:[],target:{month_confirmed:true,counts_month_confirmed:true,sales:10000,consumption:20000,visits:10,newCustomers:0,projects:20,penalty:'复盘',weeks:Object.fromEntries(weeks.map(w=>[w.id,{sales:1000,consumption:2000}]))}}));
+      await h.p.load();
+      assert.equal(h.p.data.weeks.length,count);
+      assert.equal(h.p.data.automatic,current===count-1);
+      assert.equal(h.p.data.weeks.filter(w=>w.automatic).length,1);
+      assert.equal(h.p.data.weeks[count-1].automatic,true);
+    }
+  }
+});

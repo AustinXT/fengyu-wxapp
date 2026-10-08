@@ -12,18 +12,19 @@ const databaseEnv = {
   PGUSER: decodeURIComponent(source.username), PGPASSWORD: decodeURIComponent(source.password),
   PGDATABASE: source.pathname.slice(1), PGCONNECT_TIMEOUT: '10',
 };
-function run(command, args, env = process.env) {
+function run(command, args, env = process.env, cwd = ROOT) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(command, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '';
     child.stdout.on('data', chunk => { output += chunk; });
     // 不转发可能包含连接信息的工具错误输出。
-    child.stderr.resume();
+    let diagnostics = '';
+    child.stderr.on('data', chunk => { if (command === process.execPath) diagnostics += chunk; });
     child.on('error', () => reject(Error(`${command} 无法启动`)));
     child.on('close', code => {
       if (code === 0) resolve(output);
       else {
-        if (command === process.execPath) console.log(output);
+        if (command === process.execPath) console.log((output + diagnostics).replace(/postgres(?:ql)?:\/\/[^\s'"]+/g, '[数据库连接已隐藏]').replaceAll(decodeURIComponent(source.password), '[密码已隐藏]'));
         reject(Error(`${command} 失败，退出码 ${code}`));
       }
     });
@@ -57,12 +58,18 @@ try {
   created = true;
   console.log(`临时库已创建：${name}；从日报开发库复制结构`);
   await copyStructure();
+  if (process.argv.includes('--cycle-full')) {
+    await run('psql', ['-v', 'ON_ERROR_STOP=1', '--single-transaction', '-f', path.join(ROOT, 'db/rollout/requests/daily-cycle-full.sql')], { ...databaseEnv, PGDATABASE: name })
+    console.log('完整周期候选约束已应用到独立临时库')
+  }
   const target = new URL(source); target.pathname = '/' + name;
-  const tests = ['integration.test.js', 'targets.pg.test.js', 'five-targets.pg.test.js']
+  const tests = (process.argv.includes('--calendar') ? ['calendar-auto.pg.test.js'] : ['integration.test.js', 'targets.pg.test.js', 'five-targets.pg.test.js'])
     .map(file => path.join(ROOT, 'fengyu-daily/cloudfunctions/dailyApi/tests', file));
-  const output = await run(process.execPath, ['--test', '--test-concurrency=1', ...tests], {
-    ...process.env, DAILY_TEST_DATABASE_URL: target.toString(), DAILY_TEST_TEMP_DB: name,
-  });
+  const admin = process.argv.includes('--admin') || process.argv.includes('--admin-auto');
+  const args = admin ? [path.join(ROOT, 'fengyu-admin/node_modules/vitest/vitest.mjs'), 'run', process.argv.includes('--admin-auto') ? 'src/actions/daily-calendar-save.pg.test.ts' : 'src/actions/daily-config.pg.test.ts'] : ['--test', '--test-concurrency=1', ...tests];
+  const output = await run(process.execPath, args, {
+    ...process.env, DAILY_CYCLE_FULL: process.argv.includes('--cycle-full') ? '1' : '0', DAILY_ISOLATED: '0', DAILY_TEST_DATABASE_URL: target.toString(), DAILY_TEST_TEMP_DB: name,
+  }, admin ? path.join(ROOT, 'fengyu-admin') : ROOT);
   console.log(output);
 } finally {
   if (created) {

@@ -88,13 +88,13 @@ export function OperatingView({
       .map((r, index) => ({ ...r, rank: index + 1 }))
       .filter(
         (r) =>
-          !search ||
+          (!pk || ((!filters.regionId || r.marketId === filters.regionId) && (!filters.storeId || r.storeId === filters.storeId) && (!filters.employeeId || r.employeeId === filters.employeeId))) && (!search ||
           [r.name, r.storeName, r.position, r.scopeName].some((v) =>
             v?.includes(search),
-          ),
+          )),
       )
     return reverse ? ranked.reverse() : ranked
-  }, [data.rows, metric, reverse, pk, search])
+  }, [data.rows, metric, reverse, pk, search, filters.regionId, filters.storeId, filters.employeeId])
   async function load(next: Filters) {
     setBusy(true)
     try {
@@ -391,7 +391,7 @@ export function OperatingView({
             <Button variant={layout === 'matrix' ? 'default' : 'outline'} onClick={() => setLayout('matrix')}>对齐矩阵</Button>
           </div>
         )}
-        {(view === 'week' || pk) && (
+        {!pk && view === 'week' && (
           <select
             aria-label="经营周"
             className={field}
@@ -413,8 +413,9 @@ export function OperatingView({
         )}
       </div>
       </Card>
+      {pk && <p className="text-sm text-[var(--muted-foreground)]">同班展示全部参与人员，按各自市场当前经营周的完成率排名；筛选保留原名次。经营月和经营周日期见姓名下方。</p>}
       <ReportInfoBar items={[
-        { label: '经营月', value: data.period ? `${data.period.name}（${data.period.start} 至 ${data.period.end}）` : '尚未配置经营周期' },
+        { label: '经营月', value: data.period ? (pk ? data.period.name : `${data.period.name}（${data.period.start} 至 ${data.period.end}）`) : '尚未配置经营周期' },
         { label: '统计对象', value: `${rows.length} 个${busy ? ' · 正在更新…' : ''}` },
       ]} />
       {!pk && metric === 'all' && layout === 'matrix' ? (
@@ -443,7 +444,7 @@ export function OperatingView({
                 return (
                   <tr key={`${row.scope}:${row.scopeId}`} className="border-t border-[var(--border)] hover:bg-[#FAFAFA]">
                     <td className="sticky left-0 bg-white px-3 py-3">{row.rank}</td>
-                    <td className="sticky left-16 bg-white px-3 py-3 font-medium">{row.name}</td>
+                    <td className="sticky left-16 bg-white px-3 py-3 font-medium">{row.name}{pk && <div className="mt-1 text-xs font-normal text-gray-500">月：{(row as OperatingRow & { periodStart?: string }).periodStart} 至 {(row as OperatingRow & { periodEnd?: string }).periodEnd}<br/>周：{(row as OperatingRow & { weekStart?: string }).weekStart} 至 {(row as OperatingRow & { weekEnd?: string }).weekEnd}</div>}</td>
                     <td className="px-3 py-3">{row.area || '未分配区域'}</td>
                     <td className="px-3 py-3">{row.storeName || '—'}</td>
                     <td className="px-3 py-3">{row.position || '—'}</td>
@@ -565,7 +566,7 @@ export function OperatingView({
                     className="border-t border-[var(--border)] transition-colors hover:bg-[#FAFAFA]"
                   >
                     <td className="sticky left-0 bg-white px-3 py-3">{row.rank}</td>
-                    <td className="sticky left-16 bg-white px-3 py-3 font-medium">{row.name}</td>
+                    <td className="sticky left-16 bg-white px-3 py-3 font-medium">{row.name}{pk && <div className="mt-1 text-xs font-normal text-gray-500">月：{(row as OperatingRow & { periodStart?: string }).periodStart} 至 {(row as OperatingRow & { periodEnd?: string }).periodEnd}<br/>周：{(row as OperatingRow & { weekStart?: string }).weekStart} 至 {(row as OperatingRow & { weekEnd?: string }).weekEnd}</div>}</td>
                     <td className="px-3 py-3">{row.area || '未分配区域'}</td>
                     <td className="px-3 py-3">{row.storeName || '—'}</td>
                     <td className="px-3 py-3">{row.position || '—'}</td>

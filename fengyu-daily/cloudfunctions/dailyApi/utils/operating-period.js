@@ -9,8 +9,8 @@ function date(value) {
 
 function validatePeriod(input) {
   const start = date(input.start), end = date(input.end);
-  if (start > end || !Array.isArray(input.weeks) || input.weeks.length !== 4)
-    throw Error('INVALID_PARAMS: 经营月需配置四个有效经营周');
+  if (start > end || !Array.isArray(input.weeks) || input.weeks.length < 1 || input.weeks.length > 31)
+    throw Error('INVALID_PARAMS: 经营月需配置1至31个有效经营周');
   let expected = start;
   const ids = new Set();
   for (const week of input.weeks) {
@@ -19,7 +19,7 @@ function validatePeriod(input) {
     ids.add(week.id);
     const from = date(week.start), to = date(week.end);
     if (from !== expected || from > to || to > end)
-      throw Error('INVALID_PARAMS: 四个经营周必须连续、无重叠地覆盖经营月');
+      throw Error('INVALID_PARAMS: 经营周必须连续、无重叠地覆盖经营月');
     expected = to + 86400000;
   }
   if (expected !== end + 86400000)

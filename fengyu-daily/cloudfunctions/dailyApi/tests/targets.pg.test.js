@@ -41,6 +41,27 @@ test('真实PG目标锁定、并发、前三周上限、第四周余额、周期
     await assert.rejects(target.read(ctx({ scopeId: 'other-employee' })), /PERMISSION_DENIED/);
     await assert.rejects(target.read(ctx({ scope: 'store', scopeId: 'other-store' })), /PERMISSION_DENIED/);
     await assert.rejects(target.read(ctx({ scope: 'market', scopeId: 'other-market' })), /PERMISSION_DENIED/);
+    if (process.env.DAILY_CYCLE_FULL === '1') {
+      for (const count of [1, 5]) {
+        const variableId = id + '-' + count;
+        const variableWeeks = Array.from({ length: count }, (_, i) => ({ id: 'v' + i, name: '周' + (i + 1), start: dateAdd(start, i), end: dateAdd(start, i) }));
+        await pg.query('INSERT INTO daily_operating_periods(id,name,start_date,end_date,weeks) VALUES($1,$2,$3,$4,$5::jsonb)', [variableId, '可变周测试', start, dateAdd(start, count - 1), JSON.stringify(variableWeeks)]);
+        const variableCtx = payload => ctx({ periodId: variableId, ...payload });
+        validation.today = () => start;
+        await target.confirmMonth(variableCtx({ version: 0, sales: '100', consumption: '200', penalty: '复盘' }));
+        for (let i = 0; i < count - 1; i++) {
+          validation.today = () => variableWeeks[i].start;
+          await target.saveWeek(variableCtx({ version: i + 1, sales: '10', consumption: '20' }));
+        }
+        validation.today = () => variableWeeks[count - 1].start;
+        const final = variableCtx({ date: validation.today() }); await target.read(final);
+        assert.equal(final.result.target.weeks['v' + (count - 1)].sales, (100 - (count - 1) * 10) * 100);
+        assert.equal(final.result.target.weeks['v' + (count - 1)].consumption, (200 - (count - 1) * 20) * 100);
+        await assert.rejects(target.saveWeek(variableCtx({ version: count, sales: '10', consumption: '20' })), /自动取剩余/);
+        await pg.query('DELETE FROM daily_operating_targets WHERE period_id=$1', [variableId]);
+        await pg.query('DELETE FROM daily_operating_periods WHERE id=$1', [variableId]);
+      }
+    }
   } finally {
     validation.today = realToday;
     await pg.query('DELETE FROM daily_operating_targets WHERE period_id=$1', [id]);

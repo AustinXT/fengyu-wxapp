@@ -1,4 +1,4 @@
-// V2 原型目标规则。所有金额先转为分，避免第 4 周余额出现浮点误差。
+// V2 原型目标规则。所有金额先转为分，避免最后一周余额出现浮点误差。
 function cents(value, positive = false) {
   if (typeof value !== 'number' && typeof value !== 'string')
     throw Error('INVALID_PARAMS: 请填写有效金额');
@@ -25,10 +25,10 @@ function validateMonth(input, scope) {
   };
 }
 
-// 第一至第三周目标未齐全时，第四周保持未设置；不把空值当作零。
+// 前面各周目标未齐全时，最后一周保持未设置；不把空值当作零。
 function weeklyTargets(monthCents, firstThree, allowZero = false) {
   if (!Number.isSafeInteger(monthCents) || (allowZero ? monthCents < 0 : monthCents <= 0) ||
-      !Array.isArray(firstThree) || firstThree.length !== 3)
+      !Array.isArray(firstThree) || firstThree.length > 30)
     throw Error('INVALID_PARAMS: 无效月周目标');
   for (const value of firstThree) {
     if (value !== null && (!Number.isSafeInteger(value) || value < 0))
@@ -36,7 +36,7 @@ function weeklyTargets(monthCents, firstThree, allowZero = false) {
   }
   const used = firstThree.reduce((sum, value) => sum + (value ?? 0), 0);
   if (!Number.isSafeInteger(used) || used > monthCents)
-    throw Error('INVALID_PARAMS: 前三周目标累计不能超过月目标');
+    throw Error('INVALID_PARAMS: 前面各周目标累计不能超过月目标');
   return [...firstThree, firstThree.includes(null) ? null : monthCents - used];
 }
 

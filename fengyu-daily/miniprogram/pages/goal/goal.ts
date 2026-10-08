@@ -176,7 +176,7 @@ Page({
     })
     const { target, period, week, reference } = result
     const periods = result.periods || []
-    const automatic = !!week && period?.weeks[3].id === week.id
+    const automatic = !!week && period?.weeks[period.weeks.length - 1]?.id === week.id
     this.setData({
       monthReference: reference
         ? `${reference.period.start} 至 ${reference.period.end} · 业绩 ${amount(reference.month.sales)} / 消耗 ${amount(reference.month.consumption)} 元`
@@ -225,13 +225,13 @@ Page({
       weeks: (period?.weeks || []).map((w, i) => {
         const values = target?.weeks[w.id]
         const weeklyValue = (value: number | null | undefined) =>
-          i === 3 && value == null ? '待计算' : amount(value)
+          i === period!.weeks.length - 1 && value == null ? '待计算' : amount(value)
         return {
           id: w.id,
           name: w.name,
           dates: `${w.start} 至 ${w.end}`,
           current: w.id === week?.id,
-          automatic: i === 3,
+          automatic: i === period!.weeks.length - 1,
           metrics: [
             { label: '业绩', value: weeklyValue(values?.sales) },
             { label: '消耗', value: weeklyValue(values?.consumption) },
@@ -285,7 +285,7 @@ Page({
       monthError = '请填写本月负激励。'
     if (!this.data.confirmed) weekError = '请先确认本月目标。'
     else if (!this.data.week) weekError = '当前经营月没有可设置的经营周。'
-    else if (this.data.automatic) weekError = '第4周由剩余目标自动生成。'
+    else if (this.data.automatic) weekError = '最后一周由剩余目标自动生成。'
     else {
       for (const metric of ['sales', 'consumption'] as const) {
         const raw =
@@ -295,7 +295,7 @@ Page({
           weekError = '请填写非负的本周业绩与消耗目标，最多两位小数。'
           break
         }
-        const used = (this.data.period?.weeks.slice(0, 3) || []).reduce(
+        const used = (this.data.period?.weeks.slice(0, -1) || []).reduce(
           (sum, week) =>
             sum +
             (week.id === this.data.week?.id
@@ -307,7 +307,7 @@ Page({
           !Number.isSafeInteger(used) ||
           used > (this.data.target?.[metric] ?? 0)
         ) {
-          weekError = `${metric === 'sales' ? '业绩' : '消耗'}前三周目标累计不能超过月目标。`
+          weekError = `${metric === 'sales' ? '业绩' : '消耗'}前面各周目标累计不能超过月目标。`
           break
         }
       }
@@ -368,7 +368,7 @@ Page({
           continue
         }
         const metric = field.key as 'visits' | 'newCustomers' | 'projects'
-        const used = (this.data.period?.weeks.slice(0, 3) || []).reduce(
+        const used = (this.data.period?.weeks.slice(0, -1) || []).reduce(
           (sum, w) =>
             sum +
             (w.id === this.data.week?.id
@@ -377,7 +377,7 @@ Page({
           0,
         )
         if (used > Number(field.month))
-          weekError = `${field.label}前三周合计不能超过月目标。`
+          weekError = `${field.label}前面各周合计不能超过月目标。`
       }
     }
     this.setData({

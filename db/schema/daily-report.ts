@@ -128,7 +128,7 @@ export const dailyOperatingPeriods = pgTable('daily_operating_periods', {
   ...auditColumns(),
 }, (t) => [
   check('chk_daily_period_dates', sql`${t.startDate} <= ${t.endDate}`),
-  check('chk_daily_period_weeks', sql`jsonb_typeof(${t.weeks}) = 'array' AND jsonb_array_length(${t.weeks}) = 4`),
+  check('chk_daily_period_weeks', sql`jsonb_typeof(${t.weeks}) = 'array' AND jsonb_array_length(${t.weeks}) BETWEEN 1 AND 31`),
   check('chk_daily_period_version', sql`${t.version} > 0`),
   check('chk_daily_period_template_source', sql`${t.templateSource} IN ('legacy','global-template','region-template','month-override','manual')`),
   check('chk_daily_period_month_key', sql`${t.monthKey} IS NULL OR ${t.monthKey} ~ '^\\d{4}-(0[1-9]|1[0-2])$'`),
@@ -171,15 +171,20 @@ export const dailyOperatingTargets = pgTable('daily_operating_targets', {
 
 export const dailyPkClasses = pgTable('daily_pk_classes', {
   id: text('id').primaryKey(),
+  monthKey: varchar('month_key', { length: 7 }),
   periodId: text('period_id').notNull().references(() => dailyOperatingPeriods.id),
   name: varchar('name', { length: 30 }).notNull(),
   ...auditColumns(),
 }, (t) => [
+  uniqueIndex('uq_daily_pk_month_name').on(t.monthKey, t.name),
+  uniqueIndex('uq_daily_pk_month_id').on(t.monthKey, t.id),
+  check('chk_daily_pk_class_month', sql`${t.monthKey} IS NULL OR ${t.monthKey} ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'`),
   uniqueIndex('uq_daily_pk_period_name').on(t.periodId, t.name),
   uniqueIndex('uq_daily_pk_period_id').on(t.periodId, t.id),
 ]);
 
 export const dailyPkStores = pgTable('daily_pk_stores', {
+  monthKey: varchar('month_key', { length: 7 }),
   periodId: text('period_id').notNull().references(() => dailyOperatingPeriods.id),
   storeId: text('store_id').notNull().references(() => stores.storeId),
   classId: text('class_id').notNull(),
@@ -189,6 +194,9 @@ export const dailyPkStores = pgTable('daily_pk_stores', {
   ...auditColumns(),
 }, (t) => [
   primaryKey({ columns: [t.periodId, t.storeId] }),
+  uniqueIndex('uq_daily_pk_month_store').on(t.monthKey, t.storeId),
+  check('chk_daily_pk_store_month', sql`${t.monthKey} IS NULL OR ${t.monthKey} ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'`),
+  foreignKey({ columns: [t.monthKey, t.classId], foreignColumns: [dailyPkClasses.monthKey, dailyPkClasses.id] }),
   foreignKey({ columns: [t.periodId, t.classId], foreignColumns: [dailyPkClasses.periodId, dailyPkClasses.id] }),
 ]);
 

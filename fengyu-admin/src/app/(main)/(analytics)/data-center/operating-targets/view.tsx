@@ -56,7 +56,7 @@ export function TargetEntry({ initial }: { initial: Data }) {
       !!data.period && data.period.start <= today && today <= data.period.end,
     confirmed = !!data.target?.month_confirmed,
     countsConfirmed = !!data.target?.counts_month_confirmed,
-    automatic = data.week?.id === data.period?.weeks[3].id
+    automatic = data.week?.id === data.period?.weeks[data.period.weeks.length - 1]?.id
   async function reload(input: {
     periodId?: string
     scope?: string
@@ -255,8 +255,8 @@ export function TargetEntry({ initial }: { initial: Data }) {
               ))}
             </div>
             {(!confirmed || !countsConfirmed) && editable && <div className="space-y-3 rounded-lg bg-[#F8F9FB] p-4">
-              <div className="flex flex-wrap items-center justify-between gap-2"><div><h3 className="font-medium">按周分摊</h3><p className="text-xs text-gray-500">按经营周天数分配，第四周自动补足；可手动调整前三周。</p></div><Button type="button" variant="outline" onClick={autoDistribute}>按经营天数自动分摊</Button></div>
-              <div className="overflow-x-auto"><table className="w-full min-w-[720px] text-sm"><thead><tr><th className="p-2 text-left">经营周</th>{specs.map((s) => <th key={s.key} className="p-2 text-right">{s.label}</th>)}</tr></thead><tbody>{data.period.weeks.map((w, i) => <tr key={w.id} className="border-t"><td className="p-2">{w.name} · {w.start}—{w.end}</td>{specs.map((s) => { const raw = weekPlan[w.id]?.[s.key] || ''; const total = s.key === 'sales' || s.key === 'consumption' ? Math.round(Number(month[s.key] || 0) * 100) : Number(month[s.key] || 0); const used = data.period!.weeks.slice(0, i).reduce((n, prev) => { const v = weekPlan[prev.id]?.[s.key] || '0'; return n + (s.key === 'sales' || s.key === 'consumption' ? Math.round(Number(v) * 100) : Number(v)) }, 0); const balance = Math.max(0, total - used); return <td key={s.key} className="p-2 text-right">{i < 3 ? <Input aria-label={`${w.name}${s.label}分摊`} type="number" min="0" step={s.key === 'sales' || s.key === 'consumption' ? '0.01' : '1'} value={raw} onChange={(e) => { setWeekPlan({ ...weekPlan, [w.id]: { ...weekPlan[w.id], [s.key]: e.target.value } }); setWeekPlanTouched(true) }}/>: <span>{s.key === 'sales' || s.key === 'consumption' ? (balance / 100).toFixed(2) : String(balance)}</span>}</td> })}</tr>)}</tbody></table></div>
+              <div className="flex flex-wrap items-center justify-between gap-2"><div><h3 className="font-medium">按周分摊</h3><p className="text-xs text-gray-500">按经营周天数分配，最后一周自动补足；可手动调整前面各周。</p></div><Button type="button" variant="outline" onClick={autoDistribute}>按经营天数自动分摊</Button></div>
+              <div className="overflow-x-auto"><table className="w-full min-w-[720px] text-sm"><thead><tr><th className="p-2 text-left">经营周</th>{specs.map((s) => <th key={s.key} className="p-2 text-right">{s.label}</th>)}</tr></thead><tbody>{data.period.weeks.map((w, i) => <tr key={w.id} className="border-t"><td className="p-2">{w.name} · {w.start}—{w.end}</td>{specs.map((s) => { const raw = weekPlan[w.id]?.[s.key] || ''; const total = s.key === 'sales' || s.key === 'consumption' ? Math.round(Number(month[s.key] || 0) * 100) : Number(month[s.key] || 0); const used = data.period!.weeks.slice(0, i).reduce((n, prev) => { const v = weekPlan[prev.id]?.[s.key] || '0'; return n + (s.key === 'sales' || s.key === 'consumption' ? Math.round(Number(v) * 100) : Number(v)) }, 0); const balance = Math.max(0, total - used); return <td key={s.key} className="p-2 text-right">{i < data.period!.weeks.length - 1 ? <Input aria-label={`${w.name}${s.label}分摊`} type="number" min="0" step={s.key === 'sales' || s.key === 'consumption' ? '0.01' : '1'} value={raw} onChange={(e) => { setWeekPlan({ ...weekPlan, [w.id]: { ...weekPlan[w.id], [s.key]: e.target.value } }); setWeekPlanTouched(true) }}/>: <span>{s.key === 'sales' || s.key === 'consumption' ? (balance / 100).toFixed(2) : String(balance)}</span>}</td> })}</tr>)}</tbody></table></div>
             </div>}
             {data.scope.scope === 'personal' && (
               <label className="block space-y-2 text-sm">
@@ -290,7 +290,7 @@ export function TargetEntry({ initial }: { initial: Data }) {
                 {data.week.start} 至 {data.week.end}
               </p>
               {automatic ? (
-                <p>第 4 周由月目标减去前三周目标自动计算。</p>
+                <p>最后一周由月目标减去前面各周目标自动计算。</p>
               ) : (
                 <>
                   <div className="grid gap-4 md:grid-cols-5">
@@ -332,7 +332,7 @@ export function TargetEntry({ initial }: { initial: Data }) {
           )}
           {confirmed && (
             <Card className="overflow-auto p-5">
-              <h2 className="mb-4 text-lg font-semibold">四周目标安排</h2>
+              <h2 className="mb-4 text-lg font-semibold">经营周目标安排</h2>
               <table className="w-full whitespace-nowrap text-sm">
                 <thead>
                   <tr>

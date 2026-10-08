@@ -7,6 +7,8 @@ import { directory, participantObjects } from './operating-objects'
 import { series, marketNewCustomers } from './operating-series'
 import { buildRows } from './operating-rows'
 import { expand } from './target-write'
+import { automaticCalendar } from '@/lib/daily-calendar-service'
+import { pkWorkspace } from './pk-workspace'
 export const today = () =>
   new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10)
 export const metrics = [
@@ -137,6 +139,8 @@ export async function workspace(
   pk = false,
   metadataOnly = false,
 ) {
+  await automaticCalendar(isAdminScope(session) ? null : session.permissions.scopeStoreIds)
+  if (pk) return pkWorkspace(session, filters, query, async (text, args) => db.transaction(async tx => { await tx.execute(sql`SET LOCAL jit = off`); return queryWith(tx)(text,args) }), today())
   const sessionMarket = session.roles.find((r) => r.scopeType === '市场')?.scopeId
   const [selfStore] = session.employeeId ? await query('SELECT store_id FROM staff_wechat_users WHERE employee_id=$1 AND NOT is_resigned', [session.employeeId]) : []
   const [market] = filters.regionId ? [{ market_id: filters.regionId }] : selfStore?.store_id ? await query(`WITH RECURSIVE a AS (
@@ -395,7 +399,7 @@ export async function workspace(
   }
   const active = filters.weekId
     ? period.weeks.find((w) => w.id === filters.weekId)
-    : week || (today() < period.start ? period.weeks[0] : period.weeks[3])
+    : week || (today() < period.start ? period.weeks[0] : period.weeks[period.weeks.length - 1])
   if (filters.weekId && !active) throw Error('INVALID_PARAMS: 无效经营周')
   return {
     ...empty,

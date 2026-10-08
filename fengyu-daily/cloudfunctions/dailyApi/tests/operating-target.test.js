@@ -21,3 +21,11 @@ test('拒绝非法、过精度和超安全范围金额', () => {
   for (const value of ['', null, true, '-1', '1e3', '1.001', 'Infinity', '9007199254740991'])
     assert.throws(() => cents(value));
 });
+
+test('1周直接使用月目标，5周和31周最后一周精确取余额', () => {
+  assert.deepEqual(weeklyTargets(12345, []), [12345]);
+  assert.deepEqual(weeklyTargets(100, [10, 20, 30, 0]), [10, 20, 30, 0, 40]);
+  assert.deepEqual(weeklyTargets(10, [0, 0, null, 0]), [0, 0, null, 0, null]);
+  assert.equal(weeklyTargets(31, Array(30).fill(1)).at(-1), 1);
+  assert.throws(() => weeklyTargets(1, Array(31).fill(0)));
+});

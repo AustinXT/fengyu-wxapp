@@ -19,7 +19,7 @@
     </view>
     <view wx:if="{{confirmed && editable && !automatic && weekError}}" class="goal-error">{{weekError}}</view>
     <view wx:if="{{confirmed && week}}" class="card"><view class="title">{{week.name}}目标</view><view class="muted">{{week.start}} 至 {{week.end}} · 只填写当前经营周</view>
-      <view wx:if="{{automatic}}" class="notice">第4周目标自动取月目标扣除前三周后的余额，无需填写。</view>
+      <view wx:if="{{automatic}}" class="notice">最后一周目标自动取月目标扣除前面各周后的余额，无需填写。</view>
       <block wx:else>
         <view class="week-target-list">
           <view class="week-target-row"><view class="week-target-label">本周业绩目标（元）<view class="muted">占月目标 {{weekSalesPercent}}</view></view><input class="goal-input week-target-input" type="digit" data-field="weekSales" value="{{weekSales}}" bindinput="input" disabled="{{saving || !editable}}" /></view>

@@ -1,4 +1,4 @@
-// V2 原型目标规则。所有金额先转为分，避免第 4 周余额出现浮点误差。
+// V2 原型目标规则。所有金额先转为分，避免最后一周余额出现浮点误差。
 export function cents(value: any, positive: any = false) {
   if (typeof value !== 'number' && typeof value !== 'string')
     throw Error('INVALID_PARAMS: 请填写有效金额')
@@ -13,7 +13,7 @@ export function cents(value: any, positive: any = false) {
 }
 
 export function distributeByDays(total: number, days: number[]) {
-  if (!Number.isSafeInteger(total) || total < 0 || days.length !== 4 || days.some((day) => !Number.isSafeInteger(day) || day <= 0))
+  if (!Number.isSafeInteger(total) || total < 0 || (days.length < 1 || days.length > 31) || days.some((day) => !Number.isSafeInteger(day) || day <= 0))
     throw Error('INVALID_PARAMS: 无效的目标分摊参数')
   const totalDays = days.reduce((sum, day) => sum + BigInt(day), BigInt(0))
   const totalValue = BigInt(total)
@@ -38,7 +38,7 @@ export function validateMonth(input: any, scope: any) {
   }
 }
 
-// 第一至第三周目标未齐全时，第四周保持未设置；不把空值当作零。
+// 前面各周目标未齐全时，最后一周保持未设置；不把空值当作零。
 export function weeklyTargets(
   monthCents: any,
   firstThree: any,
@@ -48,7 +48,7 @@ export function weeklyTargets(
     !Number.isSafeInteger(monthCents) ||
     (allowZero ? monthCents < 0 : monthCents <= 0) ||
     !Array.isArray(firstThree) ||
-    firstThree.length !== 3
+    firstThree.length > 30
   )
     throw Error('INVALID_PARAMS: 无效月周目标')
   for (const value of firstThree) {
@@ -60,7 +60,7 @@ export function weeklyTargets(
     0,
   )
   if (!Number.isSafeInteger(used) || used > monthCents)
-    throw Error('INVALID_PARAMS: 前三周目标累计不能超过月目标')
+    throw Error('INVALID_PARAMS: 前面各周目标累计不能超过月目标')
   return [...firstThree, firstThree.includes(null) ? null : monthCents - used]
 }
 

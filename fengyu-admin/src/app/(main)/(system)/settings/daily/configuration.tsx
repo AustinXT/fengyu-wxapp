@@ -1,114 +1,66 @@
 'use client'
 import { useMemo, useState } from 'react'
-import { createDailyPeriodsForMonth, getDailyConfiguration, previewDailyPeriod, saveDailyPeriod, saveDailyPeriodTemplate, saveDailyPk } from '@/actions/daily-config'
-import { type DailyPeriodInput, type DailyPeriodTemplateInput } from '@/lib/daily-config'
-import { buildDailyPeriod, defaultDailyCyclePattern, type DailyCyclePattern } from '@/lib/daily-period-template'
+import { getDailyConfiguration, saveDailyPk, selectDailyPkMonth } from '@/actions/daily-config'
+import { periodMonth, monthRange } from '@/lib/daily-cycle-planner'
+import DailyCycleSettings from './cycle-settings'
 import { actionErrorMessage } from '@/lib/action-error'
 
-type Configuration = Awaited<ReturnType<typeof getDailyConfiguration>>
+type Configuration = Omit<Awaited<ReturnType<typeof getDailyConfiguration>>, 'disabledTemplateIds'> & { disabledTemplateIds?: string[] }
 // getRandomValues 在 HTTP 测试地址也可用；randomUUID 仅在安全上下文可用。
+const monthPeriod = (data: Configuration, id: string) => {
+  const chosen = data.periods.find(p => p.id === id)
+  if (!chosen) return ''
+  const group = data.periods.filter(p => periodMonth(p) === periodMonth(chosen))
+  return group.find(p => !p.regionId)?.id || group.slice().sort((a, b) => a.id.localeCompare(b.id))[0]?.id || ''
+}
 const configurationId = () => Array.from(crypto.getRandomValues(new Uint8Array(15)), (n) => n.toString(16).padStart(2, '0')).join('')
-const blank = (): DailyPeriodInput => ({ id: configurationId(), name: '', start: '', end: '', version: 0,
-  weeks: [1, 2, 3, 4].map((n) => ({ id: 'w' + n, name: '第' + n + '周', start: '', end: '' })) })
 const field = 'rounded-lg border border-gray-300 px-3 py-2 bg-white w-full focus:border-[#C0322A] focus:outline-none focus:ring-2 focus:ring-[#C0322A]/15'
 const button = 'inline-flex items-center justify-center rounded-lg bg-[#C0322A] text-white px-4 py-2 text-sm font-medium hover:bg-[#a92922] disabled:opacity-50'
 const subtleButton = 'inline-flex items-center justify-center rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium hover:bg-gray-50'
 const auditText = (detail: unknown, key: 'before' | 'after', stores: { id: string; name: string }[]) => {
   const value = (detail as Record<string, unknown> | null)?.[key]
+  if (Array.isArray(value)) return value.map(m => `${m.name || '周期模式'}：${m.isDefault ? '总部默认' : `${m.regionIds?.length || 0}个市场`}`).join('；') || '无周期模式'
   if (!value || typeof value !== 'object') return '尚未配置'
   const data = value as Record<string, unknown>
   if (Array.isArray(data.classes)) {
     const classes = data.classes as { id: string; name: string }[], assigned = Array.isArray(data.stores) ? data.stores as { storeId: string; classId: string; legion: string; groupName: string; mentorName: string }[] : []
     return `班级：${classes.map((c) => c.name).join('、') || '无'}；${assigned.map((a) => `${stores.find((s) => s.id === a.storeId)?.name || '已移除门店'}：${classes.find((c) => c.id === a.classId)?.name || '无班级'} / ${a.legion || '未设置军团'} / ${a.groupName || '未设置小组'} / ${a.mentorName || '未设置指导员'}`).join('；') || '无参与门店'}`
   }
+  if (data.name === '沿用总部规则') return '沿用总部规则（已有月份保留原安排）'
+  const pattern = (data.pattern || (typeof data.start === 'object' ? data : null)) as { start: { monthOffset: number; day: number }; end: { monthOffset: number; day: number } } | null
+  if (pattern) {
+    const point = (p: { monthOffset: number; day: number }) => `${p.monthOffset === -1 ? '上月' : p.monthOffset === 1 ? '下月' : '当月'}${p.day}日`
+    return `${data.name || '日期规则'}：${point(pattern.start)} 至 ${point(pattern.end)}`
+  }
   const weeks = Array.isArray(data.weeks) ? data.weeks as { name: string; start: string; end: string }[] : []
   return `${data.name || '经营周期'} · ${data.start || ''} 至 ${data.end || ''}；${weeks.map((w) => `${w.name} ${w.start} 至 ${w.end}`).join('；')}`
 }
-const dayCount = (start: string, end: string) => {
-  if (!start || !end) return '—'
-  const days = Math.round((Date.parse(end + 'T12:00:00Z') - Date.parse(start + 'T12:00:00Z')) / 86400000) + 1
-  return days > 0 ? `${days} 天` : '日期有误'
-}
-const dateLabel = (start: string, end: string) => start && end ? `${start} 至 ${end}` : '日期待配置'
-
 export default function DailyConfiguration({ initial: initialConfiguration }: { initial: Configuration }) {
   const [initial, setInitial] = useState(initialConfiguration)
-  const [tab, setTab] = useState('period'), [selected, setSelected] = useState(initial.periods[0]?.id || '')
-  const [period, setPeriod] = useState<DailyPeriodInput>(() => initial.periods[0] || blank())
-  const [classes, setClasses] = useState(initial.classes.filter((c) => c.periodId === selected))
-  const [assignments, setAssignments] = useState(initial.assignments.filter((s) => s.periodId === selected))
-  const [selectedClass, setSelectedClass] = useState('')
+  const [tab, setTab] = useState('period'), [selected, setSelected] = useState(monthPeriod(initial, (initial.periods.find(p => p.start <= new Date(Date.now()+8*3600000).toISOString().slice(0,10) && p.end >= new Date(Date.now()+8*3600000).toISOString().slice(0,10)) || initial.periods[0])?.id || ''))
+  const currentMonth = periodMonth(initial.periods.find(p => p.start <= new Date(Date.now()+8*3600000).toISOString().slice(0,10) && p.end >= new Date(Date.now()+8*3600000).toISOString().slice(0,10)) || { name: '', end: new Date(Date.now()+8*3600000).toISOString().slice(0,10) })
+  const [requestedMonth, setRequestedMonth] = useState(periodMonth(initial.periods.find(p => p.id === selected) || {name:''}))
+  const [classes, setClasses] = useState(initial.classes.filter((c) => initial.periods.some(p => p.id === c.periodId && periodMonth(p) === periodMonth(initial.periods.find(p => p.id === selected) || { name: '' }))))
+  const [assignments, setAssignments] = useState(initial.assignments.filter((s) => initial.periods.some(p => p.id === s.periodId && periodMonth(p) === periodMonth(initial.periods.find(p => p.id === selected) || { name: '' }))))
+  const [selectedClass, setSelectedClass] = useState(classes[0]?.id || '')
   const [storeSearch, setStoreSearch] = useState(''), [areaFilter, setAreaFilter] = useState(''), [storeFilter, setStoreFilter] = useState('all')
+  const [unsaved, setUnsaved] = useState(false)
   const [busy, setBusy] = useState(false), [message, setMessage] = useState('')
-  const [impact, setImpact] = useState<Awaited<ReturnType<typeof previewDailyPeriod>> | null>(null)
-  const [overrideAfterSave, setOverrideAfterSave] = useState(false)
-  const [templateScope, setTemplateScope] = useState('')
-  const [templateName, setTemplateName] = useState(() => initial.templates.find((t) => !t.regionId)?.name || '默认经营周期')
-  const [templateVersion, setTemplateVersion] = useState(() => initial.templates.find((t) => !t.regionId)?.version || 0)
-  const [templatePattern, setTemplatePattern] = useState<DailyCyclePattern>(() => (initial.templates.find((t) => !t.regionId)?.pattern as DailyCyclePattern) || defaultDailyCyclePattern)
-  const [templateMonth, setTemplateMonth] = useState(new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 7))
-  const currentTemplate = initial.templates.find((t) => (t.regionId || '') === templateScope)
-  const chooseTemplate = (regionId: string) => {
-    setTemplateScope(regionId)
-    const found = initial.templates.find((t) => (t.regionId || '') === regionId)
-    setTemplateName(found?.name || (regionId ? `${initial.regions.find((r) => r.id === regionId)?.name || '区域'}经营周期` : '默认经营周期'))
-    setTemplateVersion(found?.version || 0)
-    setTemplatePattern((found?.pattern as DailyCyclePattern) || defaultDailyCyclePattern)
-  }
-  const saveTemplate = async () => {
-    const input: DailyPeriodTemplateInput = { id: currentTemplate?.id || configurationId(), regionId: templateScope || null,
-      name: templateName, pattern: templatePattern, version: currentTemplate?.version || templateVersion }
-    setBusy(true); setMessage('')
-    try {
-      await saveDailyPeriodTemplate(input)
-      const configuration = await getDailyConfiguration(); setInitial(configuration)
-      setTemplateVersion((currentTemplate?.version || 0) + 1); setMessage('周期模板已保存')
-    } catch (e) { setMessage(actionErrorMessage(e, '模板保存失败')) } finally { setBusy(false) }
-  }
-  const createMonth = async () => {
-    setBusy(true); setMessage('')
-    try {
-      const result = await createDailyPeriodsForMonth(templateMonth)
-      const configuration = await getDailyConfiguration(); setInitial(configuration)
-      change(result.ids[0] || '', configuration); setMessage(`已生成 ${result.ids.length} 个区域经营周期快照`)
-    } catch (e) { setMessage(actionErrorMessage(e, '生成经营月失败')) } finally { setBusy(false) }
-  }
-  const saveMonthOverride = async () => {
-    if (!selected || !period.start || !period.end) return
-    setOverrideAfterSave(true)
-    await preview()
-  }
-  const updatePoint = (part: 'start' | 'end' | 'weekStart' | 'weekEnd', index: number, key: 'monthOffset' | 'day', value: number) => {
-    setTemplatePattern((old) => {
-      if (part === 'start' || part === 'end') return { ...old, [part]: { ...old[part], [key]: value } }
-      return { ...old, weeks: old.weeks.map((w, i) => i !== index ? w : part === 'weekStart'
-        ? { ...w, start: { ...w.start, [key]: value } } : { ...w, end: { ...w.end, [key]: value } }) }
-    })
-  }
   const change = (id: string, configuration = initial) => {
+    id = monthPeriod(configuration, id)
     const p = configuration.periods.find((p) => p.id === id)
-    setSelected(id); setPeriod(p || blank()); setImpact(null); setMessage('')
-    const nextClasses = configuration.classes.filter((c) => c.periodId === id)
-    setClasses(nextClasses); setAssignments(configuration.assignments.filter((s) => s.periodId === id))
+    setSelected(p?.id || ''); setRequestedMonth(p ? periodMonth(p) : ''); setMessage('')
+    const monthIds = configuration.periods.filter(row => p && periodMonth(row) === periodMonth(p)).map(row => row.id)
+    const nextClasses = configuration.classes.filter((c) => monthIds.includes(c.periodId))
+    setClasses(nextClasses); setAssignments(configuration.assignments.filter((s) => monthIds.includes(s.periodId)))
     setSelectedClass(nextClasses[0]?.id || ''); setStoreSearch(''); setAreaFilter(''); setStoreFilter('all')
   }
-  const edit = (data: Partial<DailyPeriodInput>) => { setPeriod({ ...period, ...data }); setImpact(null) }
-  const preview = async () => {
-    setBusy(true); setMessage('')
-    try { setImpact(await previewDailyPeriod(period)) } catch (e) { setMessage(actionErrorMessage(e, '预览失败，请重试')) } finally { setBusy(false) }
-  }
-  const save = async () => {
-    setBusy(true); setMessage('')
-    try {
-      const source = initial.periods.find((p) => p.id === selected)
-      if (overrideAfterSave && (!source || !source.templateId)) throw Error('该经营月尚无模板来源，请先保存对应区域模板')
-      await saveDailyPeriod(period, overrideAfterSave)
-      if (overrideAfterSave) {
-        setOverrideAfterSave(false)
-      }
-      const configuration = await getDailyConfiguration(); setInitial(configuration); change(period.id, configuration); setMessage(overrideAfterSave ? '经营周期和单月覆盖已保存' : '经营周期已保存')
-    }
-    catch (e) { setMessage(actionErrorMessage(e, '保存失败，请重试')) } finally { setBusy(false) }
+  const pkMonth = async (key: string) => {
+    if (!key) return;
+    setRequestedMonth(key); setBusy(true); setMessage(''); setSelected(''); setClasses([]); setAssignments([]);
+    try { const next = await selectDailyPkMonth(key); setInitial(next); change(next.periods.find(p => periodMonth(p) === key)?.id || '', next); }
+    catch (e) { setMessage(actionErrorMessage(e, '该月安排失败，请检查日期规则')); }
+    finally { setBusy(false); }
   }
   const removeClass = (id: string) => {
     if (assignments.some((s) => s.classId === id) && !window.confirm('移除班级会同时取消本月该班级的门店分配。确认移除？')) return
@@ -132,65 +84,20 @@ export default function DailyConfiguration({ initial: initialConfiguration }: { 
   const visibleStores = initial.stores.filter((store) => {
     const assignment = assignments.find((a) => a.storeId === store.id)
     const matchesClass = storeFilter === 'all' || (storeFilter === 'unassigned' ? !assignment : assignment?.classId === selectedClass)
-    const currentPeriod = initial.periods.find((p) => p.id === selected)
-    const monthStores = initial.periodStores.filter((s) => s.periodId === selected)
-    const inPeriod = !currentPeriod?.regionId || monthStores.some((s) => s.storeId === store.id)
-    return inPeriod && matchesClass && (!areaFilter || store.area === areaFilter) && (!storeSearch || store.name.toLowerCase().includes(storeSearch.toLowerCase()))
+    return  matchesClass && (!areaFilter || store.area === areaFilter) && (!storeSearch || store.name.toLowerCase().includes(storeSearch.toLowerCase()))
   })
 
   return <div className="space-y-4">
     <h1 className="text-2xl font-bold text-[var(--foreground)]">日报经营配置</h1>
 
-    <section className="rounded-xl border bg-white p-4 md:p-5">
-      <div className="grid gap-4 md:grid-cols-[minmax(240px,360px)_1fr] md:items-end">
-        <label className="block text-sm font-medium">当前经营月份
-          <select className={`${field} mt-1`} value={selected} onChange={(e) => change(e.target.value)}>
-            <option value="">选择已有经营月</option>{initial.periods.map((p) => <option key={p.id} value={p.id}>{p.monthKey || p.name} · {p.regionId ? initial.regions.find((r) => r.id === p.regionId)?.name || '区域' : '全局'}</option>)}
-          </select>
-        </label>
-        <div className="rounded-lg bg-gray-50 px-4 py-3 text-sm">
-          <span className="text-gray-500">经营日期</span><p className="mt-1 font-medium">{dateLabel(period.start, period.end)}</p>
-        </div>
-      </div>
-      <div className="mt-5 flex gap-2 border-b" role="tablist" aria-label="日报配置类型">
-        {([['period', '经营周期'], ['pk', 'PK 班级']] as const).map(([key, label]) => <button key={key} type="button" role="tab" aria-selected={tab === key} onClick={() => { setTab(key); setMessage('') }} className={`-mb-px border-b-2 px-4 py-3 text-sm font-medium ${tab === key ? 'border-[#C0322A] text-[#C0322A]' : 'border-transparent text-gray-500 hover:text-gray-900'}`}>{label}</button>)}
-      </div>
-    </section>
-
+    <div className="flex gap-2 border-b" role="tablist" aria-label="日报配置类型">
+      {[['period', '经营周期'], ['pk', 'PK 班级']].map(([key, label]) => <button key={key} type="button" role="tab" disabled={busy} aria-selected={tab === key} className={`px-5 py-3 text-sm font-medium ${tab === key ? 'border-b-2 border-[#C0322A] text-[#C0322A]' : 'text-gray-500'}`} onClick={() => { if (key !== tab && unsaved && !window.confirm('放弃尚未保存的经营周期修改？')) return; setTab(key); setMessage('') }}>{label}</button>)}
+    </div>
     {message && <div role="status" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm">{message}</div>}
-
-    <fieldset disabled={busy} className="min-w-0 space-y-5 disabled:opacity-75">
-      {tab === 'period' ? <>
-      <section className="rounded-xl border bg-white p-4 md:p-5">
-        <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="font-semibold">周期模板</h2><p className="mt-1 text-sm text-gray-500">区域模板优先于全局模板；生成经营月后会保存为快照。</p></div>
-          <div className="flex flex-wrap gap-2"><select aria-label="模板区域" className={field} value={templateScope} onChange={(e) => chooseTemplate(e.target.value)}><option value="">全局默认模板</option>{initial.regions.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}</select><input aria-label="周期模板名称" className={field} value={templateName} onChange={(e) => setTemplateName(e.target.value)} /></div>
-        </div>
-        <div className="mt-4 grid gap-3 md:grid-cols-2">{(['start', 'end'] as const).map((key) => <label key={key} className="text-sm">经营月{key === 'start' ? '开始' : '结束'}规则<div className="mt-1 flex gap-2"><select className={field} value={templatePattern[key].monthOffset} onChange={(e) => updatePoint(key, 0, 'monthOffset', Number(e.target.value))}><option value={-1}>上月</option><option value={0}>当月</option><option value={1}>次月</option></select><input className={field} type="number" min="1" max="31" value={templatePattern[key].day} onChange={(e) => updatePoint(key, 0, 'day', Number(e.target.value))}/></div></label>)}</div>
-        <div className="mt-4 overflow-x-auto"><table className="w-full min-w-[650px] text-sm"><thead className="text-left text-xs text-gray-500"><tr><th className="py-2">经营周</th><th>开始月份/日期</th><th>结束月份/日期</th></tr></thead><tbody>{templatePattern.weeks.map((week, i) => <tr key={week.id} className="border-t"><td className="py-2 pr-3"><input className={field} value={week.name} onChange={(e) => setTemplatePattern((p) => ({ ...p, weeks: p.weeks.map((w, n) => n === i ? { ...w, name: e.target.value } : w) }))}/></td>{(['weekStart', 'weekEnd'] as const).map((part) => { const point = part === 'weekStart' ? week.start : week.end; return <td key={part} className="py-2 pr-3"><div className="flex gap-2"><select className={field} value={point.monthOffset} onChange={(e) => updatePoint(part, i, 'monthOffset', Number(e.target.value))}><option value={-1}>上月</option><option value={0}>当月</option><option value={1}>次月</option></select><input className={field} type="number" min="1" max="31" value={point.day} onChange={(e) => updatePoint(part, i, 'day', Number(e.target.value))}/></div></td>})}</tr>)}</tbody></table></div>
-        <div className="mt-4 flex flex-wrap items-end gap-3"><label className="text-sm">归属月<input type="month" className={`${field} mt-1`} value={templateMonth} onChange={(e) => setTemplateMonth(e.target.value)}/></label><span className="text-sm text-gray-500">{(() => { try { const p = buildDailyPeriod(templateMonth, templatePattern, 'preview'); return `预览：${p.start} 至 ${p.end} · ${p.weeks.map((w) => `${w.name} ${w.start}—${w.end}`).join(' / ')}` } catch { return '日期规则需调整，确保四周连续覆盖经营月' } })()}</span><button className={subtleButton} type="button" disabled={busy} onClick={() => void saveTemplate()}>保存模板</button><button className={button} type="button" disabled={busy} onClick={() => void createMonth()}>按模板生成经营月</button></div>
-        {currentTemplate && <p className="mt-2 text-xs text-gray-500">模板版本 v{currentTemplate.version}；单月覆盖：{initial.overrides.filter((o) => o.templateId === currentTemplate.id).map((o) => o.monthKey).join('、') || '暂无'}</p>}
-      </section>
-      <section className="overflow-hidden rounded-xl border bg-white">
-        <div className="border-b px-4 py-4 md:px-5"><h2 className="font-semibold">{period.version ? '经营周期' : '新建经营周期'}</h2><p className="mt-1 text-sm text-gray-500">四个经营周连续覆盖整月，可按实际经营安排设置不同天数。</p></div>
-        <div className="grid gap-4 p-4 md:grid-cols-3 md:px-5">
-          <label className="text-sm font-medium">月份名称<input className={`${field} mt-1`} value={period.name} onChange={(e) => edit({ name: e.target.value })} maxLength={60}/></label>
-          <label className="text-sm font-medium">经营月开始<input aria-label="经营月开始日期" type="date" className={`${field} mt-1`} value={period.start} onChange={(e) => edit({ start: e.target.value })}/></label>
-          <label className="text-sm font-medium">经营月结束<input aria-label="经营月结束日期" type="date" className={`${field} mt-1`} value={period.end} onChange={(e) => edit({ end: e.target.value })}/></label>
-        </div>
-        <div className="px-4 pb-2 md:px-5"><h3 className="font-medium">周次安排</h3><p className="mt-1 text-sm text-gray-500">检查每周起止日期连续衔接，并覆盖上方经营月。</p></div>
-        <div className="space-y-3 px-4 pb-5 md:px-5">
-          <div className="hidden grid-cols-[minmax(130px,1fr)_minmax(160px,1fr)_minmax(160px,1fr)_100px] gap-3 text-xs font-medium text-gray-500 md:grid"><span>周次名称</span><span>开始日期</span><span>结束日期</span><span>时长</span></div>
-          {period.weeks.map((w, i) => <div key={w.id} className="grid gap-3 rounded-lg border border-gray-200 bg-gray-50/60 p-3 md:grid-cols-[minmax(130px,1fr)_minmax(160px,1fr)_minmax(160px,1fr)_100px] md:items-center md:border-0 md:bg-transparent md:p-0">
-            <label className="text-xs text-gray-500 md:text-sm md:text-gray-900">第 {i + 1} 周名称<input aria-label={`第${i + 1}周名称`} className={`${field} mt-1`} value={w.name} onChange={(e) => edit({ weeks: period.weeks.map((v, n) => n === i ? { ...v, name: e.target.value } : v) })}/></label>
-            <label className="text-xs text-gray-500 md:text-sm md:text-gray-900">开始日期<input aria-label={`${w.name}开始日期`} type="date" className={`${field} mt-1`} value={w.start} onChange={(e) => edit({ weeks: period.weeks.map((v, n) => n === i ? { ...v, start: e.target.value } : v) })}/></label>
-            <label className="text-xs text-gray-500 md:text-sm md:text-gray-900">结束日期<input aria-label={`${w.name}结束日期`} type="date" className={`${field} mt-1`} value={w.end} onChange={(e) => edit({ weeks: period.weeks.map((v, n) => n === i ? { ...v, end: e.target.value } : v) })}/></label>
-            <div className="text-sm text-gray-600"><span className="md:hidden">本周时长：</span>{dayCount(w.start, w.end)}</div>
-          </div>)}
-        </div>
-        {impact && <div className="mx-4 mb-4 space-y-2 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm md:mx-5"><p className="font-medium">保存影响预览</p><p>日期范围内涉及 {impact.reports} 份日报、{impact.targets} 项目标、{impact.classes} 个 PK 班级。</p><p>实时统计按新周期计算；已提交日报的原始快照保留。</p>{impact.changes.map((change) => <p key={change.name}>{change.name}：{change.before} → {change.after}</p>)}</div>}
-        <div className="sticky bottom-0 flex flex-wrap items-center justify-between gap-3 border-t bg-white/95 px-4 py-3 backdrop-blur md:px-5"><button type="button" className={subtleButton} disabled={!selected || busy} onClick={() => void saveMonthOverride()}>保存为该月覆盖</button><span className="text-xs text-gray-500">保存前会展示对现有日报和目标的影响</span>{impact ? <button className={button} onClick={() => void save()}>确认并保存</button> : <button className={button} onClick={() => void preview()}>预览影响</button>}</div>
-      </section></> : <section className="space-y-5">
-        {!selected ? <div className="rounded-xl border bg-white p-8 text-center"><p className="font-medium">请先创建经营月份</p><p className="mt-1 text-sm text-gray-500">PK 班级和门店分配按经营月分别保存。</p><button type="button" className={`${button} mt-4`} onClick={() => { setTab('period'); change('') }}>新建经营月</button></div> : <>
+    {tab === 'period' ? <DailyCycleSettings configuration={initial} onBusyChange={setBusy} onDirtyChange={setUnsaved} onConfigurationChange={configuration => { setInitial(configuration); change(selected || configuration.periods[0]?.id || '', configuration) }} /> : <fieldset disabled={busy} className="space-y-5">
+      <section className="rounded-xl border bg-white p-4"><div className="flex flex-wrap gap-3"><label className="text-sm font-medium">PK所属月份<select className={`${field} mt-2`} value={requestedMonth} onChange={e => { void pkMonth(e.target.value) }}><option value="">选择PK所属月份</option>{[...new Set([...initial.periods.map(p => periodMonth(p)), ...monthRange(currentMonth,13)])].sort().reverse().map(key => <option key={key}>{key}</option>)}</select></label><div className="text-sm font-medium">配置范围<div className={`${field} mt-2 bg-gray-50`}>全部市场</div></div></div><p className="mt-2 text-sm text-gray-500">总部按经营月份统一配置全部市场的班级与门店，支持跨市场同班。下方区域筛选仅用于查找门店。</p></section>
+      <section className="space-y-5">
+        {!selected ? <div className="rounded-xl border bg-white p-8 text-center"><p className="font-medium">{busy ? '正在自动安排该月日期…' : message ? '该月日期安排未完成' : '请先选择PK所属月份'}</p><p className="mt-1 text-sm text-gray-500">所选月份的日期安排成功后，才能配置班级与门店。</p><button type="button" className={`${button} mt-4`} onClick={() => { setTab('period'); change('') }}>查看经营周期</button></div> : <>
           <section className="rounded-xl border bg-white p-4 md:p-5">
             <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="font-semibold">班级分组</h2><p className="mt-1 text-sm text-gray-500">选择班级查看和分配门店；同一家门店同月只能加入一个班级。</p></div><button type="button" className={subtleButton} onClick={() => { const id = configurationId(); setClasses([...classes, { id, name: '', periodId: selected }]); setSelectedClass(id) }}>添加班级</button></div>
             {classes.length ? <div className="mt-4 divide-y rounded-lg border">{classes.map((c, i) => { const stats = classStats(c.id); const active = selectedClass === c.id; return <div key={c.id} className={`grid gap-2 p-3 md:grid-cols-[100px_minmax(220px,1fr)_220px_64px] md:items-center ${active ? 'bg-[#C0322A]/5' : 'bg-white'}`}>
@@ -231,9 +138,9 @@ export default function DailyConfiguration({ initial: initialConfiguration }: { 
             })}{!rows.length && <tr><td colSpan={6} className="p-3 text-gray-500">暂无参与人员</td></tr>}</tbody></table></div></details>
           })}</div></section>
         </>}
-      </section>}
-    </fieldset>
+      </section>
+    </fieldset>}
 
-    <details className="rounded-xl border bg-white"><summary className="cursor-pointer px-4 py-4 font-semibold">配置修改记录 <span className="ml-2 text-sm font-normal text-gray-500">最近 {initial.logs.length} 条</span></summary><div className="border-t px-4 py-3"><p className="mb-3 text-sm text-gray-500">记录操作人、时间和变更前后的配置。</p>{initial.logs.map((log) => <details key={log.id} className="mb-2 rounded-lg border p-3"><summary className="cursor-pointer text-sm">{log.action === 'daily.period.save' ? '修改经营周期' : '修改 PK 班级'} · {log.operator || '系统'} · {new Date(log.at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}</summary><div className="mt-3 space-y-2 text-sm text-gray-600"><p>变更前：{auditText(log.detail, 'before', initial.stores)}</p><p>变更后：{auditText(log.detail, 'after', initial.stores)}</p></div></details>)}{!initial.logs.length && <p className="text-sm text-gray-500">暂无修改记录</p>}</div></details>
+    <details className="rounded-xl border bg-white"><summary className="cursor-pointer px-4 py-4 font-semibold">配置修改记录 <span className="ml-2 text-sm font-normal text-gray-500">最近 {initial.logs.length} 条</span></summary><div className="border-t px-4 py-3"><p className="mb-3 text-sm text-gray-500">记录操作人、时间和变更前后的配置。</p>{initial.logs.map((log) => <details key={log.id} className="mb-2 rounded-lg border p-3"><summary className="cursor-pointer text-sm">{({ 'daily.period.save': '调整本月日期', 'daily.pk.save': '修改 PK 班级', 'daily.period_template.save': '保存长期日期规则', 'daily.period_template.inherit': '恢复沿用总部', 'daily.period_override.save': '保存本月特殊安排', 'daily.period.generate': '准备月份安排', 'daily.cycle_modes.save': '保存周期模式' } as Record<string, string>)[log.action] || log.action} · {log.operator || '系统'} · {new Date(log.at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}</summary><div className="mt-3 space-y-2 text-sm text-gray-600"><p>变更前：{auditText(log.detail, 'before', initial.stores)}</p><p>变更后：{auditText(log.detail, 'after', initial.stores)}</p></div></details>)}{!initial.logs.length && <p className="text-sm text-gray-500">暂无修改记录</p>}</div></details>
   </div>
 }

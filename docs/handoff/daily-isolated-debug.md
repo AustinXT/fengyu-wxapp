@@ -43,3 +43,22 @@
 ## 恢复
 
 切换失败时先恢复备份中的 dailyApiDev 代码与原三项环境变量，通过统一部署入口发布并验证。备份包含代码包及私密连接，不提交Git。独立库保留用于排查，不自动删除数据卷；源dev快照只能恢复到确认的空独立库。
+
+## 2026-10-07 经营周期开发环境更新
+
+- 经用户授权，备份后在日报独立测试库 101.34.242.103:8151/fengyu_daily_dev 应用 daily-cycle-full.sql 候选约束，允许1～31周。46个经营月份、2份日报及Drizzle历史保持不变。备份：/www/wwwroot/fengyu-daily-db/backups/daily-20261007T145831Z.dump。
+- 使用统一入口 DAILY_DEPLOY_BACKEND=wechat WX_DEVTOOLS_PORT=41652 scripts/deploy-cloudfunctions.sh dev daily 上传 dailyApiDev。CloudBase CLI 当前身份无法访问环境，使用开发者工具既有登录。
+- 云端下载回读核对 routes/target.js、utils/operating-target.js、utils/operating-period.js 以及部署脚本既有关键文件，均与本地字节一致；控制台最后更新时间2026-10-07 23:01:05。
+- 控制台只读核验：PG指向8151日报独立测试库，账号daily_app；DEPLOY_CHANNEL=shadow、TZ=Asia/Shanghai、Node.js18.15、256MB、30秒。未修改环境变量。
+- 微信开发者工具重新编译，真实云端 auth.login、period.list、pk.classes、report.history 返回code0。首轮未传scope的个人目标查询被当前微信店长身份正确拒绝，随后按店长门店scope补验 target.read、metrics.read 均返回code0，现有四周周期兼容读取成功。
+- 未更新普通dev/prod共享数据库、其他云函数或远程管理后台。正式Drizzle迁移仍待集中集成；真机可变周填写仍待验证。
+
+## 2026-10-07 PK恢复全市场配置
+
+- 根据用户确认，PK按归属月统一分班，取消区域月份导致的市场配置分割。11月/12月/次年1月均可配置全部54家门店；10月3个班级、9条分配保留。
+- 测试库候选结构及备份见 `db/rollout/requests/daily-pk-global.md`；正式迁移仍待集成。
+- 后台统一保存同月全部班级；云函数授权按是否参与该班判断，同班返回全部参与人员，指标使用每人所属市场实际日期。后台与小程序显示该日期口径，筛选保留原排名。
+- 后台、小程序类型检查通过；云函数JS语法检查通过。只读核验11月全部市场54店、10月存量班级，数据库month_key回填完整。
+- 通过统一入口更新dailyApiDev，回读 routes/pk.js、utils/pk-board.js、utils/pk-month.js与本地字节一致。未修改环境变量（此前控制台核实为8151日报独立库/daily_app、shadow、Asia/Shanghai、Nodejs18.15、256MB、30秒）。
+- 真实微信云端只读验证 pk.classes 返回code0和4个月份；pk.read 返回code0，27行均带经营月/周日期。不代表手机性能或跨市场实数完整验收，真机待验证。
+- 本批未改用户班级配置内容、未部署远程后台或正式云函数。

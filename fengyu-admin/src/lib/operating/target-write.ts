@@ -15,11 +15,11 @@ export function expand(target: any, period: any) {
       metric === 'newCustomers' ? target.new_customers : target[metric]
     const amounts =
       monthValue == null
-        ? [null, null, null, null]
+        ? period.weeks.map(() => null)
         : weeklyTargets(
             monthValue,
             period.weeks
-              .slice(0, 3)
+              .slice(0, -1)
               .map((w: any) => target.weeks[w.id]?.[metric] ?? null),
             countKeys.includes(metric),
           )
@@ -75,6 +75,11 @@ export async function writeTarget(
       period.version !== payload.periodVersion
     )
       throw Error('CONFLICT: 经营周期已调整，请重新加载')
+    const regional = await query(`SELECT p.id FROM daily_operating_periods p
+      WHERE p.id<>$1 AND p.region_id IS NOT NULL
+      AND COALESCE(p.month_key,to_char(p.end_date,'YYYY-MM'))=(SELECT COALESCE(month_key,to_char(end_date,'YYYY-MM')) FROM daily_operating_periods WHERE id=$1)
+      AND (($2='market' AND p.region_id=$3) OR ($2='store' AND EXISTS(SELECT 1 FROM daily_operating_period_stores ps WHERE ps.period_id=p.id AND ps.store_id=$3)) OR ($2='personal' AND EXISTS(SELECT 1 FROM daily_operating_period_stores ps JOIN staff_wechat_users u ON u.store_id=ps.store_id WHERE ps.period_id=p.id AND u.employee_id=$3))) LIMIT 1`, [period.id,scope.scope,scope.scopeId])
+    if (regional.length) throw Error('CONFLICT: 该市场已调整特殊月份，请重新加载目标')
     if (today() < period.start || today() > period.end)
       throw Error('INVALID_STATE: 只能设置当前经营月目标')
     await query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [
@@ -91,9 +96,9 @@ export async function writeTarget(
       if (plan) {
         for (const metric of ['sales', 'consumption', ...(counts ? countKeys : [])]) {
           const value = metric === 'newCustomers' ? payload.newCustomers : payload[metric]
-          const firstThree = period.weeks.slice(0, 3).map((w: any) => {
+          const firstThree = period.weeks.slice(0, -1).map((w: any) => {
             const raw = plan[w.id]?.[metric]
-            if (raw === undefined || raw === '') throw Error('INVALID_PARAMS: 请补全前三周分摊目标')
+            if (raw === undefined || raw === '') throw Error('INVALID_PARAMS: 请补全前面各周分摊目标')
             return metric === 'sales' || metric === 'consumption' ? cents(raw) : count(raw)
           })
           const total = metric === 'sales' || metric === 'consumption' ? cents(value, true) : count(value)
@@ -153,8 +158,8 @@ export async function writeTarget(
         )
     } else {
       if (!old?.month_confirmed) throw Error('INVALID_STATE: 请先确认本月目标')
-      if (!week || week.id === period.weeks[3].id)
-        throw Error('INVALID_STATE: 第4周自动取剩余金额，无需填写')
+      if (!week || week.id === period.weeks[period.weeks.length - 1].id)
+        throw Error('INVALID_STATE: 最后一周自动取剩余金额，无需填写')
       const counts = validateCounts(payload)
       if (counts && !old.counts_month_confirmed)
         throw Error('INVALID_STATE: 请先补充确认三项月目标')
@@ -174,7 +179,7 @@ export async function writeTarget(
           weeklyTargets(
             value,
             period.weeks
-              .slice(0, 3)
+              .slice(0, -1)
               .map((w: any) => weeks[w.id]?.[metric] ?? null),
             countKeys.includes(metric),
           )

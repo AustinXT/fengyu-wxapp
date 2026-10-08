@@ -16,6 +16,6 @@ test('五项目标零值、旧金额锁定、补充确认、周余额及旧请�
   for(let i=0;i<3;i++){Date.now=()=>Date.parse(weeks[i].start+'T04:00:00Z');const c=ctx({version:i+2,sales:'20',consumption:'30',visits:'2',newCustomers:'0',projects:'3'});await target.saveWeek(c);if(i===2){assert.equal(c.result.target.weeks.w4.visits,4);assert.equal(c.result.target.weeks.w4.newCustomers,0);assert.equal(c.result.target.weeks.w4.projects,11);}}
   // 旧版两项请求更新当前周时，已有计数值不能被清空。
   const legacy=ctx({version:5,sales:'21',consumption:'31'});await target.saveWeek(legacy);assert.equal(legacy.result.target.weeks.w3.visits,2);
-  Date.now=()=>Date.parse(date(27)+'T04:00:00Z');await assert.rejects(target.saveWeek(ctx({version:6,sales:'1',consumption:'1',visits:'1',newCustomers:'0',projects:'1'})),/第4周/);
+  Date.now=()=>Date.parse(date(27)+'T04:00:00Z');await assert.rejects(target.saveWeek(ctx({version:6,sales:'1',consumption:'1',visits:'1',newCustomers:'0',projects:'1'})),/最后一周/);
  }finally{Date.now=real;await pg.query('DELETE FROM daily_operating_targets WHERE period_id=$1',[id]);await pg.query('DELETE FROM daily_operating_periods WHERE id=$1',[id]);await pg.getPool().end();}
 });
