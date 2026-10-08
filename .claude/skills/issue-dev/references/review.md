@@ -2,7 +2,8 @@
 
 Codex 主会话负责实现、验证、四维自审和 finding 裁决。独立评审固定为
 GLM-5.3[1M]（OpenCode，请求规格 `zhipuai-coding-plan/glm-5.3[1m]`）+ DeepSeek-V4.1-Flash
-（Claude Code CLI，默认 `deepseek-flash[1m]`）；CLI 品牌不是模型谱系。
+（dsh headless，默认 `deepseek-flash`）；CLI 品牌不是模型谱系。
+Codex 开发时禁止通过 Claude Code CLI 代理调用 DeepSeek 或其它模型，也不得作为故障回退路径。
 这是用户指定组合，不自动换成其它型号。DeepSeek 官方 API 用 `deepseek-flash`
 调用 V4.1 Flash，参见 [发布说明](https://api-docs.deepseek.com/zh-cn/news/news260910/)。
 旧 `.claude/dev-launch.review.md` 的 Codex reviewer / 自动替换链不再适用于这三个 skill。
@@ -45,12 +46,18 @@ python3 "$WT/.agents/skills/issue-dev/scripts/dual_review.py" \
 可用 `--timeout` 调整；等待时每分钟给进度。先 `--probe` 实测鉴权与结构化返回，
 探针通过不等于代码评审通过。GLM 模型用 `--glm-model`，DeepSeek 用 `--deepseek-model`
 或同名 `REVIEW_*_MODEL` 环境变量；模型必须仍属于指定谱系。
+兼容旧 DeepSeek 规格 `deepseek-flash[1m]`，调用 dsh 时去掉 `[1m]`；结果同时记录
+请求规格、实际传入模型 ID 与 harness。dsh 原生适配器默认上下文容量为 1M。
 
-DeepSeek 密钥优先 `DEEPSEEK_API_KEY`，否则只读取本机 `~/.claude/settings.json` 中
-DeepSeek endpoint 对应的 token；子进程固定 DeepSeek endpoint，`--bare`、禁工具、禁 MCP。
-不会改全局 Claude / Codex 配置，不依赖 Anthropic 账号。OpenCode 用已有 GLM provider
-凭证，禁工具权限、自动分享和插件。参见 [OpenCode CLI](https://opencode.ai/docs/cli/)、
-[权限](https://opencode.ai/docs/permissions/)、[DeepSeek 接入 Claude Code](https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code/)。
+DeepSeek 使用 dsh 原生适配器，固定 provider `deepseek-official` 和 endpoint
+`https://api.deepseek.com`；凭证来自 `DEEPSEEK_API_KEY` 或原 `$DSH_HOME/.credentials.yaml`
+（未设置 DSH_HOME 时为 `~/.dsh/.credentials.yaml`）。不读取 Claude 设置或 Anthropic 凭证。
+脚本在本轮输出目录生成专用 dsh profile 与空工作目录，显式挂载最小插件集合和空工具注册表；
+不加载用户 profile/patch/settings、仓库指令、工具插件或 MCP，不使用 Claude CLI。
+`dsh --profile headless review` 通过可信本地 patch 从 stdin 读取 packet，stdout 为完整 JSON
+回复，脚本严格校验 schema 和进程退出码。会话记录留在本轮 `dsh-home/sessions/`。
+不会改全局 dsh / Claude / Codex 配置。OpenCode 用已有 GLM provider 凭证，禁工具权限、
+自动分享和插件。参见 [OpenCode CLI](https://opencode.ai/docs/cli/)、[权限](https://opencode.ai/docs/permissions/)。
 
 ## 裁决与收敛
 

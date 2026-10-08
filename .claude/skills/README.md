@@ -51,17 +51,17 @@
 
 ## D. issue 工作流（3 个）
 
-维护期主线：甲方需求 → issues → 开发 → PR。需求歧义必停等拍板；质量闸门（三层验证 + pr-ready 对抗审查 + 双谱系评审）是放手让 AI 执行的前提，不因维护期降级。
+维护期主线：甲方需求 → issues → 开发 → PR。需求歧义必停等拍板；质量闸门（三层验证 + Codex 四维自审 + GLM/OpenCode 与 DeepSeek/dsh 双谱系评审）是放手让 AI 执行的前提，不因维护期降级。
 
 | Skill | 一句话作用 | 典型触发 |
 |---|---|---|
 | `req-to-issues` | 需求（会议纪要/口头/聊天）→ 去重 → 确认后批量建 gh issues | "把需求建成 issues" |
-| `issue-dev` | 单条 issue：**开隔离 worktree** → 分流 → 实现 → 三层验证 → pr-ready + 双谱系评审 → PR base dev → 回收 | "处理 issue #N" / "发车" |
+| `issue-dev` | 单条 issue：**开隔离 worktree** → 分流 → 实现 → 三层验证 → Codex 自审 + GLM/OpenCode、DeepSeek/dsh → PR base dev → 回收 | "处理 issue #N" / "发车" |
 | `issue-sweep` | 遍历 open issues 逐条走 issue-dev 全闸门，ledger 断点续跑，攒 PR 出汇总表 | "把 open issues 清一遍" |
 
 > 三步串联：会议后先 `req-to-issues` 落任务（spec 更新另走 `meeting-to-spec`）；单条在场处理用 `issue-dev`；批量清积压用 `issue-sweep`（可配 `/loop` 长跑）。merge 与关单始终由人执行。
 > 状态管理：过程产物与 checkpoint 落 `_tmp/issue-<N>/`（state/triage/spec/verify/review），sweep 进度在 `_tmp/issue-sweep/run-*.md`，中断可重入。
-> 配套配置：pr-ready 项目模版在 `~/.claude/skills/pr-ready/templates/fengyu-wxapp.md`；双谱系 harness 链在 `.claude/dev-launch.review.md`（本机专属，已 gitignore）。
+> Codex 配套入口：`issue-dev/references/review.md` 与 `issue-dev/scripts/dual_review.py`；禁止通过 Claude Code CLI 代理调用模型。旧 `.claude/dev-launch.review.md` 不再用于这条流水线。
 
 ---
 

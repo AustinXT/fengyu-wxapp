@@ -36,7 +36,7 @@ for f in fengyu-client/miniprogram/project.private.config.json \
   fi
 done
 
-# 3.5 复制本机 AI 协作配置（已 gitignore，但 issue-dev 双谱系评审闸门依赖它）
+# 3.5 复制旧 Claude 工作流的本机配置（Codex issue-dev 使用仓库内 review.md，不依赖它）
 if [ -f ".claude/dev-launch.review.md" ]; then
   mkdir -p "$DIR/.claude"
   cp -n ".claude/dev-launch.review.md" "$DIR/.claude/dev-launch.review.md" 2>/dev/null || true
