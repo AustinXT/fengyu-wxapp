@@ -3198,7 +3198,9 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
       const src = stripComments(readFile(file))
       const begin = file === FILES.staffOrderJs ? src.indexOf('async function approveRefund(ctx)') : src.indexOf('cascade = await db.transaction')
       const body = src.slice(begin)
-      expect(body.indexOf('SELECT sale_order_id FROM sale_orders'), file).toBeLessThan(body.indexOf('UPDATE sale_order_payments'))
+      const lock = body.indexOf('SELECT sale_order_id, received, refunded_amount FROM sale_orders')
+      expect(lock, file).toBeGreaterThanOrEqual(0)
+      expect(lock, file).toBeLessThan(body.indexOf('UPDATE sale_order_payments'))
     }
   })
 

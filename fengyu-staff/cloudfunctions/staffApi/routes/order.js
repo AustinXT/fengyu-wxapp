@@ -4082,7 +4082,9 @@ async function approveRefund(ctx) {
 
   await pg.transaction(async (client) => {
     // 与申请/转换统一为原单→退款流水→源行；必须在余额读取和退款 CAS 之前取锁。
-    await client.query('SELECT sale_order_id FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE', [refSaleOrderId])
+    const lockedOrderRes = await client.query('SELECT sale_order_id, received, refunded_amount FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE', [refSaleOrderId])
+    const lockedOrder = lockedOrderRes.rows[0]
+    if (!lockedOrder) throw new Error('NOT_FOUND: 原销售单不存在')
     // G 复校：审批前重算可退余额（本笔仍待审批，SUM 已支付自动排除），防 create→approve 间余额变化导致超退。
     // create 时已校验，但其间回款/其它操作可能改变余额；in-flight 唯一约束保证本笔是唯一待审批。两端镜像 admin refunds.ts。
     const capNowRes = await client.query(
@@ -4091,7 +4093,7 @@ async function approveRefund(ctx) {
       [refSaleOrderId]
     )
     const paymentsNetNow = Number(capNowRes.rows[0]?.net || 0)
-    const refundCapNow = Math.max(paymentsNetNow, Number(sopRow.received || 0) - Number(sopRow.refunded_amount || 0))
+    const refundCapNow = Math.max(paymentsNetNow, Number(lockedOrder.received || 0) - Number(lockedOrder.refunded_amount || 0))
     if (refundAbs > refundCapNow + 0.001) {
       throw new Error('INVALID_STATE: 订单可退余额已变化，请刷新后重新发起退款')
     }

@@ -366,3 +366,34 @@ describe('approveRefund — 寄存次数冲突返回契约', () => {
     expect(result.error.message).not.toContain('稍后重试')
   })
 })
+
+
+describe('approveRefund — 持锁资金上限', () => {
+  it('预查800、拿锁后仅200：拒绝500退款，不翻流水状态', async () => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    const q: any = {}
+    for (const name of ['from', 'leftJoin', 'where', 'limit']) q[name] = () => q
+    q.then = (resolve: any, reject: any) => Promise.resolve([{
+      payment: { id: 1001, saleOrderId: 'sale', changeType: '退款', status: '待审批', amount: '-500' },
+      orderStoreId: 'store-1', orderSaleOrderType: '销售单', orderReceived: '800', orderRefundedAmount: '0',
+      orderTotalAmount: '800', orderPrepaidCardAmount: '0',
+    }]).then(resolve, reject)
+    ;(db.select as any).mockReturnValue(q)
+    ;(db.execute as any).mockResolvedValue([{ net: '800' }])
+    const statements: string[] = []
+    ;(db.transaction as any).mockImplementation(async (cb: any) => cb({ execute: async (sql: any) => {
+      statements.push(sql.__sqlText)
+      if (sql.__sqlText.includes('FOR UPDATE')) return [{ received: '200', refunded_amount: '0' }]
+      if (sql.__sqlText.includes('AS net')) return [{ net: '200' }]
+      return { count: 1 }
+    } }))
+    const result = await approveRefund(1001)
+    expect(result.success).toBe(false)
+    if (result.success) throw new Error('余额下降后不能审批')
+    expect(result.error.code).toBe('INVALID_STATE')
+    expect(result.error.message).toContain('可退余额已变化')
+    expect(statements.some((sql) => sql.includes('UPDATE sale_order_payments'))).toBe(false)
+    expect(db.execute).not.toHaveBeenCalled()
+  })
+})

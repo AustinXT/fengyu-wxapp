@@ -1206,17 +1206,6 @@ export const approveRefund = withPermission(
   const refSaleOrderId = pre.payment.saleOrderId
   const refundAmount = Math.abs(Number(pre.payment.amount || 0))
 
-  // G 复校：审批前重算可退余额（本笔仍待审批，SUM 已支付自动排除），防 create→approve 间余额变化导致超退。两端镜像 staff order.js。
-  const capNowRes = await db.execute<{ net: string }>(sql`
-    SELECT COALESCE(SUM(amount), 0)::numeric AS net FROM sale_order_payments
-    WHERE sale_order_id = ${refSaleOrderId} AND status = '已支付'
-  `)
-  const paymentsNetNow = Number((capNowRes as unknown as Array<{ net: string | number }>)[0]?.net || 0)
-  const refundCapNow = Math.max(paymentsNetNow, Number(pre.orderReceived || 0) - Number(pre.orderRefundedAmount || 0))
-  if (refundAmount > refundCapNow + 0.001) {
-    return { success: false, error: { code: 'INVALID_STATE', message: '订单可退余额已变化，请刷新后重新发起退款' } }
-  }
-
   const origPrepaidCardAmount = Number(pre.orderPrepaidCardAmount || 0)
   const origTotalAmount = Number(pre.orderTotalAmount || 0)
   const { refundByCard, refundByOrigin } = splitRefundByOriginalPayment(
@@ -1239,7 +1228,18 @@ export const approveRefund = withPermission(
   try {
     cascade = await db.transaction(async (tx) => {
       // 先原单、再退款流水 CAS；与寄存申请、转换统一锁序，避免唯一索引等待成环。
-      await tx.execute(sql`SELECT sale_order_id FROM sale_orders WHERE sale_order_id = ${refSaleOrderId} FOR UPDATE`)
+      const lockedOrders = await tx.execute(sql`SELECT sale_order_id, received, refunded_amount FROM sale_orders WHERE sale_order_id = ${refSaleOrderId} FOR UPDATE`) as unknown as Array<{ received: string | number; refunded_amount: string | number }>
+      const lockedOrder = lockedOrders[0]
+      if (!lockedOrder) throw new ApiError('NOT_FOUND', 'REFUND_ORDER_MISSING: 原销售单不存在')
+      // G：原单与资金上限必须来自同一持锁事务，不能使用事务外预查的金额。
+      const capNowRes = await tx.execute(sql`
+        SELECT COALESCE(SUM(amount), 0)::numeric AS net FROM sale_order_payments
+        WHERE sale_order_id = ${refSaleOrderId} AND status = '已支付'
+      `) as unknown as Array<{ net: string | number }>
+      const refundCapNow = Math.max(Number(capNowRes[0]?.net || 0), Number(lockedOrder.received || 0) - Number(lockedOrder.refunded_amount || 0))
+      if (refundAmount > refundCapNow + 0.001) {
+        throw new ApiError('INVALID_STATE', 'REFUND_BALANCE_CHANGED: 订单可退余额已变化，请刷新后重新发起退款')
+      }
       // paid_at / audit_at 写北京墙钟字面（见 lib/db-time）：原 new Date().toISOString() 落 UTC 字面早 8h。
 
       // 1) CAS 翻状态 + 同一条 UPDATE 写审批人：仅 '待审批' → '已支付'
@@ -1542,6 +1542,12 @@ export const approveRefund = withPermission(
     })
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
+    if (msg.includes('REFUND_ORDER_MISSING')) {
+      return { success: false, error: { code: 'NOT_FOUND', message: '原销售单不存在' } }
+    }
+    if (msg.includes('REFUND_BALANCE_CHANGED')) {
+      return { success: false, error: { code: 'INVALID_STATE', message: '订单可退余额已变化，请刷新后重新发起退款' } }
+    }
     if (msg.includes('CONCURRENT_CHANGED')) {
       return { success: false, error: { code: 'CONFLICT', message: '退款状态已变更，请刷新后重试' } }
     }
