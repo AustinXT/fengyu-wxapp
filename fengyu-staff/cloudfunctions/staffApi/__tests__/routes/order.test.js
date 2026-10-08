@@ -5229,7 +5229,7 @@ describe('order.createConversion', () => {
     expect(orderInsert.params[12]).toBe('0.00')
     expect(orderInsert.params[22]).toBe('50.00')
     expect(orderInsert.params[23]).toBe(false)
-    const conversionReceivedRecalc = calls.find(({ sql }) => sql.includes('WITH conversion_order AS'))
+    const conversionReceivedRecalc = calls.find(({ sql }) => sql.includes('WITH refund_parts AS'))
     const paidSessionsRecalc = calls.find(({ sql }) => sql.includes('paid_sessions = CASE'))
     expect(conversionReceivedRecalc).toBeDefined()
     expect(calls.indexOf(conversionReceivedRecalc)).toBeLessThan(calls.indexOf(paidSessionsRecalc))

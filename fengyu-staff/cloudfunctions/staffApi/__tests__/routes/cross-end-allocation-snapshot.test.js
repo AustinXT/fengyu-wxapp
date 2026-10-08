@@ -55,7 +55,14 @@ const FILES = {
 }
 
 function readFile(p) {
-  return fs.readFileSync(p, 'utf8')
+  let source = fs.readFileSync(p, 'utf8')
+  if (['paid-sessions.js', 'paid-sessions.ts', 'payment-allocatable.js', 'payment-allocatable.ts'].includes(path.basename(p))) {
+    const helper = fs.readFileSync(path.join(path.dirname(p), p.endsWith('.ts') ? 'conversion-value.ts' : 'conversion-value.js'), 'utf8')
+    const body = helper.match(/const CONVERSION_VALUE_RECALC_SQL = `([\s\S]*?)`/)[1]
+    source = source.replace('CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL = CONVERSION_VALUE_RECALC_SQL', 'CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL = `' + body + '`')
+    if (path.basename(p).startsWith('payment-allocatable')) source += '\n' + helper
+  }
+  return source
 }
 
 /**

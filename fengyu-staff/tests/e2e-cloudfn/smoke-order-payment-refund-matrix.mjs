@@ -112,7 +112,7 @@ async function main() {
       saleOrderId: o, clientUserId: TEST_CLIENT_USER_ID,
       productName: `${NS}_M02`, productType: '疗程卡', sessionCount: 10,
       totalAmount: 1000, status: '待支付', salesCategory: '他销自耗',
-      prepaidCardAmount: 200,
+      pendingPrepaidCardAmount: 200,
     })
     await pgQuery(`UPDATE sale_items SET pending_received=500 WHERE sale_order_id=$1`, [o])
     await createTestPrepaidCard({ initialBalance: 500 })
@@ -247,7 +247,7 @@ async function main() {
       saleOrderId: o, clientUserId: TEST_CLIENT_USER_ID,
       productName: `${NS}_M06_1`, productType: '疗程卡', sessionCount: 6,
       totalAmount: 600, status: '待支付', salesCategory: '他销自耗',
-      prepaidCardAmount: 300,
+      pendingPrepaidCardAmount: 300,
     })
     const i2 = `${o}_ITEM_2`
     await createTestSaleItem({
@@ -398,7 +398,7 @@ async function main() {
       saleOrderId: o, clientUserId: TEST_CLIENT_USER_ID,
       productName: `${NS}_M10`, productType: '疗程卡', sessionCount: 10,
       totalAmount: 1000, status: '待支付', salesCategory: '他销自耗',
-      prepaidCardAmount: 400,
+      pendingPrepaidCardAmount: 400,
     })
     await pgQuery(`UPDATE sale_items SET pending_received=1000 WHERE sale_order_id=$1`, [o])
     await createTestPrepaidCard({ initialBalance: 500 })
@@ -513,7 +513,7 @@ async function main() {
       saleOrderId: o, clientUserId: TEST_CLIENT_USER_ID,
       productName: `${NS}_M13`, productType: '疗程卡', sessionCount: 10,
       totalAmount: 1000, status: '待支付', salesCategory: '他销自耗',
-      prepaidCardAmount: 400,
+      pendingPrepaidCardAmount: 400,
     })
     await pgQuery(`UPDATE sale_items SET pending_received=1000 WHERE sale_order_id=$1`, [o])
     await createTestPrepaidCard({ initialBalance: 500 })
@@ -551,7 +551,7 @@ async function main() {
       saleOrderId: o, clientUserId: TEST_CLIENT_USER_ID,
       productName: `${NS}_M14_1`, productType: '疗程卡', sessionCount: 6,
       totalAmount: 600, status: '待支付', salesCategory: '他销自耗',
-      prepaidCardAmount: 400,
+      pendingPrepaidCardAmount: 400,
     })
     const i2 = `${o}_ITEM_2`
     await createTestSaleItem({

@@ -418,7 +418,7 @@ export const exportCustomers = withPermission(
       const spendRows = await db
         .select({
           clientUserId: saleOrders.clientUserId,
-          total: sql<string>`COALESCE(SUM(GREATEST((received::numeric) - (refunded_amount::numeric) - ${sql.raw(retainedRefundFeeSql('sale_orders.sale_order_id'))}, 0)) FILTER (WHERE sale_order_type IN ('销售单','转换单')), 0)::text`,
+          total: sql<string>`COALESCE(GREATEST(SUM(CASE WHEN sale_order_type = '转换单' THEN (received::numeric) - (refunded_amount::numeric) - ${sql.raw(retainedRefundFeeSql('sale_orders.sale_order_id'))} ELSE GREATEST((received::numeric) - (refunded_amount::numeric) - ${sql.raw(retainedRefundFeeSql('sale_orders.sale_order_id'))}, 0) END) FILTER (WHERE sale_order_type IN ('销售单','转换单')), 0), 0)::text`,
         })
         .from(saleOrders)
         .where(inArray(saleOrders.clientUserId, userIds))

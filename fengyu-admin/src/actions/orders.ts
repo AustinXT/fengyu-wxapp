@@ -1,3 +1,4 @@
+import { getConversionDebt } from '@/lib/conversion-value'
 'use server'
 
 import { retainedRefundFeeSql } from '@/lib/refund-fee-sql'
@@ -3822,7 +3823,7 @@ export const confirmOfflinePayment = withPermission(
       const orderPayable = locked.payable_amount != null
         ? Number(locked.payable_amount)
         : Math.round((orderTotal - orderActualPrepaid - orderPendingPrepaid) * 100) / 100
-      const remainingPayable = Math.round((orderPayable - orderReceived) * 100) / 100
+      const remainingPayable = locked.sale_order_type === '转换单' ? Math.max(0, await getConversionDebt(tx, saleOrderId) - orderPendingPrepaid) : Math.round((orderPayable - orderReceived) * 100) / 100
 
       // 缺省确认金额（两步式 2026-06-07）= 开单约定实付草稿合计（pending_received）− 已收，cap 到剩余应付；
       // 无草稿（旧订单）回退全额 remainingPayable。前端 dialog 通常显式传 confirmAmount（已按 pending 预填），
@@ -3966,7 +3967,7 @@ export const confirmOfflinePayment = withPermission(
       const settleTarget = locked.sale_order_type === '充值单'
         ? Math.round(orderPayable * 100) / 100
         : Math.round(orderTotal * 100) / 100
-      const targetStatus: OrderStatus = newReceived + 0.005 >= settleTarget ? '已支付' : '部分支付'
+      const targetStatus: OrderStatus = (locked.sale_order_type === '转换单' ? newReceived - orderReceived + 0.005 >= remainingPayable + orderPendingPrepaid : newReceived + 0.005 >= settleTarget) ? '已支付' : '部分支付'
       const documentType = await classifySaleOrderDocumentType(tx, clientUserId, saleOrderId)
       // paid_at 写北京墙钟字面（见 lib/db-time）：结清→NOW()，未结清→NULL（保留原行为）。
       const paidAtExpr = targetStatus === '已支付' ? nowTs() : sql`NULL`
@@ -7836,7 +7837,7 @@ export const getRepayable = withPermission(
 
     // 欠款 = total − received（= settleTarget − received，与 status 结清判定一致）。
     // received 按 I1 含储值卡抵扣，须用总额减；旧口径 payable(扣卡) − received(含卡) 会让含卡部分支付单算成无欠款。
-    const remainingPayable = Math.round((Number(order.totalAmount) - Number(order.received)) * 100) / 100
+    const remainingPayable = order.saleOrderType === '转换单' ? await getConversionDebt(db, saleOrderId) : Math.round((Number(order.totalAmount) - Number(order.received)) * 100) / 100
 
     let cardBalance: number | null = null
     if (order.clientUserId) {
@@ -8030,7 +8031,7 @@ export const recordPayment = withPermission(
             throw new ApiError('INVALID_STATE', `子项 ${item.saleItemId} 已退款，不可再回款`)
           }
         }
-      } else if (orderHasRefund) {
+      } else if (orderHasRefund && locked.sale_order_type !== '转换单') {
         throw new ApiError('INVALID_STATE', '本单存在已退款项目，请按子项回款未退款的项目')
       }
 
@@ -8052,7 +8053,7 @@ export const recordPayment = withPermission(
       // payable + prepaid 在「回款新增储值卡抵扣」时会破裂（见下方结清判定注释），故直接锚 total 单调正确。
       const origTotal = Number(locked.total_amount || 0)
       const origPaid = Number(locked.received || 0)
-      const remainingPayable = Math.round((origTotal - origPaid) * 100) / 100
+      const remainingPayable = locked.sale_order_type === '转换单' ? await getConversionDebt(tx, saleOrderId) : Math.round((origTotal - origPaid) * 100) / 100
 
       // 3) 超额校验
       if (totalThisTime > remainingPayable + 0.001) {
@@ -8239,7 +8240,7 @@ export const recordPayment = withPermission(
       // 多笔储值卡回款后 origPayable + origPrepaid > total 误判部分支付）。改锚 total 单调正确。
       // 充值单不进回款路径（一次性付清），total 锚无副作用。
       const settleTarget = Math.round(origTotal * 100) / 100
-      const targetStatus: OrderStatus = settled + 0.001 >= settleTarget ? '已支付' : '部分支付'
+      const targetStatus: OrderStatus = (locked.sale_order_type === '转换单' ? totalThisTime + 0.001 >= remainingPayable : settled + 0.001 >= settleTarget) ? '已支付' : '部分支付'
       const documentType = ['部分支付', '已支付', '已完成'].includes(locked.status)
         ? null
         : await classifySaleOrderDocumentType(tx, locked.client_user_id, saleOrderId)
@@ -8492,13 +8493,7 @@ export const freezeConversionRepaymentAmount = withPermission(
         if (String(locked.lakala_out_order_no || '').trim()) {
           throw new ApiError('CONFLICT', 'PAYMENT_INTENT_ACTIVE: 订单已有进行中的在线支付，请等待支付结果后重试')
         }
-        const remainingCents = Math.round(
-          (
-            Number(locked.total_amount || 0) -
-            Number(locked.received || 0) +
-            Number(locked.refunded_amount || 0)
-          ) * 100,
-        )
+        const remainingCents = Math.round(await getConversionDebt(tx, saleOrderId) * 100)
         if (amountCents > remainingCents) {
           // 余额写进中文正文而非子标签位：本条的 catch 走 businessErrorMessage，
           // 留在子标签位会显示成「100.00: 本次回款金额超过订单欠款」（评审 round 5）。

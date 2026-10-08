@@ -247,6 +247,26 @@ async function buildReceiptRefundItems(client, saleOrderId, refundPaymentId, eff
   }))
 }
 
+// #548：转换负消费在顾客汇总后钳零；只冲销现有积分。
+async function reverseConversionPoints(client, saleOrderId) {
+  const res = await client.query(`SELECT c.user_id,
+    GREATEST(0, FLOOR(COALESCE((SELECT SUM(o.received::numeric - o.refunded_amount::numeric - ${retainedRefundFeeSql('o.sale_order_id')})
+      FROM sale_orders o WHERE o.client_user_id = c.user_id AND o.sale_order_type IN ('销售单','转换单')), 0) / 100)) AS expected,
+    COALESCE((SELECT SUM(pt.amount) FROM point_transactions pt WHERE pt.user_id = c.user_id AND pt.type IN ('消费赠送','回款赠送','消费冲销')), 0) AS granted
+    FROM client_wechat_users c JOIN sale_orders so ON so.client_user_id = c.user_id WHERE so.sale_order_id = $1 FOR UPDATE OF c`, [saleOrderId])
+  const row = res.rows[0]
+  if (!row) return 0
+  const amount = Math.max(0, Number(row.granted) - Number(row.expected))
+  if (amount === 0) return 0
+  await client.query(`INSERT INTO point_transactions (user_id, ref_order_id, type, amount, created_at)
+    VALUES ($1, $2, '消费冲销', $3, NOW()) ON CONFLICT (user_id, ref_order_id, type)
+    WHERE ref_order_id IS NOT NULL AND type IN ('消费赠送','消费冲销')
+    DO UPDATE SET amount = point_transactions.amount + EXCLUDED.amount`, [row.user_id, saleOrderId, -amount])
+  await consumePointBatches(client, { userId: row.user_id, amount: -amount, refOrderId: saleOrderId })
+  await client.query(`UPDATE client_wechat_users c SET points_balance = COALESCE((SELECT SUM(pb.remaining_amount) FROM point_batches pb WHERE pb.user_id = c.user_id AND pb.expire_at > NOW()), 0), updated_at = NOW() WHERE c.user_id = $1`, [row.user_id])
+  return amount
+}
+
 async function cascadeRefund(client, params) {
   const { saleOrderId, refundPaymentId, items, isWholeOrderRefund, refundReason } = params || {}
   if (!saleOrderId) {
@@ -304,7 +324,7 @@ async function cascadeRefund(client, params) {
             WHERE out_item.ref_sale_item_id = si.sale_item_id AND out_item.item_direction = '转出'
               AND conv_order.status <> '已关闭'), 0)::int AS converted_quantity
         FROM sale_items si CROSS JOIN (SELECT $2::bigint AS id) current_refund
-       WHERE si.sale_order_id = $1 AND si.item_direction = '购买' ORDER BY si.sale_item_id
+       WHERE si.sale_order_id = $1 AND si.item_direction IN ('购买', '转入') ORDER BY si.sale_item_id
     `, [saleOrderId, refundPaymentId])).rows
     if (note.items.some((it) => it.refSaleItemId === 'OVERPAY')) {
       note.items = remapLegacyOverpay(note.items, computeItemOverpayRemainders(paidRows))
@@ -337,8 +357,18 @@ async function cascadeRefund(client, params) {
     `SELECT so.sale_order_type,
             EXISTS (SELECT 1 FROM sale_payment_item_receipts r WHERE r.sale_order_id = so.sale_order_id) AS has_receipts
        FROM sale_orders so WHERE so.sale_order_id = $1`, [saleOrderId])).rows
+  const isConversionOrder = orderTypeRows[0]?.sale_order_type === '转换单'
   const isDepositOrder = orderTypeRows[0]?.sale_order_type === '寄存单'
   const skipReceiptReversal = isDepositOrder && orderTypeRows[0]?.has_receipts !== true
+
+  if (isConversionOrder) {
+    const result = await client.query(`SELECT BOOL_AND(EXISTS (SELECT 1 FROM sale_order_payments r
+      CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(public.try_jsonb(r.note) -> 'items') = 'array' THEN public.try_jsonb(r.note) -> 'items' ELSE '[]'::jsonb END) part
+      WHERE r.sale_order_id = si.sale_order_id AND r.change_type = '退款' AND r.status = '已支付'
+        AND part ->> 'refSaleItemId' = si.sale_item_id AND part ->> 'isFullItemRefund' = 'true')) AS full_refund
+    FROM sale_items si WHERE si.sale_order_id = $1 AND si.item_direction = '转入'`, [saleOrderId])
+    wholeOrder = result.rows[0]?.full_refund === true
+  }
 
   let voidedAllocations = 0
   let refundAllocatedCents = 0
@@ -349,7 +379,9 @@ async function cascadeRefund(client, params) {
   // INVALID_STATE: 退款金额无法完整映射到商品行实收（该单没有任何正向 receipt；自愈补 receipt
   // 只覆盖单购买行）——prod 多行且有钱的寄存单 6,142 单 / ¥38,293,737.84。
   // 空数组 ⇒ 下方写负数 receipt / 负数子分配的循环整体空跑，refundAllocatedCents 保持 0。
-  const receiptRefundItems = skipReceiptReversal
+  const receiptRefundItems = isConversionOrder
+    ? effItems.filter(it => it.saleItemId !== 'OVERPAY').map(it => ({ saleItemId: it.saleItemId, refundAmount: Number(it.netRefundAmount ?? it.refundAmount ?? 0) }))
+    : skipReceiptReversal
     ? []
     : await buildReceiptRefundItems(client, saleOrderId, refundPaymentId, effItems)
   for (const it of receiptRefundItems) {
@@ -534,7 +566,10 @@ async function cascadeRefund(client, params) {
   // ========== 通道 4: point_transactions 比例冲销（订单级，按 refunded/received 比例）==========
   let reversedPoints = 0
   let pointsBalanceUpdated = false
-  if (note && Array.isArray(note.items)) {
+  if (isConversionOrder) {
+    reversedPoints = await reverseConversionPoints(client, saleOrderId)
+    pointsBalanceUpdated = true
+  } else if (note && Array.isArray(note.items)) {
     const pointResult = await settlePointsSafe(client, saleOrderId, 'refund')
     reversedPoints = Math.max(0, -Number(pointResult.delta ?? 0))
     pointsBalanceUpdated = pointResult.delta !== undefined

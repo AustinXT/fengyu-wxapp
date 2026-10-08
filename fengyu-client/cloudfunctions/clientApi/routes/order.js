@@ -1,3 +1,4 @@
+const { getConversionDebt, conversionDebtSql } = require('../utils/conversion-value')
 const { retainedRefundFeeSql } = require('../utils/refund-fee-sql')
 /**
  * 订单模块路由
@@ -273,7 +274,7 @@ async function refreshSpendingTier(client, clientUserId) {
      END::spending_tier,
      updated_at = NOW()
      FROM (
-       SELECT COALESCE(SUM(GREATEST((received::numeric) - (refunded_amount::numeric) - ${retainedRefundFeeSql('sale_orders.sale_order_id')}, 0)), 0) AS total
+       SELECT COALESCE(GREATEST(SUM(CASE WHEN sale_order_type = '转换单' THEN (received::numeric) - (refunded_amount::numeric) - ${retainedRefundFeeSql('sale_orders.sale_order_id')} ELSE GREATEST((received::numeric) - (refunded_amount::numeric) - ${retainedRefundFeeSql('sale_orders.sale_order_id')}, 0) END), 0), 0) AS total
        FROM sale_orders
        WHERE client_user_id = $1
          AND status IN ('已支付', '已完成')
@@ -1308,7 +1309,7 @@ async function reserveDirectOnlinePaymentIntent({
     const remainingBase = order.sale_order_type === '充值单'
       ? effectivePayableAmount
       : totalAmount - pendingPrepaidAmount
-    const remaining = Math.round((remainingBase - netReceived) * 100) / 100
+    const remaining = order.sale_order_type === '转换单' ? Math.max(0, await getConversionDebt(client, orderNo) - pendingPrepaidAmount) : Math.round((remainingBase - netReceived) * 100) / 100
 
     if (effectivePayableAmount <= 0 && order.status === '待支付') {
       return {
@@ -1558,12 +1559,12 @@ const PENDING_AUTO_CLOSE_GUARD_SQL =
  * 窗口只有毫秒级、极难触发，但这是一行就能封死的越权读。
  */
 function queryOrderGuardSnapshot(orderNo, userId) {
-  // ⚠️ `store_name` 要和主查询同口径。主查询是 `SELECT o.*, s.store_name`（同名列
+  // ⚠️ `store_name` 要和主查询同口径。主查询是 `SELECT CASE WHEN o.sale_order_type = '转换单' THEN ${conversionDebtSql('o.sale_order_id')} ELSE NULL END AS conversion_remaining_payable, o.*, s.store_name`（同名列
   // 后者胜出 → 当前门店名），而这里的 `o.*` 会带出 `sale_orders` 里的**下单时快照**；
   // 不对齐的话，`Object.assign` 会把待支付单的门店名换成快照值，而已支付单
   // 不走重读仍是当前值 —— 同一张单在支付前后门店名会跳变（评审 round-16）。
   return pg.query(
-    `SELECT o.*, s.store_name,
+    `SELECT CASE WHEN o.sale_order_type = '转换单' THEN ${conversionDebtSql('o.sale_order_id')} ELSE NULL END AS conversion_remaining_payable, o.*, s.store_name,
             (${PENDING_AUTO_CLOSE_GUARD_SQL}) AS auto_close_eligible
        FROM sale_orders o
        LEFT JOIN stores s ON o.store_id = s.store_id
@@ -1813,7 +1814,7 @@ async function scanDetail(ctx) {
   }
 
   const orders = await pg.query(
-    `SELECT o.*, s.store_name, sw.name AS opener_name
+    `SELECT CASE WHEN o.sale_order_type = '转换单' THEN ${conversionDebtSql('o.sale_order_id')} ELSE NULL END AS conversion_remaining_payable, o.*, s.store_name, sw.name AS opener_name
      FROM sale_orders o
      LEFT JOIN stores s ON o.store_id = s.store_id
      LEFT JOIN staff_wechat_users sw ON o.opened_by = sw.employee_id
@@ -1962,6 +1963,7 @@ async function scanDetail(ctx) {
       // 行级口径、还要再减待扣卡额，而快照里存的是预下单当时定死的线上金额。
       // round-8/9 连着两轮因为这个口径分歧出问题（金额对不上导致复用失败、
       // 抵扣展示与实际收款不符）——权威数据在快照里，就该由后端给出，不让前端二次推算。
+      conversionRemainingPayable: order.conversion_remaining_payable == null ? null : Number(order.conversion_remaining_payable),
       resumablePayAmount: resumableIntentMeta ? resumableIntentMeta.payAmount : null,
       resumablePaymentMethod: resumableIntentMeta ? resumableIntentMeta.paymentMethod : null,
       resumablePrepaidCardAmount: resumableIntentMeta ? resumableIntentMeta.prepaidCardAmount : null,
@@ -2887,6 +2889,7 @@ async function list(ctx) {
       o.prepaid_card_amount,
       o.pending_prepaid_card_amount,
       o.received,
+      CASE WHEN o.sale_order_type = '转换单' THEN ${conversionDebtSql('o.sale_order_id')} ELSE NULL END AS conversion_remaining_payable,
       o.refunded_amount,
       o.created_at
     FROM sale_orders o
@@ -2975,7 +2978,7 @@ async function detail(ctx) {
   }
 
   const orders = await pg.query(
-    `SELECT o.*, s.store_name,
+    `SELECT CASE WHEN o.sale_order_type = '转换单' THEN ${conversionDebtSql('o.sale_order_id')} ELSE NULL END AS conversion_remaining_payable, o.*, s.store_name,
             (${PENDING_AUTO_CLOSE_GUARD_SQL}) AS auto_close_eligible
      FROM sale_orders o
      LEFT JOIN stores s ON o.store_id = s.store_id
@@ -4324,7 +4327,7 @@ async function repay(ctx) {
     if (origOrder.sale_order_type === '转换单') {
       const received = Number(origOrder.received || 0)
       const refundedAmount = Number(origOrder.refunded_amount || 0)
-      remaining = Math.round((Number(origOrder.total_amount || 0) - received + refundedAmount) * 100) / 100
+      remaining = await getConversionDebt(client, saleOrderId)
     } else if (Number(origOrder.refunded_amount || 0) > 0) {
       const repayItemRows = await client.query(
         `SELECT sale_item_id, sale_amount::numeric AS sale_amount, received::numeric AS received

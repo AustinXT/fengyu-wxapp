@@ -398,7 +398,7 @@
 > `remaining_sessions` 扣光 / `picked_up_quantity` 抬满，不排除则该值膨胀成整行标价价值，
 > 同单其它行退款时会把已结清的折抵行误判回「部分支付」。
 
-> ⚠️ **转入行「可提不可退」是既定语义**：转换单整单禁止退款（仅销售单支持），退款候选与 `refund-cascade` 的 effItems 取数均只取 `item_direction='购买'` 行。换入的货只能沿源头销售单退，而源头此时 `refundable = quantity − picked_up_quantity` 已因折抵归零。**若将来放开转换单退款，必须同步让 `refund-cascade` 的 effItems 覆盖转入行**，否则转入家居行的 `picked_up_quantity` 不会被抬、`refundable` 不归零，即成可重复退的资损。
+> **转换单逐项退款（#548，2026-10-09）**：转入行允许按未使用的实际已付价值退款，包含旧项目折抵，不限于本单补款；仅选转入行，保留转出记录及源权益注销。800 元折抵 + 200 元补款换入未用 1,000 元商品，可退 1,000 元。退款全归转换单门店与期间，转换单净额可为负；消费统计在顾客汇总后钳零，不能逐转换单吞掉负额。退款 note 标记 `conversionRefund=true`，首次退款的 `items[].paidAmount` 冻结该行已付份额，重算扣该项累计净退款，手续费不恢复权益；后续补款仅解锁未退行。负差额已充储值金不计入转入价值；体验转换按实际重定价已付退，禁止按更高标价退款。审批锁内复核状态、数量及已付快照，重复审批由 CAS 拒绝。不执行转换撤销，不恢复旧项目、次数、数量或旧欠款。
 > - `购买`（默认）：正常购买行
 > - `转出`：转换退出行，`quantity` = 退次数，`received` = 负数
 > - `转入`：转换转入行，创建新的 sale_item
@@ -671,7 +671,7 @@
 
 ```
 expected = floor( max(0, net_settled) / 100 )
-其中 net_settled = SUM(sale_orders.paid_amount
+其中 net_settled = SUM(sale_orders.received - sale_orders.refunded_amount
                         WHERE sale_order_id = X OR ref_sale_order_id = X)
 delta    = expected - SUM(point_transactions.amount WHERE ref_order_id = X)
 ```
@@ -894,9 +894,9 @@ login 返回中包含 `permissions` 字段：
 17. **员工开单顾客身份验证**：通过手机号查询 `client_wechat_users.phone`，填入 `client_user_id`
 18. **预约取消后可重新发起**：`已取消` 可重新发起；`已关闭` 不可
 19. **回款规则**：`ref_sale_order_id` 必填；回款时原子累加原 `sale_item.received`；支持多次回款（N:1）；支付方式与销售单一致；仅员工端操作
-20. **转换规则**：转换单包含 `转出` 行和 `转入` 行，单事务完成；`转出` 原子扣减 `remaining_sessions`。普通转换 `total_amount` = 正补差价，负差额以 `card_transactions(type='充值', ref_order_id=转换单号)` 转入储值金；正补差允许 `receivedAmount ∈ [0,payable]`，部分收款用 `first_payment_amount` 限制首笔支付，该上限只能在真实支付回调或线下确认入账后清空，后续按订单级欠款回款。体验转换以旧卡划卡价值强制重定价转入行，订单金额/应付/实收均为 0、直接已支付、不得补退差额或形成任何支付流水，并以 `is_experience_conversion=true` 审计。
+20. **转换规则**：转换单包含 `转出` 行和 `转入` 行，单事务完成；`转出` 原子扣减 `remaining_sessions`。普通转换 `total_amount` = 正补差价，负差额以 `card_transactions(type='充值', ref_order_id=转换单号)` 转入储值金；正补差允许 `receivedAmount ∈ [0,payable]`，部分收款用 `first_payment_amount` 限制首笔支付，该上限只能在真实支付回调或线下确认入账后清空，后续按订单级欠款回款。体验转换以旧卡划卡价值强制重定价转入行，订单金额/应付/实收均为 0、直接已支付、不得补退差额或形成首次支付/回款/储值卡抵扣流水；转入商品退款按 #548 单独允许，并以 `is_experience_conversion=true` 审计。
     - **疗程卡累计梯度计价**：员工端和管理后台创建销售单或转换单时，将非体验、非店长特价、非套餐的疗程卡按 `category_id + spec_name` 分组，累计次数为各行 `session_count × quantity` 之和；在同组启用且未删除的普通疗程卡 SKU 中，选择 `session_count > 1`、不超过累计次数的最高档位（同次数档取顾客适用每次价最低者），并按“档位适用总价 ÷ 档位次数 × 行次数”重算每行金额。会员适用 `special_price`，否则适用 `price`。前端仅负责预览，服务端必须以 SKU 数据权威重算；内部单、寄存单、套餐、体验卡、店长特价不参与，体验转换最终由旧卡划卡价值覆盖。
-21. **退款规则**：创建时状态为 `待审批`；店长审批后原子扣减 `remaining_sessions`；`total_amount` 为负数；handling_fee 存入 `remark`
+21. **退款规则**：创建时状态为 `待审批`；店长审批后在同一事务写负数退款款项、逐项净退款 receipt（寄存单沿用无 receipt 豁免）、数量/已付权益重算及级联冲销；手续费和逐项毛/净额存于款项 `note`。销售单/寄存单/转换单均可退（转换只选转入）
 22. **回款/转换/退款仅员工端操作**
 23. **capability 列 SSoT**（2026-04-26 ticket 落地）：体验卡 / 充值卡 等"特殊 SKU 行为"判定一律读 `product_skus.is_experience` / `is_recharge_card`，**禁止**写 `WHERE product_kind = '体验卡'` / `'充值卡'` 字面量。两列互斥（`chk_sku_not_both_capabilities` CHECK 保护）。`product_kind` 仅作组织/分类标签。开单时 `sale_items` 自动快照同名列，行级不可变（admin 后续修改 SKU capability 不影响历史订单）。
 24. **D4 充值卡严格独立**：同一订单 `sale_items.is_recharge_card` 必须全 true 或全 false；混合下单抛 `INVALID_PARAMS: MIXED_RECHARGE_NOT_ALLOWED`。三端应用层（admin / staff / client）已加显式守卫，DB trigger `trg_check_no_mixed_recharge` 在 COMMIT 兜底。
@@ -1007,3 +1007,5 @@ null → 待分配               （订单支付成功）
 | AC-05 | 外部数据源不可用时，门店/员工/顾客查询不受影响 | 断开外部连接 → 验证查询正常 |
 | AC-06 | 数据同步后，新增/变更的门店/员工/顾客数据在 PG 中正确更新 | 修改源数据 → 触发同步 → 验证 PG |
 | AC-07 | 小程序中完成开单后，PG sale_orders 表中 client_user_id 正确填入 | 开单 → 查询 sale_orders.client_user_id |
+
+> #548 转换退款积分：全额现金退款计入转换单，按顾客订单消费净额汇总后的积分目标冲销已有消费积分；只冲销、不补发，原商品权益仍注销。会员滚动12月沿转换单期间计算负额。

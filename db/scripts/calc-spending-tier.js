@@ -76,7 +76,7 @@ function log(msg) {
 const UPDATE_SQL = `
 WITH spend AS (
   SELECT u.user_id,
-         COALESCE(SUM(GREATEST((o.received::numeric) - (o.refunded_amount::numeric) - ${retainedRefundFeeSql('o.sale_order_id')}, 0)) FILTER (
+         COALESCE(SUM(CASE WHEN o.sale_order_type = '转换单' THEN (o.received::numeric) - (o.refunded_amount::numeric) - ${retainedRefundFeeSql('o.sale_order_id')} ELSE GREATEST((o.received::numeric) - (o.refunded_amount::numeric) - ${retainedRefundFeeSql('o.sale_order_id')}, 0) END) FILTER (
                     WHERE o.sale_order_type IN ('销售单', '转换单')
                   ), 0) AS total
     FROM client_wechat_users u

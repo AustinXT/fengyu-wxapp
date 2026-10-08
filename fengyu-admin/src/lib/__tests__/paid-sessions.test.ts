@@ -21,14 +21,14 @@ import {
 
 describe('转换单转入 received 重算', () => {
   it('以旧卡价值 + 净到账为目标，并按转入行金额分摊至分', () => {
-    expect(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL).toContain("conversion_order.sale_order_type = '转换单'")
-    expect(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL).toContain('conversion_order.converted_value + conversion_order.net_received')
-    expect(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL).toContain('LEAST(conversion_order.in_total,')
+    expect(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL).toContain("t.sale_order_type = '转换单'")
+    expect(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL).toContain('t.gross_value - t.reserved')
+    expect(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL).toContain('LEAST(t.active_total,')
     // #182：分摊改用「累计比例的相邻边界差」（与 STEP 1.75 同手法），不再逐行 ROUND + 尾行吸差。
     // 旧写法尾差可为负（target=0.02、四行等权 → -0.01）→ FLOOR(负) = -1 → 误抛 D3；
     // 只钳尾行又会让 Σ 超过 target。边界差保证每行非负且 Σ 精确等于 target。
     expect(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL).toMatch(
-      /ROUND\(target_received \* cumulative_sale_amount \/ in_total, 2\)\s*-\s*ROUND\(target_received \* \(cumulative_sale_amount - item_sale_amount\) \/ in_total, 2\)/,
+      /ROUND\(target \* cumulative \/ active_total, 2\)\s*-\s*ROUND\(target \* \(cumulative - sale_amount\) \/ active_total, 2\)/,
     )
     expect(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL).not.toContain('rn = item_count')
     expect(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL).not.toContain('provisional_received')
@@ -271,7 +271,7 @@ describe('退款 receipt 覆盖分流', () => {
 
     const allocationIndex = fixture.executed.findIndex((text) => text.includes('WITH tg AS'))
     const deductIndex = fixture.executed.findIndex((text) => text.includes('WITH refund_items AS'))
-    const conversionIndex = fixture.executed.findIndex((text) => text.includes('WITH conversion_order AS'))
+    const conversionIndex = fixture.executed.findIndex((text) => text.includes('WITH refund_parts AS'))
     const channelSql = fixture.executed.find((text) => text.includes('AS cumulative_received'))
     const recalcIndex = fixture.executed.findIndex((text) => text.includes('paid_sessions = CASE'))
     expect(allocationIndex).toBeGreaterThan(-1)

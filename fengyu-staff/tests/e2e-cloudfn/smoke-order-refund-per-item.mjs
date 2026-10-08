@@ -16,7 +16,7 @@ import {
 import { invokeStaffApi } from './helpers/invoke.mjs'
 import {
   ensureTestStore, createTestStaff, createTestClient,
-  createTestSaleOrder, createTestSaleItem, cleanupTestData,
+  createTestSaleOrder, createTestSaleItem, createPaidPayment, cleanupTestData,
 } from './helpers/fixtures.mjs'
 
 function rec(line) { console.log(line) }
@@ -40,6 +40,7 @@ async function make3CardPaidOrder(orderNo) {
   })
   await pgQuery(`UPDATE sale_orders SET total_amount=1950, payable_amount=1950, received=1950 WHERE sale_order_id=$1`, [orderNo])
   const rows = await pgQuery(`SELECT sale_item_id FROM sale_items WHERE sale_order_id=$1 ORDER BY sale_item_id`, [orderNo])
+  await createPaidPayment(orderNo, { amount: 1950, items: rows.map(r => ({ saleItemId: r.sale_item_id, amount: 650, salesCategory: '他销自耗' })) })
   return rows.map((r) => r.sale_item_id)  // [ITEM_1, ITEM_2, ITEM_3]
 }
 

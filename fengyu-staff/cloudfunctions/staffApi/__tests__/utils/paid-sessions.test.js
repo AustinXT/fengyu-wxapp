@@ -174,16 +174,16 @@ describe('PAID_SESSIONS_RECALC_SQL 模板字面量守护', () => {
   })
 
   test('转换单转入行按旧卡价值 + 本单净到账分摊，且封顶转入总价', () => {
-    expect(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL).toContain("conversion_order.sale_order_type = '转换单'")
-    expect(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL).toContain("out_item.item_direction = '转出'")
-    expect(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL).toContain("in_item.item_direction = '转入'")
-    expect(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL).toContain('conversion_order.converted_value + conversion_order.net_received')
-    expect(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL).toContain('LEAST(conversion_order.in_total,')
+    expect(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL).toContain("t.sale_order_type = '转换单'")
+    expect(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL).toContain("item_direction = '转出'")
+    expect(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL).toContain("si.item_direction = '转入'")
+    expect(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL).toContain('t.gross_value - t.reserved')
+    expect(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL).toContain('LEAST(t.active_total,')
     // #182：分摊改用「累计比例的相邻边界差」（与 STEP 1.75 同手法），不再逐行 ROUND + 尾行吸差。
     // 旧写法的尾差可为负（target=0.02、四行等权 → -0.01）→ FLOOR(负) = -1 → 误抛 D3；
     // 只钳尾行又会让 Σ 超过 target。边界差保证每行非负且 Σ 精确等于 target。
     expect(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL).toMatch(
-      /ROUND\(target_received \* cumulative_sale_amount \/ in_total, 2\)\s*-\s*ROUND\(target_received \* \(cumulative_sale_amount - item_sale_amount\) \/ in_total, 2\)/,
+      /ROUND\(target \* cumulative \/ active_total, 2\)\s*-\s*ROUND\(target \* \(cumulative - sale_amount\) \/ active_total, 2\)/,
     )
     expect(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL).not.toContain('rn = item_count')
     expect(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL).not.toContain('provisional_received')

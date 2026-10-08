@@ -131,7 +131,14 @@ const FILES = {
 }
 
 function readFile(p) {
-  return fs.readFileSync(p, 'utf8')
+  let source = fs.readFileSync(p, 'utf8')
+  if (['paid-sessions.js', 'paid-sessions.ts', 'payment-allocatable.js', 'payment-allocatable.ts'].includes(path.basename(p))) {
+    const helper = fs.readFileSync(path.join(path.dirname(p), p.endsWith('.ts') ? 'conversion-value.ts' : 'conversion-value.js'), 'utf8')
+    const body = helper.match(/const CONVERSION_VALUE_RECALC_SQL = `([\s\S]*?)`/)[1]
+    source = source.replace('CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL = CONVERSION_VALUE_RECALC_SQL', 'CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL = `' + body + '`')
+    if (path.basename(p).startsWith('payment-allocatable')) source += '\n' + helper
+  }
+  return source
 }
 
 /**
@@ -165,7 +172,7 @@ function normalizeSql(sql) {
  * 适用于 Drizzle 的 sql`...` 与 pg 的 client.query(`...`) 两种用法，提取出来都是纯 SQL 文本。
  */
 function extractBacktickStringContaining(src, marker) {
-  const matches = src.matchAll(/`([^`]+)`/g)
+  const matches = src.matchAll(/`([^`]*)`/g)
   for (const m of matches) {
     if (m[1].includes(marker)) return m[1]
   }
@@ -668,7 +675,7 @@ describe('SUMMARY v3 §2 #14：refund-cascade 双端 5 通道覆盖守护', () =
         expect(src, `${name} 缺按超额容量分配 overpay`).toMatch(/allocateCentsByWeight/)
         expect(src, `${name} 不应把 OVERPAY 限制在已选退款商品`).not.toMatch(/selectedItemIds/)
         // #543：通道 1 对寄存单豁免（该单无任何正向 receipt，映射必抛），其它类型仍须走映射后的列表
-        expect(src, `${name} 通道 1 未使用映射后的 receipt 列表`).toMatch(/const receiptRefundItems = skipReceiptReversal/)
+        expect(src, `${name} 通道 1 未使用映射后的 receipt 列表`).toMatch(/const receiptRefundItems = isConversionOrder[\s\S]*?: skipReceiptReversal/)
         expect(src, `${name} 通道 1 未调用 receipt 映射 helper`).toMatch(/await buildReceiptRefundItems\(/)
       }
     })
@@ -1344,7 +1351,6 @@ describe("ticket 2026-05-19 paid_sessions 重算 SQL 四端字节同义守护", 
       const pairs = [
         'WITH refund_rights AS (',
         'WITH full_refund_zero_items AS (',
-        'WITH conversion_order AS (',
       ]
       for (const marker of pairs) {
         const bodies = []
@@ -1357,6 +1363,7 @@ describe("ticket 2026-05-19 paid_sessions 重算 SQL 四端字节同义守护", 
         expect(bodies.length, `${marker} 的副本份数从 2 变了，请同步本守护`).toBe(2)
         expect(bodies[1], `${marker}: 执行内联副本与导出常量不等价（改一份漏另一份会真库跑旧 SQL）`).toBe(bodies[0])
       }
+      expect(src).toContain("sql.join(CONVERSION_VALUE_RECALC_SQL.split('$1').map(part => sql.raw(part)), sql`${saleOrderId}`)")
       // 附加：改到的寄存单分支与 op 子查询必须两份都在（等价性已隐含，此处给出可读定位）
       const segs = src.split('paid_sessions = CASE').slice(1)
       for (const [i, seg] of segs.entries()) {
@@ -1399,58 +1406,21 @@ describe("ticket 2026-05-19 paid_sessions 重算 SQL 四端字节同义守护", 
 // 转换单转入行 received 重算：staff/client/payNotify/admin 四端支付入口均会调用
 // recalcPaidSessionsForOrder，必须保持同一“旧卡价值 + 净到账”分摊口径。
 describe('转换单转入 received 重算 SQL 四端一致性守护', () => {
-  const marker = 'WITH conversion_order AS'
-  let sqls
-
-  beforeAll(() => {
-    sqls = {
-      staff: normalizeSql(extractBacktickStringContaining(readFile(FILES.staffPaidSessionsJs), marker)),
-      client: normalizeSql(extractBacktickStringContaining(readFile(FILES.clientPaidSessionsJs), marker)),
-      payNotify: normalizeSql(extractBacktickStringContaining(readFile(FILES.payNotifyPaidSessionsJs), marker)),
-      adminTs: normalizeSql(extractBacktickStringContaining(readFile(FILES.adminPaidSessionsTs), marker)),
+  const marker = 'WITH refund_parts AS'
+  const sources = [FILES.staffPaidSessionsJs, FILES.clientPaidSessionsJs, FILES.payNotifyPaidSessionsJs, FILES.adminPaidSessionsTs]
+  test('四端同义，冻结逐项原已付份额，负退款不影响未退项', () => {
+    const sqls = sources.map(file => normalizeSql(extractBacktickStringContaining(readFile(file), marker)))
+    for (const query of sqls) {
+      expect(query).toBe(sqls[0])
+      expect(query).toContain("t.sale_order_type = '转换单'")
+      expect(query).toContain("si.item_direction = '转入'")
+      expect(query).toContain('LEAST(t.active_total, GREATEST(0, t.gross_value - t.reserved))')
+      expect(query).toContain('WHEN paid_value IS NOT NULL THEN GREATEST(0, paid_value - net_refund)')
+      expect(query).toContain('WHEN exited THEN received')
+      expect(query).toContain('ROUND(target * cumulative / active_total, 2) - ROUND(target * (cumulative - sale_amount) / active_total, 2)')
+      expect(query).not.toContain('so.refunded_amount')
     }
-  })
-
-  test('四端归一化后字面一致', () => {
-    expect(sqls.client).toBe(sqls.staff)
-    expect(sqls.payNotify).toBe(sqls.staff)
-    expect(sqls.adminTs).toBe(sqls.staff)
-  })
-
-  // 尾差处理已从「稳定顺序吸收」改为累计边界差，见下一条用例。
-  test('目标值必须为 min(转入总价, 转出旧卡价值 + 订单净到账)', () => {
-    expect(sqls.staff).toContain("conversion_order.sale_order_type = '转换单'")
-    expect(sqls.staff).toContain("out_item.item_direction = '转出'")
-    expect(sqls.staff).toContain("si.item_direction = '转入'")
-    // #182：target 要先扣掉「已退出转入行已占的实收」（waived_in_received），
-    // 否则被再次折抵的转入行会与其余行一起重分摊，received 被改小而 remaining 已注销 → 踩 D3。
-    expect(sqls.staff).toMatch(/LEAST\(conversion_order\.in_total, GREATEST\(0, conversion_order\.converted_value \+ conversion_order\.net_received - conversion_order\.waived_in_received\)\)/)
-    // #182：排除判据是「存在未关闭的转出行引用本行」，**不是** waived_amount > 0——
-    // 全额结清的转入行再被折抵时 Δ=0、不写 waived_amount，却同样已注销权益，
-    // 而本 SQL 是整额覆盖式重分摊，漏排除就会在 target 收缩时把它的 received 改小 → 踩 D3。
-    expect(sqls.staff).toContain("AND NOT (EXISTS (SELECT 1 FROM sale_items conv_out")
-    expect(sqls.staff).toContain("conv_out.ref_sale_item_id = si.sale_item_id")
-    expect(sqls.staff).not.toContain("AND in_item.waived_amount::numeric = 0")
-  })
-
-  // #182：分摊必须用**累计比例的相邻边界差**（与 STEP 1.75 同手法），不得回到
-  // 「逐行 ROUND + 最后一行吸收尾差」：① 尾差可为负（target=0.02、四行等权，每行
-  // ROUND(0.005,2)=0.01，前三行已占 0.03）→ received 变负 → FLOOR(负) = -1 → 误抛 D3；
-  // ② 只把尾行钳到 0 又会让 Σ 超过 target（0.03 > 0.02），凭空膨胀转入行价值。
-  // 边界差同时保证「每行非负」与「Σ 精确等于 target」。
-  test("四端按累计比例的相邻边界差分摊（不得回到尾行吸差）", () => {
-    const boundary = /ROUND\(target_received \* cumulative_sale_amount \/ in_total, 2\)\s*-\s*ROUND\(target_received \* \(cumulative_sale_amount - item_sale_amount\) \/ in_total, 2\)/i
-    const cumulative = /SUM\(si\.sale_amount::numeric\) OVER \(\s*ORDER BY si\.sale_item_id\s*ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\s*\) AS cumulative_sale_amount/i
-    for (const sql of [sqls.staff, sqls.client, sqls.payNotify, sqls.adminTs]) {
-      expect(sql).toMatch(boundary)
-      expect(sql).toMatch(cumulative)
-      expect(sql).not.toMatch(/rn = item_count/i)
-      expect(sql).not.toMatch(/provisional_received/i)
-    }
-  })
-
-  test('转换单转入 received SQL 文本快照', () => {
-    expect(sqls.staff).toMatchSnapshot()
+    expect(sqls[0]).toMatchSnapshot()
   })
 })
 
@@ -2102,8 +2072,8 @@ describe('寄存单/历史订单 资金操作锁定守护', () => {
   test('staff order.js 含 销售单/寄存单退款白名单（Bug L + #543）+ 寄存单/历史订单 回款拦截', () => {
     // Bug L：退款改正向白名单（原「寄存单不支持退款」黑名单已被白名单取代）。
     // #543（2026-10-06）：寄存单**加入**退款白名单——只放开「退款」，回款/改实收仍锁。
-    expect(staffOrder).toContain("origOrder.sale_order_type !== '销售单' && origOrder.sale_order_type !== '寄存单'")
-    expect(staffOrder).toContain('仅销售单/寄存单支持退款')
+    expect(staffOrder).toContain("!['销售单', '寄存单', '转换单'].includes(origOrder.sale_order_type)")
+    expect(staffOrder).toContain('仅销售单/寄存单/转换单支持退款')
     expect(staffOrder).toContain('历史订单不支持退款')
     expect(staffOrder).toContain('充值卡退款请在')
     // 回款仍锁（寄存单「只放开退款」的边界，勿被顺手放开）
@@ -2118,9 +2088,9 @@ describe('寄存单/历史订单 资金操作锁定守护', () => {
 
   test('admin getRefundable/createRefund 含 销售单/寄存单退款白名单（#543）+ 历史订单拦截', () => {
     expect(adminRefunds).toContain('历史订单不支持退款')
-    expect(adminRefunds).toContain("order.saleOrderType !== '销售单' && order.saleOrderType !== '寄存单'")
-    expect(adminRefunds).toContain("origOrder.saleOrderType !== '销售单' && origOrder.saleOrderType !== '寄存单'")
-    expect(adminRefunds).toContain('仅销售单/寄存单支持退款')
+    expect(adminRefunds).toContain("!['销售单', '寄存单', '转换单'].includes(order.saleOrderType)")
+    expect(adminRefunds).toContain("!['销售单', '寄存单', '转换单'].includes(origOrder.saleOrderType)")
+    expect(adminRefunds).toContain('仅销售单/寄存单/转换单支持退款')
   })
 
   test('两端寄存单全额退款后置「已退款」终态（#543 追加口径）', () => {
@@ -3402,7 +3372,7 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
     ]) {
       const sql = normalizeSql(readFile(file))
       expect(sql, `${file} 的 STEP 1.6 丢了 sale_amount > 0 过滤`).toContain(
-        "AND in_item.sale_amount::numeric > 0",
+        "AND si.sale_amount::numeric > 0",
       )
     }
     // 11 处 paid_quantity CASE 里，赠品分支必须排在 ELSE 之前（已由既有断言覆盖数量），
@@ -3564,7 +3534,7 @@ describe('#125 家居转换折抵跨端守护', () => {
       expect(src).toContain('homeRefundQty')
       // 锁集必须覆盖本单全部购买行（不能只锁家居子集），否则与混选转换事务反向加锁；
       // 且必须按 sale_item_id 升序，与 createConversion(Order) 的锁序一致
-      expect(src).toContain("AND item_direction = '购买' ORDER BY sale_item_id FOR UPDATE")
+      expect(src).toContain("ORDER BY sale_item_id FOR UPDATE")
       expect(src).not.toContain("AND product_type = '家居产品' ORDER BY sale_item_id FOR UPDATE")
       expect(src).toMatch(/homeRefundQty[\s\S]{0,2500}cascadeRefund/)
       // 加锁必须无条件：老退款单（无 note.items 且 ref_sale_item_id 空）会让 homeRefundQty 为空，
@@ -4168,9 +4138,9 @@ describe('#182 已退出判据所有站点同源', () => {
       // admin保留可直接执行的Drizzle镜像，STEP1.6字面量与内联各一份。
       const mirrors = file.endsWith('.ts') ? 2 : 1
       expect(count(source, `CASE WHEN ${exited('si')}`)).toBe(3)
-      expect(count(source, `AND NOT ${exited('in_item')}`)).toBe(mirrors)
-      expect(count(source, `AND ${exited('in_item')}`)).toBe(mirrors)
-      expect(count(source, `AND NOT ${exited('si')}`)).toBe(mirrors)
+      expect(source).toContain('WHEN exited THEN received')
+      expect(source).toContain("out_item.item_direction = '转出' AND out_order.status <> '已关闭'")
+      expect(source).toContain('COALESCE(si.remaining_sessions, 0) = 0')
       expect(source).not.toContain('CASE WHEN si.waived_amount::numeric > 0')
     }
   })
@@ -4178,9 +4148,9 @@ describe('#182 已退出判据所有站点同源', () => {
     for (const file of [FILES.staffPaymentAllocatableJs,FILES.clientPaymentAllocatableJs,FILES.payNotifyPaymentAllocatableJs,FILES.adminPaymentAllocatableTs]) {
       const source = readFile(file)
       expect(source).toContain(`${exited('si')} AS converted_out`)
-      expect(count(source, `AND NOT ${exited('in_item')}`)).toBe(1)
-      expect(count(source, `AND ${exited('in_item')}`)).toBe(1)
-      expect(count(source, `AND NOT ${exited('si')}`)).toBe(1)
+      expect(source).toContain('AND NOT r.exited AND r.paid_value IS NULL')
+      expect(source).toContain("out_item.item_direction = '转出' AND out_order.status <> '已关闭'")
+      expect(source).toContain('COALESCE(si.remaining_sessions, 0) = 0')
       expect(source).toContain('if (!fallback) return []')
     }
   })
@@ -4202,11 +4172,11 @@ describe('#529 消费档位与折抵候选传播守卫', () => {
     path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/recompute-customer-tags.ts')]
   test.each(sources)('消费档位实际SQL排手续费：%s', file => {
     const src = readFile(file)
-    const matches = src.match(/SELECT COALESCE\(SUM\(GREATEST\(\(received::numeric\)[^\n]+ AS total/g)
+    const matches = src.match(/SELECT COALESCE\(GREATEST\(SUM\(CASE WHEN sale_order_type = '转换单'[^\n]+ AS total/g)
     expect(matches).not.toBeNull()
     for (const query of matches) {
       expect(query).toContain("retainedRefundFeeSql('sale_orders.sale_order_id')")
-      expect(normalizeSql(query)).toBe('SELECT COALESCE(SUM(GREATEST((received::numeric) - (refunded_amount::numeric) - ?, 0)), 0) AS total')
+      expect(normalizeSql(query)).toContain("CASE WHEN sale_order_type = '转换单' THEN (received::numeric) - (refunded_amount::numeric) - ?")
     }
   })
   test('admin折抵候选展示与准入同时扣手续费', () => {
@@ -4224,7 +4194,7 @@ describe('#529 消费累计/cron/运维及可退零头传播守卫', () => {
     ['fengyu-admin/src/actions/refunds.ts', ''],
   ])('%s 实际累计消费查询排手续费', (file, prefix) => {
     const src = readFile(path.resolve(__dirname, '../../../../..', file))
-    const expected = `SUM(GREATEST((${prefix}received::numeric) - (${prefix}refunded_amount::numeric) - ?, 0))`
+    const expected = `CASE WHEN ${prefix}sale_order_type = '转换单' THEN (${prefix}received::numeric) - (${prefix}refunded_amount::numeric) - ?`
     expect(normalizeSql(src).includes(expected)).toBe(true)
   })
   test('admin卡包及导出可退零头扣fee但资金展示仍读真实received', () => {

@@ -1,3 +1,4 @@
+const { conversionDebtSql, getConversionDebt } = require('../utils/conversion-value')
 const { retainedRefundFeeSql } = require('../utils/refund-fee-sql')
 const { allocateRefundAccounting } = require('../utils/refund-accounting')
 /**
@@ -490,7 +491,7 @@ async function refreshSpendingTier(client, clientUserId) {
      END::spending_tier,
      updated_at = NOW()
      FROM (
-       SELECT COALESCE(SUM(GREATEST((received::numeric) - (refunded_amount::numeric) - ${retainedRefundFeeSql('sale_orders.sale_order_id')}, 0)), 0) AS total
+       SELECT COALESCE(GREATEST(SUM(CASE WHEN sale_order_type = '转换单' THEN (received::numeric) - (refunded_amount::numeric) - ${retainedRefundFeeSql('sale_orders.sale_order_id')} ELSE GREATEST((received::numeric) - (refunded_amount::numeric) - ${retainedRefundFeeSql('sale_orders.sale_order_id')}, 0) END), 0), 0) AS total
        FROM sale_orders
        WHERE client_user_id = $1
          AND status IN ('已支付', '已完成')
@@ -2079,7 +2080,7 @@ async function qrcode(ctx) {
   if (order.status === '部分支付') {
     // 回款场景：actual 储值卡已包含在 received，不能再从 payable 重复扣减。
     const netReceived = Math.round((Number(order.received || 0) - Number(order.refunded_amount || 0)) * 100) / 100
-    const remaining = Math.max(0, Math.round((totalAmount - pendingPrepaidCardAmount - netReceived) * 100) / 100)
+    const remaining = order.sale_order_type === '转换单' ? Math.max(0, await getConversionDebt(pg, saleOrderId) - pendingPrepaidCardAmount) : Math.max(0, Math.round((totalAmount - pendingPrepaidCardAmount - netReceived) * 100) / 100)
     const frozenPayment = Number(order.first_payment_amount || 0)
     actualPayable = frozenPayment > 0 ? Math.min(remaining, frozenPayment) : remaining
   } else if (order.sale_order_type === '充值单' || order.sale_order_type === '转换单') {
@@ -2233,7 +2234,7 @@ async function confirmOffline(ctx) {
       ? Number(order.payable_amount)
       : Math.round((orderTotal - orderPrepaid - orderPendingPrepaid) * 100) / 100
     const settleTarget = order.sale_order_type === '充值单' ? orderPayable : orderTotal
-    const remainingPayable = Math.max(0, Math.round((settleTarget - orderReceived + Number(order.refunded_amount || 0) - orderPendingPrepaid) * 100) / 100)
+    const remainingPayable = order.sale_order_type === '转换单' ? Math.max(0, await getConversionDebt(client, saleOrderId) - orderPendingPrepaid) : Math.max(0, Math.round((settleTarget - orderReceived + Number(order.refunded_amount || 0) - orderPendingPrepaid) * 100) / 100)
     const pendingRemaining = pendingTotal > 0
       ? Math.max(0, Math.min(remainingPayable, Math.round((pendingTotal - orderPendingPrepaid - orderReceived) * 100) / 100))
       : remainingPayable
@@ -2365,7 +2366,7 @@ async function confirmOffline(ctx) {
     const newReceived = Math.round(Number(sumRes.rows[0].new_received) * 100) / 100
     const newPrepaid = Math.round(Number(sumRes.rows[0].new_prepaid) * 100) / 100
     // 结清判定：含卡 received 直接比 settleTarget(=payable+prepaid 锁单快照)，与 admin orders.ts / createRepayment 一致
-    const targetStatus = newReceived + 0.005 >= settleTarget ? '已支付' : '部分支付'
+    const targetStatus = (order.sale_order_type === '转换单' ? newReceived - orderReceived + 0.005 >= remainingPayable + orderPendingPrepaid : newReceived + 0.005 >= settleTarget) ? '已支付' : '部分支付'
     if (!['部分支付', '已支付', '已完成'].includes(order.status)) {
       const documentType = await classifySaleOrderDocumentType(
         client,
@@ -2519,7 +2520,7 @@ async function confirmOffline(ctx) {
     paidAmount: result.newReceived, // 向后兼容字段名（前端老代码读 paidAmount）
     received: result.newReceived,
     confirmAmount: result.confirmAmount,
-    remainingPayable: Math.max(0, Math.round((result.settleTarget - result.newReceived + Number(result.order.refunded_amount || 0)) * 100) / 100),
+    remainingPayable: result.order.sale_order_type === '转换单' ? await getConversionDebt(pg, saleOrderId) : Math.max(0, Math.round((result.settleTarget - result.newReceived + Number(result.order.refunded_amount || 0)) * 100) / 100),
     totalReceived: result.totalReceived,
     message: result.targetStatus === '已支付' ? '线下收款已确认' : '已确认本次收款（订单仍部分支付）'
   }
@@ -3456,7 +3457,7 @@ async function detail(ctx) {
   // 行级退款额（已退行不可回款；与 client/admin 一致）。退款只挂「购买」行。
   const staffDetailRefundMap = await getPerItemRefundedMap(pg, saleOrderId)
   for (const it of items) {
-    if (it.item_direction === '购买') {
+    if (it.item_direction === '购买' || it.item_direction === '转入') {
       it.refunded_amount = Number(staffDetailRefundMap.get(it.sale_item_id) || 0)
     }
   }
@@ -3524,11 +3525,13 @@ async function detail(ctx) {
 
   // 多收余数（overpay）：按 sale_item 行级 received 归属，汇总字段只供老前端展示。
   // 仅销售单/转换单非历史单有意义（与可退口径一致）。
-  const purchaseItems = items.filter((it) => it.item_direction === '购买')
+  const purchaseItems = items.filter((it) => it.item_direction === (order.sale_order_type === '转换单' ? '转入' : '购买'))
   const refundableItems = purchaseItems.map(it => ({ ...it,
     received: Math.max(0, Number(it.received ?? 0) - Number(it.retained_refund_amount ?? 0)) }))
   const itemOverpayById = computeItemOverpayRemainders(refundableItems)
   for (const it of purchaseItems) {
+    const src = refundableItems.find(row => row.sale_item_id === it.sale_item_id)
+    it.refundable_quantity = src ? calculateUnusedQuantity(src) : 0
     it.overpay_refundable = Math.max(0, Number(itemOverpayById.get(it.sale_item_id) || 0))
   }
   const overpayRefundable =
@@ -3539,6 +3542,7 @@ async function detail(ctx) {
   // #214：这里是 `SELECT o.*` 原样展开，新增的 lakala_payment_intent 里含 paySign /
   // prepay_id 等支付凭据，只对归属顾客本人有意义，不该下发给员工端。
   // clientApi 的 order.detail 有同款剥离，两端必须保持一致。
+  if (order.sale_order_type === '转换单') order.conversion_remaining_payable = await getConversionDebt(pg, saleOrderId)
   const { lakala_payment_intent: _omitPaymentIntent, ...orderForStaff } = order
 
   ctx.result = {
@@ -3742,13 +3746,14 @@ async function createRefund(ctx) {
   if (origOrder.legacy_source === 'workfine') {
     throw new Error('INVALID_STATE: 历史订单不支持退款')
   }
-  if (origOrder.sale_order_type !== '销售单' && origOrder.sale_order_type !== '寄存单') {
+  if (!['销售单', '寄存单', '转换单'].includes(origOrder.sale_order_type)) {
     if (origOrder.sale_order_type === '充值单') {
       throw new Error('INVALID_STATE: 充值卡退款请在「充值卡」入口发起')
     }
-    throw new Error('INVALID_STATE: 仅销售单/寄存单支持退款')
+    throw new Error('INVALID_STATE: 仅销售单/寄存单/转换单支持退款')
   }
 
+  if (origOrder.sale_order_type === '转换单' && (origOrder.lakala_out_order_no || Number(origOrder.pending_prepaid_card_amount || 0) > 0)) throw new Error('CONFLICT: 转换单存在进行中的支付，请先完成或取消后退款')
   // in-flight 唯一性：同一原单仅允许一笔 '待审批' 退款（DB 上有 partial unique uq_sop_status_audit 兜底）
   const inflightRefunds = await pg.query(
     `SELECT id FROM sale_order_payments
@@ -3797,7 +3802,7 @@ async function createRefund(ctx) {
                          AND out_item.item_direction = '转出'
                          AND conv_order.status <> '已关闭'), 0)::int AS converted_quantity
        FROM sale_items si
-      WHERE si.sale_order_id = $1 AND si.item_direction = '购买'`,
+      WHERE si.sale_order_id = $1 AND si.item_direction = CASE WHEN (SELECT sale_order_type FROM sale_orders WHERE sale_order_id = $1) = '转换单' THEN '转入'::item_direction ELSE '购买'::item_direction END`,
     [refSaleOrderId]
   )
 
@@ -3865,7 +3870,7 @@ async function createRefund(ctx) {
   // 修复（Bug A 重复退款）：received 是不减的毛实收，必须减去已退 refunded_amount 得净可退；
   // 否则全额退后 refundCap 仍 = received → 可无限重复全额退款。paymentsNet 已含退款负数（流水完整单的净可退）；
   // received - refunded_amount 为 legacy/流水缺失单兜底。两端镜像 admin refunds.ts。
-  const refundCap = Math.max(paymentsNet, Number(origOrder.received || 0) - Number(origOrder.refunded_amount || 0))
+  const refundCap = origOrder.sale_order_type === '转换单' ? origItems.reduce((sum, it) => sum + Number(it.received || 0), 0) : Math.max(paymentsNet, Number(origOrder.received || 0) - Number(origOrder.refunded_amount || 0))
   if (finalRefundAmount > refundCap + 0.001) {
     // 疗程卡强制整卡全退、退款数量不可调（buildRefundDetails）：部分支付订单整卡值 > 净已收时，
     // 直接拒绝会导致永远无法退款。改为截断到 cap（只退已付部分）、仍作废整卡（数量不变），
@@ -3915,6 +3920,7 @@ async function createRefund(ctx) {
   const accountedDetails = allocateRefundAccounting(refundDetails, new Map(origItems.map(it => [it.sale_item_id, Number(it.received ?? 0)])), fee)
   const detailNote = JSON.stringify({
     refundAccountingVersion: 2,
+    conversionRefund: origOrder.sale_order_type === '转换单',
     _v: 2,
     refundByCard,
     refundByOrigin,
@@ -4071,8 +4077,32 @@ async function approveRefund(ctx) {
     )
     const paymentsNetNow = Number(capNowRes.rows[0]?.net || 0)
     const refundCapNow = Math.max(paymentsNetNow, Number(sopRow.received || 0) - Number(sopRow.refunded_amount || 0))
-    if (refundAbs > refundCapNow + 0.001) {
+    if (sopRow.sale_order_type !== '转换单' && refundAbs > refundCapNow + 0.001) {
       throw new Error('INVALID_STATE: 订单可退余额已变化，请刷新后重新发起退款')
+    }
+
+    if (sopRow.sale_order_type === '转换单') {
+      const lockedOrder = await client.query('SELECT status FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE', [refSaleOrderId])
+      if (!['已支付', '部分支付', '已完成'].includes(lockedOrder.rows[0]?.status)) throw new Error('INVALID_STATE: 原转换单状态已变化')
+      await client.query("SELECT sale_item_id FROM sale_items WHERE sale_order_id = $1 AND item_direction = '转入' ORDER BY sale_item_id FOR UPDATE", [refSaleOrderId])
+      const current = await client.query(`SELECT si.*, GREATEST(0, si.received::numeric - ${retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true)}) AS received,
+        COALESCE(si.picked_up_quantity, 0) AS picked_quantity,
+        COALESCE((SELECT SUM(GREATEST(0, -oi.received::numeric)) FROM sale_items oi JOIN sale_orders co ON co.sale_order_id = oi.sale_order_id WHERE oi.ref_sale_item_id = si.sale_item_id AND oi.item_direction = '转出' AND co.status <> '已关闭'), 0) AS converted_amount,
+        COALESCE((SELECT SUM(oi.quantity) FROM sale_items oi JOIN sale_orders co ON co.sale_order_id = oi.sale_order_id WHERE oi.ref_sale_item_id = si.sale_item_id AND oi.item_direction = '转出' AND co.status <> '已关闭'), 0)::int AS converted_quantity
+        FROM sale_items si WHERE si.sale_order_id = $1 AND si.item_direction = '转入'`, [refSaleOrderId])
+      const note = JSON.parse(sopRow.note || '{}')
+      if (note.conversionRefund !== true || !Array.isArray(note.items) || !note.items.length) throw new Error('INVALID_STATE: 转换退款明细缺失')
+      const available = new Map(current.rows.map(it => [it.sale_item_id, it]))
+      const overpay = computeItemOverpayRemainders(current.rows)
+      for (const it of note.items) {
+        const row = available.get(it.refSaleItemId), qty = Number(it.quantity)
+        if (!row || !Number.isInteger(qty) || qty < 0 || qty > calculateUnusedQuantity(row)
+            || Math.abs(Number(it.paidAmount) - Number(row.received)) > 0.005
+            || (row.product_type === '疗程卡' && qty > 0 && qty !== calculateUnusedQuantity(row))
+            || Number(it.refundAmount) > Math.round((calculateUnusedQuantity(row) * Number(row.unit_real_price) + Number(overpay.get(row.sale_item_id) || 0)) * 100) / 100 + 0.001) {
+          throw new Error('CONFLICT: 转换商品可退金额或数量已变化，请重新发起退款')
+        }
+      }
     }
 
     // 1. CAS 翻转流水状态 + 同一条 UPDATE 写审批人/时间/备注（幂等哨兵）
@@ -4175,7 +4205,7 @@ async function approveRefund(ctx) {
                 unit_real_price, received
            FROM sale_items
           WHERE sale_order_id = $1
-            AND item_direction = '购买'
+            AND item_direction = CASE WHEN (SELECT sale_order_type FROM sale_orders WHERE sale_order_id = $1) = '转换单' THEN '转入'::item_direction ELSE '购买'::item_direction END
           ORDER BY sale_item_id
             FOR UPDATE`,
         [refSaleOrderId],
@@ -4205,7 +4235,7 @@ async function approveRefund(ctx) {
                 ), 0)::int AS converted_quantity
            FROM sale_items si CROSS JOIN (SELECT $2::bigint AS id) current_refund
           WHERE si.sale_order_id = $1
-            AND si.item_direction = '购买'`,
+            AND si.item_direction = CASE WHEN (SELECT sale_order_type FROM sale_orders WHERE sale_order_id = $1) = '转换单' THEN '转入'::item_direction ELSE '购买'::item_direction END`,
         [refSaleOrderId, paymentId],
       )
       const consumedById = new Map(consumedRes.rows.map((c) => [c.sale_item_id, c]))
@@ -4277,7 +4307,10 @@ async function approveRefund(ctx) {
     // sale_payment_item_receipts 统计 refunded，而寄存单该表恒零行、sale_amount 又是**标价快照**，
     // 会被判成 received < retained_value → 把「已支付」误改成「部分支付」，
     // 让 total_amount=0 的寄存单掉进欠款/催款口径。两端镜像 admin refunds.ts。
-    if (sopRow.sale_order_type !== '寄存单') {
+    if (sopRow.sale_order_type === '转换单') {
+      await client.query(`UPDATE sale_orders SET status = CASE WHEN ${conversionDebtSql('sale_orders.sale_order_id')} > 0.01 THEN '部分支付'::order_status ELSE '已支付'::order_status END WHERE sale_order_id = $1`, [refSaleOrderId])
+    }
+    if (sopRow.sale_order_type !== '寄存单' && sopRow.sale_order_type !== '转换单') {
       await reconcileOrderStatusAfterRefund(client, refSaleOrderId)
     } else {
       // 寄存单退款终态（2026-10-06 追加口径）：走不到 reconcileOrderStatusAfterRefund（理由见上），
@@ -4306,10 +4339,14 @@ async function approveRefund(ctx) {
                      THEN COALESCE(si.remaining_sessions, 0) > 0
                    ELSE COALESCE(si.paid_sessions, 0)
                         > GREATEST(0, si.session_count - COALESCE(si.remaining_sessions, 0))
-                 END AS has_usable_right
+                 END OR ((SELECT sale_order_type FROM sale_orders WHERE sale_order_id = $1) = '转换单' AND si.product_type = '疗程卡'
+              AND NOT EXISTS (SELECT 1 FROM sale_items future_out JOIN sale_orders future_order ON future_order.sale_order_id = future_out.sale_order_id
+                WHERE future_out.ref_sale_item_id = si.sale_item_id AND future_out.item_direction = '转出' AND future_order.status <> '已关闭')
+              AND GREATEST(0, si.received::numeric - ${retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true)}
+                - GREATEST(0, COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0)) * si.unit_real_price::numeric) > 0.005) AS has_usable_right
             FROM sale_items si
            WHERE si.sale_order_id = $1
-             AND si.item_direction = '购买'
+             AND si.item_direction = CASE WHEN (SELECT sale_order_type FROM sale_orders WHERE sale_order_id = $1) = '转换单' THEN '转入'::item_direction ELSE '购买'::item_direction END
         ),
         this_refund_sessions AS (
           SELECT COALESCE(SUM(GREATEST(0, public.try_numeric(elem ->> 'quantity'))), 0) AS refunded_sessions
@@ -4330,7 +4367,11 @@ async function approveRefund(ctx) {
            AND so.status IN ('已支付', '已完成', '部分支付')
            AND EXISTS (SELECT 1 FROM deposit_items)
            AND NOT EXISTS (SELECT 1 FROM deposit_items di WHERE di.has_usable_right)
-           AND (SELECT refunded_sessions FROM this_refund_sessions) > 0
+           AND ((SELECT refunded_sessions FROM this_refund_sessions) > 0 OR ((SELECT sale_order_type FROM sale_orders WHERE sale_order_id = $1) = '转换单' AND EXISTS (
+              SELECT 1 FROM sale_order_payments previous_refund CROSS JOIN LATERAL jsonb_array_elements(
+                CASE WHEN jsonb_typeof(public.try_jsonb(previous_refund.note) -> 'items') = 'array' THEN public.try_jsonb(previous_refund.note) -> 'items' ELSE '[]'::jsonb END) previous_part
+              WHERE previous_refund.sale_order_id = so.sale_order_id AND previous_refund.change_type = '退款' AND previous_refund.status = '已支付'
+                AND public.try_numeric(previous_part ->> 'quantity') > 0)))
       `, [refSaleOrderId, paymentId])
       depositMarkedRefunded = (depositRefundedRes.rowCount || 0) > 0
     }
@@ -4649,7 +4690,7 @@ async function createRepayment(ctx) {
     const origTotal = Number(locked.total_amount || 0)
     const origReceived = Number(locked.received || 0)
     const origRefunded = Number(locked.refunded_amount || 0)
-    const remainingPayable = Math.round((origTotal - origReceived + origRefunded) * 100) / 100
+    const remainingPayable = locked.sale_order_type === '转换单' ? await getConversionDebt(client, refSaleOrderId) : Math.round((origTotal - origReceived + origRefunded) * 100) / 100
 
     if (onlinePaymentAmount !== null) {
       if (locked.sale_order_type !== '转换单' || locked.is_experience_conversion === true) {
@@ -4692,7 +4733,7 @@ async function createRepayment(ctx) {
           throw new Error(`INVALID_PARAMS: 子项 ${it.saleItemId} 回款额超过该行可回款额`)
         }
       }
-    } else if (orderHasRefund) {
+    } else if (orderHasRefund && locked.sale_order_type !== '转换单') {
       // 整单回款（无 items[]）且订单有退款：非定向瀑布流会误充已退行（received 靠 STEP1.5 兜底，
       // 但 receipt/营业额分配会误归已退行）。要求店长按子项回款未退款项目，精确控制资金落点。
       throw new Error('INVALID_STATE: 本单存在已退款项目，请按子项回款未退款的项目')
@@ -4816,7 +4857,7 @@ async function createRepayment(ctx) {
     // rep2 锁定的 origPayable + origPrepaid > total 误判部分支付）。改锚 total 单调正确。
     // 充值单不进回款路径（一次性付清），total 锚无副作用。
     const settleTarget = Math.round(Number(locked.total_amount || 0) * 100) / 100
-    const targetStatus = settled + 0.001 >= settleTarget ? '已支付' : '部分支付'
+    const targetStatus = (locked.sale_order_type === '转换单' ? totalThisTime + 0.001 >= remainingPayable : settled + 0.001 >= settleTarget) ? '已支付' : '部分支付'
     if (!['部分支付', '已支付', '已完成'].includes(locked.status)) {
       const documentType = await classifySaleOrderDocumentType(
         client,

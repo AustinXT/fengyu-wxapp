@@ -124,7 +124,7 @@ describe('cron-worker STEP 7 — auditPaymentInvariants', () => {
     expect(i1).toContain('LEFT JOIN')
     expect(i1.indexOf('LEFT JOIN')).toBeLessThan(i1.indexOf('WHERE'))
     expect(sqlTexts.some((s) => s.includes('refunded_amount') && s.includes("change_type = '退款'"))).toBe(true)
-    expect(sqlTexts.some((s) => s.includes('refunded_amount::numeric > so.received'))).toBe(true) // I2b refunded_le_received
+    expect(sqlTexts.some((s) => s.includes("refunded_amount::numeric > CASE WHEN so.sale_order_type = '转换单'") && s.includes("si.item_direction = '转入'") && s.includes("si.item_direction = '转出'"))).toBe(true) // I2b refunded_le_received
     expect(sqlTexts.some((s) => s.includes('points_balance') && s.includes('point_batches'))).toBe(true)
     expect(sqlTexts.some((s) => s.includes('prepaid_cards') && s.includes('card_transactions'))).toBe(true)
     expect(sqlTexts.some((s) => s.includes('payable_amount') && s.includes('total_amount'))).toBe(true)

@@ -103,8 +103,9 @@ export function canEditPaymentPerformanceAttribution(
 }
 
 export function calculateConfirmOfflineAmounts(
-  order: Pick<SaleOrder, "payableAmount" | "received" | "saleOrderType" | "firstPaymentAmount">,
-  items: Array<Pick<SaleItem, "pendingReceived">>,
+  order: Pick<SaleOrder, "payableAmount" | "received" | "saleOrderType" | "firstPaymentAmount"> & Partial<Pick<SaleOrder, "pendingPrepaidCardAmount">>,
+  items: Array<Pick<SaleItem, "pendingReceived"> & Partial<Pick<SaleItem, "itemDirection" | "received" | "saleAmount" | "saleItemId">>>,
+  payments: SaleOrderPayment[] = [],
 ): { remainingPayable: number; suggestedAmount: number } {
   // payable_amount 已扣除已结算和待结算的储值卡金额，是确认线下现金收款的持久化上限。
   // 不能由 total - prepaid_card_amount 重新推导，否则会漏掉 pending_prepaid_card_amount。
@@ -115,7 +116,13 @@ export function calculateConfirmOfflineAmounts(
   );
   const storedReceived = Number(order.received);
   const paidAmount = Number.isFinite(storedReceived) ? storedReceived : 0;
-  const remainingPayable = Math.max(0, Math.round((payableAmount - paidAmount) * 100) / 100);
+  const refunded = new Set(payments.filter(p => p.changeType === '退款' && p.status === '已支付').flatMap(p => {
+    try { return (JSON.parse(p.note || '{}').items || []).map((it: { refSaleItemId: string }) => it.refSaleItemId); } catch { return []; }
+  }));
+  const inItems = items.filter(it => it.itemDirection === '转入');
+  const remainingPayable = order.saleOrderType === '转换单' && inItems.length > 0
+    ? Math.max(0, inItems.filter(it => !refunded.has(it.saleItemId)).reduce((sum, it) => sum + Math.max(0, Number(it.saleAmount) - Number(it.received)), 0) - Number(order.pendingPrepaidCardAmount || 0))
+    : Math.max(0, Math.round((payableAmount - paidAmount) * 100) / 100);
   const suggestedAmount = order.saleOrderType === "转换单"
     ? Math.max(0, Math.min(remainingPayable, Number(order.firstPaymentAmount ?? remainingPayable)))
     : Math.max(
@@ -254,10 +261,15 @@ export default function OrderDetailPageClient({
   // 回款欠款（总额口径 = total − paidAmount，含储值卡，与 status 结清判定一致）：
   // 用于「录入回款」按钮条件 + 剩余欠款展示。旧口径 payable(扣卡) − paidAmount(含卡) 会让含卡部分支付单
   // 算成 ≤0 → clamp 死锁（按钮消失、显示欠款¥0），故回款改用总额减。
-  const repayRemaining = Math.max(0, Math.round((totalAmount - paidAmount) * 100) / 100);
+  const refundedIds = new Set((payments || []).filter(p => p.changeType === "退款" && p.status === "已支付").flatMap(p => {
+    try { return (JSON.parse(p.note || '{}').items || []).map((it: { refSaleItemId: string }) => it.refSaleItemId); } catch { return []; }
+  }));
+  const repayRemaining = order.saleOrderType === "转换单"
+    ? items.filter(it => it.itemDirection === "转入" && !refundedIds.has(it.saleItemId)).reduce((sum, it) => sum + Math.max(0, Number(it.saleAmount) - Number(it.received)), 0)
+    : Math.max(0, Math.round((totalAmount - paidAmount) * 100) / 100);
   // 确认收款的剩余应收现金（payable 口径，不含储值卡）：作确认收款弹层预填/上限。
   // 开单约定实付草稿合计（pending_received 之和），cap 到剩余应付现金，作确认收款默认预填（两步式 2026-06-07）。
-  const { remainingPayable, suggestedAmount: pendingReceivedTotal } = calculateConfirmOfflineAmounts(order, items);
+  const { remainingPayable, suggestedAmount: pendingReceivedTotal } = calculateConfirmOfflineAmounts(order, items, payments);
   // 确认收款：线下「待支付」订单的首次收款入账入口
   const canShowConfirmOffline = canConfirmOffline && order.paymentMethod === "线下" && order.status === "待支付";
 
@@ -284,7 +296,7 @@ export default function OrderDetailPageClient({
   // （历史订单是 sale_order_type='销售单' 但 legacySource='workfine'，必须显式排除，否则按钮会露出）
   const canShowRefund =
     canRefund &&
-    (order.saleOrderType === "销售单" || order.saleOrderType === "寄存单") &&
+    (order.saleOrderType === "销售单" || order.saleOrderType === "寄存单" || order.saleOrderType === "转换单") &&
     !isWorkfineLegacy(order.legacySource) &&
     (order.status === "已支付" || order.status === "已完成" || order.status === "部分支付");
 
@@ -423,7 +435,7 @@ export default function OrderDetailPageClient({
                 {/* 2026-04-26 sale-order-domain-refactor：refunded_amount > 0 推导"已退款"角标 */}
                 {hasRefund && (
                   <Badge variant="secondary" className="bg-[#FFEBEE] text-[#C62828]">
-                    已退款
+                    {order.saleOrderType === "转换单" ? "部分退款" : "已退款"}
                   </Badge>
                 )}
                 {/* 历史订单（WorkFine 导入）角标 */}

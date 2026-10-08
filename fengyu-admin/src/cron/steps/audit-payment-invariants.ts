@@ -102,7 +102,10 @@ export async function auditPaymentInvariants(db: Db): Promise<PaymentInvariantsR
            so.received::numeric        AS received,
            so.refunded_amount::numeric AS refunded_amount
     FROM sale_orders so
-    WHERE so.refunded_amount::numeric > so.received::numeric + ${MONEY_EPSILON}
+    WHERE so.refunded_amount::numeric > CASE WHEN so.sale_order_type = '转换单' THEN
+      LEAST(COALESCE((SELECT SUM(GREATEST(0, si.sale_amount::numeric)) FROM sale_items si WHERE si.sale_order_id = so.sale_order_id AND si.item_direction = '转入'), 0),
+        so.received::numeric + COALESCE((SELECT SUM(GREATEST(0, -si.received::numeric)) FROM sale_items si WHERE si.sale_order_id = so.sale_order_id AND si.item_direction = '转出'), 0))
+      ELSE so.received::numeric END + ${MONEY_EPSILON}
     LIMIT ${SAMPLE_LIMIT}
   `)) as Array<{ sale_order_id: string; received: string | number; refunded_amount: string | number }>
   if (r2b.length > 0) {

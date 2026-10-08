@@ -71,6 +71,7 @@ interface RawOrder {
   is_activity?: boolean;
   is_experience_conversion?: boolean;
   remark?: string;
+  conversion_remaining_payable?: number;
 }
 
 interface RawOrderItem {
@@ -102,6 +103,7 @@ interface RawOrderItem {
   picked_up_quantity?: number;
   refunded_quantity?: number;
   converted_quantity?: number;
+  refundable_quantity?: number;
 }
 
 interface RawPayment {
@@ -168,6 +170,7 @@ interface DisplayOrderItem {
   paidUnusedSessions: number;
   /** 该商品子项自己的多收余数 */
   overpayRefundable: number;
+  refundableQuantity: number;
   /** 三段进度条百分比（用于 WXML 内联 style） */
   remainPct: number;
   paidUnusedPct: number;
@@ -363,6 +366,7 @@ Page({
           usedSessions: used,
           paidUnusedSessions: paidUnused,
           overpayRefundable,
+          refundableQuantity: Number(it.refundable_quantity || 0),
           remainPct: pct(remain),
           paidUnusedPct: pct(paidUnused),
           unpaidPct: pct(unpaid),
@@ -475,10 +479,10 @@ Page({
       const received = Number(o.received || 0);
       const refundedAmount = Number(o.refunded_amount || 0);
       const netReceived = Math.round((received - refundedAmount) * 100) / 100;
-      const grossRemainingPayable = Math.max(0, Math.round((totalAmount - netReceived) * 100) / 100);
+      const grossRemainingPayable = o.sale_order_type === '转换单' ? Number(o.conversion_remaining_payable || 0) : Math.max(0, Math.round((totalAmount - netReceived) * 100) / 100);
       // 现金待收 = total − netReceived − pendingPrepaid。
       // actual 储值卡已包含在 received，不能再扣；pending 尚未进入 received，需单独从本次现金欠款扣除。
-      const remainingPayable = Math.max(0, Math.round((totalAmount - netReceived - pendingPrepaidCardAmount) * 100) / 100);
+      const remainingPayable = Math.max(0, Math.round((grossRemainingPayable - pendingPrepaidCardAmount) * 100) / 100);
       // 销售单仍仅在部分支付后发起回款；普通转换单允许零首付形成的待支付欠款
       // 进入订单级回款。是否有欠款与是否允许新建支付意图分离：已有 cap 时保留欠款展示和二维码恢复入口。
       const orderType = o.sale_order_type || '';
@@ -573,7 +577,7 @@ Page({
         statusClass: STATUS_CLASS[o.status] || 'pending',
         // 退款后状态角标（Bug B）：按 refunded_amount 派生「已退款/部分退款」，订单主状态不变（对齐 admin）
         refundBadge: refundedAmount > 0 && o.status !== '已退款'
-          ? (refundedAmount >= received - 0.01 ? '已退款' : '部分退款')
+          ? (o.sale_order_type === '转换单' ? '部分退款' : (refundedAmount >= received - 0.01 ? '已退款' : '部分退款'))
           : '',
         hasPendingRefund,
         attributionMinDate,
@@ -754,7 +758,8 @@ Page({
     // 可退项：疗程卡按「已付未用次数」可退；行级多收余数随所属子项一起退，不再作为独立订单级选项。
     // 疗程卡整卡全退（不支持部分退次数），label 标注可退次数。
     const options = o.items
-      .filter((it) => (it.sessionCount == null ? true : it.paidUnusedSessions > 0) || it.overpayRefundable > 0)
+      .filter((it) => it.itemDirection === (o.orderType === '转换单' ? '转入' : '购买'))
+      .filter((it) => it.refundableQuantity > 0 || it.overpayRefundable > 0)
       .map((it) => ({
         saleItemId: it.saleItemId,
         label: [

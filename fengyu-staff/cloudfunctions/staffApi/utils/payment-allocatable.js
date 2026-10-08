@@ -1,3 +1,4 @@
+const { CONVERSION_RECEIPT_SQL } = require('./conversion-value')
 /**
  * 款项逐项实收额捕获（营业额分配事实父表）—— 员工端独立副本
  *
@@ -17,70 +18,7 @@ function roundCents(v) {
 
 // #300：receipt = 本次收款前后转入行已兑现价值的差；转出折抵值不随回款改变。
 // 与 paid-sessions STEP 1.6 同一封顶/已折走行/累计边界规则，四端整段守护。
-const CONVERSION_RECEIPT_DELTAS_SQL = `WITH conversion_receipt_order AS (
-      SELECT so.sale_order_type,
-             GREATEST(0, so.received::numeric - so.refunded_amount::numeric) AS net_received,
-             COALESCE((
-               SELECT SUM(GREATEST(0, -out_item.received::numeric))
-               FROM sale_items out_item
-               WHERE out_item.sale_order_id = $1 AND out_item.item_direction = '转出'
-             ), 0)::numeric AS converted_value,
-             COALESCE((
-               SELECT SUM(in_item.sale_amount::numeric)
-               FROM sale_items in_item
-               WHERE in_item.sale_order_id = $1 AND in_item.item_direction = '转入'
-                 AND in_item.sale_amount::numeric > 0
-                 AND NOT (EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = in_item.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭') AND (CASE WHEN in_item.product_type = '疗程卡' THEN COALESCE(in_item.remaining_sessions, 0) = 0 ELSE (COALESCE(in_item.picked_up_quantity, 0) + COALESCE(in_item.refunded_quantity, 0) + COALESCE(in_item.converted_quantity, 0)) >= in_item.quantity END))
-             ), 0)::numeric AS in_total,
-             COALESCE((
-               SELECT SUM(in_item.received::numeric)
-               FROM sale_items in_item
-               WHERE in_item.sale_order_id = $1 AND in_item.item_direction = '转入'
-                 AND (EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = in_item.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭') AND (CASE WHEN in_item.product_type = '疗程卡' THEN COALESCE(in_item.remaining_sessions, 0) = 0 ELSE (COALESCE(in_item.picked_up_quantity, 0) + COALESCE(in_item.refunded_quantity, 0) + COALESCE(in_item.converted_quantity, 0)) >= in_item.quantity END))
-             ), 0)::numeric AS waived_in_received
-      FROM sale_orders so
-      WHERE so.sale_order_id = $1
-    ),
-    ranked AS (
-      SELECT si.sale_item_id,
-             si.sale_amount::numeric AS item_sale_amount,
-             conversion_receipt_order.in_total,
-             LEAST(conversion_receipt_order.in_total,
-                   GREATEST(0, conversion_receipt_order.converted_value + conversion_receipt_order.net_received
-                               - conversion_receipt_order.waived_in_received)) AS target_received,
-             LEAST(conversion_receipt_order.in_total,
-                   GREATEST(0, conversion_receipt_order.converted_value
-                     + GREATEST(0, conversion_receipt_order.net_received - $2::numeric)
-                     - conversion_receipt_order.waived_in_received)) AS target_before,
-             SUM(si.sale_amount::numeric) OVER (
-               ORDER BY si.sale_item_id
-               ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-             ) AS cumulative_sale_amount
-      FROM sale_items si
-      CROSS JOIN conversion_receipt_order
-      WHERE conversion_receipt_order.sale_order_type = '转换单'
-        AND si.sale_order_id = $1
-        AND si.item_direction = '转入'
-        AND si.sale_amount::numeric > 0
-        AND NOT (EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = si.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭') AND (CASE WHEN si.product_type = '疗程卡' THEN COALESCE(si.remaining_sessions, 0) = 0 ELSE (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)) >= si.quantity END))
-    ),
-    allocated AS (
-      SELECT sale_item_id,
-             (
-               ROUND(target_received * cumulative_sale_amount / in_total, 2)
-               - ROUND(target_received * (cumulative_sale_amount - item_sale_amount) / in_total, 2)
-              - (
-               ROUND(target_before * cumulative_sale_amount / in_total, 2)
-               - ROUND(target_before * (cumulative_sale_amount - item_sale_amount) / in_total, 2)
-             ))::numeric(10, 2) AS amount
-      FROM ranked
-      WHERE in_total > 0
-    )
-    SELECT a.sale_item_id, a.amount, si.sales_category
-    FROM allocated a
-    JOIN sale_items si ON si.sale_item_id = a.sale_item_id
-    WHERE a.amount <> 0
-    ORDER BY a.sale_item_id`
+const CONVERSION_RECEIPT_DELTAS_SQL = CONVERSION_RECEIPT_SQL
 
 async function upsertReceipt(client, { salePaymentId, saleOrderId, saleItemId, amount, salesCategory }) {
   const rows = await client.query(
