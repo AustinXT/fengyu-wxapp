@@ -25,8 +25,13 @@ try {
   await client.query('BEGIN')
   await client.query("SELECT pg_advisory_xact_lock(hashtext('lxcoding-demo:seed'))")
   if ((await client.query("SELECT 1 FROM system_configs WHERE key='lxcoding_demo_seed_version'")).rowCount) {
+    const admin = await client.query('SELECT 1 FROM staff_wechat_users WHERE employee_id=$1 AND phone=$2', ['LX-ADMIN',process.env.DEMO_LOGIN_PHONE])
+    if (!admin.rowCount) throw Error('演示管理员与本地配置不一致，拒绝修改角色')
+    // main 保留纯系统管理员不查看顾客详情的规则；演示账号同时承担客户管理职责。
+    await client.query("INSERT INTO permission_roles(employee_id,role,scope_id,created_by) VALUES($1,$2,$3,$4) ON CONFLICT(employee_id,role,scope_id) DO NOTHING", ['LX-ADMIN','customer_mgr','LX-HQ','demo-seed'])
+    await client.query("UPDATE system_configs SET value='2' WHERE key='lxcoding_demo_seed_version'")
     console.log('模拟数据已初始化，保留用户在演示库的操作记录')
-    await client.query('ROLLBACK')
+    await client.query('COMMIT')
     process.exitCode = 0
   } else {
     if ((await client.query('SELECT 1 FROM staff_wechat_users LIMIT 1')).rowCount) throw Error('库非空，拒绝覆盖；请核对演示库来源')
@@ -37,6 +42,7 @@ try {
     await insert('staff_wechat_users', { employee_id:'LX-ADMIN', name:'演示管理员', phone:process.env.DEMO_LOGIN_PHONE, org_node_id:'LX-HQ', position_name:'超级管理员', hired_at:day(-400) })
     await insert('admin_passwords', { employee_id:'LX-ADMIN', password_hash:await hash(process.env.DEMO_LOGIN_PASSWORD,12), must_change:false })
     await insert('permission_roles', { employee_id:'LX-ADMIN', role:'admin', scope_id:'LX-HQ', created_by:'demo-seed' })
+    await insert('permission_roles', { employee_id:'LX-ADMIN', role:'customer_mgr', scope_id:'LX-HQ', created_by:'demo-seed' })
     const stores = []
     const storeNames = ['星海旗舰店','星海花园店','云栖中心店','云栖悦美店']
     const staffNames = ['林晓','周宁','许悦','陈晴','苏禾']
@@ -137,7 +143,7 @@ try {
       await insert('coupon_templates',{template_id:`LX-COUPON-${i+1}`,name:['新客体验券','会员护理券','焕颜礼遇券'][i],coupon_type:'现金券',discount_value:[50,100,200][i],min_spend:[199,499,999][i],total_count:1000,validity_mode:'fixed',valid_from:timestamp(-30),valid_to:timestamp(365),description:'虚构优惠券，仅用于系统演示'})
     }
     for(let i=0;i<24;i++) await insert('user_coupons',{coupon_id:`LX-USER-COUPON-${i+1}`,template_id:`LX-COUPON-${1+i%3}`,user_id:clients[i].user,expire_at:timestamp(60)})
-    await insert('system_configs',{key:'lxcoding_demo_seed_version',value:'1'})
+    await insert('system_configs',{key:'lxcoding_demo_seed_version',value:'2'})
     await insert('operation_logs',{operator_employee_id:'LX-ADMIN',operator_name:'演示管理员',action:'demo.seed',target_type:'system',target_id:'lxcoding_demo',source:'admin',detail:JSON.stringify({synthetic:true,stores:4,customers:60,orders:192})})
     await client.query('COMMIT')
     console.log('已创建虚构数据：4 门店、21 员工、60 顾客、8 商品、192 订单、106 服务单、12 预约、12 储值卡、24 优惠券')

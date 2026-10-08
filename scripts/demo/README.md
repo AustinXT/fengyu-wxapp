@@ -10,6 +10,7 @@
 - `8095` 已用于 `lingxie-beauty-introduction`，保留原服务。
 - 独立 compose 项目、Docker 网络、PostgreSQL 数据目录、文件目录与 JWT/RSA 密钥。
 - 登录 Cookie：`lxcoding-demo-token`，避免同 IP 不同端口与开发后台互相覆盖。
+- 演示账号同时绑定总部 `admin` 与 `customer_mgr`，保留 main 的纯系统管理员不查看顾客详情规则，支持实际顾客管理演示。
 - 后台数据库启动守卫只接受 `demo-postgres:5432/lxcoding_demo`。真实微信、CloudBase、支付、OCR 凭据与连接覆盖均被拒绝。
 - 上传与导出文件写入本地演示卷；导出下载检查提交人后签发 5 分钟链接。
 - 支付演示使用线下流程；商户入网、OCR 使用 mock。后台业务 Server Actions 连接独立 PG，不部署或调用现有业务云函数。
