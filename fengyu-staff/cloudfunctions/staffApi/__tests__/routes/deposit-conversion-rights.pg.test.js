@@ -98,7 +98,8 @@ describe.skipIf(!url)('寄存退款后的转换：真实 PostgreSQL 复算', () 
     pg.transaction.mockImplementationOnce(async (cb) => {
       await client.query('BEGIN')
       try { return await cb({ query: async (sql, params) => {
-        if (/^\s*(?:INSERT|UPDATE|DELETE)\b/.test(sql)) writes.push(sql)
+        // Peripheral writes are recorded, not sent to the minimal fixture schema.
+        if (/^\s*(?:INSERT|UPDATE|DELETE)\b/.test(sql)) { writes.push(sql); return { rows: [{ id: 1 }], rowCount: 1 } }
         if (sql.startsWith('SELECT status FROM sale_orders')) signalLock()
         return client.query(sql, params)
       } }) } finally { await client.query('ROLLBACK') }
