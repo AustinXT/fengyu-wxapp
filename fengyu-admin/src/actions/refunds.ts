@@ -1250,6 +1250,8 @@ export const approveRefund = withPermission(
                audit_employee_id = ${session.employeeId},
                audit_at = ${nowTs()}
          WHERE id = ${idNum} AND status = '待审批'
+           AND amount = ${pre.payment.amount}::numeric
+           AND note IS NOT DISTINCT FROM ${pre.payment.note}
       `)
       if (rowsAffected(updRes) === 0) {
         throw new ApiError('CONFLICT', 'CONCURRENT_CHANGED: 退款状态已变更，请刷新后重试')

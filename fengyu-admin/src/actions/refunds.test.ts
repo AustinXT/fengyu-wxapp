@@ -46,7 +46,7 @@ vi.mock('drizzle-orm', () => ({
   desc: vi.fn(),
   asc: vi.fn(),
   inArray: vi.fn(),
-  sql: Object.assign(vi.fn((strings: TemplateStringsArray) => ({ __sqlText: strings.join('?'), as: vi.fn().mockReturnValue({ type: 'sql-as' }) })), { raw: vi.fn(), join: vi.fn(() => ({})) }),
+  sql: Object.assign(vi.fn((strings: TemplateStringsArray, ...values: any[]) => ({ __sqlText: strings.join('?'), __sqlValues: values, as: vi.fn().mockReturnValue({ type: 'sql-as' }) })), { raw: vi.fn(), join: vi.fn(() => ({})) }),
 }))
 
 vi.mock('drizzle-orm/pg-core', () => ({
@@ -395,5 +395,38 @@ describe('approveRefund — 持锁资金上限', () => {
     expect(result.error.message).toContain('可退余额已变化')
     expect(statements.some((sql) => sql.includes('UPDATE sale_order_payments'))).toBe(false)
     expect(db.execute).not.toHaveBeenCalled()
+  })
+})
+
+
+describe('approveRefund — 退款快照CAS', () => {
+  it('原单余额足够但退款行更正：CAS失败，不重算原单', async () => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    const q: any = {}
+    for (const name of ['from', 'leftJoin', 'where', 'limit']) q[name] = () => q
+    q.then = (resolve: any, reject: any) => Promise.resolve([{
+      payment: { id: 1001, saleOrderId: 'sale', changeType: '退款', status: '待审批', amount: '-100', note: null },
+      orderStoreId: 'store-1', orderSaleOrderType: '销售单', orderReceived: '400', orderRefundedAmount: '0',
+      orderTotalAmount: '400', orderPrepaidCardAmount: '0',
+    }]).then(resolve, reject)
+    ;(db.select as any).mockReturnValue(q)
+    const queries: any[] = []
+    ;(db.transaction as any).mockImplementation(async (cb: any) => cb({ execute: async (query: any) => {
+      queries.push(query)
+      if (query.__sqlText.includes('FOR UPDATE')) return [{ received: '400', refunded_amount: '0' }]
+      if (query.__sqlText.includes('AS net')) return [{ net: '400' }]
+      return { count: 0 }
+    } }))
+    const result = await approveRefund(1001)
+    expect(result.success).toBe(false)
+    if (result.success) throw new Error('快照变化必须失败')
+    expect(result.error.code).toBe('CONFLICT')
+    const cas = queries.find((query) => query.__sqlText.includes('UPDATE sale_order_payments'))
+    expect(cas.__sqlText).toContain('AND amount =')
+    expect(cas.__sqlText).toContain('AND note IS NOT DISTINCT FROM')
+    expect(cas.__sqlValues).toContain('-100')
+    expect(cas.__sqlValues).toContain(null)
+    expect(queries.some((query) => query.__sqlText.includes('UPDATE sale_orders'))).toBe(false)
   })
 })

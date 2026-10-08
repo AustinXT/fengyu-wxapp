@@ -207,6 +207,23 @@ describe.skipIf(!url)('寄存退款后的转换：真实 PostgreSQL 复算', () 
       expect(writes).toEqual([])
     } finally { await correction.query('ROLLBACK'); await correction.end() }
   })
+  test.each([
+    { amount: -500, note: null },
+    { amount: -100, note: '{"items":[{"quantity":2}]}' },
+  ])('退款行金额/明细更正：真实CAS拒绝旧快照 $amount $note', async ({ amount, note }) => {
+    await client.query("UPDATE sale_orders SET received = 400 WHERE sale_order_id = 'deposit'")
+    await client.query("INSERT INTO sale_order_payments (id, sale_order_id, status, change_type, amount, note) VALUES (1001, 'deposit', '待审批', '退款', $1, $2)", [amount, note])
+    pg.query.mockResolvedValueOnce([{ id: 1001, sale_order_id: 'deposit', sale_order_type: '销售单', store_id: 'store-001', status: '待审批', amount: -100, received: 400, refunded_amount: 0, note: null }])
+    pg.transaction.mockImplementationOnce(async (cb) => {
+      await client.query('BEGIN')
+      try { return await cb({ query: (sql, params) => client.query(sql, params) }) }
+      finally { await client.query('ROLLBACK') }
+    })
+    await expect(orderRoutes.approveRefund(createManagerCtx({ paymentId: 1001 }))).rejects.toThrow('CONFLICT:')
+    const { rows: [row] } = await client.query('SELECT status, amount FROM sale_order_payments WHERE id = 1001')
+    expect(row.status).toBe('待审批')
+    expect(Number(row.amount)).toBe(amount)
+  })
   test('直接提交已退光行：真实复算后拒绝，事务未写订单、权益或余额', async () => {
     await seed(2, 4)
     pg.query.mockResolvedValueOnce([{ user_id: 'cu-001', phone: '138', name: '顾客', customer_type: '会员客', bound_store_id: 'store-001' }])

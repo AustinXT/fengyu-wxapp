@@ -4103,11 +4103,13 @@ async function approveRefund(ctx) {
       `UPDATE sale_order_payments
           SET status = '已支付', paid_at = $1,
               audit_employee_id = $2, audit_at = $1, audit_remark = $3
-        WHERE id = $4 AND status = '待审批'`,
-      [now, ctx.auth.staffWfId, auditRemark || null, paymentId]
+        WHERE id = $4 AND status = '待审批'
+          AND amount = $5::numeric
+          AND note IS NOT DISTINCT FROM $6::text`,
+      [now, ctx.auth.staffWfId, auditRemark || null, paymentId, sopRow.amount, sopRow.note ?? null]
     )
     if (cas.rowCount !== 1) {
-      throw new Error('INVALID_STATE: 退款流水状态已变更，请刷新后重试')
+      throw new Error('CONFLICT: 退款流水状态或明细已变更，请刷新后重新审批')
     }
 
     // 2. 重算 sale_orders.refunded_amount = -SUM(已支付退款)（Bug F：累加→重算，幂等、自愈，对齐 admin/schema 不变量）
