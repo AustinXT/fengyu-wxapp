@@ -40,7 +40,7 @@ class ReviewTests(unittest.TestCase):
             r.validate_report(dict(GOOD, status='passed'))
 
     def test_commands_disable_tools_and_do_not_change_parent_env(self):
-        args = SimpleNamespace(glm_model='zhipuai-coding-plan/glm-5.3[1m]', deepseek_model='deepseek-flash[1m]')
+        args = SimpleNamespace(glm_model='zhipuai-coding-plan/glm-5.3[1m]', deepseek_model='deepseek-flash[1m]', deepseek_max_output=8192)
         with tempfile.TemporaryDirectory() as directory, patch.dict(r.os.environ, {
                 'DEEPSEEK_API_KEY': 'test', 'ANTHROPIC_BASE_URL': 'wrong', 'ANTHROPIC_AUTH_TOKEN': 'unrelated',
                 'CLAUDECODE': 'nested', 'DSH_HOME': '/original-dsh', 'DSH_TOOLS_MODE': 'code',
@@ -61,6 +61,7 @@ class ReviewTests(unittest.TestCase):
             configs = {row['id']: row.get('config') for row in rows}
             self.assertEqual(configs['agent-default-model'], {'provider': 'deepseek-official', 'model': 'deepseek-flash'})
             self.assertEqual(configs['llm-deepseek']['baseURL'], 'https://api.deepseek.com')
+            self.assertEqual(configs['llm-deepseek']['maxTokens'], 8192)
             self.assertEqual(configs['credentials']['path'], '/original-dsh/.credentials.yaml')
             self.assertFalse(any(row['id'].startswith('tool-') for row in rows))
             self.assertNotIn('agent-instructions', configs)
@@ -87,15 +88,37 @@ class ReviewTests(unittest.TestCase):
     def test_real_subprocess_consumes_stdin_and_timeout_fails(self):
         with tempfile.TemporaryDirectory() as directory:
             args = SimpleNamespace(out=Path(directory), cwd=Path(directory), timeout=2, glm_model='test')
-            code = 'import sys,json; data=sys.stdin.read(); print(json.dumps({"type":"text","part":{"text":json.dumps({"status":"complete","summary":data,"findings":[]})}}))'
+            code = 'import sys,json,os,stat; assert stat.S_ISFIFO(os.fstat(0).st_mode); data=sys.stdin.read(); print(json.dumps({"type":"text","part":{"text":json.dumps({"status":"complete","summary":data,"findings":[]})}}))'
             with patch.object(r, 'command', return_value=([r.sys.executable, '-c', code], r.os.environ.copy())):
                 result = r.run_one('glm', args, 'packet with `backticks` and $(literal)')
             self.assertEqual(result['report']['summary'], 'packet with `backticks` and $(literal)')
+            for name in ['glm.stdin.txt', 'glm.stdout.jsonl', 'glm.stderr.log', 'glm.json']:
+                self.assertEqual((args.out/name).stat().st_mode & 0o777, 0o600)
             args.timeout = 0.1
             with patch.object(r, 'command', return_value=([r.sys.executable, '-c', 'import time; time.sleep(5)'], r.os.environ.copy())):
                 result = r.run_one('glm', args, 'packet')
             self.assertEqual(result['status'], 'failed')
             self.assertIn('超时', result['error'])
+
+    def test_deepseek_regular_fd_without_installed_dsh(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root/'dsh-workspace').mkdir()
+            args = SimpleNamespace(out=root, cwd=root, timeout=5, deepseek_model='deepseek-flash')
+            code = 'import sys,json,os,stat; assert stat.S_ISREG(os.fstat(0).st_mode); data=sys.stdin.read(); print(json.dumps({"status":"complete","summary":data,"findings":[]}))'
+            packet = '无dsh也验证真正regular fd0：中文 `literal` $(literal)\n'*10000
+            with patch.object(r,'command',return_value=([r.sys.executable,'-c',code],r.os.environ.copy())):
+                result = r.run_one('deepseek',args,packet)
+            self.assertEqual(result['status'],'complete',result)
+            self.assertEqual(result['report']['summary'],packet)
+            self.assertEqual((root/'deepseek.stdin.txt').stat().st_mode & 0o777,0o600)
+
+    def test_project_entry_alias_targets_this_tracked_script(self):
+        root = Path(__file__).resolve().parents[5]
+        agent = root/'.agents/skills/issue-dev/scripts/dual_review.py'
+        actual = root/'.claude/skills/issue-dev/scripts/dual_review.py'
+        self.assertTrue(agent.samefile(actual))
+        self.assertTrue(actual.samefile(Path(r.__file__)))
 
     def test_dsh_nonzero_exit_cannot_pass_even_with_valid_stdout(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -137,7 +160,7 @@ class ReviewTests(unittest.TestCase):
                     config = Path(env['DSH_HOME']) / 'profiles/headless/cordis.patch.yml'
                     config.write_text(config.read_text().replace('https://api.deepseek.com', f'http://127.0.0.1:{server.server_port}'))
                     return cmd
-                packet = '审查材料 `literal` $(literal)\n中文与换行\n' + json.dumps(GOOD)
+                packet = '审查材料 `literal` $(literal)\n中文与换行\n' + '大输入完整保留\n' * 150000 + json.dumps(GOOD)
                 with patch.object(r, 'prepare_dsh', side_effect=local_prepare):
                     result = r.run_one('deepseek', args, packet)
                 self.assertEqual(result['status'], 'complete', result)
@@ -146,12 +169,42 @@ class ReviewTests(unittest.TestCase):
                 request = requests[0]
                 self.assertEqual(request['model'], 'deepseek-flash')
                 self.assertFalse(request.get('tools'))
+                self.assertEqual(request['max_tokens'], 131072)
+                self.assertEqual((args.out / 'deepseek.stdin.txt').stat().st_mode & 0o777, 0o600)
                 self.assertEqual(request['messages'][-1]['content'], packet)
                 self.assertNotIn('ANTHROPIC_', (args.out / 'deepseek.stdout.jsonl').read_text())
         finally:
             server.shutdown()
             server.server_close()
             thread.join()
+
+    def test_output_budget_invalid_and_boundaries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for value in ['0', '256001', '-1']:
+                argv = ['review', '--cwd', directory, '--out', str(root/'unused'), '--probe', '--deepseek-max-output', value]
+                with patch.object(r.sys, 'argv', argv), self.assertRaises(SystemExit):
+                    r.main()
+            for value in [1, 256000]:
+                out = root/str(value)
+                out.mkdir()
+                args = SimpleNamespace(out=out, deepseek_model='deepseek-flash', deepseek_max_output=value)
+                _, env = r.command('deepseek', args)
+                rows = json.loads((Path(env['DSH_HOME'])/'profiles/headless/cordis.patch.yml').read_text().splitlines()[0].removeprefix('- insert: '))
+                config = next(row['config'] for row in rows if row['id']=='llm-deepseek')
+                self.assertEqual(config['maxTokens'], value)
+
+    @unittest.skipUnless(shutil.which('opencode') and __import__('os').environ.get('REVIEW_LIVE_GLM_STDIN_TEST') == '1', '显式开启真实GLM联通/输入回归')
+    def test_real_opencode_pipe_stdin_preserves_unique_marker(self):
+        marker = __import__('uuid').uuid4().hex
+        with tempfile.TemporaryDirectory() as directory:
+            args = SimpleNamespace(out=Path(directory), cwd=Path(directory), timeout=180, glm_model='zhipuai-coding-plan/glm-5.3[1m]')
+            packet = '这是传输入验证，不是代码评审。禁止工具。前面重复数据忽略。\n' + '大输入逐字传输数据\n' * 12000
+            packet += '\n只输出此数据对象，summary须原样使用末尾标记：'+json.dumps({'status':'complete','summary':marker,'findings':[]})
+            result = r.run_one('glm', args, packet)
+            self.assertEqual(result['status'], 'complete', result)
+            self.assertEqual(result['report']['summary'], marker)
+            self.assertEqual((args.out/'glm.stdin.txt').read_text(), packet)
 
     def test_snapshot_gate_and_exit_semantics(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -183,6 +236,9 @@ class ReviewTests(unittest.TestCase):
                 summary = json.loads((out / 'summary.json').read_text())
                 self.assertTrue(summary['workspace_unchanged'])
                 self.assertEqual(summary['exit_code'], expected)
+                self.assertEqual(out.stat().st_mode & 0o777, 0o700)
+                for name in ['packet.md', 'summary.json']:
+                    self.assertEqual((out/name).stat().st_mode & 0o777, 0o600)
             (root / 'code.txt').write_text('uncommitted')
             with patch.object(r.sys, 'argv', argv), self.assertRaises(SystemExit):
                 r.main()
