@@ -328,8 +328,9 @@ describe('createRefund — 寄存申请的真实取数展开与锁内复核', ()
     const result = await createRefund({ refSaleOrderId: 'deposit', refundReason: '退B', items: [{ saleItemId: 'B', refundQuantity: 6 }] })
     if (changed) {
       expect(result.success).toBe(false)
-      expect(result.error?.code).toBe('CONFLICT')
-      expect(result.error?.message).toContain('寄存权益已变化')
+      if (result.success) throw new Error('预期锁内冲突')
+      expect(result.error.code).toBe('CONFLICT')
+      expect(result.error.message).toContain('寄存权益已变化')
       expect(inserted).toEqual([])
     } else {
       expect(result.success).toBe(true)

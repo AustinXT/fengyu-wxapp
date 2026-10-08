@@ -894,9 +894,6 @@ export const createRefund = withPermission(
     refundDetails = built.refundDetails
     totalRefund = built.totalRefund
   } catch (err: unknown) {
-    if (err instanceof ApiError) {
-      return { success: false, error: { code: err.prefix, message: err.message.slice(err.prefix.length + 2) } }
-    }
     const msg = err instanceof Error ? err.message : String(err)
     if (msg.startsWith('INVALID_PARAMS:')) {
       return { success: false, error: { code: 'INVALID_PARAMS', message: msg.replace(/^INVALID_PARAMS:\s*/, '') } }
@@ -1101,6 +1098,9 @@ export const createRefund = withPermission(
       console.error('[createRefund] notifyRefundCreated failed:', notifyErr)
     }
   } catch (err: unknown) {
+    if (err instanceof ApiError) {
+      return { success: false, error: { code: err.prefix, message: businessErrorMessage(err, '退款申请失败，请刷新后重试') } }
+    }
     const msg = err instanceof Error ? err.message : String(err)
     // 修复（Bug S）：drizzle 0.45 把 pg 错误码包进 err.cause；用 pgErrorCode/pgErrorConstraint 读取，否则永不命中 → 落 UNKNOWN
     if (pgErrorCode(err) === '23505' && pgErrorConstraint(err) === 'uq_sop_status_audit') {
