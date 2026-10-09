@@ -492,7 +492,7 @@ export async function cascadeRefund(
             WHERE out_item.ref_sale_item_id = si.sale_item_id AND out_item.item_direction = '转出'
               AND conv_order.status <> '已关闭'), 0)::int AS converted_quantity
         FROM sale_items si CROSS JOIN (SELECT ${refundPaymentId}::bigint AS id) current_refund
-       WHERE si.sale_order_id = ${saleOrderId} AND si.item_direction = CASE WHEN ${isConversionOrder} THEN '转入'::item_direction ELSE '购买'::item_direction END ORDER BY si.sale_item_id
+       WHERE si.sale_order_id = ${saleOrderId} AND si.item_direction = CASE WHEN (SELECT sale_order_type FROM sale_orders WHERE sale_order_id = ${saleOrderId}) = '转换单' THEN '转入'::item_direction ELSE '购买'::item_direction END ORDER BY si.sale_item_id
     `)) as unknown as Array<RefundSourceItem & { received: string }>
     if (note.items.some((it: { refSaleItemId: string }) => it.refSaleItemId === 'OVERPAY')) {
       note.items = remapLegacyOverpay(note.items, computeItemOverpayRemainders(paidRows))

@@ -25,3 +25,11 @@ describe('#548 四端来源和积分偏移独立副本合同',()=>{
     expect(()=>parseSnapshot({version:1,valueCents:100,sources:source})).toThrow('快照损坏')
   })
 })
+
+// paidRows方向也属于退款副本合同，防止异常/历史行让两端取数分叉。
+test('#548 两端退款会计来源只取本单合法方向',()=>{
+  const paths=['fengyu-staff/cloudfunctions/staffApi/helpers/refund-cascade.js','fengyu-admin/src/lib/refund-cascade.ts']
+  const predicates=paths.map(file=>fs.readFileSync(path.join(root,file),'utf8').match(/WHERE si\.sale_order_id = [^\n]*?AND si\.item_direction = CASE WHEN[^\n]*?END ORDER BY si\.sale_item_id/)[0].replace(/\$\{\w+\}|\$\d+/g,'?').replace(/\s+/g,' ').trim())
+  expect(predicates[0]).toBe(predicates[1])
+  expect(predicates[0]).toContain("(SELECT sale_order_type FROM sale_orders WHERE sale_order_id = ?) = '转换单'")
+})

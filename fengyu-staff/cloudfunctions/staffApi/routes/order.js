@@ -4332,7 +4332,7 @@ const refundCapNow = Math.max(paymentsNetNow, Number(lockedOrder.received || 0) 
     // 会被判成 received < retained_value → 把「已支付」误改成「部分支付」，
     // 让 total_amount=0 的寄存单掉进欠款/催款口径。两端镜像 admin refunds.ts。
     if (sopRow.sale_order_type === '转换单') {
-      await client.query(`UPDATE sale_orders SET status = CASE WHEN ${conversionDebtSql('sale_orders.sale_order_id')} > 0.01 THEN '部分支付'::order_status ELSE '已支付'::order_status END WHERE sale_order_id = $1`, [refSaleOrderId])
+      await client.query(`UPDATE sale_orders SET status = CASE WHEN ${conversionDebtSql('sale_orders.sale_order_id')} > 0.01 THEN '部分支付'::order_status ELSE '已支付'::order_status END WHERE sale_order_id = $1 AND status IN ('已支付', '部分支付', '已完成')`, [refSaleOrderId])
     }
     if (sopRow.sale_order_type !== '寄存单' && sopRow.sale_order_type !== '转换单') {
       await reconcileOrderStatusAfterRefund(client, refSaleOrderId)

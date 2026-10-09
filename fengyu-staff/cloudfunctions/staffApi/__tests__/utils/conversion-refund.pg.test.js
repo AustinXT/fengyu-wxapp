@@ -195,4 +195,37 @@ run('#548 隔离 PG 转换退款（真实级联与权益重算）', () => {
     expect(Number((await c.query("SELECT refunded_amount FROM sale_orders WHERE sale_order_id='C548'")).rows[0].refunded_amount)).toBe(0)
   })
 
+  test('普通销售单异常转入行不能增加旧OVERPAY退款容量', async () => {
+    await setup()
+    await cloneItem('OLD548', {sale_item_id:'OVER548',sale_amount:100,received:200,unit_price:100,unit_real_price:100,product_type:'家居产品',session_count:null,remaining_sessions:null,paid_sessions:null,picked_up_quantity:1})
+    await cloneItem('OVER548', {sale_item_id:'BAD548',item_direction:'转入'})
+    await c.query("UPDATE sale_orders SET received=1000 WHERE sale_order_id='O548'")
+    const note={items:[{refSaleItemId:'OVERPAY',refundAmount:150,overpayAmount:150,isOverpay:true,quantity:0}],handlingFee:0}
+    const rows=(await c.query("INSERT INTO sale_order_payments(sale_order_id,change_type,amount,payment_method,status,note,source_end) VALUES('O548','退款',-150,'线下','已支付',$1,'staff') RETURNING id",[JSON.stringify(note)])).rows
+    await expect(cascadeRefund(c,{saleOrderId:'O548',refundPaymentId:rows[0].id,items:[{saleItemId:'OVERPAY',refundAmount:150,isOverpay:true}],isWholeOrderRefund:false})).rejects.toThrow('可退余数已变化')
+    expect((await c.query("SELECT 1 FROM sale_payment_item_receipts WHERE sale_order_id='O548'")).rows).toHaveLength(0)
+  })
+
+  test('带ref_sale_order_id的800折抵+200实收转换，原链10点全冲且不复发', async () => {
+    const [row]=await setup()
+    await c.query("UPDATE sale_orders SET ref_sale_order_id='O548' WHERE sale_order_id='C548'")
+    await recalcPaidSessionsForOrder(c,'C548')
+    const value=(await c.query("SELECT conversion_value_snapshot FROM sale_items WHERE sale_item_id=$1",[row.sale_item_id])).rows[0].conversion_value_snapshot
+    expect(value.sources.filter(s=>s.pointOrderId==='O548').reduce((sum,s)=>sum+s.valueCents,0)).toBe(100000)
+    expect((await settlePointsForOrder(c,'O548')).delta).toBe(10)
+    await refund(row)
+    expect((await settlePointsForOrder(c,'O548')).expected).toBe(0)
+    expect((await settlePointsForOrder(c,'O548')).delta).toBe(0)
+    expect(Number((await c.query("SELECT received FROM sale_orders WHERE sale_order_id='C548'")).rows[0].received)).toBe(200)
+  })
+  test('部分付款家居逐件退后仍保留已付余件，冻结该行不再收未付补款', async () => {
+    const [row]=await setup({old:400,cash:200,home:true})
+    expect(calculateUnusedQuantity({...row,picked_quantity:0,converted_amount:0})).toBe(3)
+    await refund(row,1)
+    const next=(await c.query("SELECT * FROM sale_items WHERE sale_item_id=$1",[row.sale_item_id])).rows[0]
+    expect(calculateUnusedQuantity({...next,picked_quantity:0,converted_amount:0})).toBe(2)
+    expect(Number(next.received)).toBe(400)
+    expect(await getConversionDebt(c,'C548')).toBe(0)
+  })
+
 })

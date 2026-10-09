@@ -1496,7 +1496,7 @@ export const approveRefund = withPermission(
       // 会被判成 received < retained_value → 把「已支付」误改成「部分支付」，
       // 让 total_amount=0 的寄存单掉进欠款/催款口径（寄存单 received>0 是历史实收，不是欠款）。
       if (pre.orderSaleOrderType === '转换单') {
-        await tx.execute(sql`UPDATE sale_orders SET status = CASE WHEN ${sql.raw(conversionDebtSql('sale_orders.sale_order_id'))} > 0.01 THEN '部分支付'::order_status ELSE '已支付'::order_status END WHERE sale_order_id = ${refSaleOrderId}`)
+        await tx.execute(sql`UPDATE sale_orders SET status = CASE WHEN ${sql.raw(conversionDebtSql('sale_orders.sale_order_id'))} > 0.01 THEN '部分支付'::order_status ELSE '已支付'::order_status END WHERE sale_order_id = ${refSaleOrderId} AND status IN ('已支付', '部分支付', '已完成')`)
       }
       if (pre.orderSaleOrderType !== '寄存单' && pre.orderSaleOrderType !== '转换单') {
         await reconcileOrderStatusAfterRefund(tx, refSaleOrderId)

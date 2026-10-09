@@ -8,7 +8,8 @@ async function main() {
   try {
     await client.query('BEGIN READ ONLY')
     const result = await client.query(`SELECT si.sale_order_id, si.sale_item_id, si.item_direction,
-      CASE WHEN si.item_direction = '转出' AND ref.sale_item_id IS NULL THEN 'missing-source-item'
+      CASE WHEN si.item_direction = '转入' AND EXISTS (SELECT 1 FROM sale_items oi JOIN sale_orders co ON co.sale_order_id = oi.sale_order_id WHERE oi.ref_sale_item_id = si.sale_item_id AND oi.item_direction = '转出' AND co.status <> '已关闭') AND CASE WHEN si.product_type = '疗程卡' THEN COALESCE(si.remaining_sessions,0)=0 ELSE COALESCE(si.picked_up_quantity,0)+COALESCE(si.refunded_quantity,0)+COALESCE(si.converted_quantity,0)>=si.quantity END THEN 'exited-input-needs-reconciliation'
+           WHEN si.item_direction = '转出' AND ref.sale_item_id IS NULL THEN 'missing-source-item'
            WHEN ref_order.sale_order_type = '转换单' AND ref.conversion_value_snapshot IS NULL THEN 'missing-prior-generation'
            WHEN EXISTS (SELECT 1 FROM sale_order_payments p WHERE p.sale_order_id = si.sale_order_id AND p.change_type = '退款' AND p.status = '已支付') THEN 'legacy-refund-needs-reconciliation'
            ELSE 'candidate-for-locked-runtime-reconstruction' END AS source_status
