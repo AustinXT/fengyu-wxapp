@@ -2211,6 +2211,8 @@ async function confirmOffline(ctx) {
       throw new Error('CONFLICT: ONLINE_PAYMENT_INTENT_ACTIVE: 已有进行中的在线支付，请先完成该支付')
     }
 
+    if (order.sale_order_type === '转换单') await assertNoPendingRefund(client, saleOrderId)
+
     const now = new Date()
     const itemRes = await client.query(
       `SELECT si.sale_item_id, si.sku_id, si.received, si.pending_received, si.product_type

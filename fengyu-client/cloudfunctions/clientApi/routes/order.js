@@ -4032,7 +4032,7 @@ async function confirmPrepaidFull(ctx) {
 
   await pg.transaction(async (client) => {
     const ordRes = await client.query(
-      `SELECT sale_order_id, status, client_user_id, prepaid_card_amount,
+      `SELECT sale_order_id, status, sale_order_type, client_user_id, prepaid_card_amount,
               pending_prepaid_card_amount, payable_amount, total_amount, lakala_out_order_no
        FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE`,
       [saleOrderId]

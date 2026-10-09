@@ -49,6 +49,8 @@ async function main(){
   const refund=await apply(mixed.orderId,a.sale_item_id)
   const pendingQr=await invokeStaffApi('order.qrcode',{...auth,saleOrderId:mixed.orderId,paymentAmount:100})
   assert.notEqual(pendingQr.code,0,'待审批退款不能新冻结支付')
+  const offline=await invokeStaffApi('order.confirmOffline',{...auth,saleOrderId:mixed.orderId,confirmAmount:50})
+  assert.notEqual(offline.code,0,'待审批退款冻结线下确认收款')
   await pgQuery("UPDATE sale_orders SET lakala_out_order_no='TE2LS_RACE',first_payment_amount=100 WHERE sale_order_id=$1",[mixed.orderId])
   const active=await invokeStaffApi('order.approveRefund',{...auth,paymentId:refund.paymentId})
   assert.equal(active.code,-409,'审批锁内阻断已有授权支付')

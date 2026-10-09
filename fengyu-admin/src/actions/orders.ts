@@ -3823,6 +3823,8 @@ export const confirmOfflinePayment = withPermission(
         throw new ApiError('CONFLICT', 'PAYMENT_INTENT_ACTIVE: 在线支付处理中，暂不能确认线下收款')
       }
 
+      if (locked.sale_order_type === '转换单' && await hasPendingRefund(tx, saleOrderId)) throw new ApiError('CONFLICT','REFUND_IN_PROGRESS: 转换单退款审批中，暂不可确认收款')
+
       const orderTotal = Number(locked.total_amount || 0)
       const orderActualPrepaid = Number(locked.prepaid_card_amount || 0)
       const orderPendingPrepaid = Number(locked.pending_prepaid_card_amount || 0)
