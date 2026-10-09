@@ -48,6 +48,10 @@ const fs = require('node:fs')
 const path = require('node:path')
 
 const FILES = {
+  staffConversionSourcesJs: path.resolve(__dirname, '../../utils/conversion-sources.js'),
+  clientConversionSourcesJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/clientApi/utils/conversion-sources.js'),
+  payNotifyConversionSourcesJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/payNotify/conversion-sources.js'),
+  adminConversionSourcesTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/conversion-sources.ts'),
   staffPointsJs: path.resolve(__dirname, '../../utils/points.js'),
   clientPointsJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/clientApi/utils/points.js'),
   payNotifyPointsJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/payNotify/points.js'),
@@ -179,7 +183,7 @@ function extractBacktickStringContaining(src, marker) {
   throw new Error(`未找到含 "${marker}" 的 backtick 字符串`)
 }
 
-const MARKER_NET_SETTLED = 'AS net_settled'
+const MARKER_NET_SETTLED = 'AS basis'
 const MARKER_GRANTED = 'AS granted'
 const MARKER_UPSERT_PREPAID = 'INSERT INTO prepaid_cards'
 const MARKER_UPSERT_POINTS = 'INSERT INTO point_transactions'
@@ -191,16 +195,16 @@ describe('audit-15 P0-15-02 协同：四端 settlePointsForOrder SQL 一致性�
 
   beforeAll(() => {
     netSettledSqls = {
-      staff: normalizeSql(extractBacktickStringContaining(readFile(FILES.staffPointsJs), MARKER_NET_SETTLED)),
-      client: normalizeSql(extractBacktickStringContaining(readFile(FILES.clientPointsJs), MARKER_NET_SETTLED)),
-      payNotify: normalizeSql(extractBacktickStringContaining(readFile(FILES.payNotifyPointsJs), MARKER_NET_SETTLED)),
-      adminTs: normalizeSql(extractBacktickStringContaining(readFile(FILES.adminPointsSettleTs), MARKER_NET_SETTLED)),
+      staff: normalizeSql(extractBacktickStringContaining(readFile(FILES.staffConversionSourcesJs), MARKER_NET_SETTLED)),
+      client: normalizeSql(extractBacktickStringContaining(readFile(FILES.clientConversionSourcesJs), MARKER_NET_SETTLED)),
+      payNotify: normalizeSql(extractBacktickStringContaining(readFile(FILES.payNotifyConversionSourcesJs), MARKER_NET_SETTLED)),
+      adminTs: normalizeSql(extractBacktickStringContaining(readFile(FILES.adminConversionSourcesTs), MARKER_NET_SETTLED)),
     }
     grantedSqls = {
-      staff: normalizeSql(extractBacktickStringContaining(readFile(FILES.staffPointsJs), MARKER_GRANTED)),
-      client: normalizeSql(extractBacktickStringContaining(readFile(FILES.clientPointsJs), MARKER_GRANTED)),
-      payNotify: normalizeSql(extractBacktickStringContaining(readFile(FILES.payNotifyPointsJs), MARKER_GRANTED)),
-      adminTs: normalizeSql(extractBacktickStringContaining(readFile(FILES.adminPointsSettleTs), MARKER_GRANTED)),
+      staff: normalizeSql(extractBacktickStringContaining(readFile(FILES.staffConversionSourcesJs), MARKER_GRANTED)),
+      client: normalizeSql(extractBacktickStringContaining(readFile(FILES.clientConversionSourcesJs), MARKER_GRANTED)),
+      payNotify: normalizeSql(extractBacktickStringContaining(readFile(FILES.payNotifyConversionSourcesJs), MARKER_GRANTED)),
+      adminTs: normalizeSql(extractBacktickStringContaining(readFile(FILES.adminConversionSourcesTs), MARKER_GRANTED)),
     }
     // point_transactions 写入 upsert（分次回款/退款累加，四端字面同义）
     upsertSqls = {
@@ -2484,10 +2488,10 @@ describe('cross-end-sql-snapshot 反模式守护（防镜像 bug 字面锁定失
 
   beforeAll(() => {
     grantedSqls = {
-      staff: normalizeSql(extractBacktickStringContaining(readFile(FILES.staffPointsJs), MARKER_GRANTED)),
-      client: normalizeSql(extractBacktickStringContaining(readFile(FILES.clientPointsJs), MARKER_GRANTED)),
-      payNotify: normalizeSql(extractBacktickStringContaining(readFile(FILES.payNotifyPointsJs), MARKER_GRANTED)),
-      adminTs: normalizeSql(extractBacktickStringContaining(readFile(FILES.adminPointsSettleTs), MARKER_GRANTED)),
+      staff: normalizeSql(extractBacktickStringContaining(readFile(FILES.staffConversionSourcesJs), MARKER_GRANTED)),
+      client: normalizeSql(extractBacktickStringContaining(readFile(FILES.clientConversionSourcesJs), MARKER_GRANTED)),
+      payNotify: normalizeSql(extractBacktickStringContaining(readFile(FILES.payNotifyConversionSourcesJs), MARKER_GRANTED)),
+      adminTs: normalizeSql(extractBacktickStringContaining(readFile(FILES.adminConversionSourcesTs), MARKER_GRANTED)),
     }
     allocRollupSqls = {
       staff: normalizeSql(extractBacktickStringContaining(readFile(FILES.staffPaymentAllocatableJs), 'allocation_status = CASE')),

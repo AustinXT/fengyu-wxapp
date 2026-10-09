@@ -13,12 +13,12 @@ async function main() {
            WHEN si.item_direction = '转出' AND ref.sale_item_id IS NULL THEN 'missing-source-item'
            WHEN ref_order.sale_order_type = '转换单' AND ref.conversion_value_snapshot IS NULL THEN 'missing-prior-generation'
            WHEN EXISTS (SELECT 1 FROM sale_order_payments p WHERE p.sale_order_id = si.sale_order_id AND p.change_type = '退款' AND p.status = '已支付') THEN 'legacy-refund-needs-reconciliation'
-           ELSE 'candidate-for-locked-runtime-reconstruction' END AS source_status
+           ELSE 'legacy-responsibility-needs-offline-evidence' END AS source_status
       FROM sale_items si JOIN sale_orders so USING (sale_order_id)
       LEFT JOIN sale_items ref ON ref.sale_item_id = si.ref_sale_item_id
       LEFT JOIN sale_orders ref_order ON ref_order.sale_order_id = ref.sale_order_id
       WHERE so.sale_order_type = '转换单' AND so.status <> '已关闭'
-        AND si.conversion_value_snapshot IS NULL
+        AND COALESCE(si.conversion_value_snapshot->>'version','') <> '2'
       ORDER BY si.sale_order_id, si.sale_item_id`)
     const integrity = await client.query(CONVERSION_SOURCE_AUDIT_SQL)
     console.log(JSON.stringify({ integrityViolations: integrity.rows, missingCount: result.rows.length, items: result.rows }, null, 2))

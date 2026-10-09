@@ -1,7 +1,7 @@
-import { bigint, bigserial, check, index, pgTable, text, timestamp, uniqueIndex, varchar } from 'drizzle-orm/pg-core'
+import { bigint, bigserial, check, index, jsonb, pgTable, text, timestamp, uniqueIndex, varchar } from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
 import { clientWechatUsers } from './user'
-import { saleOrders } from './order'
+import { saleItems, saleOrders } from './order'
 
 /**
  * 积分流水（审计源）+ 积分批次（可用余额源）
@@ -93,3 +93,24 @@ export type PointTransaction = typeof pointTransactions.$inferSelect
 export type NewPointTransaction = typeof pointTransactions.$inferInsert
 export type PointBatch = typeof pointBatches.$inferSelect
 export type NewPointBatch = typeof pointBatches.$inferInsert
+
+/** 转换时交接已发积分责任；不产生赠点，不改原有效期。退款只结本单。 */
+export const conversionPointTransfers = pgTable('conversion_point_transfers', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  userId: text('user_id').notNull().references(() => clientWechatUsers.userId),
+  fromOrderId: varchar('from_order_id', { length: 30 }).notNull().references(() => saleOrders.saleOrderId),
+  toOrderId: varchar('to_order_id', { length: 30 }).notNull().references(() => saleOrders.saleOrderId),
+  fromSaleItemId: varchar('from_sale_item_id', { length: 30 }).notNull().references(() => saleItems.saleItemId),
+  excludedBasisCents: bigint('excluded_basis_cents', { mode: 'number' }).notNull(),
+  transferredPoints: bigint('transferred_points', { mode: 'number' }).notNull(),
+  batchSnapshot: jsonb('batch_snapshot').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, table => [
+  uniqueIndex('uq_conversion_point_transfer_item').on(table.toOrderId, table.fromSaleItemId),
+  index('idx_conversion_point_transfer_from').on(table.fromOrderId),
+  index('idx_conversion_point_transfer_to').on(table.toOrderId),
+  check('chk_conversion_point_transfer_nonnegative', sql`${table.excludedBasisCents} >= 0 AND ${table.transferredPoints} >= 0`),
+  check('chk_conversion_point_transfer_different_orders', sql`${table.fromOrderId} <> ${table.toOrderId}`),
+])
+export type ConversionPointTransfer = typeof conversionPointTransfers.$inferSelect
+export type NewConversionPointTransfer = typeof conversionPointTransfers.$inferInsert

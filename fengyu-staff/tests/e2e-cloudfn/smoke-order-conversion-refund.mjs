@@ -2,7 +2,11 @@
 // #548：真实action入口、审批CAS、旧资产/新增现金分离与退款后补款。
 import './setup.mjs'
 import assert from 'node:assert/strict'
-import { NS, TEST_MANAGER_OPENID, TEST_CLIENT_USER_ID, pgQuery, closePool } from './setup.mjs'
+import { createRequire } from 'node:module'
+const cloudRequire = createRequire(import.meta.url)
+const pg = cloudRequire(`${REPO_ROOT}/fengyu-staff/cloudfunctions/staffApi/db/pg.js`)
+const { settlePointsForOrder } = cloudRequire(`${REPO_ROOT}/fengyu-staff/cloudfunctions/staffApi/utils/points.js`)
+import { REPO_ROOT, NS, TEST_MANAGER_OPENID, TEST_CLIENT_USER_ID, pgQuery, closePool } from './setup.mjs'
 import { invokeStaffApi } from './helpers/invoke.mjs'
 import { ensureTestStore, createTestOrg, createTestStaff, createTestClient, createTestProduct, createTestSaleOrder, createPaidPayment, cleanupTestData } from './helpers/fixtures.mjs'
 const auth={_testOpenid:TEST_MANAGER_OPENID}
@@ -14,6 +18,7 @@ async function scenario(suffix,{cash=200,two=false,old=800}={}){
   const source=await createTestSaleOrder({saleOrderId:id,clientUserId:TEST_CLIENT_USER_ID,skuId:sourceSku.skuId,totalAmount:old,sessionCount:1,status:'已支付',salesCategory:'他销自耗'})
   await pgQuery('UPDATE sale_orders SET received=$2 WHERE sale_order_id=$1',[id,old])
   await createPaidPayment(id,{amount:old,items:[{saleItemId:source.saleItemId,amount:old,salesCategory:'他销自耗'}]})
+  await pg.transaction(c=>settlePointsForOrder(c,id))
   const conv=await call('order.createConversion',{clientUserId:TEST_CLIENT_USER_ID,convertOutSaleItemIds:[source.saleItemId],convertInItems:[{skuId:targetSku.skuId,quantity:two?2:1}],paymentMethod:'线下',receivedAmount:cash})
   await call('order.confirmOffline',{saleOrderId:conv.saleOrderId,confirmAmount:cash})
   const items=await pgQuery("SELECT * FROM sale_items WHERE sale_order_id=$1 AND item_direction='转入' ORDER BY sale_item_id",[conv.saleOrderId])
@@ -26,6 +31,7 @@ async function main(){
   assert.equal(Number(one.items[0].received),1000)
   const invalid=await invokeStaffApi('order.createRefund',{...auth,refSaleOrderId:one.orderId,items:[{saleItemId:one.source.saleItemId}],refundReason:'跨单'})
   assert.notEqual(invalid.code,0)
+  const originalPoints=await pgQuery('SELECT * FROM point_transactions WHERE ref_order_id=$1',[one.source.saleOrderId || `${NS}_548_FULL`])
   const first=await apply(one.orderId,one.items[0].sale_item_id)
   assert.equal(first.finalRefundAmount,1000)
   const results=await Promise.all([invokeStaffApi('order.approveRefund',{...auth,paymentId:first.paymentId}),invokeStaffApi('order.approveRefund',{...auth,paymentId:first.paymentId})])
@@ -33,6 +39,8 @@ async function main(){
   const final=(await pgQuery('SELECT * FROM sale_orders WHERE sale_order_id=$1',[one.orderId]))[0]
   assert.equal(final.status,'已退款');assert.equal(Number(final.refunded_amount),1000);assert.equal(Number(final.received),200)
   assert.equal((await pgQuery('SELECT remaining_sessions FROM sale_items WHERE sale_item_id=$1',[one.source.saleItemId]))[0].remaining_sessions,0)
+  assert.deepEqual(await pgQuery('SELECT * FROM point_transactions WHERE ref_order_id=$1',[`${NS}_548_FULL`]),originalPoints,'旧积分流水不因转换退款改变')
+  assert.equal(Number((await pgQuery("SELECT amount FROM point_transactions WHERE ref_order_id=$1 AND type='消费冲销'",[one.orderId]))[0].amount),-10,'旧8+补款2全部在转换单冲')
   const mixed=await scenario('PART',{cash:100,two:true})
   const [a,b]=mixed.items
   const pending=await apply(mixed.orderId,a.sale_item_id)

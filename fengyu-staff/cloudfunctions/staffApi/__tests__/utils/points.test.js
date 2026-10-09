@@ -46,8 +46,8 @@ function buildMockClient({
 
     // 2. 链净汇总（2026-04-26 sale-order-domain-refactor：paid_amount 已 DROP，
     //    改用 received - refunded_amount；按列别名 net_settled 匹配以解耦 SUM 表达式细节）
-    if (/FROM\s+sale_orders/i.test(s) && /AS\s+net_settled/i.test(s)) {
-      return { rows: [{ net_settled: netSettled }] }
+    if (/FROM\s+sale_orders/i.test(s) && /AS\s+basis/i.test(s)) {
+      return { rows: [{ basis: Math.max(0,netSettled) * 100 }] }
     }
 
     // 3. 已发合计
@@ -94,12 +94,12 @@ function countQueries(queries, pattern) {
 }
 
 describe('ORDER_TYPES_EARN_POINTS', () => {
-  test('仅包含 销售单', () => {
+  test('销售单及转换单独立结算', () => {
     expect(ORDER_TYPES_EARN_POINTS.has('销售单')).toBe(true)
     expect(ORDER_TYPES_EARN_POINTS.has('内部单')).toBe(false)
     expect(ORDER_TYPES_EARN_POINTS.has('回款单')).toBe(false)
     expect(ORDER_TYPES_EARN_POINTS.has('退款单')).toBe(false)
-    expect(ORDER_TYPES_EARN_POINTS.has('转换单')).toBe(false)
+    expect(ORDER_TYPES_EARN_POINTS.has('转换单')).toBe(true)
   })
 })
 
@@ -165,7 +165,7 @@ describe('settlePointsForOrder — 退款冲销', () => {
 
     const batchConsume = findQuery(queries, /UPDATE\s+point_batches/i)
     expect(batchConsume).toBeDefined()
-    expect(batchConsume.params).toEqual(['user-001', 1, 'o1'])
+    expect(batchConsume.params).toEqual(['user-001', 1, 'o1', false])
   })
 
   test('二次退款尾差归零：netSettled=140, granted=1 → delta=0 无写入', async () => {
@@ -175,7 +175,7 @@ describe('settlePointsForOrder — 退款冲销', () => {
     expect(r).toEqual({ delta: 0, expected: 1, granted: 1 })
 
     // 验证仅 3 次查询（SELECT 原单 + SELECT 链净 + SELECT 已发），无 INSERT/UPDATE
-    expect(client.query).toHaveBeenCalledTimes(5)
+    expect(client.query).toHaveBeenCalledTimes(3)
     expect(countQueries(queries, /INSERT\s+INTO\s+point_transactions/i)).toBe(0)
     expect(countQueries(queries, /UPDATE\s+client_wechat_users/i)).toBe(0)
   })
@@ -295,7 +295,7 @@ describe('settlePointsForOrder — 幂等重放', () => {
     expect(r2).toEqual({ delta: 0, expected: 2, granted: 2 })
     expect(countQueries(second.queries, /INSERT\s+INTO\s+point_transactions/i)).toBe(0)
     expect(countQueries(second.queries, /UPDATE\s+client_wechat_users/i)).toBe(0)
-    expect(second.client.query).toHaveBeenCalledTimes(5)
+    expect(second.client.query).toHaveBeenCalledTimes(3)
   })
 })
 

@@ -1,6 +1,6 @@
 'use server'
 
-import { stripConversionSourcesFromNote } from '@/lib/conversion-sources'
+import { stripConversionSourcesFromNote, initializeConversionSources, rollbackConversionPointTransfers, conversionSourceQuery } from '@/lib/conversion-sources'
 
 import { getConversionDebt } from '@/lib/conversion-value'
 
@@ -481,6 +481,8 @@ async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string
      ORDER BY sale_order_id
      FOR UPDATE
   `)
+
+  await rollbackConversionPointTransfers(conversionSourceQuery(tx), saleOrderId)
 
   // 0. 先用一条语句按全局 sale_item_id 顺序锁住本单引用的**全部**源行。
   //    createConversionOrder 折抵时是单语句 ORDER BY si.sale_item_id ... FOR UPDATE OF si（不分类型），
@@ -7009,6 +7011,7 @@ export const createConversionOrder = withPermission(
 
       // paid_sessions 写入（ticket 2026-05-19）：转换单 total_amount=差额，可能=0 → 兜底全付
       // 必须在 capture 之后：新 STEP1 从 receipt 聚合 received
+      await initializeConversionSources(conversionSourceQuery(tx), saleOrderId)
       await recalcPaidSessionsForOrder(tx, saleOrderId)
 
       // 全额抵扣即结清：触发积分发放 + 客户分类跃迁（与 confirmOfflinePayment 已支付分支一致）。

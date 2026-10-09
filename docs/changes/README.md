@@ -29,6 +29,7 @@
 | [013](arch/013_service-order-staff-market-support.md) | 2026-09-21 | 服务单服务人员候选放开到「本店 ∪ 门店所属市场出差支援」+ staff.list 引入 scene 参数（收窄 005 适用范围） |
 | [014](arch/014_database-integration-and-rollout-ledgers.md) | 2026-10-01 | 数据库变更独立开发、集中集成与分环境执行台账 |
 | [015](arch/015_customer-type-monotonic-and-member-level-floor.md) | 2026-10-06 | 顾客分类改回只升不降 + 会员客等级下限初钻（#545，推翻 #257） |
+| [016](arch/016_conversion-refund-local-responsibility.md) | 2026-10-09 | 转换单退款在本单闭环与转换时积分责任交接（#548） |
 
 ## ops — 生产操作
 

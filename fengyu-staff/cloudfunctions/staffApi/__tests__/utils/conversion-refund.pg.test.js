@@ -1,4 +1,4 @@
-const { recordConversionRefundSources } = require('../../utils/conversion-sources')
+const { initializeConversionSources, rollbackConversionPointTransfers, recordConversionRefundSources } = require('../../utils/conversion-sources')
 // 仅一次性本地库；显式环境变量，禁止使用业务 PG_CONNECTION_STRING。
 const { Client } = require('pg')
 const { recalcPaidSessionsForOrder } = require('../../utils/paid-sessions')
@@ -30,7 +30,7 @@ run('#548 隔离 PG 转换退款（真实级联与权益重算）', () => {
     const names=columns.map(name=>'"'+name+'"').join(',')
     await c.query(`INSERT INTO sale_items(${names}) SELECT ${columns.map(name=>'copy."'+name+'"').join(',')} FROM sale_items si CROSS JOIN LATERAL jsonb_populate_record(NULL::sale_items,to_jsonb(si)||$2::jsonb) copy WHERE si.sale_item_id=$1`,[sourceId,JSON.stringify(overrides)])
   }
-  async function setup({ old = 800, cash = 200, amounts = [1000], home = false, used = 0, linked = false } = {}) {
+  async function setup({ old = 800, cash = 200, amounts = [1000], home = false, used = 0, linked = false, awardOld = true, beforeTransfer, afterTransfer } = {}) {
     for (const [id, total, received, type] of [['O548', old, old, '销售单'], ['C548', Math.max(0, amounts.reduce((a,b)=>a+b,0)-old), cash, '转换单']]) {
       await c.query(`INSERT INTO sale_orders(sale_order_id,market_name,store_id,sale_order_datetime,total_amount,payment_method,received,status,sale_order_type,client_user_id,paid_at)
         VALUES($1,'测试','T548',NOW(),$2,'线下',$3,'已支付',$4,'T548',NOW())`, [id,total,received,type])
@@ -44,7 +44,12 @@ run('#548 隔离 PG 转换退款（真实级联与权益重算）', () => {
         VALUES($1,'C548','T548',$2,$3,$2,$2,$4,$5,$6,$5,$7,'转入')`, [`IN548-${i}`,amount,amount/(home?5:10),home?5:1,home?null:10,home?null:10-used,home?'家居产品':'疗程卡'])
     }
     if(cash>0) await c.query("INSERT INTO sale_order_payments(sale_order_id,change_type,amount,payment_method,status,source_end) VALUES('C548','首次支付',$1,'线下','已支付','staff')",[cash])
+    if (awardOld) await settlePointsForOrder(c,'O548')
+    if (beforeTransfer) await beforeTransfer(c)
+    await initializeConversionSources(async (text,params)=>(await c.query(text,params)).rows,'C548')
+    if (afterTransfer) await afterTransfer(c)
     await recalcPaidSessionsForOrder(c,'C548')
+    await settlePointsForOrder(c,'C548')
     return (await c.query("SELECT * FROM sale_items WHERE sale_order_id='C548' AND item_direction='转入' ORDER BY sale_item_id")).rows
   }
   async function refund(row, quantity, fee = 0, orderId = 'C548') {
@@ -108,97 +113,9 @@ run('#548 隔离 PG 转换退款（真实级联与权益重算）', () => {
     expect(Number((await c.query("SELECT refunded_amount FROM sale_orders WHERE sale_order_id='C548'")).rows[0].refunded_amount)).toBe(451)
     expect(Number((await c.query("SELECT amount FROM sale_payment_item_receipts WHERE sale_order_id='C548'")).rows[0].amount)).toBe(-451)
   })
-  test('全部退款后原已发消费积分冲销，旧单现金和权益仍不回滚',async()=>{
-    const [row]=await setup()
-    const tx=(await c.query("INSERT INTO point_transactions(user_id,ref_order_id,type,amount) VALUES('T548','O548','消费赠送',8) RETURNING id")).rows[0]
-    await grantPointBatch(c,{userId:'T548',pointTransactionId:tx.id,type:'消费赠送',amount:8,refOrderId:'O548'})
-    await refund(row)
-    expect(Number((await c.query("SELECT points_balance FROM client_wechat_users WHERE user_id='T548'")).rows[0].points_balance)).toBe(0)
-    expect(Number((await c.query("SELECT SUM(amount) AS net FROM point_transactions WHERE user_id='T548' AND type IN ('消费赠送','消费冲销')")).rows[0].net)).toBe(0)
-    expect(Number((await c.query("SELECT refunded_amount FROM sale_orders WHERE sale_order_id='O548'")).rows[0].refunded_amount)).toBe(0)
-  })
   test('四项两分分摊无负尾差且合计守恒',async()=>{
     const rows=await setup({old:0.02,cash:0,amounts:[1,1,1,1]});expect(rows.map(r=>Number(r.received))).toEqual([0.01,0,0.01,0]);expect(rows.reduce((n,r)=>n+Number(r.received),0)).toBe(0.02)
   })
-  test('原订单链重复结算不复发，后续真实回款只新增对应积分', async () => {
-    const [row] = await setup()
-    expect((await settlePointsForOrder(c, 'O548')).delta).toBe(8)
-    await refund(row)
-    for (const file of ['../../utils/points', '../../../../../fengyu-client/cloudfunctions/clientApi/utils/points', '../../../../../fengyu-client/cloudfunctions/payNotify/points']) {
-      expect((await require(file).settlePointsForOrder(c, 'O548')).delta).toBe(0)
-    }
-    await c.query("UPDATE sale_orders SET received=received+100 WHERE sale_order_id='O548'")
-    expect((await settlePointsForOrder(c, 'O548')).delta).toBe(1)
-    const ledger = (await c.query("SELECT ref_order_id, SUM(amount) AS points FROM point_transactions GROUP BY ref_order_id")).rows
-    expect(ledger.filter(r => r.ref_order_id === 'O548').map(r => Number(r.points))).toEqual([1])
-    expect(ledger.some(r => r.ref_order_id === 'C548')).toBe(false)
-  })
-  test('多原单来源，A/B各退500按两条原链分别冲，不改变现金归属', async () => {
-    const [a] = await setup({old:800,cash:200,amounts:[500,500]})
-    await c.query("UPDATE sale_orders SET total_amount=400,received=400 WHERE sale_order_id='O548'")
-    await c.query("UPDATE sale_items SET sale_amount=400,received=400 WHERE sale_item_id='OLD548'")
-    await c.query("UPDATE sale_items SET sale_amount=-400,received=-400,conversion_value_snapshot=NULL WHERE sale_item_id='OUT548'")
-    await c.query("INSERT INTO sale_orders SELECT (jsonb_populate_record(NULL::sale_orders, to_jsonb(o) || '{\"sale_order_id\":\"O548B\"}'::jsonb)).* FROM sale_orders o WHERE sale_order_id='O548'")
-    await cloneItem("OLD548", {"sale_item_id":"OLD548B","sale_order_id":"O548B"})
-    await cloneItem("OUT548", {"sale_item_id":"OUT548B","ref_sale_item_id":"OLD548B"})
-    await c.query("UPDATE sale_items SET conversion_value_snapshot=NULL WHERE sale_order_id='C548' AND item_direction='转入'")
-    await recalcPaidSessionsForOrder(c, 'C548')
-    await settlePointsForOrder(c, 'O548'); await settlePointsForOrder(c, 'O548B')
-    await refund(a)
-    for (const root of ['O548','O548B']) expect((await settlePointsForOrder(c,root)).expected).toBe(2)
-    const b = (await c.query("SELECT * FROM sale_items WHERE sale_item_id='IN548-1'")).rows[0]
-    await refund(b)
-    for (const root of ['O548','O548B']) expect((await settlePointsForOrder(c,root)).expected).toBe(0)
-    expect(Number((await c.query("SELECT refunded_amount FROM sale_orders WHERE sale_order_id='C548'")).rows[0].refunded_amount)).toBe(1000)
-    expect(Number((await c.query("SELECT SUM(refunded_amount) AS amount FROM sale_orders WHERE sale_order_id IN ('O548','O548B')")).rows[0].amount)).toBe(0)
-  })
-  test('两代转换继承来源，第二代补款200退1200，原链只冲800', async () => {
-    const [first] = await setup()
-    await settlePointsForOrder(c,'O548')
-    await c.query("INSERT INTO sale_orders SELECT (jsonb_populate_record(NULL::sale_orders, to_jsonb(o) || '{\"sale_order_id\":\"C548B\"}'::jsonb)).* FROM sale_orders o WHERE sale_order_id='C548'")
-    await cloneItem("OUT548", {"sale_item_id":"OUT548C","sale_order_id":"C548B","item_direction":"转出","ref_sale_item_id":"IN548-0","received":-1000,"sale_amount":-1000,"conversion_value_snapshot":null})
-    await cloneItem("IN548-0", {"sale_item_id":"IN548C","sale_order_id":"C548B","received":1200,"sale_amount":1200,"unit_real_price":120,"conversion_value_snapshot":null})
-    await c.query("UPDATE sale_items SET remaining_sessions=0 WHERE sale_item_id=$1", [first.sale_item_id])
-    await recalcPaidSessionsForOrder(c,'C548B')
-    const next=(await c.query("SELECT * FROM sale_items WHERE sale_item_id='IN548C'")).rows[0]
-    expect(next.conversion_value_snapshot.valueCents).toBe(120000)
-    expect(next.conversion_value_snapshot.sources.filter(s=>s.pointOrderId==='O548').reduce((sum,s)=>sum+s.valueCents,0)).toBe(80000)
-    await refund(next,undefined,0,'C548B')
-    expect((await settlePointsForOrder(c,'O548')).expected).toBe(0)
-    expect(Number((await c.query("SELECT refunded_amount FROM sale_orders WHERE sale_order_id='C548'")).rows[0].refunded_amount)).toBe(0)
-  })
-  test('停用积分时资金照常，恢复后沿原链补冲销', async () => {
-    const [row]=await setup(); await settlePointsForOrder(c,'O548')
-    const previous=process.env.POINTS_ACCRUAL_ENABLED
-    process.env.POINTS_ACCRUAL_ENABLED='false'
-    try { await refund(row) } finally { if(previous===undefined) delete process.env.POINTS_ACCRUAL_ENABLED; else process.env.POINTS_ACCRUAL_ENABLED=previous }
-    expect(Number((await c.query("SELECT points_balance FROM client_wechat_users WHERE user_id='T548'")).rows[0].points_balance)).toBe(8)
-    expect((await settlePointsForOrder(c,'O548')).delta).toBe(-8)
-  })
-  test('积分故障由SAVEPOINT隔离，现金退款与来源扣减保留供重算', async () => {
-    const [row]=await setup(); await settlePointsForOrder(c,'O548')
-    await c.query("CREATE FUNCTION pg_temp.reject548() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION '548 points injected failure'; END $$")
-    await c.query("CREATE TRIGGER reject548 BEFORE INSERT OR UPDATE ON point_transactions FOR EACH ROW EXECUTE FUNCTION pg_temp.reject548()")
-    await refund(row)
-    expect(Number((await c.query("SELECT refunded_amount FROM sale_orders WHERE sale_order_id='C548'")).rows[0].refunded_amount)).toBe(1000)
-    expect((await c.query("SELECT 1 FROM operation_logs WHERE action='points.settleFailed' AND target_id='O548'")).rows).toHaveLength(1)
-    await c.query('DROP TRIGGER reject548 ON point_transactions')
-    expect((await settlePointsForOrder(c,'O548')).delta).toBe(-8)
-  })
-
-  test('历史多代来源缺失时拒绝退款，不以标价伪填', async () => {
-    await setup()
-    await c.query("UPDATE sale_items SET conversion_value_snapshot=NULL WHERE sale_order_id='C548'")
-    await c.query("UPDATE sale_orders SET sale_order_type='转换单' WHERE sale_order_id='O548'")
-    await recalcPaidSessionsForOrder(c,'C548')
-    const row=(await c.query("SELECT * FROM sale_items WHERE sale_item_id='IN548-0'")).rows[0]
-    expect(row.conversion_value_snapshot).toBeNull()
-    await c.query('SAVEPOINT unknown_source')
-    await expect(refund(row)).rejects.toThrow('来源尚未确认')
-    await c.query('ROLLBACK TO SAVEPOINT unknown_source')
-    expect(Number((await c.query("SELECT refunded_amount FROM sale_orders WHERE sale_order_id='C548'")).rows[0].refunded_amount)).toBe(0)
-  })
-
   test('普通销售单异常转入行不能增加旧OVERPAY退款容量', async () => {
     await setup()
     await cloneItem('OLD548', {sale_item_id:'OVER548',sale_amount:100,received:200,unit_price:100,unit_real_price:100,product_type:'家居产品',session_count:null,remaining_sessions:null,paid_sessions:null,picked_up_quantity:1})
@@ -210,17 +127,6 @@ run('#548 隔离 PG 转换退款（真实级联与权益重算）', () => {
     expect((await c.query("SELECT 1 FROM sale_payment_item_receipts WHERE sale_order_id='O548'")).rows).toHaveLength(0)
   })
 
-  test('带ref_sale_order_id的800折抵+200实收转换，原链10点全冲且不复发', async () => {
-    const [row]=await setup({linked:true})
-    await recalcPaidSessionsForOrder(c,'C548')
-    const value=(await c.query("SELECT conversion_value_snapshot FROM sale_items WHERE sale_item_id=$1",[row.sale_item_id])).rows[0].conversion_value_snapshot
-    expect(value.sources.filter(s=>s.pointOrderId==='O548').reduce((sum,s)=>sum+s.valueCents,0)).toBe(100000)
-    expect((await settlePointsForOrder(c,'O548')).delta).toBe(10)
-    await refund(row)
-    expect((await settlePointsForOrder(c,'O548')).expected).toBe(0)
-    expect((await settlePointsForOrder(c,'O548')).delta).toBe(0)
-    expect(Number((await c.query("SELECT received FROM sale_orders WHERE sale_order_id='C548'")).rows[0].received)).toBe(200)
-  })
   async function repay(amount) {
     await c.query("UPDATE sale_orders SET received=received+$1 WHERE sale_order_id='C548'", [amount])
     const id=(await c.query("INSERT INTO sale_order_payments(sale_order_id,change_type,amount,payment_method,status,source_end) VALUES('C548','回款',$1,'线下','已支付','staff') RETURNING id",[amount])).rows[0].id
@@ -275,28 +181,158 @@ run('#548 隔离 PG 转换退款（真实级联与权益重算）', () => {
     expect(after.map(r=>r.conversion_value_snapshot.valueCents)).toEqual([0,2,1])
   })
 
-  test('来源凭据丢失时拒绝积分复发，已有快照差额由只读审计发现', async () => {
-    const [row]=await setup({linked:true}); await settlePointsForOrder(c,'O548'); await refund(row);
-    const {CONVERSION_SOURCE_AUDIT_SQL}=require('../../utils/conversion-sources');
-    expect((await c.query(CONVERSION_SOURCE_AUDIT_SQL)).rows).toHaveLength(0);
-    await c.query("UPDATE sale_order_payments SET note=(public.try_jsonb(note) #- '{items,0,conversionSources}')::text WHERE sale_order_id='C548' AND change_type='退款'");
-    await c.query('SAVEPOINT bad_source');
-    await expect(settlePointsForOrder(c,'O548')).rejects.toThrow('积分来源不完整');
-    for(const file of ['../../../../../fengyu-client/cloudfunctions/clientApi/utils/points','../../../../../fengyu-client/cloudfunctions/payNotify/points']) {
-      await expect(require(file).settlePointsForOrder(c,'O548')).rejects.toThrow('积分来源不完整');
+
+  test.each([false,true])('旧8+新2只冲本单，旧单数据不变、关联指针不重复赠点：linked=%s', async linked => {
+    const [row]=await setup({linked})
+    expect(Number((await c.query("SELECT points_balance FROM client_wechat_users WHERE user_id='T548'")).rows[0].points_balance)).toBe(10)
+    const before=(await c.query("SELECT to_jsonb(o) AS value FROM sale_orders o WHERE sale_order_id='O548'")).rows[0].value
+    const oldLedger=(await c.query("SELECT to_jsonb(p) AS value FROM point_transactions p WHERE ref_order_id='O548'")).rows
+    await refund(row)
+    expect((await c.query("SELECT to_jsonb(o) AS value FROM sale_orders o WHERE sale_order_id='O548'")).rows[0].value).toEqual(before)
+    expect((await c.query("SELECT to_jsonb(p) AS value FROM point_transactions p WHERE ref_order_id='O548'")).rows).toEqual(oldLedger)
+    expect((await c.query("SELECT ref_order_id,amount FROM point_transactions WHERE type='消费冲销'")).rows.map(r=>[r.ref_order_id,Number(r.amount)])).toEqual([['C548',-10]])
+    for(const file of ['../../utils/points','../../../../../fengyu-client/cloudfunctions/clientApi/utils/points','../../../../../fengyu-client/cloudfunctions/payNotify/points']) {
+      expect((await require(file).settlePointsForOrder(c,'O548')).delta).toBe(0)
+      expect((await require(file).settlePointsForOrder(c,'C548')).delta).toBe(0)
     }
-    await c.query('ROLLBACK TO SAVEPOINT bad_source');
-    expect((await c.query(CONVERSION_SOURCE_AUDIT_SQL)).rows.some(r=>r.reason==='refund-source-evidence-incomplete')).toBe(true);
-    await c.query("UPDATE sale_items SET conversion_value_snapshot=jsonb_set(conversion_value_snapshot,'{valueCents}','1'::jsonb) WHERE sale_item_id='IN548-0'");
-    expect((await c.query(CONVERSION_SOURCE_AUDIT_SQL)).rows.some(r=>r.reason==='snapshot-invalid-or-money-mismatch')).toBe(true);
-    expect(Number((await c.query("SELECT points_balance FROM client_wechat_users WHERE user_id='T548'")).rows[0].points_balance)).toBe(0);
+    await c.query("UPDATE sale_orders SET received=received+100 WHERE sale_order_id='O548'")
+    expect((await settlePointsForOrder(c,'O548')).delta).toBe(1)
+    expect(Number((await c.query("SELECT points_balance FROM client_wechat_users WHERE user_id='T548'")).rows[0].points_balance)).toBe(1)
   })
-  test('快照本金被改坏时退款拒绝，而诊断记录不回滚正常资金', async () => {
-    const [row]=await setup();
-    await c.query("UPDATE sale_items SET conversion_value_snapshot=jsonb_set(conversion_value_snapshot,'{valueCents}','90000'::jsonb)||jsonb_build_object('sources',jsonb_build_array(jsonb_build_object('sourceOrderId','O548','pointOrderId','O548','valueCents',90000))) WHERE sale_item_id='IN548-0'");
-    await c.query('SAVEPOINT bad_value');
-    await expect(refund(row)).rejects.toThrow('本金与已付金额不一致');
-    await c.query('ROLLBACK TO SAVEPOINT bad_value');
+  test('原积分未发则不补造旧折抵积分，只冲补款2分',async()=>{
+    const [row]=await setup({awardOld:false})
+    expect((await c.query('SELECT transferred_points FROM conversion_point_transfers')).rows.map(r=>Number(r.transferred_points))).toEqual([0])
+    await refund(row)
+    expect((await c.query("SELECT ref_order_id,amount FROM point_transactions WHERE type='消费冲销'")).rows.map(r=>[r.ref_order_id,Number(r.amount)])).toEqual([['C548',-2]])
+    expect((await settlePointsForOrder(c,'O548')).delta).toBe(0)
+  })
+  test.each(['used','expired'])('交接保留已用/原到期，不复活、不消耗其它订单批次：%s',async state=>{
+    let original
+    const [row]=await setup({beforeTransfer:async()=>{
+      if(state==='used') await c.query("UPDATE point_batches SET remaining_amount=2 WHERE ref_order_id='O548'")
+      else await c.query("UPDATE point_batches SET earned_at=NOW()-INTERVAL '400 days',expire_at=NOW()-INTERVAL '35 days',expired_at=NOW()-INTERVAL '35 days' WHERE ref_order_id='O548'")
+      original=(await c.query("SELECT earned_at,expire_at,expired_at,remaining_amount FROM point_batches WHERE ref_order_id='O548'")).rows[0]
+    }})
+    const inherited=(await c.query("SELECT earned_at,expire_at,expired_at,remaining_amount FROM point_batches WHERE ref_order_id='C548' AND source_transaction_id=(SELECT id FROM point_transactions WHERE ref_order_id='O548' AND type='消费赠送')")).rows[0]
+    expect(inherited).toEqual(original)
+    const extra=(await c.query("INSERT INTO point_transactions(user_id,type,amount) VALUES('T548','获取',50) RETURNING id")).rows[0]
+    await grantPointBatch(c,{userId:'T548',pointTransactionId:extra.id,type:'获取',amount:50})
+    const unrelated=(await c.query('SELECT * FROM point_batches WHERE source_transaction_id=$1',[extra.id])).rows
+    await refund(row)
+    expect((await c.query('SELECT * FROM point_batches WHERE source_transaction_id=$1',[extra.id])).rows).toEqual(unrelated)
+    expect(Number((await c.query("SELECT points_balance FROM client_wechat_users WHERE user_id='T548'")).rows[0].points_balance)).toBe(50)
+  })
+  test('连续转换只交接一次，末代退款冲12，前两单没有冲销',async()=>{
+    const [first]=await setup()
+    await c.query("INSERT INTO sale_orders SELECT (jsonb_populate_record(NULL::sale_orders,to_jsonb(o)||'{\"sale_order_id\":\"C548B\"}'::jsonb)).* FROM sale_orders o WHERE sale_order_id='C548'")
+    await cloneItem('OUT548',{sale_item_id:'OUT548B',sale_order_id:'C548B',ref_sale_item_id:first.sale_item_id,received:-1000,sale_amount:-1000,conversion_value_snapshot:null})
+    await cloneItem(first.sale_item_id,{sale_item_id:'IN548B',sale_order_id:'C548B',received:1200,sale_amount:1200,unit_real_price:120,conversion_value_snapshot:null})
+    await c.query("UPDATE sale_items SET remaining_sessions=0 WHERE sale_item_id=$1",[first.sale_item_id])
+    const query=async(text,params)=>(await c.query(text,params)).rows
+    await initializeConversionSources(query,'C548B'); await initializeConversionSources(query,'C548B')
+    await recalcPaidSessionsForOrder(c,'C548B');expect((await settlePointsForOrder(c,'C548B')).delta).toBe(2)
+    expect((await settlePointsForOrder(c,'C548')).delta).toBe(0)
+    const next=(await c.query("SELECT * FROM sale_items WHERE sale_item_id='IN548B'")).rows[0]
+    await refund(next,undefined,0,'C548B')
+    expect((await c.query("SELECT ref_order_id,amount FROM point_transactions WHERE type='消费冲销'")).rows.map(r=>[r.ref_order_id,Number(r.amount)])).toEqual([['C548B',-12]])
+    expect((await settlePointsForOrder(c,'O548')).delta).toBe(0)
+    expect((await settlePointsForOrder(c,'C548')).delta).toBe(0)
+  })
+  test('真正撤销转换恢复交接；逐项退款不恢复来源',async()=>{
+    await setup({cash:0})
+    const query=async(text,params)=>(await c.query(text,params)).rows
+    await rollbackConversionPointTransfers(query,'C548'); await rollbackConversionPointTransfers(query,'C548')
+    expect((await c.query('SELECT * FROM conversion_point_transfers')).rows).toHaveLength(0)
+    expect((await c.query("SELECT ref_order_id,remaining_amount FROM point_batches WHERE ref_order_id='O548'")).rows.map(r=>Number(r.remaining_amount))).toEqual([8])
+    expect((await settlePointsForOrder(c,'O548')).delta).toBe(0)
+  })
+  test('历史责任缺失只拒绝本单退款，不在退款时前追或猜算',async()=>{
+    const [row]=await setup()
+    await c.query("UPDATE sale_items SET conversion_value_snapshot=NULL WHERE sale_order_id='C548'")
+    await c.query('SAVEPOINT unknown_responsibility')
+    await expect(refund(row)).rejects.toThrow('责任尚未交接')
+    await c.query('ROLLBACK TO SAVEPOINT unknown_responsibility')
+    expect(Number((await c.query("SELECT refunded_amount FROM sale_orders WHERE sale_order_id='C548'")).rows[0].refunded_amount)).toBe(0)
+  })
+
+  test('旧员工80提成保留，仅反冲转换补款员工20，退款查询不绑定旧单或旧明细',async()=>{
+    const [row]=await setup()
+    await c.query("INSERT INTO staff_wechat_users(employee_id,name) VALUES('EMP548A','旧员工'),('EMP548B','本单员工')")
+    const oldPay=(await c.query("INSERT INTO sale_order_payments(sale_order_id,change_type,amount,payment_method,status,source_end) VALUES('O548','首次支付',800,'线下','已支付','staff') RETURNING id")).rows[0].id
+    const cashPay=(await c.query("SELECT id FROM sale_order_payments WHERE sale_order_id='C548' AND change_type='首次支付'")).rows[0].id
+    for(const [order,item,payment,employee,amount,commission] of [['O548','OLD548',oldPay,'EMP548A',800,80],['C548',row.sale_item_id,cashPay,'EMP548B',200,20]]) {
+      const receipt=(await c.query("INSERT INTO sale_payment_item_receipts(sale_order_id,sale_payment_id,sale_item_id,amount) VALUES($1,$2,$3,$4) RETURNING id",[order,payment,item,amount])).rows[0].id
+      await c.query("INSERT INTO sale_payment_item_allocations(sale_payment_item_receipt_id,employee_id,role_type,allocation_ratio,allocated_amount,commission_rate,commission_amount) VALUES($1,$2,'美容师',1,$3,.1,$4)",[receipt,employee,amount,commission])
+    }
+    // 初始现金已进入快照，新增的真实receipt不应再次增加现金。
+    await c.query("UPDATE sale_items SET conversion_value_snapshot=jsonb_set(conversion_value_snapshot,'{lastCashPaymentId}',to_jsonb($1::bigint)) WHERE sale_order_id='C548' AND item_direction='转入'",[cashPay])
+    const before=(await c.query("SELECT to_jsonb(a) AS value FROM sale_payment_item_allocations a WHERE employee_id='EMP548A'")).rows
+    const sourceItem=(await c.query("SELECT to_jsonb(i) AS value FROM sale_items i WHERE sale_item_id='OLD548'")).rows[0].value
+    const calls=[],originalQuery=c.query.bind(c)
+    c.query=async(text,params)=>{calls.push({text:String(text),params});return originalQuery(text,params)}
+    try { await refund(row) } finally { c.query=originalQuery }
+    expect(calls.some(q=>(q.params || []).some(p=>p==='O548' || p==='OLD548'))).toBe(false)
+    expect((await c.query("SELECT to_jsonb(a) AS value FROM sale_payment_item_allocations a WHERE employee_id='EMP548A'")).rows).toEqual(before)
+    expect((await c.query("SELECT to_jsonb(i) AS value FROM sale_items i WHERE sale_item_id='OLD548'")).rows[0].value).toEqual(sourceItem)
+    const reversed=(await c.query("SELECT allocated_amount,commission_amount FROM sale_payment_item_allocations WHERE employee_id='EMP548B' AND allocated_amount<0")).rows
+    expect(reversed.map(r=>[Number(r.allocated_amount),Number(r.commission_amount)])).toEqual([[-200,-20]])
+  })
+  test('停用/积分故障隔离保留本单冲销责任，恢复后只结本单',async()=>{
+    const [row]=await setup()
+    const prior=process.env.POINTS_ACCRUAL_ENABLED; process.env.POINTS_ACCRUAL_ENABLED='false'
+    try { await refund(row) } finally { if(prior===undefined) delete process.env.POINTS_ACCRUAL_ENABLED; else process.env.POINTS_ACCRUAL_ENABLED=prior }
+    expect((await settlePointsForOrder(c,'C548')).delta).toBe(-10)
+    expect((await settlePointsForOrder(c,'O548')).delta).toBe(0)
+  })
+
+  test('来源有已冲销空批次时，新赠积分的有效余额仍正确交接',async()=>{
+    const [first]=await setup()
+    // 构造同账户旧空批次，不能让它承接本次责任而把实际可用余额留在来源。
+    const tx=(await c.query("SELECT id FROM point_transactions WHERE ref_order_id='C548' AND type='消费赠送'")).rows[0].id
+    await c.query("INSERT INTO point_batches(user_id,source_transaction_id,source_type,ref_order_id,original_amount,remaining_amount,earned_at,expire_at) SELECT user_id,$1,'消费赠送','C548',50,0,NOW()-INTERVAL '300 days',NOW()+INTERVAL '65 days' FROM client_wechat_users WHERE user_id='T548'",[tx])
+    await c.query("INSERT INTO sale_orders SELECT (jsonb_populate_record(NULL::sale_orders,to_jsonb(o)||'{\"sale_order_id\":\"C548B\"}'::jsonb)).* FROM sale_orders o WHERE sale_order_id='C548'")
+    await cloneItem('OUT548',{sale_item_id:'OUT548B',sale_order_id:'C548B',ref_sale_item_id:first.sale_item_id,received:-1000,sale_amount:-1000,conversion_value_snapshot:null})
+    await cloneItem(first.sale_item_id,{sale_item_id:'IN548B',sale_order_id:'C548B',received:1200,sale_amount:1200,unit_real_price:120,conversion_value_snapshot:null})
+    await c.query("UPDATE sale_items SET remaining_sessions=0 WHERE sale_item_id=$1",[first.sale_item_id])
+    await initializeConversionSources(async(text,params)=>(await c.query(text,params)).rows,'C548B')
+    expect(Number((await c.query("SELECT COALESCE(SUM(remaining_amount),0) AS balance FROM point_batches WHERE ref_order_id='C548' AND expire_at>NOW()")).rows[0].balance)).toBe(0)
+    expect(Number((await c.query("SELECT COALESCE(SUM(remaining_amount),0) AS balance FROM point_batches WHERE ref_order_id='C548B' AND expire_at>NOW()")).rows[0].balance)).toBe(10)
+  })
+
+  test('转换交接本身不增余额或新赠流水，重复初始化不重复交接',async()=>{
+    let balance,batches,transactions
+    await setup({beforeTransfer:async()=>{
+      balance=(await c.query("SELECT points_balance FROM client_wechat_users WHERE user_id='T548'")).rows
+      batches=Number((await c.query("SELECT SUM(remaining_amount) AS n FROM point_batches WHERE user_id='T548'")).rows[0].n)
+      transactions=(await c.query("SELECT * FROM point_transactions WHERE user_id='T548' ORDER BY id")).rows
+    },afterTransfer:async()=>{
+      await initializeConversionSources(async(text,params)=>(await c.query(text,params)).rows,'C548')
+      expect((await c.query("SELECT points_balance FROM client_wechat_users WHERE user_id='T548'")).rows).toEqual(balance)
+      expect(Number((await c.query("SELECT SUM(remaining_amount) AS n FROM point_batches WHERE user_id='T548'")).rows[0].n)).toBe(batches)
+      expect((await c.query("SELECT * FROM point_transactions WHERE user_id='T548' ORDER BY id")).rows).toEqual(transactions)
+      expect((await c.query("SELECT * FROM conversion_point_transfers WHERE to_order_id='C548'")).rows).toHaveLength(1)
+    }})
+  })
+  test('本单积分写入故障只隔离积分，资金和责任保留；旧单流水未触碰',async()=>{
+    const [row]=await setup()
+    await c.query("CREATE FUNCTION pg_temp.reject548() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION '548 points injected failure'; END $$")
+    await c.query("CREATE TRIGGER reject548 BEFORE INSERT OR UPDATE ON point_transactions FOR EACH ROW EXECUTE FUNCTION pg_temp.reject548()")
+    await refund(row)
+    expect(Number((await c.query("SELECT refunded_amount FROM sale_orders WHERE sale_order_id='C548'")).rows[0].refunded_amount)).toBe(1000)
+    expect((await c.query("SELECT 1 FROM operation_logs WHERE action='points.settleFailed' AND target_id='C548'")).rows).toHaveLength(1)
+    await c.query('DROP TRIGGER reject548 ON point_transactions')
+    expect((await settlePointsForOrder(c,'C548')).delta).toBe(-10)
+    expect((await settlePointsForOrder(c,'O548')).delta).toBe(0)
+  })
+  test('本单交接台账丢失则拒绝退款，由本单审计定位，不回查原单',async()=>{
+    const [row]=await setup()
+    await c.query("DELETE FROM conversion_point_transfers WHERE to_order_id='C548'")
+    const { CONVERSION_SOURCE_AUDIT_SQL }=require('../../utils/conversion-sources')
+    expect((await c.query(CONVERSION_SOURCE_AUDIT_SQL)).rows.some(r=>r.sale_item_id==='OUT548')).toBe(true)
+    await c.query('SAVEPOINT missing_journal')
+    await expect(refund(row)).rejects.toThrow('交接凭据不完整')
+    await c.query('ROLLBACK TO SAVEPOINT missing_journal')
+    expect(Number((await c.query("SELECT refunded_amount FROM sale_orders WHERE sale_order_id='C548'")).rows[0].refunded_amount)).toBe(0)
   })
 
 })

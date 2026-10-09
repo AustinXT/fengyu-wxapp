@@ -1,19 +1,7 @@
-const { CONVERSION_POINT_OFFSETS_SQL, assertConversionRefundSourcesKnown } = require('./conversion-sources')
-const { retainedRefundFeeSql } = require('./refund-fee-sql')
-/**
- * 积分发放工具 — 订单链净额差值法（ticket 2026-04-24 points-accrual-on-sale-order）
- *
- * 语义：对"原销售单"维度调用 settlePointsForOrder，把整条链
- * （销售单 + 全部回款/退款/转换派生单）的净到账金额换算为目标积分，
- * 与已发放流水求差值，写入 delta 条流水 + 更新余额缓存。
- *
- * 逻辑副本：与 fengyu-staff/cloudfunctions/staffApi/utils/points.js 保持完全一致；
- * 云函数独立部署单元不能跨目录 require，只能复制一份。
- * 两端任一处修改后必须同步另一端。
- */
-
-// 参与积分发放的订单类型（决策 D1：内部单不发）
-const ORDER_TYPES_EARN_POINTS = new Set(['销售单'])
+const { getPointAccount, refreshConversionSources } = require('./conversion-sources')
+// 销售单按自身净额扣除永久移出的计分基数；转换单按本单责任快照结算。
+// 转换交接不新增赠点，补款归本单，退款仅消耗本单批次。
+const ORDER_TYPES_EARN_POINTS = new Set(['销售单', '转换单'])
 
 async function grantPointBatch(client, { userId, pointTransactionId, type, amount, refOrderId }) {
   if (!pointTransactionId || !amount || amount <= 0) return
@@ -30,7 +18,7 @@ async function grantPointBatch(client, { userId, pointTransactionId, type, amoun
   )
 }
 
-async function consumePointBatches(client, { userId, amount, refOrderId }) {
+async function consumePointBatches(client, { userId, amount, refOrderId, onlyOrder = false }) {
   const consumeAmount = Math.abs(amount)
   if (!consumeAmount) return
   await client.query(
@@ -40,6 +28,7 @@ async function consumePointBatches(client, { userId, amount, refOrderId }) {
         WHERE user_id = $1
           AND remaining_amount > 0
           AND expire_at > NOW()
+          AND ($4::boolean = false OR ref_order_id = $3)
         ORDER BY CASE WHEN $3::text IS NOT NULL AND ref_order_id = $3 THEN 0 ELSE 1 END,
                  expire_at, id
         FOR UPDATE
@@ -65,7 +54,7 @@ async function consumePointBatches(client, { userId, amount, refOrderId }) {
        FROM allocation
       WHERE pb.id = allocation.id
         AND allocation.consume_amount > 0`,
-    [userId, consumeAmount, refOrderId || null],
+    [userId, consumeAmount, refOrderId || null, onlyOrder],
   )
 }
 
@@ -73,8 +62,8 @@ async function consumePointBatches(client, { userId, amount, refOrderId }) {
  * 结算某条订单链的积分
  *
  * @param {object} client - pg 事务 client（调用方必须在 pg.transaction 内调用）
- * @param {string} originalSaleOrderId - 原销售单 ID；若当前业务触发点是派生单
- *                                        （回款/退款/转换），传 ref_sale_order_id
+ * @param {string} originalSaleOrderId - 当前责任账户 ID（销售单或转换单）；若当前业务触发点是派生单
+ *                                        （回款/退款），传对应销售单或转换单 ID
  */
 async function settlePointsForOrder(client, originalSaleOrderId) {
   if (!originalSaleOrderId) {
@@ -103,28 +92,9 @@ async function settlePointsForOrder(client, originalSaleOrderId) {
   //   - paid_amount 列已 DROP；改用 received - refunded_amount（净到账）
   //   - 回款单/退款单已迁出 sale_orders → 通过原单的 received / refunded_amount 即可表达整条链净额
   //   - 转换单（仍存在于 sale_orders）通过 ref_sale_order_id 关联，保留 OR 关系兼容
-  await assertConversionRefundSourcesKnown(async (text, params) => (await client.query(text, params)).rows, userId)
-
-  const sumRes = await client.query(
-    `SELECT COALESCE(SUM(COALESCE(received,0) - CASE WHEN sale_order_type = '转换单' AND EXISTS (SELECT 1 FROM sale_order_payments modern_refund WHERE modern_refund.sale_order_id = sale_orders.sale_order_id AND modern_refund.change_type = '退款' AND modern_refund.status = '已支付' AND public.try_jsonb(modern_refund.note) ->> 'conversionRefund' = 'true') THEN 0 ELSE COALESCE(refunded_amount,0) + ${retainedRefundFeeSql('sale_orders.sale_order_id')} END), 0)::numeric AS net_settled
-       FROM sale_orders
-      WHERE sale_order_id = $1
-         OR ref_sale_order_id = $1`,
-    [originalSaleOrderId],
-  )
-  const offsetRes = await client.query(`SELECT ${CONVERSION_POINT_OFFSETS_SQL} AS offset_amount`, [originalSaleOrderId])
-  const netSettled = Number(sumRes.rows[0]?.net_settled || 0) - Number(offsetRes.rows[0]?.offset_amount || 0)
-
-  const expected = Math.floor(Math.max(0, netSettled) / 100)
-
-  const grantedRes = await client.query(
-    `SELECT COALESCE(SUM(amount), 0)::bigint AS granted
-       FROM point_transactions
-      WHERE ref_order_id = $1
-        AND type IN ('消费赠送','消费冲销')`,
-    [originalSaleOrderId],
-  )
-  const granted = Number(grantedRes.rows[0]?.granted || 0)
+  const query = async (text, params) => (await client.query(text, params)).rows
+  if (saleOrderType === '转换单') await refreshConversionSources(query, originalSaleOrderId)
+  const { expected, granted } = await getPointAccount(query, originalSaleOrderId, saleOrderType)
 
   const delta = expected - granted
   if (delta === 0) {
@@ -159,6 +129,7 @@ async function settlePointsForOrder(client, originalSaleOrderId) {
       userId,
       amount: delta,
       refOrderId: originalSaleOrderId,
+      onlyOrder: saleOrderType === '转换单',
     })
   }
   await client.query(

@@ -1,6 +1,6 @@
 'use server'
 
-import { refreshConversionSources, recordConversionRefundSources, lockConversionPointRoots, conversionSourceQuery, stripConversionSourcesFromNote } from '@/lib/conversion-sources'
+import { refreshConversionSources, recordConversionRefundSources, conversionSourceQuery, stripConversionSourcesFromNote } from '@/lib/conversion-sources'
 
 import { conversionDebtSql } from '@/lib/conversion-value'
 
@@ -1242,7 +1242,6 @@ export const approveRefund = withPermission(
   try {
     cascade = await db.transaction(async (tx) => {
       // 先原单、再退款流水 CAS；与寄存申请、转换统一锁序，避免唯一索引等待成环。
-      if (pre.orderSaleOrderType === '转换单') await lockConversionPointRoots(conversionSourceQuery(tx), refSaleOrderId)
       const lockedOrders = await tx.execute(sql`SELECT sale_order_id, received, refunded_amount FROM sale_orders WHERE sale_order_id = ${refSaleOrderId} FOR UPDATE`) as unknown as Array<{ received: string | number; refunded_amount: string | number }>
       const lockedOrder = lockedOrders[0]
       if (!lockedOrder) throw new ApiError('NOT_FOUND', 'REFUND_ORDER_MISSING: 原销售单不存在')

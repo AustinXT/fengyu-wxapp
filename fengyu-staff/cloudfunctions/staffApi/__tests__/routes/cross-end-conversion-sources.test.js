@@ -4,6 +4,7 @@ const { parse } = require('@babel/parser')
 const root = path.resolve(__dirname, '../../../../..')
 const files = ['fengyu-staff/cloudfunctions/staffApi/utils/conversion-sources.js','fengyu-client/cloudfunctions/clientApi/utils/conversion-sources.js','fengyu-client/cloudfunctions/payNotify/conversion-sources.js','fengyu-admin/src/lib/conversion-sources.ts']
 function canonical(node) {
+  if (node?.type === 'TSNonNullExpression') return canonical(node.expression)
   if (Array.isArray(node)) return node.map(canonical)
   if (!node || typeof node !== 'object') return node
   return Object.fromEntries(Object.entries(node).filter(([key]) => !['start','end','loc','extra','comments','leadingComments','trailingComments','innerComments','typeAnnotation','returnType','typeParameters'].includes(key)).map(([key,value])=>[key,canonical(value)]))
@@ -12,7 +13,7 @@ function core(file) {
   const ast = parse(fs.readFileSync(path.join(root,file),'utf8'), {sourceType:'module',plugins:['typescript']})
   return ast.program.body.map(n => n.type === 'ExportNamedDeclaration' ? n.declaration : n)
     .filter(n => n.type === 'FunctionDeclaration' && n.id.name !== 'conversionSourceQuery'
-      || n.type === 'VariableDeclaration' && ['CONVERSION_POINT_OFFSETS_SQL','CONVERSION_SOURCE_AUDIT_SQL','CONVERSION_UNKNOWN_POINT_SOURCE_SQL'].includes(n.declarations[0].id.name)).map(canonical)
+      || n.type === 'VariableDeclaration' && ['POINT_ACCOUNT_LEDGER_SQL','CONVERSION_SOURCE_AUDIT_SQL'].includes(n.declarations[0].id.name)).map(canonical)
 }
 describe('#548 四端来源和积分偏移独立副本合同',()=>{
   test.each(files)('%s 完整来源算法同义', file => expect(core(file)).toEqual(core(files[0])))
@@ -43,12 +44,17 @@ test('#548 公共退款note保留金额和原因，去除内部来源，数据�
   expect(stripConversionSourcesFromNote('普通收款备注')).toBe('普通收款备注')
 })
 
-test('#548 四端原链读者必须实际调用凭据守卫，不能只有导入',()=>{
+test('#548 四端积分读者使用本单账户；转换退款只能冲本单批次',()=>{
  const readers=['fengyu-admin/src/lib/points-settle.ts','fengyu-staff/cloudfunctions/staffApi/utils/points.js','fengyu-client/cloudfunctions/clientApi/utils/points.js','fengyu-client/cloudfunctions/payNotify/points.js'];
  for(const file of readers) {
   const src=fs.readFileSync(path.join(root,file),'utf8');
-  expect(src).toMatch(/await assertConversionRefundSourcesKnown\(/);
-  const guard=src.indexOf('await assertConversionRefundSourcesKnown(');
-  expect(guard).toBeLessThan(src.indexOf('const sumRes ='));
+  expect(src).toMatch(/await getPointAccount\(/);
+  expect(src).toContain("onlyOrder: saleOrderType === '转换单'");
+  expect(src).not.toContain('CONVERSION_POINT_OFFSETS_SQL');
+ }
+ for(const file of ['fengyu-admin/src/lib/refund-cascade.ts','fengyu-staff/cloudfunctions/staffApi/helpers/refund-cascade.js']) {
+  const src=fs.readFileSync(path.join(root,file),'utf8');
+  expect(src).toMatch(/settlePointsSafe\((tx|client), saleOrderId, 'conversion.refund'\)/);
+  expect(src).not.toContain('s.pointOrderId');
  }
 });

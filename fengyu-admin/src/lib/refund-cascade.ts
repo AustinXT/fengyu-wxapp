@@ -712,11 +712,8 @@ export async function cascadeRefund(
   // ── 4) point_transactions 比例冲销 + client_wechat_users.points_balance 重算（订单级） ──
   let reversedPoints = 0
   if (isConversionOrder) {
-    const roots = [...new Set<string>((note?.items || []).flatMap((it: { conversionSources?: Array<{ pointOrderId: string | null }> }) => (it.conversionSources || []).map(s => s.pointOrderId).filter((id): id is string => !!id)))].sort()
-    for (const root of roots) {
-      const result = await settlePointsSafe(tx, root, 'conversion.refund')
-      reversedPoints += Math.max(0, -Number(result.delta || 0))
-    }
+    const result = await settlePointsSafe(tx, saleOrderId, 'conversion.refund')
+    reversedPoints = Math.max(0, -Number(result.delta || 0))
   } else if (note && Array.isArray(note.items)) {
     // 新退款按订单链可计消费净额重算，手续费不能因比例舍入保留一枚积分。
     const pointResult = await settlePointsSafe(tx, saleOrderId, 'refund')

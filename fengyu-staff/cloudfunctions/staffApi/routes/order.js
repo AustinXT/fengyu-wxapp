@@ -1,5 +1,5 @@
 const { stripConversionSourcesFromNote } = require('../utils/conversion-sources')
-const { refreshConversionSources, recordConversionRefundSources, lockConversionPointRoots } = require('../utils/conversion-sources')
+const { refreshConversionSources, recordConversionRefundSources, initializeConversionSources, rollbackConversionPointTransfers } = require('../utils/conversion-sources')
 const { conversionDebtSql, getConversionDebt } = require('../utils/conversion-value')
 const { retainedRefundFeeSql } = require('../utils/refund-fee-sql')
 const { allocateRefundAccounting } = require('../utils/refund-accounting')
@@ -2552,6 +2552,8 @@ async function rollbackPendingConversionOnClose(client, saleOrderId, now) {
     [saleOrderId],
   )
 
+  await rollbackConversionPointTransfers(async (text, params) => (await client.query(text, params)).rows, saleOrderId)
+
   // 0. 再用一条语句按全局 sale_item_id 顺序锁住本单引用的**全部**源行。
   //    createConversion 折抵时是单语句 `ORDER BY si.sale_item_id ... FOR UPDATE OF si`（不分类型），
   //    若这里分「疗程卡段→家居段」两次加锁，混选转换单在家居行 id < 疗程卡行 id 时会形成反向锁序而死锁。
@@ -4085,7 +4087,6 @@ async function approveRefund(ctx) {
   await pg.transaction(async (client) => {
     // 与申请/转换统一为原单→退款流水→源行；必须在余额读取和退款 CAS 之前取锁。
     const sourceQuery = async (text, params) => (await client.query(text, params)).rows
-    if (sopRow.sale_order_type === '转换单') await lockConversionPointRoots(sourceQuery, refSaleOrderId)
     const lockedOrderRes = await client.query('SELECT sale_order_id, received, refunded_amount FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE', [refSaleOrderId])
     const lockedOrder = lockedOrderRes.rows[0]
     if (!lockedOrder) throw new Error('NOT_FOUND: 原销售单不存在')
@@ -6058,6 +6059,7 @@ WHERE sale_items.sale_item_id = ANY($1)`,
     // paid_sessions 初始写入（ticket 2026-05-19）：转换单 total_amount=差额（可能=0），
     // 公式走 op.total_amount <= 0 → 兜底 = session_count（转入新卡视为全付获得）
     // 必须在 capture 之后：新 STEP1 从 receipt 聚合 received
+    await initializeConversionSources(async (text, params) => (await tx.query(text, params)).rows, convOrderId)
     await recalcPaidSessionsForOrder(tx, convOrderId)
 
     // 全额抵扣即结清：触发与 confirmOffline 已支付分支一致的结算副作用。

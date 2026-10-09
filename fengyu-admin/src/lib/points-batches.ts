@@ -15,6 +15,7 @@ export interface GrantPointBatchInput {
 }
 
 export interface ConsumePointBatchInput {
+  onlyOrder?: boolean
   userId: string
   amount: number
   refOrderId?: string | null
@@ -73,6 +74,7 @@ export async function consumePointBatches(
       WHERE user_id = ${input.userId}
         AND remaining_amount > 0
         AND expire_at > NOW()
+        AND (${input.onlyOrder ?? false}::boolean = false OR ref_order_id = ${input.refOrderId ?? null})
       ORDER BY
         CASE
           WHEN ${input.refOrderId ?? null}::text IS NOT NULL

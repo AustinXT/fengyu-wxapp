@@ -16,8 +16,8 @@ exports[`applyRechargeOnOrderPaid SQL 一致性守护（三端独立副本） > 
 
 exports[`audit-15 P0-15-02 协同：四端 settlePointsForOrder SQL 一致性守护 > Snapshot 守护（提交后任一字符漂移立即可见） > settlePoints 关键 SQL 文本快照 1`] = `
 {
-  "granted": "SELECT COALESCE(SUM(amount), 0)::bigint AS granted FROM point_transactions WHERE ref_order_id = ? AND type IN ('消费赠送','消费冲销')",
-  "netSettled": "SELECT COALESCE(SUM(COALESCE(received,0) - CASE WHEN sale_order_type = '转换单' AND EXISTS (SELECT 1 FROM sale_order_payments modern_refund WHERE modern_refund.sale_order_id = sale_orders.sale_order_id AND modern_refund.change_type = '退款' AND modern_refund.status = '已支付' AND public.try_jsonb(modern_refund.note) ->> 'conversionRefund' = 'true') THEN 0 ELSE COALESCE(refunded_amount,0) + ? END), 0)::numeric AS net_settled FROM sale_orders WHERE sale_order_id = ? OR ref_sale_order_id = ?",
+  "granted": "SELECT (COALESCE((SELECT SUM(amount) FROM point_transactions WHERE ref_order_id=? AND type IN ('消费赠送','消费冲销')),0) +COALESCE((SELECT SUM(transferred_points) FROM conversion_point_transfers WHERE to_order_id=?),0) -COALESCE((SELECT SUM(transferred_points) FROM conversion_point_transfers WHERE from_order_id=?),0))::bigint AS granted",
+  "netSettled": "SELECT GREATEST(0,COALESCE(SUM(COALESCE(received,0)-COALESCE(refunded_amount,0)-?),0)*100 -COALESCE((SELECT SUM(excluded_basis_cents) FROM conversion_point_transfers WHERE from_order_id=?),0)) AS basis FROM sale_orders WHERE sale_order_id=? OR (ref_sale_order_id=? AND sale_order_type <> '转换单')",
   "upsert": "INSERT INTO point_transactions (user_id, type, amount, ref_order_id, created_at) VALUES (?, ?, ?, ?, NOW()) ON CONFLICT (user_id, ref_order_id, type) WHERE ref_order_id IS NOT NULL AND type IN ('消费赠送','消费冲销') DO UPDATE SET amount = point_transactions.amount + EXCLUDED.amount, created_at = NOW() RETURNING id",
 }
 `;
