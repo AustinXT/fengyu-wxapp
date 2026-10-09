@@ -42,3 +42,13 @@ test('#548 公共退款note保留金额和原因，去除内部来源，数据�
   expect(original).toContain('secret-root')
   expect(stripConversionSourcesFromNote('普通收款备注')).toBe('普通收款备注')
 })
+
+test('#548 四端原链读者必须实际调用凭据守卫，不能只有导入',()=>{
+ const readers=['fengyu-admin/src/lib/points-settle.ts','fengyu-staff/cloudfunctions/staffApi/utils/points.js','fengyu-client/cloudfunctions/clientApi/utils/points.js','fengyu-client/cloudfunctions/payNotify/points.js'];
+ for(const file of readers) {
+  const src=fs.readFileSync(path.join(root,file),'utf8');
+  expect(src).toMatch(/await assertConversionRefundSourcesKnown\(/);
+  const guard=src.indexOf('await assertConversionRefundSourcesKnown(');
+  expect(guard).toBeLessThan(src.indexOf('const sumRes ='));
+ }
+});

@@ -282,6 +282,9 @@ run('#548 隔离 PG 转换退款（真实级联与权益重算）', () => {
     await c.query("UPDATE sale_order_payments SET note=(public.try_jsonb(note) #- '{items,0,conversionSources}')::text WHERE sale_order_id='C548' AND change_type='退款'");
     await c.query('SAVEPOINT bad_source');
     await expect(settlePointsForOrder(c,'O548')).rejects.toThrow('积分来源不完整');
+    for(const file of ['../../../../../fengyu-client/cloudfunctions/clientApi/utils/points','../../../../../fengyu-client/cloudfunctions/payNotify/points']) {
+      await expect(require(file).settlePointsForOrder(c,'O548')).rejects.toThrow('积分来源不完整');
+    }
     await c.query('ROLLBACK TO SAVEPOINT bad_source');
     expect((await c.query(CONVERSION_SOURCE_AUDIT_SQL)).rows.some(r=>r.reason==='refund-source-evidence-incomplete')).toBe(true);
     await c.query("UPDATE sale_items SET conversion_value_snapshot=jsonb_set(conversion_value_snapshot,'{valueCents}','1'::jsonb) WHERE sale_item_id='IN548-0'");

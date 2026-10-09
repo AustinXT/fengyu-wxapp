@@ -7450,7 +7450,7 @@ async function refundList(ctx) {
     LIMIT $2 OFFSET $3
   `, params)
 
-  ctx.result = { refunds, page: safePage, pageSize: safePageSize }
+  ctx.result = { refunds: refunds.map(row => ({...row, detail_note: stripConversionSourcesFromNote(row.detail_note)})), page: safePage, pageSize: safePageSize }
 }
 
 /**

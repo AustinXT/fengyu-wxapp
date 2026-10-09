@@ -89,6 +89,8 @@ async function settlePointsForOrder(client, originalSaleOrderId) {
 
   // 2026-04-26 sale-order-domain-refactor: paid_amount 已 DROP，改用 received - refunded_amount
   // 退款单 refunded_amount 为正，回款单 received 为正；累加得链净额
+  await assertConversionRefundSourcesKnown(async (text, params) => (await client.query(text, params)).rows, userId)
+
   const sumRes = await client.query(
     `SELECT COALESCE(SUM(COALESCE(received,0) - CASE WHEN sale_order_type = '转换单' AND EXISTS (SELECT 1 FROM sale_order_payments modern_refund WHERE modern_refund.sale_order_id = sale_orders.sale_order_id AND modern_refund.change_type = '退款' AND modern_refund.status = '已支付' AND public.try_jsonb(modern_refund.note) ->> 'conversionRefund' = 'true') THEN 0 ELSE COALESCE(refunded_amount,0) + ${retainedRefundFeeSql('sale_orders.sale_order_id')} END), 0)::numeric AS net_settled
        FROM sale_orders
