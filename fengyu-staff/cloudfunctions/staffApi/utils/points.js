@@ -1,4 +1,4 @@
-const { getPointAccount, refreshConversionSources } = require('./conversion-sources')
+const { getPointAccount, refreshConversionSources, recordConversionInheritedReversal, lockConversionPointBatches } = require('./conversion-sources')
 // 销售单按自身净额扣除永久移出的计分基数；转换单按本单责任快照结算。
 // 转换交接不新增赠点，补款归本单，退款仅消耗本单批次。
 const ORDER_TYPES_EARN_POINTS = new Set(['销售单', '转换单'])
@@ -18,7 +18,7 @@ async function grantPointBatch(client, { userId, pointTransactionId, type, amoun
   )
 }
 
-async function consumePointBatches(client, { userId, amount, refOrderId, onlyOrder = false }) {
+async function consumePointBatches(client, { userId, amount, refOrderId, onlyOrder = false, pointClass = null }) {
   const consumeAmount = Math.abs(amount)
   if (!consumeAmount) return
   await client.query(
@@ -29,6 +29,8 @@ async function consumePointBatches(client, { userId, amount, refOrderId, onlyOrd
           AND remaining_amount > 0
           AND expire_at > NOW()
           AND ($4::boolean = false OR ref_order_id = $3)
+          AND ($5::text IS NULL OR (source_type='消费赠送' AND
+            ((source_transaction_id IN (SELECT id FROM point_transactions WHERE ref_order_id=$3 AND type='消费赠送')) OR id IN (SELECT public.try_numeric(b->>'toBatchId')::bigint FROM conversion_point_transfers t CROSS JOIN LATERAL jsonb_array_elements(COALESCE(t.batch_snapshot->'batches','[]'::jsonb)) b WHERE t.to_order_id=$3 AND b->>'ownCash'='true')) = ($5::text='cash')))
         ORDER BY CASE WHEN $3::text IS NOT NULL AND ref_order_id = $3 THEN 0 ELSE 1 END,
                  expire_at, id
         FOR UPDATE
@@ -54,7 +56,7 @@ async function consumePointBatches(client, { userId, amount, refOrderId, onlyOrd
        FROM allocation
       WHERE pb.id = allocation.id
         AND allocation.consume_amount > 0`,
-    [userId, consumeAmount, refOrderId || null, onlyOrder],
+    [userId, consumeAmount, refOrderId || null, onlyOrder, pointClass],
   )
 }
 
@@ -94,13 +96,18 @@ async function settlePointsForOrder(client, originalSaleOrderId) {
 
   const query = async (text, params) => (await client.query(text, params)).rows
   if (saleOrderType === '转换单') await refreshConversionSources(query, originalSaleOrderId)
-  const { expected, granted } = await getPointAccount(query, originalSaleOrderId, saleOrderType)
+  const account = await getPointAccount(query, originalSaleOrderId, saleOrderType)
+  const { expected, granted } = account
 
-  const delta = expected - granted
-  if (delta === 0) {
-    return { delta: 0, expected, granted }
-  }
-
+  const conversion = saleOrderType === '转换单'
+  const inheritedReversal = conversion ? Math.max(0,account.inheritedOwned-account.inheritedPoints) : 0
+  const ownDelta = conversion ? (expected-account.inheritedPoints-account.ownGranted) : expected-granted
+  const delta = ownDelta-inheritedReversal
+  const changes=[{delta:ownDelta,pointClass:conversion ? 'cash' : null},{delta:-inheritedReversal,pointClass:'inherited'}].filter(c=>c.delta!==0)
+  if (!changes.length) return {delta:0,expected,granted}
+  if (conversion) await lockConversionPointBatches(query,userId,originalSaleOrderId)
+  for (const change of changes) {
+    const delta=change.delta
   const type = delta > 0 ? '消费赠送' : '消费冲销'
   // partial unique uq_point_txn_order_user_type (user_id, ref_order_id, type) WHERE ref_order_id IS NOT NULL AND type IN ('消费赠送','消费冲销')
   // 分次回款/退款累加：同 (user,order,type) 已有行时把增量 delta 累加进唯一行（granted=SUM 口径不变），
@@ -130,8 +137,11 @@ async function settlePointsForOrder(client, originalSaleOrderId) {
       amount: delta,
       refOrderId: originalSaleOrderId,
       onlyOrder: saleOrderType === '转换单',
+      pointClass: change.pointClass,
     })
   }
+  }
+  if (inheritedReversal) await recordConversionInheritedReversal(query,originalSaleOrderId,inheritedReversal)
   await client.query(
     `UPDATE client_wechat_users c
         SET points_balance    = COALESCE((
@@ -145,7 +155,7 @@ async function settlePointsForOrder(client, originalSaleOrderId) {
     [userId],
   )
 
-  return { delta, expected, granted }
+  return conversion ? {delta,expected,granted,reversed:inheritedReversal+Math.max(0,-ownDelta)} : {delta,expected,granted}
 }
 
 /**

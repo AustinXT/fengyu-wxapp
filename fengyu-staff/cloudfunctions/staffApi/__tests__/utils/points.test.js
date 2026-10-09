@@ -165,7 +165,7 @@ describe('settlePointsForOrder — 退款冲销', () => {
 
     const batchConsume = findQuery(queries, /UPDATE\s+point_batches/i)
     expect(batchConsume).toBeDefined()
-    expect(batchConsume.params).toEqual(['user-001', 1, 'o1', false])
+    expect(batchConsume.params).toEqual(['user-001', 1, 'o1', false, null])
   })
 
   test('二次退款尾差归零：netSettled=140, granted=1 → delta=0 无写入', async () => {

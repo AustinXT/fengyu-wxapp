@@ -178,7 +178,7 @@
         bind:click="onShowQrcode"
       >{{order.canResumeOnlinePayment ? '查看本次收款码（¥' + order.activePaymentAmount + '）' : '查看收款码'}}</van-button>
       <van-button
-        wx:if="{{!isReadOnly && (isManager || isCreator) && order.status === '待支付'}}"
+        wx:if="{{!isReadOnly && (isManager || isCreator) && order.status === '待支付' && !hasConversionRefund}}"
         block plain type="danger"
         custom-style="border-radius:48rpx;margin-top:24rpx;"
         bind:click="onCloseOrder"
@@ -202,7 +202,7 @@
       >创建服务单</van-button>
       <!-- P2: 退款按钮（已支付/已完成/部分支付 + 销售单/寄存单；排除 workfine 历史单 + 已有待审批退款；员工可发起→店长审批，对齐 admin order-detail-page.tsx；充值单走下方专用按钮） -->
       <van-button
-        wx:if="{{!isReadOnly && (order.status === '已支付' || order.status === '已完成' || order.status === '部分支付') && (order.orderType === '销售单' || order.orderType === '寄存单' || order.orderType === '转换单') && !order.isLegacy && !hasPendingRefund}}"
+        wx:if="{{!isReadOnly && (order.status === '已支付' || order.status === '已完成' || order.status === '部分支付' || (order.status === '待支付' && hasFundedConversionValue)) && (order.orderType === '销售单' || order.orderType === '寄存单' || order.orderType === '转换单') && !order.isLegacy && !hasPendingRefund}}"
         block plain type="danger"
         custom-style="border-radius:48rpx;margin-top:24rpx;"
         bind:click="onCreateRefund"

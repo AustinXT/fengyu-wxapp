@@ -16,6 +16,7 @@ export interface GrantPointBatchInput {
 
 export interface ConsumePointBatchInput {
   onlyOrder?: boolean
+  pointClass?: 'cash' | 'inherited'
   userId: string
   amount: number
   refOrderId?: string | null
@@ -75,6 +76,8 @@ export async function consumePointBatches(
         AND remaining_amount > 0
         AND expire_at > NOW()
         AND (${input.onlyOrder ?? false}::boolean = false OR ref_order_id = ${input.refOrderId ?? null})
+        AND (${input.pointClass ?? null}::text IS NULL OR (source_type='消费赠送' AND
+          ((source_transaction_id IN (SELECT id FROM point_transactions WHERE ref_order_id=${input.refOrderId ?? null} AND type='消费赠送')) OR id IN (SELECT public.try_numeric(b->>'toBatchId')::bigint FROM conversion_point_transfers t CROSS JOIN LATERAL jsonb_array_elements(COALESCE(t.batch_snapshot->'batches','[]'::jsonb)) b WHERE t.to_order_id=${input.refOrderId ?? null} AND b->>'ownCash'='true')) = (${input.pointClass ?? null}::text='cash')))
       ORDER BY
         CASE
           WHEN ${input.refOrderId ?? null}::text IS NOT NULL

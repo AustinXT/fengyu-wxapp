@@ -4270,6 +4270,11 @@ export const closeOrder = withPermission(
     .where(and(eq(saleOrders.saleOrderId, saleOrderId), scopeCondition(session, saleOrders.storeId)))
     .limit(1)
 
+  if(orderCtx?.saleOrderType === '转换单') {
+    const refunds = await db.execute(sql`SELECT 1 FROM sale_order_payments WHERE sale_order_id=${saleOrderId} AND change_type='退款' AND status IN ('待审批','已支付') LIMIT 1`)
+    if(refunds.length) return { success:false,message:'转换单已有退款，不允许撤销转换' }
+  }
+
   // issue #214：顾客唤起支付后没付款，渠道单仍在有效期内，旧实现只能拒绝关闭
   // （「在线支付处理中，暂不能关闭订单」），店员得等约 20 分钟。这里先向渠道关单并
   // 释放意图，再走下面**原样不动**的事务与 CAS（`AND lakala_out_order_no IS NULL`）。
@@ -4298,6 +4303,11 @@ export const closeOrder = withPermission(
   // 事务：关闭订单 + 作废分配，原子提交
   try {
     const txResult = await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT sale_order_id FROM sale_orders WHERE sale_order_id=${saleOrderId} AND ${scopeCondition(session, saleOrders.storeId) ?? sql`TRUE`} FOR UPDATE`)
+      if(orderCtx?.saleOrderType === '转换单') {
+        const refunds = await tx.execute(sql`SELECT 1 FROM sale_order_payments WHERE sale_order_id=${saleOrderId} AND change_type='退款' AND status IN ('待审批','已支付') LIMIT 1`)
+        if(refunds.length) throw new ApiError('CONFLICT','转换单已有退款，不允许撤销转换')
+      }
       const result = await tx
         .update(saleOrders)
         .set({
@@ -6663,7 +6673,7 @@ export const createConversionOrder = withPermission(
 
       // 5. 插入订单主表
       // 顾客补现场景：priceDiff > 0 → total_amount=priceDiff，status 按抵扣后应付决定
-      //   - payable > 0（仍需付现金）：'待支付'，扣卡延后到 confirmOffline / payNotify
+      //   - payable > 0（仍需付现金）：待支付，扣卡延后到确认到账
       //   - payable == 0 且有抵扣（全额抵扣）：事务内即时扣卡 → '已支付'，payment_method='无'
       // 其他（priceDiff <= 0）：total_amount=0 & status='已支付'
       const orderTotal = Math.max(0, priceDiff).toFixed(2)
@@ -6958,6 +6968,8 @@ export const createConversionOrder = withPermission(
         }
       }
 
+      await initializeConversionSources(conversionSourceQuery(tx), saleOrderId)
+
       // 8. 差额退余：priceDiff < 0 → UPSERT prepaid_cards + card_transactions
       let prepaidCardCredit = 0
       if (priceDiff < 0) {
@@ -7011,7 +7023,6 @@ export const createConversionOrder = withPermission(
 
       // paid_sessions 写入（ticket 2026-05-19）：转换单 total_amount=差额，可能=0 → 兜底全付
       // 必须在 capture 之后：新 STEP1 从 receipt 聚合 received
-      await initializeConversionSources(conversionSourceQuery(tx), saleOrderId)
       await recalcPaidSessionsForOrder(tx, saleOrderId)
 
       // 全额抵扣即结清：触发积分发放 + 客户分类跃迁（与 confirmOfflinePayment 已支付分支一致）。

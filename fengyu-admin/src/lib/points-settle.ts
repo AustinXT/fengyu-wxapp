@@ -1,4 +1,4 @@
-import { getPointAccount, conversionSourceQuery, refreshConversionSources } from './conversion-sources'
+import { getPointAccount, conversionSourceQuery, refreshConversionSources, recordConversionInheritedReversal, lockConversionPointBatches } from './conversion-sources'
 import { sql } from 'drizzle-orm'
 import { db } from '@/db'
 import { consumePointBatches, grantPointBatch } from '@/lib/points-batches'
@@ -10,6 +10,7 @@ export interface SettleResult {
   delta: number
   expected: number
   granted: number
+  reversed?: number
   skipped?: string
   error?: string
 }
@@ -58,14 +59,18 @@ export async function settlePointsForOrder(
   }
 
   if (saleOrderType === '转换单') await refreshConversionSources(conversionSourceQuery(tx), originalSaleOrderId)
-  const { expected, granted } = await getPointAccount(conversionSourceQuery(tx), originalSaleOrderId, saleOrderType)
+  const account = await getPointAccount(conversionSourceQuery(tx), originalSaleOrderId, saleOrderType)
+  const { expected, granted } = account
 
-  // 5. 差值判断 — delta=0 天然幂等
-  const delta = expected - granted
-  if (delta === 0) {
-    return { delta: 0, expected, granted }
-  }
-
+  const conversion = saleOrderType === '转换单'
+  const inheritedReversal = conversion ? Math.max(0,account.inheritedOwned-account.inheritedPoints) : 0
+  const ownDelta = conversion ? (expected-account.inheritedPoints-account.ownGranted) : expected-granted
+  const delta = ownDelta-inheritedReversal
+  const changes=[{delta:ownDelta,pointClass:conversion ? 'cash' as const : undefined},{delta:-inheritedReversal,pointClass:'inherited' as const}].filter(c=>c.delta!==0)
+  if (!changes.length) return {delta:0,expected,granted}
+  if (conversion) await lockConversionPointBatches(conversionSourceQuery(tx),userId,originalSaleOrderId)
+  for (const change of changes) {
+    const delta=change.delta
   const type = delta > 0 ? '消费赠送' : '消费冲销'
   // partial unique uq_point_txn_order_user_type (user_id, ref_order_id, type) WHERE ref_order_id IS NOT NULL AND type IN ('消费赠送','消费冲销')
   // 分次回款/退款累加：同 (user,order,type) 已有行时把增量 delta 累加进唯一行（granted=SUM 口径不变），
@@ -95,9 +100,12 @@ export async function settlePointsForOrder(
       amount: delta,
       refOrderId: originalSaleOrderId,
       onlyOrder: saleOrderType === '转换单',
+      pointClass: change.pointClass,
     })
   }
 
+  }
+  if (inheritedReversal) await recordConversionInheritedReversal(conversionSourceQuery(tx),originalSaleOrderId,inheritedReversal)
   await tx.execute(sql`
     UPDATE client_wechat_users c
        SET points_balance    = COALESCE((
@@ -110,7 +118,7 @@ export async function settlePointsForOrder(
      WHERE c.user_id = ${userId}
   `)
 
-  return { delta, expected, granted }
+  return conversion ? {delta,expected,granted,reversed:inheritedReversal+Math.max(0,-ownDelta)} : {delta,expected,granted}
 }
 
 /**

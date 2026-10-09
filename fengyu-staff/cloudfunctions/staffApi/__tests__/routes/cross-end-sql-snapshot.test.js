@@ -2110,7 +2110,8 @@ describe('寄存单/历史订单 资金操作锁定守护', () => {
       expect(src, `${name} 缺「本笔退过次数」前提`).toContain('this_refund_sessions')
       expect(src, `${name} 缺「本笔退过次数」判据`).toContain("SUM(GREATEST(0, public.try_numeric(elem ->> 'quantity')))")
       expect(src, `${name} 缺「本笔退过次数」门槛`).toContain('(SELECT refunded_sessions FROM this_refund_sessions) > 0')
-      expect(src, `${name} 缺状态迁移约束`).toContain("AND so.status IN ('已支付', '已完成', '部分支付')")
+      expect(src, `${name} 缺状态迁移约束`).toContain("so.status IN ('已支付', '已完成', '部分支付')")
+      expect(src).toContain("OR (so.sale_order_type='转换单' AND so.status='待支付')")
       expect(src, `${name} 未置已退款`).toContain("SET status = '已退款'::order_status")
     }
     // 终态只对寄存单生效，不得外溢（两端变量名不同：staff 用 sopRow，admin 用 pre）

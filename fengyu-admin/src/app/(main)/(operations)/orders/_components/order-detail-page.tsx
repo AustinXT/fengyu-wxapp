@@ -291,7 +291,8 @@ export default function OrderDetailPageClient({
     canRefund &&
     (order.saleOrderType === "销售单" || order.saleOrderType === "寄存单" || order.saleOrderType === "转换单") &&
     !isWorkfineLegacy(order.legacySource) &&
-    (order.status === "已支付" || order.status === "已完成" || order.status === "部分支付");
+    (order.status === "已支付" || order.status === "已完成" || order.status === "部分支付"
+      || (order.saleOrderType === "转换单" && order.status === "待支付" && items.some(item => item.itemDirection === "转入" && Number(item.received ?? 0) > 0)));
 
   const canShowDepositApproval =
     canApproveDeposit &&

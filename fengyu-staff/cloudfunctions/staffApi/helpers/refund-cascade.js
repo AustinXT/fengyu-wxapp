@@ -549,7 +549,7 @@ async function cascadeRefund(client, params) {
   let pointsBalanceUpdated = false
   if (isConversionOrder) {
     const result = await settlePointsSafe(client, saleOrderId, 'conversion.refund')
-    reversedPoints = Math.max(0, -Number(result.delta || 0))
+    reversedPoints = Number(result.reversed ?? Math.max(0, -Number(result.delta || 0)))
     pointsBalanceUpdated = true
   } else if (note && Array.isArray(note.items)) {
     const pointResult = await settlePointsSafe(client, saleOrderId, 'refund')

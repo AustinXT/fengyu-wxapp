@@ -20,7 +20,7 @@ async function scenario(suffix,{cash=200,two=false,old=800}={}){
   await createPaidPayment(id,{amount:old,items:[{saleItemId:source.saleItemId,amount:old,salesCategory:'他销自耗'}]})
   await pg.transaction(c=>settlePointsForOrder(c,id))
   const conv=await call('order.createConversion',{clientUserId:TEST_CLIENT_USER_ID,convertOutSaleItemIds:[source.saleItemId],convertInItems:[{skuId:targetSku.skuId,quantity:two?2:1}],paymentMethod:'线下',receivedAmount:cash})
-  await call('order.confirmOffline',{saleOrderId:conv.saleOrderId,confirmAmount:cash})
+  if(cash>0) await call('order.confirmOffline',{saleOrderId:conv.saleOrderId,confirmAmount:cash})
   const items=await pgQuery("SELECT * FROM sale_items WHERE sale_order_id=$1 AND item_direction='转入' ORDER BY sale_item_id",[conv.saleOrderId])
   return {orderId:conv.saleOrderId,source,items}
 }
@@ -56,6 +56,15 @@ async function main(){
   assert.equal(after[0].paid_sessions,0);assert.equal(Number(after[1].received),500)
   const last=await apply(mixed.orderId,b.sale_item_id);await call('order.approveRefund',{paymentId:last.paymentId})
   assert.equal((await pgQuery('SELECT status FROM sale_orders WHERE sale_order_id=$1',[mixed.orderId]))[0].status,'已退款')
+  const zero=await scenario('ZEROCASH',{cash:0,two:true})
+  assert.equal((await pgQuery('SELECT status FROM sale_orders WHERE sale_order_id=$1',[zero.orderId]))[0].status,'待支付','零补款保留原补款流程，商品折抵价值可退款')
+  for(const item of zero.items) {
+    assert.equal(Number(item.received),400)
+    const r=await apply(zero.orderId,item.sale_item_id);assert.equal(r.finalRefundAmount,400)
+    assert.equal((await invokeStaffApi('order.close',{...auth,saleOrderId:zero.orderId})).code,-409,'退款期间不能撤销转换')
+    await call('order.approveRefund',{paymentId:r.paymentId})
+  }
+  assert.equal((await pgQuery('SELECT status FROM sale_orders WHERE sale_order_id=$1',[zero.orderId]))[0].status,'已退款')
   const owed=await scenario('COURSEDEBT',{cash:100,two:true});
   // A有9次已付，已用6次，退当前剩余3次，但仍有1次未付50元。
   await pgQuery('UPDATE sale_items SET remaining_sessions=4 WHERE sale_item_id=$1',[owed.items[0].sale_item_id]);

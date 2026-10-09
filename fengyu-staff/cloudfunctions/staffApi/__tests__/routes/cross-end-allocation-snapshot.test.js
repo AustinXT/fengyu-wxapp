@@ -201,7 +201,8 @@ describe('断言2：四端 capturePaymentAllocatables 关键不变片段（含 a
 
   test('四端转换单无购买行时按转入兑现价值增量捕获 receipt', () => {
     for (const [side,src] of ENDS()) {
-      expect(src, `${side} 缺收款前后差额`).toContain('AS target_before')
+      expect(src, `${side} 缺本次欠款容量`).toContain('AS debt')
+      expect(src, `${side} 缺权威剩余已付价值`).toContain('conversion_value_snapshot IS NOT NULL THEN received::numeric')
       expect(src, `${side} 仍对转出重复分摊现金`).not.toContain('allocateSignedCents')
       expect(src).toContain("si.item_direction = '转入'")
     }

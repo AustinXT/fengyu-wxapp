@@ -2896,6 +2896,10 @@ async function close(ctx) {
   // scope 守卫
   await assertOrderInScope(pg, ctx.auth, saleOrderId)
 
+  const conversionRefunds = await pg.query(`SELECT 1 FROM sale_orders o WHERE o.sale_order_id=$1 AND o.sale_order_type='转换单'
+    AND EXISTS(SELECT 1 FROM sale_order_payments p WHERE p.sale_order_id=o.sale_order_id AND p.change_type='退款' AND p.status IN ('待审批','已支付'))`,[saleOrderId])
+  if(conversionRefunds.length) throw new Error('CONFLICT: 转换单已有退款，不允许撤销转换')
+
   // issue #214：顾客唤起支付后没付款，渠道单仍在有效期内，旧实现只能拒绝关闭
   // （「已有进行中的在线支付，暂不可关闭订单」），店员得等约 20 分钟。这里先请
   // clientApi 向渠道关单并释放意图，再走下面**原样不动**的事务与 CAS。
@@ -2917,6 +2921,7 @@ async function close(ctx) {
       throw new Error('INVALID_PARAMS: 订单不存在')
     }
     const order = lockedRes.rows[0]
+    if(order.sale_order_type==='转换单' && (await client.query("SELECT 1 FROM sale_order_payments WHERE sale_order_id=$1 AND change_type='退款' AND status IN ('待审批','已支付') LIMIT 1",[saleOrderId])).rows.length) throw new Error('CONFLICT: 转换单已有退款，不允许撤销转换')
     const isManagerRole = isCurrentStoreManager(ctx.auth)
     const isCreator = order.opened_by && order.opened_by === ctx.auth.staffWfId
 
@@ -3732,7 +3737,7 @@ async function createRefund(ctx) {
 
   // 查原单 + 校验状态
   const origOrders = await pg.query(
-    "SELECT * FROM sale_orders WHERE sale_order_id = $1 AND status IN ('已支付', '已完成', '部分支付')",
+    "SELECT * FROM sale_orders WHERE sale_order_id = $1 AND (status IN ('已支付', '已完成', '部分支付') OR (sale_order_type='转换单' AND status='待支付' AND EXISTS(SELECT 1 FROM sale_items WHERE sale_order_id=$1 AND item_direction='转入' AND received::numeric>0)))",
     [refSaleOrderId]
   )
   if (origOrders.length === 0) throw new Error('INVALID_PARAMS: 原订单状态不允许退款')
@@ -4106,7 +4111,7 @@ const refundCapNow = Math.max(paymentsNetNow, Number(lockedOrder.received || 0) 
     if (sopRow.sale_order_type === '转换单') {
       await refreshConversionSources(sourceQuery, refSaleOrderId)
       const lockedStatusRows = await client.query('SELECT status FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE', [refSaleOrderId])
-      if (!['已支付', '部分支付', '已完成'].includes(lockedStatusRows.rows[0]?.status)) throw new Error('INVALID_STATE: 原转换单状态已变化')
+      if (!['已支付', '部分支付', '已完成', '待支付'].includes(lockedStatusRows.rows[0]?.status)) throw new Error('INVALID_STATE: 原转换单状态已变化')
       await client.query("SELECT sale_item_id FROM sale_items WHERE sale_order_id = $1 AND item_direction = '转入' ORDER BY sale_item_id FOR UPDATE", [refSaleOrderId])
       const current = await client.query(`SELECT si.*, GREATEST(0, si.received::numeric - ${retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true)}) AS received,
         COALESCE(si.picked_up_quantity, 0) AS picked_quantity,
@@ -4334,7 +4339,7 @@ const refundCapNow = Math.max(paymentsNetNow, Number(lockedOrder.received || 0) 
     // 会被判成 received < retained_value → 把「已支付」误改成「部分支付」，
     // 让 total_amount=0 的寄存单掉进欠款/催款口径。两端镜像 admin refunds.ts。
     if (sopRow.sale_order_type === '转换单') {
-      await client.query(`UPDATE sale_orders SET status = CASE WHEN ${conversionDebtSql('sale_orders.sale_order_id')} > 0.01 THEN '部分支付'::order_status ELSE '已支付'::order_status END WHERE sale_order_id = $1 AND status IN ('已支付', '部分支付', '已完成')`, [refSaleOrderId])
+      await client.query(`UPDATE sale_orders SET status = CASE WHEN status='待支付' AND received::numeric=0 THEN '待支付'::order_status WHEN ${conversionDebtSql('sale_orders.sale_order_id')} > 0.01 THEN '部分支付'::order_status ELSE '已支付'::order_status END WHERE sale_order_id = $1 AND status IN ('已支付', '部分支付', '已完成', '待支付')`, [refSaleOrderId])
     }
     if (sopRow.sale_order_type !== '寄存单' && sopRow.sale_order_type !== '转换单') {
       await reconcileOrderStatusAfterRefund(client, refSaleOrderId)
@@ -4390,7 +4395,7 @@ const refundCapNow = Math.max(paymentsNetNow, Number(lockedOrder.received || 0) 
            SET status = '已退款'::order_status,
                updated_at = NOW()
          WHERE so.sale_order_id = $1
-           AND so.status IN ('已支付', '已完成', '部分支付')
+           AND (so.status IN ('已支付', '已完成', '部分支付') OR (so.sale_order_type='转换单' AND so.status='待支付'))
            AND (so.sale_order_type <> '转换单' OR ${conversionDebtSql('so.sale_order_id')} <= 0.01)
            AND EXISTS (SELECT 1 FROM deposit_items)
            AND NOT EXISTS (SELECT 1 FROM deposit_items di WHERE di.has_usable_right)
@@ -5692,7 +5697,7 @@ async function createConversion(ctx) {
       if (rounded > 0 && rounded < payable) firstPaymentAmount = rounded
     }
     const isFullCardCoverage = card > 0 && payable === 0
-    // 差额>0 且仍需付现金：'待支付'（线下走 confirmOffline，线上走 payNotify）；
+    // 差额>0且仍需现金：待支付；
     // 差额>0 全额抵扣 或 差额<=0：'已支付'
     const orderStatus = priceDiff > 0 ? (payable > 0 ? '待支付' : '已支付') : '已支付'
     const orderPaid = priceDiff <= 0 || isFullCardCoverage
@@ -6003,6 +6008,8 @@ WHERE sale_items.sale_item_id = ANY($1)`,
       }
     }
 
+    await initializeConversionSources(async (text, params) => (await tx.query(text, params)).rows, convOrderId)
+
     // 8. 负差额 — UPSERT prepaid_cards + INSERT card_transactions（type='充值'）
     // 2026-04-24 schema 变更：UNIQUE(user_id)，一户一账户，跨店共享；INSERT 列集不含 store_id。
     let prepaidCardCredit = 0
@@ -6059,7 +6066,6 @@ WHERE sale_items.sale_item_id = ANY($1)`,
     // paid_sessions 初始写入（ticket 2026-05-19）：转换单 total_amount=差额（可能=0），
     // 公式走 op.total_amount <= 0 → 兜底 = session_count（转入新卡视为全付获得）
     // 必须在 capture 之后：新 STEP1 从 receipt 聚合 received
-    await initializeConversionSources(async (text, params) => (await tx.query(text, params)).rows, convOrderId)
     await recalcPaidSessionsForOrder(tx, convOrderId)
 
     // 全额抵扣即结清：触发与 confirmOffline 已支付分支一致的结算副作用。

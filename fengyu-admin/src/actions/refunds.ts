@@ -777,7 +777,9 @@ export const createRefund = withPermission(
     }
     return { success: false, error: { code: 'INVALID_STATE', message: '仅销售单/寄存单/转换单支持退款' } }
   }
-  if (!['已支付', '已完成', '部分支付'].includes(origOrder.status)) {
+  const pendingWithPaidValue = origOrder.saleOrderType === '转换单' && origOrder.status === '待支付'
+    && (await db.execute(sql`SELECT 1 FROM sale_items WHERE sale_order_id=${refSaleOrderId} AND item_direction='转入' AND received::numeric>0 LIMIT 1`)).length>0
+  if (!['已支付', '已完成', '部分支付'].includes(origOrder.status) && !pendingWithPaidValue) {
     return {
       success: false,
       error: { code: 'INVALID_STATE', message: `原订单状态"${origOrder.status}"不允许退款` },
@@ -1259,7 +1261,7 @@ export const approveRefund = withPermission(
       if (pre.orderSaleOrderType === '转换单') {
         await refreshConversionSources(conversionSourceQuery(tx), refSaleOrderId)
         const lockedStatusRows = (await tx.execute(sql`SELECT status FROM sale_orders WHERE sale_order_id = ${refSaleOrderId} FOR UPDATE`)) as unknown as Array<{ status: string }>
-        if (!['已支付', '部分支付', '已完成'].includes(lockedStatusRows[0]?.status)) throw new ApiError('INVALID_STATE', '原转换单状态已变化')
+        if (!['已支付', '部分支付', '已完成', '待支付'].includes(lockedStatusRows[0]?.status)) throw new ApiError('INVALID_STATE', '原转换单状态已变化')
         await tx.execute(sql`SELECT sale_item_id FROM sale_items WHERE sale_order_id = ${refSaleOrderId} AND item_direction = '转入' ORDER BY sale_item_id FOR UPDATE`)
         const currentItems = (await tx.execute(sql`
           SELECT si.*, GREATEST(0, si.received::numeric - ${sql.raw(retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true))}) AS received,
@@ -1495,7 +1497,7 @@ export const approveRefund = withPermission(
       // 会被判成 received < retained_value → 把「已支付」误改成「部分支付」，
       // 让 total_amount=0 的寄存单掉进欠款/催款口径（寄存单 received>0 是历史实收，不是欠款）。
       if (pre.orderSaleOrderType === '转换单') {
-        await tx.execute(sql`UPDATE sale_orders SET status = CASE WHEN ${sql.raw(conversionDebtSql('sale_orders.sale_order_id'))} > 0.01 THEN '部分支付'::order_status ELSE '已支付'::order_status END WHERE sale_order_id = ${refSaleOrderId} AND status IN ('已支付', '部分支付', '已完成')`)
+        await tx.execute(sql`UPDATE sale_orders SET status = CASE WHEN status='待支付' AND received::numeric=0 THEN '待支付'::order_status WHEN ${sql.raw(conversionDebtSql('sale_orders.sale_order_id'))} > 0.01 THEN '部分支付'::order_status ELSE '已支付'::order_status END WHERE sale_order_id = ${refSaleOrderId} AND status IN ('已支付', '部分支付', '已完成', '待支付')`)
       }
       if (pre.orderSaleOrderType !== '寄存单' && pre.orderSaleOrderType !== '转换单') {
         await reconcileOrderStatusAfterRefund(tx, refSaleOrderId)
@@ -1552,7 +1554,7 @@ export const approveRefund = withPermission(
              SET status = '已退款'::order_status,
                  updated_at = NOW()
            WHERE so.sale_order_id = ${refSaleOrderId}
-             AND so.status IN ('已支付', '已完成', '部分支付')
+             AND (so.status IN ('已支付', '已完成', '部分支付') OR (so.sale_order_type='转换单' AND so.status='待支付'))
              AND (so.sale_order_type <> '转换单' OR ${sql.raw(conversionDebtSql('so.sale_order_id'))} <= 0.01)
              AND EXISTS (SELECT 1 FROM deposit_items)
              AND NOT EXISTS (SELECT 1 FROM deposit_items di WHERE di.has_usable_right)

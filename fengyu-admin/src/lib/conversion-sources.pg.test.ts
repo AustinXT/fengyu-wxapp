@@ -26,6 +26,7 @@ run('#548 admin真实PG来源、积分与参数绑定', () => {
         await tx.execute(sql`INSERT INTO sale_items(sale_item_id,sale_order_id,store_id,unit_price,unit_real_price,sale_amount,received,quantity,session_count,remaining_sessions,paid_sessions,product_type,item_direction)
           VALUES('OLD548A','O548A','T548A',800,800,800,800,1,1,0,1,'疗程卡','购买'),('OUT548A','C548A','T548A',800,800,-800,-800,1,1,0,1,'疗程卡','转出'),('IN548A','C548A','T548A',1000,100,1000,1000,1,10,10,10,'疗程卡','转入')`)
         await tx.execute(sql`UPDATE sale_items SET ref_sale_item_id='OLD548A' WHERE sale_item_id='OUT548A'`)
+        await tx.execute(sql`INSERT INTO sale_order_payments(sale_order_id,change_type,amount,payment_method,status,source_end) VALUES('C548A','首次支付',200,'线下','已支付','admin')`)
         const query = conversionSourceQuery(tx)
         expect((await settlePointsForOrder(tx,'O548A')).delta).toBe(8)
         await initializeConversionSources(query,'C548A')

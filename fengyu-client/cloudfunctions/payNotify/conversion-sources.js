@@ -78,10 +78,13 @@ function removeLots(lots, amount, move) {
         return lot(l.id, l.kind, p.valueCents, points);
     });
 }
+function inheritedFromValues(values) {
+    return values.flatMap(v => [...(v.lots || []), ...(v.retainedLots || [])])
+        .filter(l => l.kind === 'inherited').reduce((s, l) => s + l.points - l.movedPoints, 0);
+}
 function expectedFromValues(values) {
-    const lots = values.flatMap(v => [...(v.lots || []), ...(v.retainedLots || [])]);
-    return lots.filter(l => l.kind === 'inherited').reduce((s, l) => s + l.points - l.movedPoints, 0)
-        + Math.floor(lots.filter(l => l.kind === 'cash').reduce((s, l) => s + l.valueCents - l.movedCents, 0) / 10000);
+    return inheritedFromValues(values) + Math.floor(values.flatMap(v => [...(v.lots || []), ...(v.retainedLots || [])])
+        .filter(l => l.kind === 'cash').reduce((s, l) => s + l.valueCents - l.movedCents, 0) / 10000);
 }
 const POINT_ACCOUNT_LEDGER_SQL = `SELECT (COALESCE((SELECT SUM(amount) FROM point_transactions WHERE ref_order_id=$1 AND type IN ('消费赠送','消费冲销')),0)
  +COALESCE((SELECT SUM(transferred_points) FROM conversion_point_transfers WHERE to_order_id=$1),0)
@@ -93,19 +96,33 @@ function salePointBasisSql() {
 }
 async function getPointAccount(query, orderId, orderType) {
     const ledger = await query(POINT_ACCOUNT_LEDGER_SQL, [orderId]);
-    let expected = 0;
+    let expected = 0, inheritedPoints = 0, inheritedOwned = 0;
     if (orderType === '转换单') {
         const rows = await query('SELECT item_direction,conversion_value_snapshot FROM sale_items WHERE sale_order_id=$1 ORDER BY sale_item_id', [orderId]);
         const values = rows.map(r => localSnapshot(r.conversion_value_snapshot));
         const outgoing = rows.map((r, index) => ({ row: r, value: values[index] })).filter(r => r.row.item_direction === '转出');
-        const transfers = (await query('SELECT COUNT(*) AS count,COALESCE(SUM(transferred_points),0) AS points FROM conversion_point_transfers WHERE to_order_id=$1', [orderId]))[0];
-        if (Number(transfers?.count || 0) !== outgoing.length || Number(transfers?.points || 0) !== outgoing.reduce((sum, r) => sum + r.value.lots.reduce((n, l) => n + l.originalPoints, 0), 0))
+        const transfers = (await query(`SELECT COUNT(*) AS count,COALESCE(SUM(transferred_points),0) AS points,COALESCE(SUM(COALESCE(public.try_numeric(batch_snapshot->>'ownCashPoints'),0)),0) AS own_points,COALESCE((SELECT SUM(public.try_numeric(b->>'points')) FROM conversion_point_transfers x CROSS JOIN LATERAL jsonb_array_elements(COALESCE(x.batch_snapshot->'batches','[]'::jsonb)) b WHERE x.to_order_id=$1 AND b->>'ownCash'='true'),0) AS own_batch_points FROM conversion_point_transfers WHERE to_order_id=$1`, [orderId]))[0];
+        if (Number(transfers?.count || 0) !== outgoing.length || Number(transfers?.points || 0) !== Number(transfers?.own_points || 0) + outgoing.reduce((sum, r) => sum + r.value.lots.reduce((n, l) => n + l.originalPoints, 0), 0))
             throw new Error('CONFLICT: 转换积分交接凭据不完整，请核查本单责任');
-        expected = expectedFromValues(values.map((v, index) => rows[index].item_direction === '转出' ? { ...v, lots: [] } : v));
+        const active = values.map((v, index) => rows[index].item_direction === '转出' ? { ...v, lots: [] } : v);
+        expected = expectedFromValues(active);
+        inheritedPoints = inheritedFromValues(active);
+        if (Number(transfers?.own_points || 0) !== Number(transfers?.own_batch_points || 0))
+            throw new Error('CONFLICT: 历史补款积分批次交接凭据不完整');
+        const marker = values[0]?.pointSettlement?.inheritedReversedPoints ?? 0;
+        if (!integer(marker))
+            throw new Error('CONFLICT: 本单积分责任冲销凭据损坏');
+        const reversed = marker;
+        const moved = (await query("SELECT COALESCE(SUM(transferred_points-COALESCE(public.try_numeric(batch_snapshot->>'ownTransferred'),0)),0) AS points FROM conversion_point_transfers WHERE from_order_id=$1", [orderId]))[0];
+        const total = Number(transfers?.points || 0) - Number(transfers?.own_points || 0), movedPoints = Number(moved?.points || 0);
+        if (reversed > total - movedPoints - inheritedPoints)
+            throw new Error('CONFLICT: 本单积分责任冲销凭据损坏');
+        inheritedOwned = total - movedPoints - reversed;
     }
     else if (orderType === '销售单')
         expected = Math.floor(Number((await query(salePointBasisSql(), [orderId]))[0]?.basis || 0) / 10000);
-    return { expected, granted: Number(ledger[0]?.granted || 0) };
+    const granted = Number(ledger[0]?.granted || 0);
+    return { expected, granted, inheritedPoints, inheritedOwned, ownGranted: granted - inheritedOwned };
 }
 async function writeValue(query, itemId, value) { await query('UPDATE sale_items SET conversion_value_snapshot=$2::jsonb WHERE sale_item_id=$1', [itemId, JSON.stringify(value)]); }
 // 支付/退款只读本单快照、本单回款分配，不读取原单。
@@ -132,37 +149,44 @@ async function refreshConversionSources(query, orderId) {
             await writeValue(query, row.sale_item_id, v);
     }
 }
-async function movePointBatches(query, userId, from, to, points) {
+async function movePointBatches(query, userId, from, to, points, ownPoints) {
     if (!points)
         return [];
-    const rows = await query(`SELECT * FROM point_batches WHERE user_id=$1 AND ref_order_id=$2 AND source_type='消费赠送' ORDER BY CASE WHEN remaining_amount>0 AND expire_at>NOW() THEN 0 WHEN remaining_amount>0 THEN 1 ELSE 2 END,expire_at,id FOR UPDATE`, [userId, from]);
     const facts = [];
-    let left = points;
-    for (const b of rows) {
-        const n = Math.min(left, Number(b.original_amount));
-        if (!n)
+    for (const group of [{ own: true, amount: ownPoints }, { own: false, amount: points - ownPoints }]) {
+        if (!group.amount)
             continue;
-        const remaining = Math.min(n, Number(b.remaining_amount));
-        let newId = Number(b.id);
-        if (n === Number(b.original_amount))
-            await query('UPDATE point_batches SET ref_order_id=$2,updated_at=NOW() WHERE id=$1', [b.id, to]);
-        else {
-            newId = Number((await query(`INSERT INTO point_batches(user_id,source_transaction_id,source_type,ref_order_id,original_amount,remaining_amount,earned_at,expire_at,expired_at,created_at,updated_at)
+        const rows = await query(`SELECT pb.* FROM point_batches pb JOIN point_transactions pt ON pt.id=pb.source_transaction_id
+          WHERE pb.user_id=$1 AND pb.ref_order_id=$2 AND pb.source_type='消费赠送'
+            AND ((pt.ref_order_id IS NOT DISTINCT FROM $2) OR pb.id IN (SELECT public.try_numeric(b->>'toBatchId')::bigint FROM conversion_point_transfers t CROSS JOIN LATERAL jsonb_array_elements(COALESCE(t.batch_snapshot->'batches','[]'::jsonb)) b WHERE t.to_order_id=$2 AND b->>'ownCash'='true'))=$3::boolean
+          ORDER BY CASE WHEN pb.remaining_amount>0 AND pb.expire_at>NOW() THEN 0 WHEN pb.remaining_amount>0 THEN 1 ELSE 2 END,pb.expire_at,pb.id FOR UPDATE OF pb`, [userId, from, group.own]);
+        let left = group.amount;
+        for (const b of rows) {
+            const n = Math.min(left, Number(b.original_amount));
+            if (!n)
+                continue;
+            const remaining = Math.min(n, Number(b.remaining_amount));
+            let newId = Number(b.id);
+            if (n === Number(b.original_amount))
+                await query('UPDATE point_batches SET ref_order_id=$2,updated_at=NOW() WHERE id=$1', [b.id, to]);
+            else {
+                newId = Number((await query(`INSERT INTO point_batches(user_id,source_transaction_id,source_type,ref_order_id,original_amount,remaining_amount,earned_at,expire_at,expired_at,created_at,updated_at)
         SELECT user_id,source_transaction_id,source_type,$2,$3,$4,earned_at,expire_at,expired_at,NOW(),NOW() FROM point_batches WHERE id=$1 RETURNING id`, [b.id, to, n, remaining]))[0].id);
-            await query('UPDATE point_batches SET original_amount=original_amount-$2,remaining_amount=remaining_amount-$3,updated_at=NOW() WHERE id=$1', [b.id, n, remaining]);
+                await query('UPDATE point_batches SET original_amount=original_amount-$2,remaining_amount=remaining_amount-$3,updated_at=NOW() WHERE id=$1', [b.id, n, remaining]);
+            }
+            facts.push({ fromBatchId: Number(b.id), toBatchId: newId, points: n, remaining, earnedAt: b.earned_at, expireAt: b.expire_at, expiredAt: b.expired_at });
+            left -= n;
+            if (!left)
+                break;
         }
-        facts.push({ fromBatchId: Number(b.id), toBatchId: newId, points: n, remaining, earnedAt: b.earned_at, expireAt: b.expire_at, expiredAt: b.expired_at });
-        left -= n;
-        if (!left)
-            break;
+        if (left)
+            throw new Error('CONFLICT: 原积分批次责任不完整，请核查历史凭据');
     }
-    if (left)
-        throw new Error('CONFLICT: 原积分批次责任不完整，请核查历史凭据');
     return facts;
 }
 // 创建转换的持锁事务内交接；退款不调用、不追溯。
 async function initializeConversionSources(query, orderId) {
-    const order = (await query('SELECT client_user_id,received FROM sale_orders WHERE sale_order_id=$1', [orderId]))[0];
+    const order = (await query(`SELECT client_user_id,received,COALESCE((SELECT SUM(amount) FROM sale_order_payments WHERE sale_order_id=$1 AND status='已支付' AND change_type IN ('首次支付','回款','储值卡抵扣') AND amount>0),0) AS actual_cash FROM sale_orders WHERE sale_order_id=$1`, [orderId]))[0];
     if (!order)
         throw new Error('CONFLICT: 转换单不存在');
     const rows = await query('SELECT * FROM sale_items WHERE sale_order_id=$1 ORDER BY sale_item_id', [orderId]);
@@ -174,33 +198,48 @@ async function initializeConversionSources(query, orderId) {
         throw new Error('CONFLICT: 历史转换责任需离线核查交接');
     let pool = [], poolLots = [];
     const outgoing = rows.filter(r => r.item_direction === '转出');
+    // 原订单锁已由创建入口取得；批次按统一到期/id顺序预锁，分组只决定归属分配。
+    await query(`SELECT pb.id FROM point_batches pb WHERE pb.user_id=$1 AND pb.ref_order_id IN (
+      SELECT ref.sale_order_id FROM sale_items oi JOIN sale_items ref ON ref.sale_item_id=oi.ref_sale_item_id
+      WHERE oi.sale_order_id=$2 AND oi.item_direction='转出') ORDER BY pb.expire_at,pb.id FOR UPDATE`, [order.client_user_id, orderId]);
     for (const out of outgoing) {
         const ref = (await query('SELECT si.*,so.sale_order_type,so.client_user_id FROM sale_items si JOIN sale_orders so USING(sale_order_id) WHERE si.sale_item_id=$1', [out.ref_sale_item_id]))[0];
         if (!ref || ref.client_user_id !== order.client_user_id)
             throw new Error('CONFLICT: 转换来源顾客不一致');
         const amount = cents(-Number(out.received));
+        if ((await query("SELECT id FROM point_transactions WHERE ref_order_id=$1 AND type IN ('获取','回款赠送') AND amount>0 LIMIT 1", [ref.sale_order_id])).length)
+            throw new Error('CONFLICT: 历史积分类型责任需离线核查，请先补全交接凭据');
         await refreshConversionSources(query, ref.sale_order_id);
         const before = await getPointAccount(query, ref.sale_order_id, ref.sale_order_type);
-        let afterExpected = before.expected, moved = [];
+        let afterExpected = before.expected, moved = [], ownTransferred = 0;
         if (ref.sale_order_type === '转换单') {
             const v = localSnapshot((await query('SELECT conversion_value_snapshot FROM sale_items WHERE sale_item_id=$1', [ref.sale_item_id]))[0]?.conversion_value_snapshot);
             moved = removeLots(v.lots, amount, true);
             v.exited = ref.product_type === '疗程卡' ? Number(ref.remaining_sessions) === 0 : Number(ref.picked_up_quantity || 0) + Number(ref.refunded_quantity || 0) + Number(ref.converted_quantity || 0) >= Number(ref.quantity);
             await writeValue(query, ref.sale_item_id, v);
-            afterExpected = (await getPointAccount(query, ref.sale_order_id, ref.sale_order_type)).expected;
+            const after = await getPointAccount(query, ref.sale_order_id, ref.sale_order_type);
+            afterExpected = after.expected;
+            const actualOwn = Math.max(0, before.ownGranted);
+            const ownDelta = (before.expected - before.inheritedPoints) - (after.expected - after.inheritedPoints);
+            ownTransferred = Math.min(actualOwn, Math.max(0, ownDelta));
         }
         else if (ref.sale_order_type === '销售单')
             afterExpected = Math.floor(Math.max(0, Number((await query(salePointBasisSql(), [ref.sale_order_id]))[0]?.basis || 0) - amount) / 10000);
-        const transferred = Math.min(Math.max(0, before.granted), Math.max(0, before.expected - afterExpected));
-        const batches = await movePointBatches(query, order.client_user_id, ref.sale_order_id, orderId, transferred);
+        const inheritedMoved = moved.filter(l => l.kind === 'inherited').reduce((n, l) => n + l.points, 0);
+        const target = ref.sale_order_type === '转换单' ? inheritedMoved + ownTransferred : Math.max(0, before.expected - afterExpected);
+        const transferred = Math.min(Math.max(0, before.granted), target);
+        if (ref.sale_order_type !== '转换单')
+            ownTransferred = transferred;
+        ownTransferred = Math.min(ownTransferred, transferred);
+        const batches = await movePointBatches(query, order.client_user_id, ref.sale_order_id, orderId, transferred, ownTransferred);
         await query(`INSERT INTO conversion_point_transfers(user_id,from_order_id,to_order_id,from_sale_item_id,excluded_basis_cents,transferred_points,batch_snapshot)
-      VALUES($1,$2,$3,$4,$5,$6,$7::jsonb)`, [order.client_user_id, ref.sale_order_id, orderId, ref.sale_item_id, amount, transferred, JSON.stringify({ batches, moved })]);
+      VALUES($1,$2,$3,$4,$5,$6,$7::jsonb)`, [order.client_user_id, ref.sale_order_id, orderId, ref.sale_item_id, amount, transferred, JSON.stringify({ batches, moved, ownTransferred })]);
         const sources = [{ sourceOrderId: ref.sale_order_id, sourceItemId: ref.sale_item_id, pointOrderId: null, valueCents: amount }], inherited = lot(`transfer:${out.sale_item_id}`, 'inherited', amount, transferred);
         await writeValue(query, out.sale_item_id, { version: 2, valueCents: amount, sources, lots: [inherited] });
         pool.push(...sources);
         poolLots.push({ ...inherited });
     }
-    const cash = cents(order.received);
+    const cash = cents(order.actual_cash);
     pool = mergeSources([...pool, { sourceOrderId: orderId, pointOrderId: null, valueCents: cash }]);
     if (cash)
         poolLots.push(lot(`initial-cash:${orderId}`, 'cash', cash, 0));
@@ -212,6 +251,7 @@ async function initializeConversionSources(query, orderId) {
         pool = subtractSources(pool, sources);
         const portions = removeLots(poolLots, n, false).map((l, index) => lot(`${l.id}:${r.sale_item_id}:${index}`, l.kind, l.valueCents, l.points));
         await writeValue(query, r.sale_item_id, { version: 2, valueCents: n, sources, lots: portions, lastCashPaymentId: last });
+        await query('UPDATE sale_items SET received=$2 WHERE sale_item_id=$1', [r.sale_item_id, (n / 100).toFixed(2)]);
     }
     // 负差额入储值卡：未换入商品的责任保留本单，商品退款不冲此部分。
     const retained = poolLots.filter(l => l.valueCents > 0);
@@ -270,6 +310,17 @@ async function rollbackConversionPointTransfers(query, orderId) {
     }
     await query('DELETE FROM conversion_point_transfers WHERE to_order_id=$1', [orderId]);
 }
+async function lockConversionPointBatches(query, userId, orderId) {
+    await query('SELECT id FROM point_batches WHERE user_id=$1 AND ref_order_id=$2 ORDER BY expire_at,id FOR UPDATE', [userId, orderId]);
+}
+async function recordConversionInheritedReversal(query, orderId, points) {
+    if (!points)
+        return;
+    const row = (await query('SELECT sale_item_id,conversion_value_snapshot FROM sale_items WHERE sale_order_id=$1 ORDER BY sale_item_id LIMIT 1', [orderId]))[0];
+    const value = localSnapshot(row?.conversion_value_snapshot);
+    value.pointSettlement = { inheritedReversedPoints: (value.pointSettlement?.inheritedReversedPoints || 0) + points };
+    await writeValue(query, row.sale_item_id, value);
+}
 function stripConversionSourcesFromNote(note) {
     if (!note)
         return note;
@@ -308,7 +359,7 @@ SELECT i.sale_order_id,i.sale_item_id,'responsibility-not-handed-over-or-invalid
    OR public.try_numeric(l->>'points')<0 OR public.try_numeric(l->>'valueCents')<0)
  OR (item_direction='转出' AND NOT EXISTS(SELECT 1 FROM conversion_point_transfers t WHERE t.to_order_id=i.sale_order_id AND t.from_sale_item_id=i.ref_sale_item_id AND t.user_id=i.client_user_id
    AND t.excluded_basis_cents=public.try_numeric(i.conversion_value_snapshot->>'valueCents')
-   AND t.transferred_points=COALESCE((SELECT SUM(public.try_numeric(l->>'originalPoints')) FROM jsonb_array_elements(CASE WHEN jsonb_typeof(i.conversion_value_snapshot->'lots')='array' THEN i.conversion_value_snapshot->'lots' ELSE '[]'::jsonb END) l),0))) LIMIT 100`;
+   AND t.transferred_points=COALESCE(public.try_numeric(t.batch_snapshot->>'ownCashPoints'),0)+COALESCE((SELECT SUM(public.try_numeric(l->>'originalPoints')) FROM jsonb_array_elements(CASE WHEN jsonb_typeof(i.conversion_value_snapshot->'lots')='array' THEN i.conversion_value_snapshot->'lots' ELSE '[]'::jsonb END) l),0))) LIMIT 100`;
 async function reportConversionSourceGap(query, orderId, reason, sourceItemId) {
     console.warn('[conversion.sourceUnresolved]', { orderId, reason, sourceItemId });
     let created = false;
@@ -329,4 +380,4 @@ async function reportConversionSourceGap(query, orderId, reason, sourceItemId) {
     }
 }
 
-module.exports = { initializeConversionSources, rollbackConversionPointTransfers, getPointAccount, POINT_ACCOUNT_LEDGER_SQL, CONVERSION_SOURCE_AUDIT_SQL, stripConversionSourcesFromNote, refreshConversionSources, recordConversionRefundSources, parseSnapshot, takeSources, snapshot }
+module.exports = { initializeConversionSources, rollbackConversionPointTransfers, recordConversionInheritedReversal, lockConversionPointBatches, getPointAccount, POINT_ACCOUNT_LEDGER_SQL, CONVERSION_SOURCE_AUDIT_SQL, stripConversionSourcesFromNote, refreshConversionSources, recordConversionRefundSources, parseSnapshot, takeSources, snapshot }

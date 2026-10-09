@@ -265,6 +265,8 @@ Page({
     statusClass: '',
     refundBadge: '',
     hasPendingRefund: false,
+    hasFundedConversionValue: false,
+    hasConversionRefund: false,
     _saleOrderId: '',
     // P2: 退款
     showRefundDialog: false,
@@ -467,6 +469,8 @@ Page({
         };
       });
       // 退款入口守卫：该单已有「待审批/待支付」退款则隐藏「申请退款」按钮，防重复发起（对齐 admin order-detail-page.tsx）
+      const hasFundedConversionValue = o.sale_order_type === '转换单' && (res.items || []).some(it => it.item_direction === '转入' && Number(it.received || 0) > 0);
+      const hasConversionRefund = o.sale_order_type === '转换单' && payments.some(p => p.isRefund && (p.status === '待审批' || p.status === '已支付'));
       const hasPendingRefund = payments.some((p) => p.isRefund && (p.status === '待审批' || p.status === '待支付'));
 
       const totalAmount = Number(o.total_amount || 0);
@@ -582,6 +586,8 @@ Page({
           ? (o.sale_order_type === '转换单' ? '部分退款' : (refundedAmount >= received - 0.01 ? '已退款' : '部分退款'))
           : '',
         hasPendingRefund,
+        hasFundedConversionValue,
+        hasConversionRefund,
         attributionMinDate,
         attributionMaxDate,
         isReadOnly,

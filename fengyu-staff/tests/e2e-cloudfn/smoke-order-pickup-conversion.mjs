@@ -248,6 +248,12 @@ async function main() {
   // ─── 9. 转入行可被再次折抵转出，折抵后从提货候选消失（#153 验收 5，依赖 #125 转出侧）───
   await createTestSaleOrder({ ...homeItem, saleOrderId: CONV2_ORDER_ID, status: '已支付', saleOrderType: '转换单' })
   await makeTransferIn(CONV2_ITEM_ID)
+  // 本私有夹具明确没有历史赠点：冻结0积分责任，不能让真实入口前追猜算。
+  await pgQuery(`UPDATE sale_items SET conversion_value_snapshot=$2::jsonb WHERE sale_item_id=$1`,[
+    CONV2_ITEM_ID,JSON.stringify({version:2,valueCents:40000,lastCashPaymentId:0,
+      sources:[{sourceOrderId:CONV2_ORDER_ID,pointOrderId:null,valueCents:40000}],
+      lots:[{id:'fixture-known-zero-points',kind:'inherited',originalCents:40000,originalPoints:0,valueCents:40000,points:0,movedCents:0,movedPoints:0}]})
+  ])
 
   const held = await invokeStaffApi('order.customerHeldCards', {
     _testOpenid: TEST_MANAGER_OPENID,

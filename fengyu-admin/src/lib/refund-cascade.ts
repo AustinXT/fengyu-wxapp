@@ -713,7 +713,7 @@ export async function cascadeRefund(
   let reversedPoints = 0
   if (isConversionOrder) {
     const result = await settlePointsSafe(tx, saleOrderId, 'conversion.refund')
-    reversedPoints = Math.max(0, -Number(result.delta || 0))
+    reversedPoints = Number(result.reversed ?? Math.max(0, -Number(result.delta || 0)))
   } else if (note && Array.isArray(note.items)) {
     // 新退款按订单链可计消费净额重算，手续费不能因比例舍入保留一枚积分。
     const pointResult = await settlePointsSafe(tx, saleOrderId, 'refund')
