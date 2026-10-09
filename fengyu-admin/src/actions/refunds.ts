@@ -1,5 +1,7 @@
 'use server'
 
+import { refreshConversionSources, recordConversionRefundSources, lockConversionPointRoots, conversionSourceQuery } from '@/lib/conversion-sources'
+
 import { conversionDebtSql } from '@/lib/conversion-value'
 
 import { retainedRefundFeeSql } from '@/lib/refund-fee-sql'
@@ -1240,6 +1242,7 @@ export const approveRefund = withPermission(
   try {
     cascade = await db.transaction(async (tx) => {
       // 先原单、再退款流水 CAS；与寄存申请、转换统一锁序，避免唯一索引等待成环。
+      if (pre.orderSaleOrderType === '转换单') await lockConversionPointRoots(conversionSourceQuery(tx), refSaleOrderId)
       const lockedOrders = await tx.execute(sql`SELECT sale_order_id, received, refunded_amount FROM sale_orders WHERE sale_order_id = ${refSaleOrderId} FOR UPDATE`) as unknown as Array<{ received: string | number; refunded_amount: string | number }>
       const lockedOrder = lockedOrders[0]
       if (!lockedOrder) throw new ApiError('NOT_FOUND', 'REFUND_ORDER_MISSING: 原销售单不存在')
@@ -1255,6 +1258,7 @@ export const approveRefund = withPermission(
       // paid_at / audit_at 写北京墙钟字面（见 lib/db-time）：原 new Date().toISOString() 落 UTC 字面早 8h。
 
       if (pre.orderSaleOrderType === '转换单') {
+        await refreshConversionSources(conversionSourceQuery(tx), refSaleOrderId)
         const lockedStatusRows = (await tx.execute(sql`SELECT status FROM sale_orders WHERE sale_order_id = ${refSaleOrderId} FOR UPDATE`)) as unknown as Array<{ status: string }>
         if (!['已支付', '部分支付', '已完成'].includes(lockedStatusRows[0]?.status)) throw new ApiError('INVALID_STATE', '原转换单状态已变化')
         await tx.execute(sql`SELECT sale_item_id FROM sale_items WHERE sale_order_id = ${refSaleOrderId} AND item_direction = '转入' ORDER BY sale_item_id FOR UPDATE`)
@@ -1297,6 +1301,8 @@ export const approveRefund = withPermission(
       if (rowsAffected(updRes) === 0) {
         throw new ApiError('CONFLICT', 'CONCURRENT_CHANGED: 退款状态已变更，请刷新后重试')
       }
+
+      if (pre.orderSaleOrderType === '转换单') await recordConversionRefundSources(conversionSourceQuery(tx), refSaleOrderId, idNum)
 
       // 3) 重算原单 refunded_amount = -SUM(已支付退款 amount)
       // CAS-EXEMPT: 仅累加 refunded_amount，status 由其他路径（recordPayment 等）另行 CAS

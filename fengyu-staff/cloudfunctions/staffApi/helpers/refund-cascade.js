@@ -248,25 +248,6 @@ async function buildReceiptRefundItems(client, saleOrderId, refundPaymentId, eff
 }
 
 // #548：转换负消费在顾客汇总后钳零；只冲销现有积分。
-async function reverseConversionPoints(client, saleOrderId) {
-  const res = await client.query(`SELECT c.user_id,
-    GREATEST(0, FLOOR(COALESCE((SELECT SUM(o.received::numeric - o.refunded_amount::numeric - ${retainedRefundFeeSql('o.sale_order_id')})
-      FROM sale_orders o WHERE o.client_user_id = c.user_id AND o.sale_order_type IN ('销售单','转换单')), 0) / 100)) AS expected,
-    COALESCE((SELECT SUM(pt.amount) FROM point_transactions pt WHERE pt.user_id = c.user_id AND pt.type IN ('消费赠送','回款赠送','消费冲销')), 0) AS granted
-    FROM client_wechat_users c JOIN sale_orders so ON so.client_user_id = c.user_id WHERE so.sale_order_id = $1 FOR UPDATE OF c`, [saleOrderId])
-  const row = res.rows[0]
-  if (!row) return 0
-  const amount = Math.max(0, Number(row.granted) - Number(row.expected))
-  if (amount === 0) return 0
-  await client.query(`INSERT INTO point_transactions (user_id, ref_order_id, type, amount, created_at)
-    VALUES ($1, $2, '消费冲销', $3, NOW()) ON CONFLICT (user_id, ref_order_id, type)
-    WHERE ref_order_id IS NOT NULL AND type IN ('消费赠送','消费冲销')
-    DO UPDATE SET amount = point_transactions.amount + EXCLUDED.amount`, [row.user_id, saleOrderId, -amount])
-  await consumePointBatches(client, { userId: row.user_id, amount: -amount, refOrderId: saleOrderId })
-  await client.query(`UPDATE client_wechat_users c SET points_balance = COALESCE((SELECT SUM(pb.remaining_amount) FROM point_batches pb WHERE pb.user_id = c.user_id AND pb.expire_at > NOW()), 0), updated_at = NOW() WHERE c.user_id = $1`, [row.user_id])
-  return amount
-}
-
 async function cascadeRefund(client, params) {
   const { saleOrderId, refundPaymentId, items, isWholeOrderRefund, refundReason } = params || {}
   if (!saleOrderId) {
@@ -567,7 +548,11 @@ async function cascadeRefund(client, params) {
   let reversedPoints = 0
   let pointsBalanceUpdated = false
   if (isConversionOrder) {
-    reversedPoints = await reverseConversionPoints(client, saleOrderId)
+    const roots = [...new Set((note?.items || []).flatMap(it => (it.conversionSources || []).map(s => s.pointOrderId).filter(Boolean)))].sort()
+    for (const root of roots) {
+      const result = await settlePointsSafe(client, root, 'conversion.refund')
+      reversedPoints += Math.max(0, -Number(result.delta || 0))
+    }
     pointsBalanceUpdated = true
   } else if (note && Array.isArray(note.items)) {
     const pointResult = await settlePointsSafe(client, saleOrderId, 'refund')

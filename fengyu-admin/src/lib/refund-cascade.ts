@@ -420,29 +420,6 @@ async function buildReceiptRefundItems(
   }))
 }
 
-// #548：转换单可为负消费，汇总顾客净消费后才钳零；只冲销现有积分，不补发新积分。
-async function reverseConversionPoints(tx: TransactionLike, saleOrderId: string): Promise<number> {
-  const rows = (await tx.execute(sql`
-    SELECT c.user_id,
-      GREATEST(0, FLOOR(COALESCE((SELECT SUM(o.received::numeric - o.refunded_amount::numeric - ${sql.raw(retainedRefundFeeSql('o.sale_order_id'))})
-        FROM sale_orders o WHERE o.client_user_id = c.user_id AND o.sale_order_type IN ('销售单','转换单')), 0) / 100)) AS expected,
-      COALESCE((SELECT SUM(pt.amount) FROM point_transactions pt WHERE pt.user_id = c.user_id AND pt.type IN ('消费赠送','回款赠送','消费冲销')), 0) AS granted
-    FROM client_wechat_users c JOIN sale_orders so ON so.client_user_id = c.user_id
-    WHERE so.sale_order_id = ${saleOrderId} FOR UPDATE OF c
-  `)) as unknown as Array<{ user_id: string; expected: string; granted: string }>
-  const row = rows[0]
-  if (!row) return 0
-  const amount = Math.max(0, Number(row.granted) - Number(row.expected))
-  if (amount === 0) return 0
-  await tx.execute(sql`INSERT INTO point_transactions (user_id, ref_order_id, type, amount, created_at)
-    VALUES (${row.user_id}, ${saleOrderId}, '消费冲销', ${-amount}, NOW())
-    ON CONFLICT (user_id, ref_order_id, type) WHERE ref_order_id IS NOT NULL AND type IN ('消费赠送','消费冲销')
-    DO UPDATE SET amount = point_transactions.amount + EXCLUDED.amount`)
-  await consumePointBatches(tx, { userId: row.user_id, amount: -amount, refOrderId: saleOrderId })
-  await tx.execute(sql`UPDATE client_wechat_users c SET points_balance = COALESCE((SELECT SUM(pb.remaining_amount) FROM point_batches pb WHERE pb.user_id = c.user_id AND pb.expire_at > NOW()), 0), updated_at = NOW() WHERE c.user_id = ${row.user_id}`)
-  return amount
-}
-
 export async function cascadeRefund(
   tx: TransactionLike,
   params: CascadeRefundParams,
@@ -735,7 +712,11 @@ export async function cascadeRefund(
   // ── 4) point_transactions 比例冲销 + client_wechat_users.points_balance 重算（订单级） ──
   let reversedPoints = 0
   if (isConversionOrder) {
-    reversedPoints = await reverseConversionPoints(tx, saleOrderId)
+    const roots = [...new Set<string>((note?.items || []).flatMap((it: { conversionSources?: Array<{ pointOrderId: string | null }> }) => (it.conversionSources || []).map(s => s.pointOrderId).filter((id): id is string => !!id)))].sort()
+    for (const root of roots) {
+      const result = await settlePointsSafe(tx, root, 'conversion.refund')
+      reversedPoints += Math.max(0, -Number(result.delta || 0))
+    }
   } else if (note && Array.isArray(note.items)) {
     // 新退款按订单链可计消费净额重算，手续费不能因比例舍入保留一枚积分。
     const pointResult = await settlePointsSafe(tx, saleOrderId, 'refund')

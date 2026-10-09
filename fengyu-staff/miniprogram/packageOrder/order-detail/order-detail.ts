@@ -479,9 +479,7 @@ Page({
       const received = Number(o.received || 0);
       const refundedAmount = Number(o.refunded_amount || 0);
       const netReceived = Math.round((received - refundedAmount) * 100) / 100;
-      const inRows = items.filter(it => it.itemDirection === '转入');
-      const conversionFallback = inRows.length > 0 ? inRows.filter(it => !it.isRefunded).reduce((sum, it) => sum + Math.max(0, Number(it.saleAmount) - Number(it.received)), 0) : Math.max(0, totalAmount - received);
-      const grossRemainingPayable = o.sale_order_type === '转换单' ? Number(o.conversion_remaining_payable ?? conversionFallback) : Math.max(0, Math.round((totalAmount - netReceived) * 100) / 100);
+      const grossRemainingPayable = o.sale_order_type === '转换单' ? Number(o.conversion_remaining_payable ?? 0) : Math.max(0, Math.round((totalAmount - netReceived) * 100) / 100);
       // 现金待收 = total − netReceived − pendingPrepaid。
       // actual 储值卡已包含在 received，不能再扣；pending 尚未进入 received，需单独从本次现金欠款扣除。
       const remainingPayable = Math.max(0, Math.round((grossRemainingPayable - pendingPrepaidCardAmount) * 100) / 100);

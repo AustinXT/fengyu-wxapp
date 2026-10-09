@@ -1,3 +1,4 @@
+const { refreshConversionSources, recordConversionRefundSources, lockConversionPointRoots } = require('../utils/conversion-sources')
 const { conversionDebtSql, getConversionDebt } = require('../utils/conversion-value')
 const { retainedRefundFeeSql } = require('../utils/refund-fee-sql')
 const { allocateRefundAccounting } = require('../utils/refund-accounting')
@@ -4082,6 +4083,8 @@ async function approveRefund(ctx) {
 
   await pg.transaction(async (client) => {
     // 与申请/转换统一为原单→退款流水→源行；必须在余额读取和退款 CAS 之前取锁。
+    const sourceQuery = async (text, params) => (await client.query(text, params)).rows
+    if (sopRow.sale_order_type === '转换单') await lockConversionPointRoots(sourceQuery, refSaleOrderId)
     const lockedOrderRes = await client.query('SELECT sale_order_id, received, refunded_amount FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE', [refSaleOrderId])
     const lockedOrder = lockedOrderRes.rows[0]
     if (!lockedOrder) throw new Error('NOT_FOUND: 原销售单不存在')
@@ -4099,6 +4102,7 @@ const refundCapNow = Math.max(paymentsNetNow, Number(lockedOrder.received || 0) 
     }
 
     if (sopRow.sale_order_type === '转换单') {
+      await refreshConversionSources(sourceQuery, refSaleOrderId)
       const lockedStatusRows = await client.query('SELECT status FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE', [refSaleOrderId])
       if (!['已支付', '部分支付', '已完成'].includes(lockedStatusRows.rows[0]?.status)) throw new Error('INVALID_STATE: 原转换单状态已变化')
       await client.query("SELECT sale_item_id FROM sale_items WHERE sale_order_id = $1 AND item_direction = '转入' ORDER BY sale_item_id FOR UPDATE", [refSaleOrderId])
@@ -4135,6 +4139,8 @@ const refundCapNow = Math.max(paymentsNetNow, Number(lockedOrder.received || 0) 
     if (cas.rowCount !== 1) {
       throw new Error('CONFLICT: 退款流水状态或明细已变更，请刷新后重新审批')
     }
+
+    if (sopRow.sale_order_type === '转换单') await recordConversionRefundSources(sourceQuery, refSaleOrderId, paymentId)
 
     // 2. 重算 sale_orders.refunded_amount = -SUM(已支付退款)（Bug F：累加→重算，幂等、自愈，对齐 admin/schema 不变量）
     // CAS-EXEMPT: 仅维护资金列 refunded_amount，不翻 status。本笔已在上方 CAS 翻为'已支付'，SUM 含本笔。

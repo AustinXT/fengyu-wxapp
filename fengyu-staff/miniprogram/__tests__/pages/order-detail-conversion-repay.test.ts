@@ -70,6 +70,15 @@ function createPage() {
 }
 
 describe('转换单订单级在线回款', () => {
+  test('再次转出后的权威欠款为零，旧金额及商品差额不能复活回款按钮', async () => {
+    vi.mocked(callStaffApi).mockResolvedValueOnce({
+      order: { sale_order_id: 'FY-CONV-EXITED', sale_order_type: '转换单', status: '部分支付', total_amount: '1500', received: '500', refunded_amount: '0', conversion_remaining_payable: 0 },
+      items: [], payments: [], cardBalance: 0,
+    } as never)
+    const page=createPage(); await page.loadDetail('FY-CONV-EXITED')
+    expect(page.data.order.hasDebt).toBe(false)
+    expect(page.data.order.canInitiateRepayment).toBe(false)
+  })
   test('零首付待支付转换单开放订单级回款入口', async () => {
     vi.mocked(callStaffApi).mockResolvedValueOnce({
       order: {
@@ -79,6 +88,7 @@ describe('转换单订单级在线回款', () => {
         total_amount: '1500.00',
         received: '0.00',
         refunded_amount: '0.00',
+        conversion_remaining_payable: 1500,
         first_payment_amount: null,
         customer_name: '零首付顾客',
         is_experience_conversion: false,
@@ -110,6 +120,7 @@ describe('转换单订单级在线回款', () => {
         total_amount: '1500.00',
         received: '0.00',
         refunded_amount: '0.00',
+        conversion_remaining_payable: 1500,
         first_payment_amount: '500.00',
         customer_name: '首付顾客',
         is_experience_conversion: false,
@@ -140,6 +151,7 @@ describe('转换单订单级在线回款', () => {
         total_amount: '2000.00',
         received: '500.00',
         refunded_amount: '0.00',
+        conversion_remaining_payable: 1500,
         first_payment_amount: '500.00',
         customer_name: '部分支付顾客',
         is_experience_conversion: false,
@@ -172,6 +184,7 @@ describe('转换单订单级在线回款', () => {
         total_amount: '2000.00',
         received: '500.00',
         refunded_amount: '0.00',
+        conversion_remaining_payable: 1500,
         first_payment_amount: null,
         lakala_out_order_no: 'FY-CONV-OLD-O1_1500',
         customer_name: '历史支付顾客',
@@ -200,6 +213,7 @@ describe('转换单订单级在线回款', () => {
         total_amount: '2000.00',
         received: '0.00',
         refunded_amount: '0.00',
+        conversion_remaining_payable: 2000,
         pending_prepaid_card_amount: '500.00',
         first_payment_amount: null,
         customer_name: '待扣卡顾客',
@@ -250,6 +264,7 @@ describe('转换单订单级在线回款', () => {
         total_amount: '2000.00',
         received: '0.00',
         refunded_amount: '0.00',
+        conversion_remaining_payable: 2000,
         pending_prepaid_card_amount: '500.00',
         first_payment_amount: null,
         customer_name: '余额不足顾客',

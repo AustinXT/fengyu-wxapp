@@ -3232,6 +3232,7 @@ export const getOrderById = withAnyPermission(
   }))
 
   return {
+    conversionRemainingPayable: r.order.saleOrderType === '转换单' ? await getConversionDebt(db, saleOrderId) : undefined,
     saleOrderId: r.order.saleOrderId,
     status: r.order.status as SaleOrder['status'],
     saleOrderType: r.order.saleOrderType as SaleOrder['saleOrderType'],

@@ -1,3 +1,4 @@
+const { refreshConversionSources } = require('./conversion-sources')
 const { CONVERSION_VALUE_RECALC_SQL } = require('./conversion-value')
 /**
  * paid_sessions 计算与重算 — 单源四端字节同义（ticket 2026-05-19-sale-items-paid-sessions）
@@ -365,6 +366,7 @@ async function recalcPaidSessionsForOrder(client, saleOrderId) {
   }
   // STEP 1.6：转换单转入价值随旧卡折抵 + 实际到账逐步解锁，禁止部分付款提前释放全部次数。
   await client.query(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL, [saleOrderId])
+  await refreshConversionSources(async (text, params) => (await client.query(text, params)).rows, saleOrderId)
   // STEP 1.75：received 已成为最终有符号净额，按它分摊 actual 储值卡/现金通道。
   await client.query(SALE_ITEMS_PAYMENT_CHANNEL_ALLOC_SQL, [saleOrderId])
   // STEP 2：行级公式重算 paid_sessions（received 已净额，不再下分订单级退款）

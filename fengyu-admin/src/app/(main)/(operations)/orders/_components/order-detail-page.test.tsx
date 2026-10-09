@@ -49,6 +49,12 @@ describe("calculateConfirmOfflineAmounts", () => {
   });
 });
 
+describe("转换余额由服务端判定", () => {
+  it("再次转出的行不从金额差推导欠款", () => {
+    expect(calculateConfirmOfflineAmounts({ payableAmount: "200", received: "100", saleOrderType: "转换单", firstPaymentAmount: null, conversionRemainingPayable: 0 }, [{ pendingReceived: "100", itemDirection: "转入", saleAmount: "1000", received: "900", saleItemId: "EXITED" }])).toEqual({ remainingPayable: 0, suggestedAmount: 0 });
+  });
+});
+
 describe("mergePaymentsForDisplay", () => {
   const payment = (overrides: Partial<SaleOrderPayment>): SaleOrderPayment => ({
     id: 1,

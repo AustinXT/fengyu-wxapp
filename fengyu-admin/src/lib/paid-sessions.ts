@@ -1,3 +1,4 @@
+import { refreshConversionSources, conversionSourceQuery } from './conversion-sources'
 import { CONVERSION_VALUE_RECALC_SQL } from './conversion-value'
 /**
  * paid_sessions 计算与重算 — 单源四端字节同义（ticket 2026-05-19-sale-items-paid-sessions）
@@ -300,6 +301,7 @@ export async function recalcPaidSessionsForOrder(tx: AdminTx, saleOrderId: strin
 
   // STEP 1.6：转换单转入价值随旧卡折抵 + 实际到账逐步解锁，禁止部分付款提前释放全部次数。
   await tx.execute(sql.join(CONVERSION_VALUE_RECALC_SQL.split('$1').map(part => sql.raw(part)), sql`${saleOrderId}`))
+  await refreshConversionSources(conversionSourceQuery(tx), saleOrderId)
 
   // STEP 1.75：received 已成为最终有符号净额，用累计边界差分摊 actual 储值卡/现金通道。
   await tx.execute(sql`

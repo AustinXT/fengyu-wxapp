@@ -1,3 +1,4 @@
+import { CONVERSION_POINT_OFFSETS_SQL, conversionSourceQuery } from './conversion-sources'
 import { retainedRefundFeeSql } from './refund-fee-sql'
 /**
  * 积分发放工具 — admin 端实现（链净额差值法）
@@ -78,13 +79,14 @@ export async function settlePointsForOrder(
   //    2026-04-26 sale-order-domain-refactor: paid_amount 已 DROP，改用 received - refunded_amount
   //    退款单 refunded_amount 为正，回款单 received 为正；累加得链净额
   const sumRes = await tx.execute(sql`
-    SELECT COALESCE(SUM(COALESCE(received,0) - COALESCE(refunded_amount,0) - ${sql.raw(retainedRefundFeeSql('sale_orders.sale_order_id'))}), 0)::numeric AS net_settled
+    SELECT COALESCE(SUM(COALESCE(received,0) - CASE WHEN sale_order_type = '转换单' AND EXISTS (SELECT 1 FROM sale_order_payments modern_refund WHERE modern_refund.sale_order_id = sale_orders.sale_order_id AND modern_refund.change_type = '退款' AND modern_refund.status = '已支付' AND public.try_jsonb(modern_refund.note) ->> 'conversionRefund' = 'true') THEN 0 ELSE COALESCE(refunded_amount,0) + ${sql.raw(retainedRefundFeeSql('sale_orders.sale_order_id'))} END), 0)::numeric AS net_settled
       FROM sale_orders
      WHERE sale_order_id = ${originalSaleOrderId}
         OR ref_sale_order_id = ${originalSaleOrderId}
   `)
   const sumRows = sumRes as unknown as Array<{ net_settled: string | number }>
-  const netSettled = Number(sumRows[0]?.net_settled ?? 0)
+  const offsets = await conversionSourceQuery(tx)(`SELECT ${CONVERSION_POINT_OFFSETS_SQL} AS offset_amount`, [originalSaleOrderId])
+  const netSettled = Number(sumRows[0]?.net_settled ?? 0) - Number(offsets[0]?.offset_amount || 0)
 
   // 3. 目标积分（决策 D3：不允许负余额，expected 下界为 0）
   const expected = Math.floor(Math.max(0, netSettled) / 100)
