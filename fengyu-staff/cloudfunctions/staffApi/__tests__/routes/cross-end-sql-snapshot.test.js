@@ -1422,7 +1422,7 @@ describe('转换单转入 received 重算 SQL 四端一致性守护', () => {
       expect(query).toContain('WHEN paid_value IS NOT NULL THEN GREATEST(0, paid_value + extra_paid - net_refund)')
       expect(query).toContain('WHEN exited THEN received')
       expect(query).toContain('ROUND(target * cumulative / active_total, 2) - ROUND(target * (cumulative - sale_amount) / active_total, 2)')
-      expect(query).not.toContain('so.refunded_amount')
+      expect(query).toContain('so.refunded_amount::numeric - COALESCE((SELECT SUM(net_refund) FROM refund_parts),0)')
     }
     expect(sqls[0]).toMatchSnapshot()
   })

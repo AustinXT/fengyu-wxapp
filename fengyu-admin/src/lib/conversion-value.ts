@@ -35,11 +35,11 @@ export const CONVERSION_VALUE_RECALC_SQL = `WITH refund_parts AS (
 ), totals AS (
   SELECT so.sale_order_type,
          COALESCE((SELECT SUM(GREATEST(0, -received::numeric)) FROM sale_items WHERE sale_order_id = $1 AND item_direction = '转出'), 0)
-           + so.received::numeric AS gross_value,
+           + GREATEST(0, so.received::numeric - GREATEST(0, so.refunded_amount::numeric - COALESCE((SELECT SUM(net_refund) FROM refund_parts),0))) AS gross_value,
          COALESCE(SUM(i.sale_amount) FILTER (WHERE NOT i.exited AND i.paid_value IS NULL), 0) AS active_total,
          COALESCE(SUM(COALESCE(i.paid_value + i.extra_paid, i.received)) FILTER (WHERE i.exited OR i.paid_value IS NOT NULL), 0) AS reserved
     FROM sale_orders so LEFT JOIN in_items i ON true
-   WHERE so.sale_order_id = $1 GROUP BY so.sale_order_type, so.received
+   WHERE so.sale_order_id = $1 GROUP BY so.sale_order_type, so.received, so.refunded_amount
 ), ranked AS (
   SELECT i.*, t.active_total,
          LEAST(t.active_total, GREATEST(0, t.gross_value - t.reserved)) AS target,

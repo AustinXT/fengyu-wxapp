@@ -63,6 +63,19 @@ run('#548 隔离 PG 转换退款（真实级联与权益重算）', () => {
     await recalcPaidSessionsForOrder(c,orderId)
     return built.totalRefund
   }
+  test('历史无快照已退款单重算保留旧净实收，不重新解锁已退次数', async () => {
+    await setup()
+    await c.query("UPDATE sale_items SET conversion_value_snapshot=NULL WHERE sale_order_id='C548'")
+    await c.query("UPDATE sale_orders SET refunded_amount=100 WHERE sale_order_id='C548'")
+    await c.query("INSERT INTO sale_order_payments(sale_order_id,change_type,amount,payment_method,status,source_end,ref_sale_item_id,session_count) VALUES('C548','退款',-100,'线下','已支付','staff','IN548-0',1)")
+    await c.query("UPDATE sale_items SET remaining_sessions=9 WHERE sale_item_id='IN548-0'")
+    await recalcPaidSessionsForOrder(c,'C548')
+    const row=(await c.query("SELECT received,paid_sessions FROM sale_items WHERE sale_item_id='IN548-0'")).rows[0]
+    expect(Number(row.received)).toBe(900)
+    expect(row.paid_sessions).toBe(9)
+    await recalcPaidSessionsForOrder(c,'C548')
+    expect(Number((await c.query("SELECT received FROM sale_items WHERE sale_item_id='IN548-0'")).rows[0].received)).toBe(900)
+  })
   test('800折抵+200现金退1000；负receipt，不伪造收款，不恢复旧卡，重算不复活',async()=>{
     const [row]=await setup(); expect(Number(row.received)).toBe(1000)
     expect(await refund(row)).toBe(1000)
