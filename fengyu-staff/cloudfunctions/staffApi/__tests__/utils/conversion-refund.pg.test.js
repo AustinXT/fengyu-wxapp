@@ -30,11 +30,12 @@ run('#548 隔离 PG 转换退款（真实级联与权益重算）', () => {
     const names=columns.map(name=>'"'+name+'"').join(',')
     await c.query(`INSERT INTO sale_items(${names}) SELECT ${columns.map(name=>'copy."'+name+'"').join(',')} FROM sale_items si CROSS JOIN LATERAL jsonb_populate_record(NULL::sale_items,to_jsonb(si)||$2::jsonb) copy WHERE si.sale_item_id=$1`,[sourceId,JSON.stringify(overrides)])
   }
-  async function setup({ old = 800, cash = 200, amounts = [1000], home = false, used = 0 } = {}) {
+  async function setup({ old = 800, cash = 200, amounts = [1000], home = false, used = 0, linked = false } = {}) {
     for (const [id, total, received, type] of [['O548', old, old, '销售单'], ['C548', Math.max(0, amounts.reduce((a,b)=>a+b,0)-old), cash, '转换单']]) {
       await c.query(`INSERT INTO sale_orders(sale_order_id,market_name,store_id,sale_order_datetime,total_amount,payment_method,received,status,sale_order_type,client_user_id,paid_at)
         VALUES($1,'测试','T548',NOW(),$2,'线下',$3,'已支付',$4,'T548',NOW())`, [id,total,received,type])
     }
+    if(linked) await c.query("UPDATE sale_orders SET ref_sale_order_id='O548' WHERE sale_order_id='C548'")
     await c.query(`INSERT INTO sale_items(sale_item_id,sale_order_id,store_id,unit_price,unit_real_price,sale_amount,received,quantity,session_count,remaining_sessions,paid_sessions,product_type,item_direction)
       VALUES('OLD548','O548','T548',$1,$1,$1,$1,1,1,0,1,'疗程卡','购买'),('OUT548','C548','T548',$1,$1,-$1,-$1,1,1,0,1,'疗程卡','转出')`, [old])
     await c.query("UPDATE sale_items SET ref_sale_item_id='OLD548' WHERE sale_item_id='OUT548'")
@@ -74,7 +75,7 @@ run('#548 隔离 PG 转换退款（真实级联与权益重算）', () => {
     await refund(a)
     expect(Number((await c.query("SELECT received FROM sale_items WHERE sale_item_id=$1",[b.sale_item_id])).rows[0].received)).toBe(bBefore)
     const debt=await getConversionDebt(c,'C548');expect(debt).toBe(500-bBefore)
-    if(debt>0){await c.query("UPDATE sale_orders SET received=received+$1 WHERE sale_order_id='C548'",[debt]);const deltas=await c.query(CONVERSION_RECEIPT_SQL,['C548',debt]);expect(deltas.rows.map(r=>[r.sale_item_id,Number(r.amount)])).toEqual([[b.sale_item_id,debt]])}
+    if(debt>0){const deltas=await repay(debt);expect(deltas.map(r=>[r.sale_item_id,Number(r.amount)])).toEqual([[b.sale_item_id,debt]])}
     await recalcPaidSessionsForOrder(c,'C548')
     const after=(await c.query("SELECT * FROM sale_items WHERE item_direction='转入' AND sale_order_id='C548' ORDER BY sale_item_id")).rows
     expect(calculateUnusedQuantity(after[0])).toBe(0);expect(Number(after[1].received)).toBe(500)
@@ -138,6 +139,7 @@ run('#548 隔离 PG 转换退款（真实级联与权益重算）', () => {
     await c.query("INSERT INTO sale_orders SELECT (jsonb_populate_record(NULL::sale_orders, to_jsonb(o) || '{\"sale_order_id\":\"O548B\"}'::jsonb)).* FROM sale_orders o WHERE sale_order_id='O548'")
     await cloneItem("OLD548", {"sale_item_id":"OLD548B","sale_order_id":"O548B"})
     await cloneItem("OUT548", {"sale_item_id":"OUT548B","ref_sale_item_id":"OLD548B"})
+    await c.query("UPDATE sale_items SET conversion_value_snapshot=NULL WHERE sale_order_id='C548' AND item_direction='转入'")
     await recalcPaidSessionsForOrder(c, 'C548')
     await settlePointsForOrder(c, 'O548'); await settlePointsForOrder(c, 'O548B')
     await refund(a)
@@ -207,8 +209,7 @@ run('#548 隔离 PG 转换退款（真实级联与权益重算）', () => {
   })
 
   test('带ref_sale_order_id的800折抵+200实收转换，原链10点全冲且不复发', async () => {
-    const [row]=await setup()
-    await c.query("UPDATE sale_orders SET ref_sale_order_id='O548' WHERE sale_order_id='C548'")
+    const [row]=await setup({linked:true})
     await recalcPaidSessionsForOrder(c,'C548')
     const value=(await c.query("SELECT conversion_value_snapshot FROM sale_items WHERE sale_item_id=$1",[row.sale_item_id])).rows[0].conversion_value_snapshot
     expect(value.sources.filter(s=>s.pointOrderId==='O548').reduce((sum,s)=>sum+s.valueCents,0)).toBe(100000)
@@ -218,14 +219,58 @@ run('#548 隔离 PG 转换退款（真实级联与权益重算）', () => {
     expect((await settlePointsForOrder(c,'O548')).delta).toBe(0)
     expect(Number((await c.query("SELECT received FROM sale_orders WHERE sale_order_id='C548'")).rows[0].received)).toBe(200)
   })
-  test('部分付款家居逐件退后仍保留已付余件，冻结该行不再收未付补款', async () => {
+  async function repay(amount) {
+    await c.query("UPDATE sale_orders SET received=received+$1 WHERE sale_order_id='C548'", [amount])
+    const id=(await c.query("INSERT INTO sale_order_payments(sale_order_id,change_type,amount,payment_method,status,source_end) VALUES('C548','回款',$1,'线下','已支付','staff') RETURNING id",[amount])).rows[0].id
+    const deltas=(await c.query(CONVERSION_RECEIPT_SQL,['C548',amount])).rows.filter(r=>Number(r.amount)!==0)
+    for(const row of deltas) await c.query("INSERT INTO sale_payment_item_receipts(sale_order_id,sale_payment_id,sale_item_id,amount,sales_category) VALUES('C548',$1,$2,$3,$4)",[id,row.sale_item_id,row.amount,row.sales_category])
+    await recalcPaidSessionsForOrder(c,'C548')
+    return deltas
+  }
+  test('部分付款家居退1件后，未退余件可补款，已退数量不复活', async () => {
     const [row]=await setup({old:400,cash:200,home:true})
     expect(calculateUnusedQuantity({...row,picked_quantity:0,converted_amount:0})).toBe(3)
     await refund(row,1)
-    const next=(await c.query("SELECT * FROM sale_items WHERE sale_item_id=$1",[row.sale_item_id])).rows[0]
+    let next=(await c.query("SELECT * FROM sale_items WHERE sale_item_id=$1",[row.sale_item_id])).rows[0]
     expect(calculateUnusedQuantity({...next,picked_quantity:0,converted_amount:0})).toBe(2)
     expect(Number(next.received)).toBe(400)
+    expect(await getConversionDebt(c,'C548')).toBe(400)
+    expect((await repay(400)).map(r=>Number(r.amount))).toEqual([400])
+    await recalcPaidSessionsForOrder(c,'C548')
+    next=(await c.query("SELECT * FROM sale_items WHERE sale_item_id=$1",[row.sale_item_id])).rows[0]
+    expect(Number(next.received)).toBe(800)
+    expect(next.conversion_value_snapshot.valueCents).toBe(80000)
+    expect(calculateUnusedQuantity({...next,picked_quantity:0,converted_amount:0})).toBe(4)
+    expect(next.refunded_quantity).toBe(1)
     expect(await getConversionDebt(c,'C548')).toBe(0)
+    expect(await refund(next,4)).toBe(800)
+  })
+  test('A部分退款再补款，不移动B原已付价值；尾差、来源及现金只进未退余量', async () => {
+    const [a,b]=await setup({old:800,cash:100,home:true,amounts:[500,500]})
+    await refund(a,1)
+    const current=(await c.query("SELECT * FROM sale_items WHERE sale_order_id='C548' AND item_direction='转入' ORDER BY sale_item_id")).rows
+    expect(current.map(r=>Number(r.received))).toEqual([350,450])
+    expect(await getConversionDebt(c,'C548')).toBe(100)
+    expect((await repay(100)).map(r=>Number(r.amount))).toEqual([50,50])
+    await recalcPaidSessionsForOrder(c,'C548')
+    const paid=(await c.query("SELECT * FROM sale_items WHERE sale_order_id='C548' AND item_direction='转入' ORDER BY sale_item_id")).rows
+    expect(paid.map(r=>Number(r.received))).toEqual([400,500])
+    expect(paid.map(r=>r.conversion_value_snapshot.valueCents)).toEqual([40000,50000])
+    expect(paid[0].refunded_quantity).toBe(1)
+    expect(await refund(paid[0],4)).toBe(400)
+    expect(await refund(paid[1],5)).toBe(500)
+    expect(await getConversionDebt(c,'C548')).toBe(0)
+  })
+
+  test('1分新到账不能移动旧1分，received增量必须逐项等于真实receipt且重复重算幂等', async () => {
+    const before=await setup({old:0.02,cash:0,amounts:[10,20,30]})
+    expect(before.map(r=>Number(r.received))).toEqual([0,0.01,0.01])
+    const deltas=await repay(0.01)
+    expect(deltas.map(r=>[r.sale_item_id,Number(r.amount)])).toEqual([['IN548-1',0.01]])
+    await recalcPaidSessionsForOrder(c,'C548')
+    const after=(await c.query("SELECT * FROM sale_items WHERE sale_order_id='C548' AND item_direction='转入' ORDER BY sale_item_id")).rows
+    expect(after.map(r=>Number(r.received))).toEqual([0,0.02,0.01])
+    expect(after.map(r=>r.conversion_value_snapshot.valueCents)).toEqual([0,2,1])
   })
 
 })

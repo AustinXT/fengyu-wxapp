@@ -43,6 +43,7 @@ interface OrderDetailItem {
 }
 
 interface OrderDetailData {
+  conversion_remaining_payable?: number;
   sale_order_id: string;
   status: string;
   sale_order_type: string;
@@ -499,8 +500,7 @@ Page({
       // 2026-04-26 sale-order-domain-refactor: received/refunded_amount 替代已 DROP 的 paid_amount。
       let outstandingSum = 0;
       if (order.sale_order_type === '转换单') {
-        outstandingSum = itemsWithProgress.filter(it => it.item_direction === '转入' && Number(it.refunded_amount || 0) === 0)
-          .reduce((sum, it) => sum + Math.max(0, Number(it.sale_amount || 0) - Number(it.received || 0)), 0);
+        outstandingSum = Math.max(0, Number(order.conversion_remaining_payable || 0));
       } else {
         for (const it of itemsWithProgress) {
           const refunded = Number(it.refunded_amount ?? 0);

@@ -1,5 +1,7 @@
 'use server'
 
+import { stripConversionSourcesFromNote } from '@/lib/conversion-sources'
+
 import { getConversionDebt } from '@/lib/conversion-value'
 
 import { retainedRefundFeeSql } from '@/lib/refund-fee-sql'
@@ -3758,7 +3760,7 @@ export const getOrderPayments = withAnyPermission(
     status: r.payment.status as import('@/lib/types').PaymentFlowStatus,
     sourceEnd: r.payment.sourceEnd as import('@/lib/types').PaymentSourceEnd,
     operatorEmployeeId: r.payment.operatorEmployeeId ?? null,
-    note: r.payment.note ?? null,
+    note: stripConversionSourcesFromNote(r.payment.note) ?? null,
     createdAt: r.payment.createdAt.toISOString(),
     paidAt: r.payment.paidAt?.toISOString() ?? null,
     performanceAttributionDate: r.payment.performanceAttributionDate ?? null,

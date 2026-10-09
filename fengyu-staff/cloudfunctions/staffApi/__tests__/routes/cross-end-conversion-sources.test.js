@@ -33,3 +33,12 @@ test('#548 两端退款会计来源只取本单合法方向',()=>{
   expect(predicates[0]).toBe(predicates[1])
   expect(predicates[0]).toContain("(SELECT sale_order_type FROM sale_orders WHERE sale_order_id = ?) = '转换单'")
 })
+
+test('#548 公共退款note保留金额和原因，去除内部来源，数据库原文不变',()=>{
+  const {stripConversionSourcesFromNote}=require('../../utils/conversion-sources')
+  const original=JSON.stringify({refundReason:'退一件',items:[{refSaleItemId:'A',paidAmount:1000,refundAmount:200,conversionSources:[{pointOrderId:'secret-root',valueCents:20000}]}]})
+  const cleaned=JSON.parse(stripConversionSourcesFromNote(original))
+  expect(cleaned).toEqual({refundReason:'退一件',items:[{refSaleItemId:'A',paidAmount:1000,refundAmount:200}]})
+  expect(original).toContain('secret-root')
+  expect(stripConversionSourcesFromNote('普通收款备注')).toBe('普通收款备注')
+})

@@ -1415,7 +1415,7 @@ describe('转换单转入 received 重算 SQL 四端一致性守护', () => {
       expect(query).toContain("t.sale_order_type = '转换单'")
       expect(query).toContain("si.item_direction = '转入'")
       expect(query).toContain('LEAST(t.active_total, GREATEST(0, t.gross_value - t.reserved))')
-      expect(query).toContain('WHEN paid_value IS NOT NULL THEN GREATEST(0, paid_value - net_refund)')
+      expect(query).toContain('WHEN paid_value IS NOT NULL THEN GREATEST(0, paid_value + extra_paid - net_refund)')
       expect(query).toContain('WHEN exited THEN received')
       expect(query).toContain('ROUND(target * cumulative / active_total, 2) - ROUND(target * (cumulative - sale_amount) / active_total, 2)')
       expect(query).not.toContain('so.refunded_amount')
@@ -4199,7 +4199,7 @@ describe('#182 已退出判据所有站点同源', () => {
     for (const file of [FILES.staffPaymentAllocatableJs,FILES.clientPaymentAllocatableJs,FILES.payNotifyPaymentAllocatableJs,FILES.adminPaymentAllocatableTs]) {
       const source = readFile(file)
       expect(source).toContain(`${exited('si')} AS converted_out`)
-      expect(source).toContain('AND NOT r.exited AND r.paid_value IS NULL')
+      expect(source).toContain('fully_refunded OR exited THEN 0')
       expect(source).toContain("out_item.item_direction = '转出' AND out_order.status <> '已关闭'")
       expect(source).toContain('COALESCE(si.remaining_sessions, 0) = 0')
       expect(source).toContain('if (!fallback) return []')

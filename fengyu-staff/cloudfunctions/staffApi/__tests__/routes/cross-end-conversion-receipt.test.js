@@ -8,15 +8,15 @@ describe('#548 四端转换资产与现金增量SQL独立副本', () => {
     const queries=files.map(f=>extract(f,name)); for(const q of queries) expect(q).toBe(queries[0])
     expect(queries[0]).toMatchSnapshot()
   })
-  test('现金仅分给未退项，前后分币差共用同一资产CTE',()=>{
-    const receipt=extract(files[0],'CONVERSION_RECEIPT_SQL'), value=extract(files[0],'CONVERSION_VALUE_RECALC_SQL')
-    expect(receipt).toContain('t.gross_value - $2::numeric - t.reserved')
-    expect(receipt).toContain('AND NOT r.exited AND r.paid_value IS NULL')
-    const prefix=q=>q.slice(0,q.indexOf('), ranked AS ('))
-    expect(prefix(receipt)).toBe(prefix(value))
+  test('现金只支付未退剩余价值，整项退款/再次转出均不能吸收现金',()=>{
+    const receipt=extract(files[0],'CONVERSION_RECEIPT_SQL')
+    expect(receipt).toContain('fully_refunded OR exited THEN 0')
+    expect(receipt).toContain('retained_price -')
+    expect(receipt).toContain('LEAST($2::numeric,debt_total)')
+    expect(receipt).toContain('conversion_value_snapshot IS NOT NULL THEN received::numeric')
   })
   test.each(files)('%s 单端改金额公式不能蒙混通过',file=>{
-    const q=extract(file,'CONVERSION_RECEIPT_SQL');expect(q.replace('t.gross_value - $2::numeric','t.gross_value')).not.toBe(q)
+    const q=extract(file,'CONVERSION_RECEIPT_SQL');expect(q.replace('LEAST($2::numeric,debt_total)','debt_total')).not.toBe(q)
   })
 })
 

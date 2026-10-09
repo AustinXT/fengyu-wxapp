@@ -1,3 +1,4 @@
+const { stripConversionSourcesFromNote } = require('../utils/conversion-sources')
 const { getConversionDebt, conversionDebtSql } = require('../utils/conversion-value')
 const { retainedRefundFeeSql } = require('../utils/refund-fee-sql')
 /**
@@ -3099,7 +3100,7 @@ async function detail(ctx) {
     status: p.status,
     paid_at: p.paid_at,
     created_at: p.created_at,
-    note: p.note,
+    note: stripConversionSourcesFromNote(p.note),
     refund_reason: p.refund_reason || null,
     audit_at: p.audit_at || null,
     audit_remark: p.audit_remark || null,

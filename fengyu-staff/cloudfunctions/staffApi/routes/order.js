@@ -1,3 +1,4 @@
+const { stripConversionSourcesFromNote } = require('../utils/conversion-sources')
 const { refreshConversionSources, recordConversionRefundSources, lockConversionPointRoots } = require('../utils/conversion-sources')
 const { conversionDebtSql, getConversionDebt } = require('../utils/conversion-value')
 const { retainedRefundFeeSql } = require('../utils/refund-fee-sql')
@@ -1999,7 +2000,7 @@ async function qrcode(ctx) {
       if (String(locked.lakala_out_order_no || '').trim()) {
         throw new Error('CONFLICT: ONLINE_PAYMENT_INTENT_ACTIVE: 已有进行中的在线回款，请勿重复出码')
       }
-      const remainingPayable = await getConversionDebt(client, saleOrderId)
+      const remainingPayable = Math.max(0, await getConversionDebt(client, saleOrderId) - Number(locked.pending_prepaid_card_amount || 0))
       if (roundedPaymentAmount > remainingPayable + 0.001) {
         throw new Error('INVALID_PARAMS: 本次在线回款金额不能超过订单欠款')
       }
@@ -3505,7 +3506,7 @@ async function detail(ctx) {
     status: p.status,
     paid_at: p.paid_at,
     created_at: p.created_at,
-    note: p.note,
+    note: stripConversionSourcesFromNote(p.note),
     allocation_status: p.allocation_status,
   }))
 
