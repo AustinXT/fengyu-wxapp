@@ -9,7 +9,13 @@
  */
 const pg = globalThis.__mocks__.pg
 const { createManagerCtx, createBeauticianCtx } = require('../helpers')
+// 原路由用例聚焦开单/撤销状态与权益；责任交接全文由独立真实PG套件验证。
+const sourcesId = require.resolve('../../utils/conversion-sources')
+const sourcesActual = require(sourcesId), sourcesCache = require.cache[sourcesId]
+const initializeConversionSources = vi.fn(async () => {})
+require.cache[sourcesId] = { ...sourcesCache, exports: { ...sourcesActual, initializeConversionSources } }
 const orderRoutes = require('../../routes/order')
+require.cache[sourcesId] = sourcesCache
 const {
   _loadAndValidateBundle,
   buildNormalSkuMarketScopeFilter,
@@ -167,6 +173,7 @@ function makeConfirmOfflineQuery(handler = async (sql) => defaultQueryResult(sql
 // 仅把锁内订单快照桥接进去；其余关闭副作用交给用例自定义。
 function makeCloseQuery(handler = async (sql) => defaultQueryResult(sql)) {
   return vi.fn(async (sql, params) => {
+    if (sql.includes("change_type='退款'") && sql.includes("status IN ('待审批','已支付')")) return { rows: [], rowCount: 0 }
     const isOrderLock = typeof sql === 'string'
       && sql.includes('SELECT * FROM sale_orders')
       && sql.includes('FOR UPDATE')
@@ -2365,7 +2372,7 @@ describe('order.close', () => {
 
   // assertOrderInScope helper 调用 SELECT store_id FROM sale_orders（在 SELECT * 之前）
   const mockScopeOk = (storeId = 'store-001') =>
-    pg.query.mockResolvedValueOnce([{ store_id: storeId }])
+    pg.query.mockResolvedValueOnce([{ store_id: storeId }]).mockResolvedValueOnce([])
 
   test('店长可关闭待支付订单（C4: UPDATE WHERE 含 status 条件）', async () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-001' })
@@ -2400,6 +2407,20 @@ describe('order.close', () => {
     // C4 合规验证
     expect(capturedUpdateSql).toContain('AND status = $')
     expect(capturedUpdateParams).toContain('待支付')
+  })
+
+  test('预检之后新建退款：锁内复检拒绝撤销转换且不改任何权益', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-CONV-001' })
+    mockScopeOk()
+    const query = vi.fn(async (sql) => {
+      if (sql.includes('SELECT * FROM sale_orders')) return { rows: [{ sale_order_id: 'FY-CONV-001', sale_order_type: '转换单', status: '待支付', store_id: 'store-001' }], rowCount: 1 }
+      if (sql.includes("change_type='退款'")) return { rows: [{ present: 1 }], rowCount: 1 }
+      throw new Error('不应执行撤销副作用')
+    })
+    pg.transaction.mockImplementationOnce(async cb => cb({ query }))
+    await expect(orderRoutes.close(ctx)).rejects.toThrow('转换单已有退款')
+    expect(query.mock.calls.every(([sql]) => /^SELECT/.test(sql))).toBe(true)
+    expect(query.mock.calls).toHaveLength(2)
   })
 
   test('店长可关闭支付失败订单', async () => {
@@ -8594,7 +8615,7 @@ describe('order.close — 家居转出回滚（#125）', () => {
 
   // assertOrderInScope helper 先 SELECT store_id FROM sale_orders
   const mockScopeOk = (storeId = 'store-001') =>
-    pg.query.mockResolvedValueOnce([{ store_id: storeId }])
+    pg.query.mockResolvedValueOnce([{ store_id: storeId }]).mockResolvedValueOnce([])
 
   test('关闭待支付转换单时把家居转出数量退回 picked_up_quantity', async () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-CONV-HOME-001' })
@@ -8639,7 +8660,7 @@ describe('order.close — 欠款归零的回滚（#182）', () => {
     rowWaived, rowRefunded, restoredOk = true, sourceFound = true, orderTotal = '1000.00',
   }) => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-CONV-WAIVE-001' })
-    pg.query.mockResolvedValueOnce([{ store_id: 'store-001' }])
+    pg.query.mockResolvedValueOnce([{ store_id: 'store-001' }]).mockResolvedValueOnce([])
     pg.query.mockResolvedValueOnce([{
       sale_order_id: 'FY-CONV-WAIVE-001',
       status: '待支付',
@@ -8737,7 +8758,7 @@ describe('order.close — 欠款归零的回滚（#182）', () => {
   // rowCount=0 既可能是原单孤儿、也可能是有在途在线支付，两者都必须整笔失败。
   test('订单还原 CAS 不命中（在途支付/状态已变）必须抛 CONFLICT', async () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-CONV-WAIVE-001' })
-    pg.query.mockResolvedValueOnce([{ store_id: 'store-001' }])
+    pg.query.mockResolvedValueOnce([{ store_id: 'store-001' }]).mockResolvedValueOnce([])
     pg.query.mockResolvedValueOnce([{
       sale_order_id: 'FY-CONV-WAIVE-001',
       status: '待支付',
@@ -8790,7 +8811,7 @@ describe('order.close — 欠款归零的回滚（#182）', () => {
   // 「货已还给顾客、欠款仍被豁免」。必须整笔关单事务回滚。
   test('还原 CAS 失败（restored_ok=false）必须抛 CONFLICT 而不是静默放过', async () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-CONV-WAIVE-001' })
-    pg.query.mockResolvedValueOnce([{ store_id: 'store-001' }])
+    pg.query.mockResolvedValueOnce([{ store_id: 'store-001' }]).mockResolvedValueOnce([])
     pg.query.mockResolvedValueOnce([{
       sale_order_id: 'FY-CONV-WAIVE-001',
       status: '待支付',
@@ -8830,7 +8851,7 @@ describe('order.close — 欠款归零的回滚（#182）', () => {
   // 之前没有断言 → 源行金额已还原、paid_sessions 没还原，而收尾还会把归因凭据清零。
   test('paid_sessions 重算影响 0 行（原单孤儿）必须抛 CONFLICT', async () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-CONV-WAIVE-001' })
-    pg.query.mockResolvedValueOnce([{ store_id: 'store-001' }])
+    pg.query.mockResolvedValueOnce([{ store_id: 'store-001' }]).mockResolvedValueOnce([])
     pg.query.mockResolvedValueOnce([{
       sale_order_id: 'FY-CONV-WAIVE-001',
       status: '待支付',

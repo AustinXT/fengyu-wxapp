@@ -341,13 +341,13 @@ function stripConversionSourcesFromNote(note) {
         return note;
     }
 }
-const CONVERSION_SOURCE_AUDIT_SQL = `WITH items AS (
+const CONVERSION_SOURCE_AUDIT_SQL = `WITH conversion_audit_items AS (
  SELECT si.*,so.client_user_id,COALESCE((SELECT SUM(COALESCE(public.try_numeric(part->>'handlingFee'),0)+COALESCE(public.try_numeric(part->>'overdraftDeduction'),0))
    FROM sale_order_payments p CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(public.try_jsonb(p.note)->'items')='array' THEN public.try_jsonb(p.note)->'items' ELSE '[]'::jsonb END) part
    WHERE p.sale_order_id=si.sale_order_id AND p.change_type='退款' AND p.status='已支付' AND part->>'refSaleItemId'=si.sale_item_id),0) AS retained_fee
  FROM sale_items si JOIN sale_orders so USING(sale_order_id) WHERE so.sale_order_type='转换单' AND so.status<>'已关闭'
 )
-SELECT i.sale_order_id,i.sale_item_id,'responsibility-not-handed-over-or-invalid' AS reason FROM items i
+SELECT i.sale_order_id,i.sale_item_id,'responsibility-not-handed-over-or-invalid' AS reason FROM conversion_audit_items i
  WHERE COALESCE(conversion_value_snapshot->>'version','')<>'2'
  OR jsonb_typeof(conversion_value_snapshot->'lots') IS DISTINCT FROM 'array'
  OR public.try_numeric(conversion_value_snapshot->>'valueCents') IS NULL

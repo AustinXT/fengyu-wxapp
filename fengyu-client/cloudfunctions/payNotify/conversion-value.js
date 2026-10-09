@@ -80,7 +80,8 @@ function conversionDebtSql(orderExpression) {
 
 module.exports = { CONVERSION_VALUE_RECALC_SQL, conversionDebtSql }
 
-const CONVERSION_RECEIPT_SQL = `WITH refunded AS (
+// 已有未冻结/未退款转换单保留历史 signed 分币算法；新单及退款后只用本单增量债务。
+const CONVERSION_RECEIPT_SQL = `WITH current_local_receipts AS (WITH refunded AS (
   SELECT part ->> 'refSaleItemId' AS sale_item_id,
     SUM(COALESCE(public.try_numeric(part ->> 'netRefundAmount'), public.try_numeric(part ->> 'refundAmount'), 0)
         - COALESCE(public.try_numeric(part ->> 'overpayAmount'), 0)) AS price_reduction,
@@ -116,7 +117,74 @@ SELECT sale_item_id,
   (ROUND(LEAST($2::numeric,debt_total) * debt_running / debt_total,2)
    - ROUND(LEAST($2::numeric,debt_total) * (debt_running-debt) / debt_total,2))::numeric(10,2) AS amount,
   sales_category
-FROM ranked WHERE debt > 0 AND debt_total > 0 ORDER BY sale_item_id`
+FROM ranked WHERE debt > 0 AND debt_total > 0 ORDER BY sale_item_id), legacy_signed_receipts AS (WITH conversion_receipt_order AS (
+      SELECT so.sale_order_type,
+             GREATEST(0, so.received::numeric - so.refunded_amount::numeric) AS net_received,
+             COALESCE((
+               SELECT SUM(GREATEST(0, -out_item.received::numeric))
+               FROM sale_items out_item
+               WHERE out_item.sale_order_id = $1 AND out_item.item_direction = '转出'
+             ), 0)::numeric AS converted_value,
+             COALESCE((
+               SELECT SUM(in_item.sale_amount::numeric)
+               FROM sale_items in_item
+               WHERE in_item.sale_order_id = $1 AND in_item.item_direction = '转入'
+                 AND in_item.sale_amount::numeric > 0
+                 AND NOT (EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = in_item.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭') AND (CASE WHEN in_item.product_type = '疗程卡' THEN COALESCE(in_item.remaining_sessions, 0) = 0 ELSE (COALESCE(in_item.picked_up_quantity, 0) + COALESCE(in_item.refunded_quantity, 0) + COALESCE(in_item.converted_quantity, 0)) >= in_item.quantity END))
+             ), 0)::numeric AS in_total,
+             COALESCE((
+               SELECT SUM(in_item.received::numeric)
+               FROM sale_items in_item
+               WHERE in_item.sale_order_id = $1 AND in_item.item_direction = '转入'
+                 AND (EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = in_item.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭') AND (CASE WHEN in_item.product_type = '疗程卡' THEN COALESCE(in_item.remaining_sessions, 0) = 0 ELSE (COALESCE(in_item.picked_up_quantity, 0) + COALESCE(in_item.refunded_quantity, 0) + COALESCE(in_item.converted_quantity, 0)) >= in_item.quantity END))
+             ), 0)::numeric AS waived_in_received
+      FROM sale_orders so
+      WHERE so.sale_order_id = $1
+    ),
+    ranked AS (
+      SELECT si.sale_item_id,
+             si.sale_amount::numeric AS item_sale_amount,
+             conversion_receipt_order.in_total,
+             LEAST(conversion_receipt_order.in_total,
+                   GREATEST(0, conversion_receipt_order.converted_value + conversion_receipt_order.net_received
+                               - conversion_receipt_order.waived_in_received)) AS target_received,
+             LEAST(conversion_receipt_order.in_total,
+                   GREATEST(0, conversion_receipt_order.converted_value
+                     + GREATEST(0, conversion_receipt_order.net_received - $2::numeric)
+                     - conversion_receipt_order.waived_in_received)) AS target_before,
+             SUM(si.sale_amount::numeric) OVER (
+               ORDER BY si.sale_item_id
+               ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+             ) AS cumulative_sale_amount
+      FROM sale_items si
+      CROSS JOIN conversion_receipt_order
+      WHERE conversion_receipt_order.sale_order_type = '转换单'
+        AND si.sale_order_id = $1
+        AND si.item_direction = '转入'
+        AND si.sale_amount::numeric > 0
+        AND NOT (EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = si.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭') AND (CASE WHEN si.product_type = '疗程卡' THEN COALESCE(si.remaining_sessions, 0) = 0 ELSE (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)) >= si.quantity END))
+    ),
+    allocated AS (
+      SELECT sale_item_id,
+             (
+               ROUND(target_received * cumulative_sale_amount / in_total, 2)
+               - ROUND(target_received * (cumulative_sale_amount - item_sale_amount) / in_total, 2)
+              - (
+               ROUND(target_before * cumulative_sale_amount / in_total, 2)
+               - ROUND(target_before * (cumulative_sale_amount - item_sale_amount) / in_total, 2)
+             ))::numeric(10, 2) AS amount
+      FROM ranked
+      WHERE in_total > 0
+    )
+    SELECT a.sale_item_id, a.amount, si.sales_category
+    FROM allocated a
+    JOIN sale_items si ON si.sale_item_id = a.sale_item_id
+    WHERE a.amount <> 0
+    ORDER BY a.sale_item_id)
+SELECT sale_item_id,amount,sales_category FROM current_local_receipts WHERE (EXISTS (SELECT 1 FROM sale_items WHERE sale_order_id=$1 AND conversion_value_snapshot IS NOT NULL) OR EXISTS (SELECT 1 FROM sale_order_payments WHERE sale_order_id=$1 AND change_type='退款' AND status='已支付' AND public.try_jsonb(note)->>'conversionRefund'='true'))
+UNION ALL
+SELECT sale_item_id,amount,sales_category FROM legacy_signed_receipts WHERE NOT (EXISTS (SELECT 1 FROM sale_items WHERE sale_order_id=$1 AND conversion_value_snapshot IS NOT NULL) OR EXISTS (SELECT 1 FROM sale_order_payments WHERE sale_order_id=$1 AND change_type='退款' AND status='已支付' AND public.try_jsonb(note)->>'conversionRefund'='true'))
+ORDER BY sale_item_id`
 module.exports.CONVERSION_RECEIPT_SQL = CONVERSION_RECEIPT_SQL
 
 async function getConversionDebt(executor, saleOrderId) {
