@@ -1059,6 +1059,21 @@ export const createRefund = withPermission(
   let refundPaymentId: number
   try {
     refundPaymentId = await db.transaction(async (tx) => {
+      if (origOrder.saleOrderType === '转换单') {
+        const lockedOrders = await tx.execute(sql`SELECT status, lakala_out_order_no, pending_prepaid_card_amount FROM sale_orders WHERE sale_order_id = ${refSaleOrderId} FOR UPDATE`) as unknown as Array<{ status: string; lakala_out_order_no: string | null; pending_prepaid_card_amount: string | number }>
+        const current = lockedOrders[0]
+        if (!current || current.status !== origOrder.status) throw new ApiError('CONFLICT', '转换单状态已变化，请刷新后重新发起退款')
+        if (current.lakala_out_order_no || Number(current.pending_prepaid_card_amount || 0) > 0) throw new ApiError('CONFLICT', '转换单存在进行中的支付，请先完成或取消后退款')
+        await tx.execute(sql`SELECT sale_item_id FROM sale_items WHERE sale_order_id = ${refSaleOrderId} AND item_direction = '转入' ORDER BY sale_item_id FOR UPDATE`)
+        const lockedItems = await tx.execute(sql`SELECT si.*, GREATEST(0, si.received::numeric - ${sql.raw(retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true))}) AS rights_received FROM sale_items si WHERE si.sale_order_id = ${refSaleOrderId} AND si.item_direction = '转入' ORDER BY si.sale_item_id`) as unknown as Array<Record<string, unknown>>
+        const before = new Map(sourceItems.map(it => [it.sale_item_id, it]))
+        const fields = ['remaining_sessions', 'paid_sessions', 'unit_real_price', 'session_count', 'quantity', 'picked_up_quantity', 'refunded_quantity'] as const
+        if (lockedItems.length !== before.size || lockedItems.some(it => {
+          const old = before.get(it.sale_item_id as string)
+          return !old || Number(old.received ?? 0) !== Number(it.rights_received ?? 0)
+            || fields.some(field => Number(old[field] ?? 0) !== Number(it[field] ?? 0))
+        }) || (current.status === '待支付' && !lockedItems.some(it => Number(it.rights_received ?? 0) > 0))) throw new ApiError('CONFLICT', '转换权益或已付价值已变化，请刷新后重新发起退款')
+      }
       if (origOrder.saleOrderType === '寄存单') {
         const lockedOrders = await tx.execute(sql`SELECT status FROM sale_orders WHERE sale_order_id = ${refSaleOrderId} FOR UPDATE`) as unknown as Array<{ status: string }>
         if (!lockedOrders[0] || lockedOrders[0].status !== origOrder.status) {

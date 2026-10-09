@@ -3958,6 +3958,21 @@ async function createRefund(ctx) {
 
   try {
   await pg.transaction(async (client) => {
+    if (origOrder.sale_order_type === '转换单') {
+      const lockedOrders = await client.query('SELECT status, lakala_out_order_no, pending_prepaid_card_amount FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE', [refSaleOrderId])
+      const current = lockedOrders.rows[0]
+      if (!current || current.status !== origOrder.status) throw new Error('CONFLICT: 转换单状态已变化，请刷新后重新发起退款')
+      if (current.lakala_out_order_no || Number(current.pending_prepaid_card_amount || 0) > 0) throw new Error('CONFLICT: 转换单存在进行中的支付，请先完成或取消后退款')
+      await client.query("SELECT sale_item_id FROM sale_items WHERE sale_order_id = $1 AND item_direction = '转入' ORDER BY sale_item_id FOR UPDATE", [refSaleOrderId])
+      const lockedItems = await client.query(`SELECT si.*, GREATEST(0, si.received::numeric - ${retainedRefundFeeSql('si.sale_order_id', 'si.sale_item_id', true)}) AS rights_received FROM sale_items si WHERE si.sale_order_id = $1 AND si.item_direction = '转入' ORDER BY si.sale_item_id`, [refSaleOrderId])
+      const before = new Map(origItems.map(it => [it.sale_item_id, it]))
+      const fields = ['remaining_sessions', 'paid_sessions', 'unit_real_price', 'session_count', 'quantity', 'picked_up_quantity', 'refunded_quantity']
+      if (lockedItems.rows.length !== before.size || lockedItems.rows.some(it => {
+        const old = before.get(it.sale_item_id)
+        return !old || Number(old.received || 0) !== Number(it.rights_received || 0)
+          || fields.some(field => Number(old[field] || 0) !== Number(it[field] || 0))
+      }) || (current.status === '待支付' && !lockedItems.rows.some(it => Number(it.rights_received || 0) > 0))) throw new Error('CONFLICT: 转换权益或已付价值已变化，请刷新后重新发起退款')
+    }
     if (origOrder.sale_order_type === '寄存单') {
       // 与转换保持原单→源行锁序；事务外退款定额只在锁内快照未变化时可提交。
       const lockedOrder = await client.query('SELECT status FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE', [refSaleOrderId])

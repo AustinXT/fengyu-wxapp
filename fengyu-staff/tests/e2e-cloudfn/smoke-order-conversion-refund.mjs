@@ -29,6 +29,22 @@ async function main(){
   await cleanupTestData(NS);await ensureTestStore();await createTestOrg({markets:['A'],stores:['A2']});await createTestStaff();await createTestClient()
   const one=await scenario('FULL')
   assert.equal(Number(one.items[0].received),1000)
+  // 事务外选项读取后、事务内落退款前注入变化；必须早拒绝且不留下待审批流水。
+  for (const mutation of ['status', 'value', 'payment']) {
+    const transaction = pg.transaction
+    pg.transaction = async cb => transaction(async tx => {
+      if (mutation === 'status') await tx.query("UPDATE sale_orders SET status='已关闭' WHERE sale_order_id=$1", [one.orderId])
+      if (mutation === 'value') await tx.query("UPDATE sale_items SET received=received-1 WHERE sale_item_id=$1", [one.items[0].sale_item_id])
+      if (mutation === 'payment') await tx.query("UPDATE sale_orders SET lakala_out_order_no='TEST_E2E_ACTIVE' WHERE sale_order_id=$1", [one.orderId])
+      return cb(tx)
+    })
+    let blocked
+    try { blocked = await invokeStaffApi('order.createRefund', {...auth, refSaleOrderId:one.orderId, items:[{saleItemId:one.items[0].sale_item_id}], refundReason:'申请并发复核'}) }
+    finally { pg.transaction = transaction }
+    assert.notEqual(blocked.code,0,`${mutation}:申请必须在锁内拒绝`)
+    assert.equal(blocked.code,-409)
+    assert.equal((await pgQuery("SELECT 1 FROM sale_order_payments WHERE sale_order_id=$1 AND change_type='退款'", [one.orderId])).length,0)
+  }
   const invalid=await invokeStaffApi('order.createRefund',{...auth,refSaleOrderId:one.orderId,items:[{saleItemId:one.source.saleItemId}],refundReason:'跨单'})
   assert.notEqual(invalid.code,0)
   const originalPoints=await pgQuery('SELECT * FROM point_transactions WHERE ref_order_id=$1',[one.source.saleOrderId || `${NS}_548_FULL`])
