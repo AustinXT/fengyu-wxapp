@@ -152,3 +152,14 @@
 - 影子staff空payload=-1，staff/client auth.login与client store.list无身份请求=-401，鉴权冒烟通过；不代表已登录业务流程验收。类型检查0错误，staff407/admin27/analyst476项测试通过，DB脚本132通过/16环境型跳过。db:migrate退出0，63条when/hash前后一致，无pending。
 - 脱敏证据 _tmp/release-dev-v1.17.25/：迁移前后、migrate.log、两站部署日志、remote-verify.log、cloud-deploy.log、cloud-verify.json及smoke JSON。APP_VERSION两端v1.17.25，.active=prod。
 - 本台账收尾发生在构建之后，镜像指纹对应构建时工作树。未提交文件为db/rollout/dev.md、两端miniprogram/utils/version.ts。小程序须手工上传client/staff开发版才生效；dailyApiDev不在默认3函数范围。本次prod未迁移或部署。
+
+
+## #548 转换退款：部署待执行（2026-10-09 集中集成）
+
+- 正式迁移 `0063_conversion_refund_local_responsibility`；when `1791543196400`；SQL SHA-256 `ad71fa10fcd0ed022cb57f01322a5ebe18eb54afd9082a522d5f71af95d71d49`。与业务代码同 PR #552 合入，旧63条 SQL/journal 身份不变。
+- dev 状态：**未执行、未部署**。本记录表示已准备交付，不表示目标库已迁；部署前只读核验实际 journal 的 pending 与既有 when/hash。
+- 私有验证：空库64条重放；存量63→64真实 db:migrate；历史普通单/转换明细/部分已用积分批次/原 earned_at、expire_at、流水和余额精确保留；新增列默认 NULL、交接表为空；唯一/非负/不同订单/FK约束通过；二次 db:generate 无变更。
+- 顺序：目标断言及 journal 核验 → 本次及实际 pending 正式 db:migrate → 结构与 journal 回读 → `DATABASE_URL="$TARGET_DATABASE_URL" node db/scripts/audit-conversion-value-sources.js` 只读审计 → 四端同版发布 → 小程序与人工实效验收。不得先发依赖新列/表的代码。
+- 额外自动写脚本：**无**。历史缺口不按现价/余额猜算；确定映射的补建须单独形成可审查交付，未经确认的项目维持退款保护。候选 `requests/issue-548.sql` 不再单独执行。
+- 不回写原销售业绩/旧佣金；退款只冲本单新增，积分在转换时交接。发生新退款后不可回滚到旧欠款/积分归属代码。
+- 部署时在本环境另追加执行时间、发布SHA、实际迁移身份、审计/结构和人工验收结果，不推定另一环境同步完成。

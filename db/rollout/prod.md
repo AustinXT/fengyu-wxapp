@@ -115,3 +115,14 @@
   - `member_level` 有 156 人处在 150 天保级期内（现值高于滚动 12 月口径应得档位），为既有保级规则，非漏算。
 - 证据：`~/backups/fengyu/tagrecalc-20261006/{step1-recalc-all-customer-types,step2-recalc-became-member-at,step3-backfill-membership-upgrade-doc-type,step4-verify-dryruns}.log`（含含手机号的私有名单一律未入 git）。
 - 备注：本台账条目不自动授权后续回填；`became_member_at` 前移会重排会员报表的历史分布（2026-09-22 那轮已发生过同类效应，属预期）。
+
+
+## #548 转换退款：部署待执行（2026-10-09 集中集成）
+
+- 正式迁移 `0063_conversion_refund_local_responsibility`；when `1791543196400`；SQL SHA-256 `ad71fa10fcd0ed022cb57f01322a5ebe18eb54afd9082a522d5f71af95d71d49`。与业务代码同 PR #552 合入，旧63条 SQL/journal 身份不变。
+- prod 状态：**未执行、未部署**。本记录表示已准备交付，不表示目标库已迁；部署前只读核验实际 journal 的 pending 与既有 when/hash。
+- 私有验证：空库64条重放；存量63→64真实 db:migrate；历史普通单/转换明细/部分已用积分批次/原 earned_at、expire_at、流水和余额精确保留；新增列默认 NULL、交接表为空；唯一/非负/不同订单/FK约束通过；二次 db:generate 无变更。
+- 顺序：目标断言及 journal 核验 → 本次及实际 pending 正式 db:migrate → 结构与 journal 回读 → `DATABASE_URL="$TARGET_DATABASE_URL" node db/scripts/audit-conversion-value-sources.js` 只读审计 → 四端同版发布 → 小程序与人工实效验收。不得先发依赖新列/表的代码。
+- 额外自动写脚本：**无**。历史缺口不按现价/余额猜算；确定映射的补建须单独形成可审查交付，未经确认的项目维持退款保护。候选 `requests/issue-548.sql` 不再单独执行。
+- 不回写原销售业绩/旧佣金；退款只冲本单新增，积分在转换时交接。发生新退款后不可回滚到旧欠款/积分归属代码。
+- 部署时在本环境另追加执行时间、发布SHA、实际迁移身份、审计/结构和人工验收结果，不推定另一环境同步完成。
