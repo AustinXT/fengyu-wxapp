@@ -1,3 +1,4 @@
+import { expireLogin, identityContext, sessionContext, sessionChanged } from '../../utils/session';
 import {
   callApi,
   showError,
@@ -8,7 +9,11 @@ import {
   Management,
 } from "../../utils/cloud";
 import { login, syncTabs } from "../../utils/workspace";
+// 组织页的市场只是授权门店分组，不等同于整市场访问权限。
+interface OrganizationMarket { id: string; name: string; storeIds: string[] }
 Page({
+  _context: '',
+  _loadId: 0,
   data: {
     user: null as Employee | null,
     workspace: "employee" as Workspace,
@@ -30,8 +35,10 @@ Page({
     positions: ['全部', '店长', '顾问', '养生师'], position: '全部',
     storePeople: [] as Management['employees'],
     orgView: "tree",
-    selectedNodeId: "",
-    visibleNodes: [] as Management["nodes"],
+    organizationMarkets: [] as OrganizationMarket[],
+    organizationCompatibility: false,
+    organizationMarketIndex: 0,
+    organizationMarketId: "",
     visibleStores: [] as Management["stores"],
     visibleEmployees: [] as Management["employees"],
     storeReports: [] as {
@@ -44,11 +51,27 @@ Page({
   onShow() {
     void this.load();
   },
-  async load() {
-    if (this.data.loading) return;
-    this.setData({ loading: true, ready: false });
+  async onPullDownRefresh() {
+    expireLogin();
+    try { await this.load(true); }
+    finally { wx.stopPullDownRefresh(); }
+  },
+  async load(refreshPeriods = false) {
+    const identity = identityContext();
+    if (this.data.loading && this._context === sessionContext()) return;
+    const loadId = ++this._loadId;
+    if (this._context !== sessionContext()) this.setData({ ready: false, overview: null,
+      periods: [], periodIndex: 0, reports: [], visibleStores: [], visibleEmployees: [],
+      search: "", position: "全部", peopleStoreIndex: 0, storeIndex: 0,
+      storePeople: [], storeReports: [], summary: null });
+    this._context = sessionContext();
+    this.setData({ loading: true });
     try {
       const { user, workspace } = await login();
+      if (identity !== identityContext() || loadId !== this._loadId) throw sessionChanged();
+      this._context = sessionContext();
+      if (user?.employeeId !== this.data.user?.employeeId)
+        this.setData({ organizationMarketId: "", organizationMarketIndex: 0 });
       this.setData({ user, workspace });
       syncTabs(this, workspace, 1);
       if (!user) {
@@ -56,13 +79,13 @@ Page({
         return;
       }
       if (workspace === "employee") {
-        if (!this.data.periods.length) {
-          const data = await callApi<{ periods: { id: string; name: string }[]; period: { id: string } | null }>('period.list');
-          this.setData({ periods: data.periods, periodIndex: Math.max(0, data.periods.findIndex((p) => p.id === data.period?.id)) });
-        }
-        const { reports, summary } = await callApi<{ reports: Report[]; summary: Management['summary'] | null }>('report.history',
-          { periodId: this.data.periods[this.data.periodIndex]?.id });
-        this.setData({ reports, personalSummary: summary });
+        const { reports, summary, periods, period } = await callApi<{ reports: Report[]; summary: Management['summary'] | null;
+          periods?: { id: string; name: string }[]; period: { id: string } | null }>('report.history',
+          { periodId: this.data.periods[this.data.periodIndex]?.id, includePeriods: refreshPeriods || !this.data.periods.length });
+        if (identity !== identityContext() || loadId !== this._loadId) return;
+        this.setData({ reports, personalSummary: summary, ...(periods ? {
+          periods, periodIndex: Math.max(0, periods.findIndex(p => p.id === period?.id)),
+        } : {}) });
       } else if (workspace === "manager") {
         const managerStores = user.managerWorkspaceStores || user.managerStores;
         if (!managerStores.length) throw new Error("当前授权范围没有可查看的门店");
@@ -80,6 +103,7 @@ Page({
           period: this.data.period,
           storeId: managerStores[index].store_id,
         });
+        if (identity !== identityContext() || loadId !== this._loadId) return;
         this.setData({
           storeIndex: index,
           managerStores,
@@ -88,67 +112,57 @@ Page({
           summary: data.summary, range: data.range,
         });
       } else {
-        const overview = await callApi<Management>("management.read", {
+        this.setData({ period: "today" });
+        const overview = await callApi<Management & { organizationMarkets?: OrganizationMarket[] }>("management.read", {
           date: this.data.date,
           period: this.data.period,
+          includeOrganization: true,
         });
+        if (identity !== identityContext() || loadId !== this._loadId) return;
+        const organizationCompatibility = !Array.isArray(overview.organizationMarkets);
         this.setData({ overview,
-          peopleStores: [{ store_id: '', store_name: '全部门店' }, ...overview.stores],
-          peopleMarkets: [{ id: '', name: '全部市场' }, ...overview.nodes.filter((n) => n.type === '市场')],
+          organizationCompatibility,
+          organizationMarkets: organizationCompatibility
+            ? [{ id: '__legacy_authorized__', name: '全部授权门店', storeIds: overview.stores.map(store => store.store_id) }]
+            : overview.organizationMarkets!,
         });
         this.filter();
       }
-      this.setData({ ready: true });
+      if (loadId === this._loadId) this.setData({ ready: true });
     } catch (e) {
-      showError(e);
+      if (loadId === this._loadId) {
+        this.setData({ ready: false, overview: null, reports: [], visibleStores: [], visibleEmployees: [],
+          storePeople: [], storeReports: [], summary: null });
+        showError(e);
+      }
     } finally {
-      this.setData({ loading: false });
+      if (loadId === this._loadId) this.setData({ loading: false });
     }
   },
   filter() {
     const overview = this.data.overview;
     if (!overview) return;
-    const ids = new Set(overview.nodes.map((n) => n.id));
-    const selectedNodeId = ids.has(this.data.selectedNodeId)
-      ? this.data.selectedNodeId
-      : "";
-    const descendants = new Set<string>(
-      selectedNodeId ? [selectedNodeId] : overview.nodes.map((n) => n.id),
+    const savedIndex = this.data.organizationMarkets.findIndex(market => market.id === this.data.organizationMarketId);
+    const organizationMarketIndex = savedIndex >= 0 ? savedIndex : Math.max(0,
+      this.data.organizationMarkets.findIndex(market => market.storeIds.length > 0),
     );
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (const node of overview.nodes) {
-        if (
-          node.parent_id &&
-          descendants.has(node.parent_id) &&
-          !descendants.has(node.id)
-        ) {
-          descendants.add(node.id);
-          changed = true;
-        }
-      }
-    }
-    const marketId = this.data.peopleMarkets[this.data.peopleMarketIndex]?.id || '';
-    const peopleIds = new Set(marketId ? [marketId] : overview.nodes.map((n) => n.id));
-    let expand = true;
-    while (expand) { expand = false; for (const n of overview.nodes) if (peopleIds.has(n.parent_id || '') && !peopleIds.has(n.id)) { peopleIds.add(n.id); expand = true; } }
-    const storeIds = new Set(overview.stores.filter((s) => !marketId || peopleIds.has(s.org_node_id || '')).map((s) => s.store_id));
-    const storeId = this.data.peopleStores[this.data.peopleStoreIndex]?.store_id || '';
+    const organizationMarket = this.data.organizationMarkets[organizationMarketIndex];
+    const organizationStoreIds = new Set(organizationMarket?.storeIds || []);
+    const visibleStores = overview.stores.filter(s => organizationStoreIds.has(s.store_id));
+    const previousStoreId = this.data.peopleStores[this.data.peopleStoreIndex]?.store_id || '';
+    const peopleStores = [{ store_id: '', store_name: '全部门店' }, ...visibleStores];
+    const peopleStoreIndex = Math.max(0, peopleStores.findIndex(s => s.store_id === previousStoreId));
+    const storeId = peopleStores[peopleStoreIndex].store_id;
     this.setData({
-      selectedNodeId,
-      visibleStores: overview.stores.filter(
-        (s) =>
-          !selectedNodeId ||
-          (!!s.org_node_id && descendants.has(s.org_node_id)),
-      ),
-      visibleNodes: overview.nodes.filter((n) =>
-        selectedNodeId
-          ? n.parent_id === selectedNodeId
-          : !n.parent_id || !ids.has(n.parent_id),
-      ),
+      organizationMarketIndex,
+      organizationMarketId: organizationMarket?.id || "",
+      visibleStores,
+      peopleMarkets: this.data.organizationMarkets,
+      peopleMarketIndex: organizationMarketIndex,
+      peopleStores,
+      peopleStoreIndex,
       visibleEmployees: overview.employees.filter(
-        (e) => (!this.data.search || e.name.includes(this.data.search.trim())) && storeIds.has(e.store_id)
+        (e) => (!this.data.search || e.name.includes(this.data.search.trim())) && organizationStoreIds.has(e.store_id)
           && (!storeId || e.store_id === storeId)
           && (this.data.position === '全部' || (this.data.position === '店长' ? e.is_store_manager : e.position_name?.includes(this.data.position))),
       ),
@@ -156,14 +170,14 @@ Page({
   },
   periodChange(e: WechatMiniprogram.CustomEvent) {
     if (this.data.loading) return;
-    this.setData({ period: e.currentTarget.dataset.period }); void this.load();
+    this.setData({ period: e.currentTarget.dataset.period, ready: false }); void this.load();
   },
   person(e: WechatMiniprogram.CustomEvent) {
     wx.navigateTo({ url: '/pages/history/history?employeeId=' + encodeURIComponent(e.currentTarget.dataset.id) });
   },
   monthChange(e: WechatMiniprogram.CustomEvent<{ value: string }>) {
     if (this.data.loading) return;
-    this.setData({ periodIndex: Number(e.detail.value) }); void this.load();
+    this.setData({ periodIndex: Number(e.detail.value), ready: false }); void this.load();
   },
   monthlyHistory() { wx.navigateTo({ url: '/pages/history/history' }); },
   orgChange(e: WechatMiniprogram.CustomEvent) {
@@ -174,23 +188,20 @@ Page({
     this.filter();
   },
   peopleFilter(e: WechatMiniprogram.CustomEvent<{ value: string }>) {
-    this.setData({ [e.currentTarget.dataset.kind === 'market' ? 'peopleMarketIndex' : 'peopleStoreIndex']: Number(e.detail.value) }); this.filter();
+    if (e.currentTarget.dataset.kind === 'market') { this.organizationMarketChange(e); return; }
+    if (this.data.loading || !this.data.peopleStores[Number(e.detail.value)]) return;
+    this.setData({ peopleStoreIndex: Number(e.detail.value) }); this.filter();
   },
   position(e: WechatMiniprogram.CustomEvent) { this.setData({ position: e.currentTarget.dataset.value }); this.filter(); },
-  node(e: WechatMiniprogram.CustomEvent) {
-    const node = this.data.overview?.nodes.find((n) => n.id === e.currentTarget.dataset.id);
-    if (node?.type === '市场') {
-      wx.navigateTo({ url: '/pages/range/range?nodeId=' + encodeURIComponent(node.id) }); return;
-    }
-    this.setData({ selectedNodeId: e.currentTarget.dataset.id });
-    this.filter();
-  },
-  root() {
-    this.setData({ selectedNodeId: "" });
+  organizationMarketChange(e: WechatMiniprogram.CustomEvent<{ value: string }>) {
+    if (this.data.loading) return;
+    const market = this.data.organizationMarkets[Number(e.detail.value)];
+    if (!market) return;
+    this.setData({ organizationMarketId: market.id, peopleStoreIndex: 0 });
     this.filter();
   },
   storeChange(e: WechatMiniprogram.CustomEvent<{ value: string }>) {
-    this.setData({ storeIndex: Number(e.detail.value) });
+    this.setData({ storeIndex: Number(e.detail.value), ready: false });
     void this.load();
   },
   open(e: WechatMiniprogram.CustomEvent) {

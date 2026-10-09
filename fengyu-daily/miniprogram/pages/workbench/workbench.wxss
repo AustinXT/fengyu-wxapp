@@ -1,0 +1,4 @@
+.organization-scope{padding:24rpx;margin-bottom:24rpx;border:1rpx solid #f1dddd;border-radius:16rpx;background:#fff8f8;color:#c0322a;font-weight:600;line-height:1.6}
+.organization-store-main{flex:1;min-width:0;overflow-wrap:anywhere}
+
+.organization-store-name{font-weight:600}

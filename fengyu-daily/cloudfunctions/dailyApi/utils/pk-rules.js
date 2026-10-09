@@ -41,4 +41,13 @@ function rankRows(rows, metric) {
   return items.map(({ row }, index) => ({ ...row, rank: index + 1 }));
 }
 
-module.exports = { validateClasses, rankRows };
+function rankBothMetrics(rows, metric) {
+  const indexed = rows.map((row, index) => ({ ...row, _rankIndex: index }));
+  const ranks = rows.map(() => ({}));
+  for (const key of ['sales', 'consumption'])
+    for (const row of rankRows(indexed, key)) ranks[row._rankIndex][key] = row.rank;
+  return rankRows(indexed, metric).map(({ _rankIndex, ...row }) => ({
+    ...row, rankByMetric: ranks[_rankIndex],
+  }));
+}
+module.exports = { validateClasses, rankRows, rankBothMetrics };

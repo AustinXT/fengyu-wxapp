@@ -1,3 +1,4 @@
+import { identityContext, invalidateSession, sessionChanged } from './session';
 export type Workspace = "employee" | "manager" | "management";
 export interface Employee {
   employeeId: string;
@@ -117,6 +118,7 @@ export async function callApi<T>(
   payload: object = {},
   extra: object = {},
 ): Promise<T> {
+  const identity = identityContext();
   const testCode = wx.getAccountInfoSync().miniProgram.envVersion === "develop"
     ? wx.getStorageSync("dailyTestBindingCode") as string
     : "";
@@ -127,6 +129,7 @@ export async function callApi<T>(
     name: functionName(),
     data: { action, payload: requestPayload, ...extra },
   });
+  if (identity !== identityContext()) throw sessionChanged();
   const result = response.result as {
     code: number;
     message: string;
@@ -137,6 +140,7 @@ export async function callApi<T>(
     throw new Error("日报服务返回格式不正确，请确认已上传日报云函数代码。");
   }
   if (result.code !== 0) {
+    if ([-401, -403].includes(result.code) || ["UNAUTHORIZED", "PHONE_REQUIRED", "PERMISSION_DENIED"].includes(result.errorType || "")) invalidateSession();
     const error = new Error(
       result?.message || "服务暂不可用，请稍后重试",
     ) as Error & { errorType?: string };
@@ -148,6 +152,7 @@ export async function callApi<T>(
 }
 export function showError(error: unknown): void {
   const e = error as Error & { errorType?: string };
+  if (e.errorType === "SESSION_CHANGED") return;
   if (e.errorType === "PHONE_REQUIRED") {
     wx.showModal({
       title: "需要绑定员工身份",

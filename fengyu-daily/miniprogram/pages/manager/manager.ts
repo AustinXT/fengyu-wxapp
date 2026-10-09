@@ -22,6 +22,8 @@ Page({
     loading: false,
     ready: false,
     selectedStoreId: "",
+    title: "门店日报",
+    employeeRows: [] as (Management["employees"][number] & { directReportId: string })[],
   },
   onLoad(options: Record<string, string | undefined>) {
     const routeId = decodeRouteId(options.storeId);
@@ -46,7 +48,14 @@ Page({
         storeId: this.data.selectedStoreId || this.data.stores[this.data.storeIndex]?.store_id,
       });
       const { stores, storeId, ...overview } = data;
+      const employeeRows = data.employees.map(employee => ({ ...employee,
+        directReportId: this.data.period === 'today'
+          ? data.reports.find(report => report.employee_id === employee.employee_id)?.id || ''
+          : '',
+      }));
       this.setData({ ...overview, stores,
+        employeeRows,
+        title: (stores.find(store => store.store_id === storeId)?.store_name || '门店') + '日报',
         storeIndex: Math.max(0, stores.findIndex((store) => store.store_id === storeId)),
         selectedStoreId: "", ready: true });
     } catch (e) {
@@ -71,6 +80,7 @@ Page({
     void this.load();
   },
   open(e: WechatMiniprogram.CustomEvent) {
+    if (!e.currentTarget.dataset.id) return;
     wx.navigateTo({
       url:
         "/pages/detail/detail?id=" +

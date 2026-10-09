@@ -419,6 +419,12 @@ test("真实 PG 最小闭环、归属、并发和门店权限", { skip: !url }, 
       try {
         const h = await run(report.history, { periodId });
         assert.equal(h.reports.length, 1); assert.equal(h.reports[0].report_date, old);
+        const initialized = await run(report.history, { periodId, includePeriods: true });
+        assert.deepEqual(initialized.reports, h.reports);
+        assert.deepEqual(initialized.summary, h.summary);
+        assert.equal(initialized.period.id, periodId);
+        assert.ok(initialized.periods.some(p => p.id === periodId));
+        assert.equal((await run(report.history, { limit: 2 })).reports.length <= 2, true);
         const other = await run(report.history, { employeeId: a, periodId }, { ...boss, employeeId: b });
         assert.equal(other.own, false); assert.ok(other.reports.every((r) => r.status === 'submitted'));
         await assert.rejects(run(report.history, { employeeId: c }, boss), /NOT_FOUND/);
@@ -448,6 +454,35 @@ test("真实 PG 最小闭环、归属、并发和门店权限", { skip: !url }, 
         await pg.query('DELETE FROM daily_pk_classes WHERE period_id=$1', [periodId]);
         await pg.query('DELETE FROM daily_operating_targets WHERE period_id=$1', [periodId]);
         await pg.query('DELETE FROM daily_operating_periods WHERE id=$1', [periodId]);
+      }
+    });
+    await t.test('初始化合并保持跨市场观看者特殊周期，结果与原两次调用一致', async () => {
+      const globalId = prefix + 'bootstrap-global', specialId = prefix + 'bootstrap-special', market2 = prefix + 'market2';
+      await pg.query("INSERT INTO org_nodes(id,name,type,parent_id) VALUES($1,$1,'市场',$2)", [market2, prefix + 'hq']);
+      await pg.query('UPDATE org_nodes SET parent_id=$1 WHERE id=$2', [market2, n2]);
+      const viewer = { ...user, availableWorkspaces: ['management'], scopedStores: [{ store_id: s1 }, { store_id: s2 }] };
+      try {
+        const weeks = [{ id: 'w', name: '经营周', start: '2025-01-01', end: '2025-01-28' }];
+        await pg.query(`INSERT INTO daily_operating_periods(id,name,start_date,end_date,weeks,month_key)
+          VALUES($1,'默认月份','2025-01-01','2025-01-28',$2::jsonb,'2025-01')`, [globalId, JSON.stringify(weeks)]);
+        await pg.query(`INSERT INTO daily_operating_periods(id,name,start_date,end_date,weeks,region_id,month_key)
+          VALUES($1,'市场特殊月份','2025-01-01','2025-01-25',$2::jsonb,$3,'2025-01')`,
+          [specialId, JSON.stringify([{ ...weeks[0], end: '2025-01-25' }]), prefix + 'market']);
+        await pg.query('INSERT INTO daily_operating_period_stores(period_id,store_id) VALUES($1,$2)', [specialId,s1]);
+        const periodRoute = require('../routes/period');
+        const priorList = await run(periodRoute.list, { date: '2025-01-15' }, viewer);
+        const otherList = await run(periodRoute.list, { date: '2025-01-15' }, { ...viewer, employeeId: c, storeId: s2 });
+        assert.equal(priorList.period.id,specialId);assert.equal(otherList.period.id,globalId);
+        const old = await run(report.history, { employeeId: c, periodId: priorList.period.id, date: '2025-01-15' }, viewer);
+        const initialized = await run(report.history, { employeeId: c, includePeriods: true, date: '2025-01-15' }, viewer);
+        assert.equal(initialized.period.id,specialId);
+        assert.deepEqual(initialized.reports,old.reports);assert.deepEqual(initialized.summary,old.summary);
+        assert.deepEqual(initialized.periods,priorList.periods);
+      } finally {
+        await pg.query('DELETE FROM daily_operating_period_stores WHERE period_id=$1', [specialId]);
+        await pg.query('DELETE FROM daily_operating_periods WHERE id=ANY($1::text[])', [[globalId,specialId]]);
+        await pg.query('UPDATE org_nodes SET parent_id=$1 WHERE id=$2', [prefix + 'market',n2]);
+        // 市场触发的库存关联随本次私有测试数据库一起销毁。
       }
     });
     await t.test('空市场授权沿用员工端入口规则，只返回授权空范围', async () => {

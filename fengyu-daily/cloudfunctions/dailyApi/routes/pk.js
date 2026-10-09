@@ -1,6 +1,6 @@
 const pg = require('../db/pg');
 const v = require('../utils/validation');
-const { rankRows } = require('../utils/pk-rules');
+const { rankBothMetrics } = require('../utils/pk-rules');
 const { visibleStores } = require('../utils/operating-visibility');
 const { monthContext } = require('../utils/pk-month');
 const { boardRows } = require('../utils/pk-board');
@@ -39,6 +39,6 @@ async function read(ctx) {
   const rows=await boardRows(pg.query,jitDisabledQuery.query,assignments,data.monthPeriods,date);
   const metric=payload.metric || 'sales';
   const week=data.period.weeks.find(w=>w.start<=date && w.end>=date) || (date<data.period.start?data.period.weeks[0]:data.period.weeks[data.period.weeks.length-1]);
-  ctx.result={period:data.period,week,class:klass,metric,rows:rankRows(rows.map(r=>({...r,...r.values})),metric),scopeLabel};
+  ctx.result={period:data.period,week,class:klass,metric,rows:rankBothMetrics(rows.map(r=>({...r,...r.values})),metric),scopeLabel};
 }
 module.exports={classes,read};

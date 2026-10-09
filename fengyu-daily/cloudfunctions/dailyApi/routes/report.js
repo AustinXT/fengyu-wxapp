@@ -209,6 +209,8 @@ async function write(ctx, submit) {
 }
 async function history(ctx) {
   const payload = ctx.event.payload || {};
+  const limit = payload.limit === undefined ? 366 : payload.limit;
+  if (!Number.isInteger(limit) || limit < 1 || limit > 366) throw Error("INVALID_PARAMS: 历史条数需为1至366的整数");
   const employeeId = payload.employeeId ? v.text(payload.employeeId, 30) : ctx.auth.employeeId;
   const own = employeeId === ctx.auth.employeeId;
   const { reportStores } = require('../utils/report-scope');
@@ -217,20 +219,31 @@ async function history(ctx) {
     FROM staff_wechat_users u LEFT JOIN stores s ON s.store_id=u.store_id
     WHERE u.employee_id=$1 AND ($2::boolean OR u.store_id=ANY($3::text[]))`, [employeeId, own, storeIds]);
   if (!employee) throw Error('NOT_FOUND: 员工不存在或无权查看');
-  const resolved = payload.periodId ? await require('./period').resolve(pg.query, payload, ctx.auth) : null;
+  let bootstrap = null;
+  if (payload.includePeriods === true) {
+    const periodCtx = { auth: ctx.auth, event: { payload } };
+    await require('./period').list(periodCtx);
+    bootstrap = periodCtx.result;
+  }
+  const periodId = payload.periodId || (bootstrap && (bootstrap.period?.id || bootstrap.periods[0]?.id));
+  const resolved = periodId
+    ? bootstrap?.period?.id === periodId ? bootstrap
+      : await require('./period').resolve(pg.query, { ...payload, periodId }, ctx.auth)
+    : null;
   if (payload.periodId && !resolved.period) throw Error('NOT_FOUND: 经营周期不存在');
   const period = resolved?.period;
   const end = period ? (period.end < v.today() ? period.end : v.today()) : v.today();
   const reports = await pg.query(`SELECT id,report_date,status,updated_at FROM daily_reports
     WHERE employee_id=$1 AND ($2::boolean OR (status='submitted' AND store_id=ANY($3::text[])))
       AND ($4::date IS NULL OR report_date BETWEEN $4::date AND $5::date)
-    ORDER BY report_date DESC LIMIT 366`, [employeeId, own, storeIds, period?.start || null, end]);
+    ORDER BY report_date DESC LIMIT $6`, [employeeId, own, storeIds, period?.start || null, end, limit]);
   let summary = null;
   if (period) {
     const people = await require('../utils/submission-range').people(pg.query, [employee.store_id], { start: period.start, end });
     summary = require('../utils/submission-range').summary(people.filter((e) => e.employee_id === employeeId));
   }
-  ctx.result = { employee, own, period: period || null, reports, summary };
+  ctx.result = { employee, own, period: period || null, reports, summary,
+    ...(bootstrap ? { periods: bootstrap.periods } : {}) };
 }
 async function previous(ctx) {
   const date = v.date(ctx.event.payload?.date);

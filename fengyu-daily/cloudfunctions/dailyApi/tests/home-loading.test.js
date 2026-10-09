@@ -9,7 +9,7 @@ function home(api) {
   const source = fs.readFileSync(path.join(__dirname, '../../../miniprogram/pages/home/home.ts'), 'utf8');
   vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText, {
     exports: {}, Page(p) { page = p; },
-    require: () => ({ callApi: api, today: () => '2026-10-03', showError() {}, syncTabs() {},
+    require: () => ({ identityContext: () => 'identity', sessionContext: () => 'session', sessionChanged: () => Error('session changed'), invalidateSession() {}, callApi: api, today: () => '2026-10-03', showError() {}, syncTabs() {},
       login: async () => ({ user: { employeeId: 'self', name: '员工' }, workspace: 'employee' }) }),
   });
   page.data = { ...page.data };

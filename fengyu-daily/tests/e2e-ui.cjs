@@ -25,10 +25,10 @@ const automator = require("miniprogram-automator");
   mp.on("exception", (e) => exceptions.push(e.message || String(e)));
   try {
     // 仅模拟器内拦截，测试完恢复；不写入正式代码或业务库。
-    await mp.mockWxMethod("showModal", () => ({
-      confirm: false,
-      cancel: true,
-    }));
+    await mp.mockWxMethod("showModal", (options) => {
+      globalThis.__dailyUiLastError = options.content;
+      return { confirm: false, cancel: true };
+    });
     await mp.mockWxMethod('showToast', () => ({}));
     await mp.mockWxMethod("cloud.callFunction", (options) => {
       const date = new Date(Date.now() + 8 * 3600000)
@@ -74,14 +74,20 @@ const automator = require("miniprogram-automator");
           data = {}; break;
         case 'contacts.list': data = { contacts: [] }; break;
         case 'business.list': data = { entries: [] }; break;
-        case 'pk.classes': data = { period, classes: [{ id: 'UI-CLASS', name: '测试班级', members: 1, stores: 1 }], scopeLabel: '排名仅统计授权门店' }; break;
+        case 'pk.classes': data = { period, periods: [period], classes: [{ id: 'UI-CLASS', name: '测试班级', members: 1, stores: 1 }], scopeLabel: '排名仅统计授权门店' }; break;
         case 'pk.read': data = { period, week: period.weeks[0], scopeLabel: '排名仅统计授权门店', rows: [{ employeeId: user.employeeId, name: user.name, area: '测试市场', legion: '测试军团', group: '测试小组', mentor: '测试指导员', rank: 1,
           sales: { weekTarget: 10000, weekDone: 5000, monthTarget: 10000, monthDone: 5000 }, consumption: { weekTarget: 10000, weekDone: 6000, monthTarget: 10000, monthDone: 6000 },
           visits: { weekTarget: 10, weekDone: 4, monthTarget: 40, monthDone: 12 }, newCustomers: { weekTarget: 5, weekDone: 2, monthTarget: 20, monthDone: 6 }, projects: { weekTarget: 20, weekDone: 8, monthTarget: 80, monthDone: 24 } }] }; break;
-        case 'management.read': data = { summary, range, markets: [{ id: 'UI-MARKET', name: '测试市场', ...summary }],
+        case 'management.read': data = { organizationMarkets: [{ id: 'UI-MARKET', name: '测试市场', storeIds: ['UI-STORE'] }], summary, range, markets: [{ id: 'UI-MARKET', name: '测试市场', ...summary }],
           stores: [{ store_id: 'UI-STORE', store_name: '测试门店', org_node_id: 'UI-MARKET', ...summary }],
           employees: [{ employee_id: user.employeeId, name: user.name, store_id: 'UI-STORE', store_name: '测试门店', position_name: '顾问', due: 2, submitted: 1 }],
-          nodes: [{ id: 'UI-MARKET', name: '测试市场', type: '市场', parent_id: null }] }; break;
+          nodes: [{ id: 'UI-MARKET', name: '测试市场', type: '市场', parent_id: null }] };
+          if (options.data.payload?.includeOrganization && globalThis.__dailyUiOrgMulti) {
+            data.organizationMarkets.push({ id: 'UI-MARKET-2', name: '第二市场', storeIds: ['UI-STORE-2'] });
+            data.stores.push({ store_id: 'UI-STORE-2', store_name: '第二市场门店', org_node_id: 'UI-MARKET-2', ...summary });
+            data.employees.push({ employee_id: 'UI-EMP-2', name: '第二市场员工', store_id: 'UI-STORE-2', store_name: '第二市场门店', position_name: '顾问', due: 1, submitted: 0 });
+          }
+          break;
         case "auth.login":
           data = { user };
           break;
@@ -102,6 +108,7 @@ const automator = require("miniprogram-automator");
         case "report.history":
           data = {
             own: true, employee: { name: user.name, position_name: '顾问', store_name: '测试门店' }, summary,
+            period, ...(options.data.payload?.includePeriods ? { periods: [period] } : {}),
             reports: [
               { id: "UI-REPORT", report_date: date, status: "submitted" },
             ],
@@ -118,7 +125,7 @@ const automator = require("miniprogram-automator");
                 employee_name: user.name,
               },
             ],
-            unsubmitted: [], summary, range, employees: [{ employee_id: user.employeeId, name: user.name, due: 2, submitted: 1 }],
+            unsubmitted: [], summary, range, employees: [{ employee_id: user.employeeId, name: user.name, position_name: '顾问', due: 1, submitted: 1 }, { employee_id: 'UI-MISSING', name: '待交员工', position_name: '养生师', due: 1, submitted: 0 }],
           };
           break;
         case "manager.detail":
@@ -143,7 +150,73 @@ const automator = require("miniprogram-automator");
     });
     const output = path.resolve(__dirname, "../../_tmp/daily-ui");
     fs.mkdirSync(output, { recursive: true });
-    await mp.evaluate(() => { globalThis.__dailyUiStoreManager = false; wx.setStorageSync("dailyWorkspace", "employee"); });
+    if (process.argv.includes('--organization-only')) {
+      const capture = async name => { await new Promise(resolve => setTimeout(resolve, 1000)); await mp.screenshot({ path: path.join(output, name) }); };
+      await mp.evaluate(() => wx.setStorageSync('dailyWorkspace', 'management'));
+      await mp.reLaunch('/pages/home/home');
+      await wait(async () => (await mp.currentPage()).data('overview'), '管理总览初始化');
+      let org = await mp.switchTab('/pages/workbench/workbench');
+      await wait(() => org.data('ready'), '组织首页');
+      assert.equal((await org.data('visibleStores')).length, 1);
+      await capture('organization-single-market.png');
+      await mp.evaluate(() => { globalThis.__dailyUiOrgMulti = true; });
+      await org.callMethod('load');
+      await org.callMethod('organizationMarketChange', { detail: { value: '1' } });
+      await capture('organization-multi-market.png');
+      await org.callMethod('orgChange', { currentTarget: { dataset: { view: 'people' } } });
+      assert.equal((await org.data('visibleEmployees'))[0].employee_id, 'UI-EMP-2');
+      assert.equal((await org.data('peopleStores'))[1].store_id, 'UI-STORE-2');
+      await capture('organization-people.png');
+      await org.callMethod('peopleFilter', { currentTarget: { dataset: { kind: 'market' } }, detail: { value: '0' } });
+      await org.callMethod('orgChange', { currentTarget: { dataset: { view: 'tree' } } });
+      await org.callMethod('store', { currentTarget: { dataset: { id: 'UI-STORE' } } });
+      await wait(async () => (await mp.currentPage()).path === 'pages/manager/manager', '进入门店');
+      let storePage = await mp.currentPage();
+      await wait(() => storePage.data('ready'), '门店数据');
+      assert.equal(await storePage.data('title'), '测试门店日报');
+      assert.equal((await storePage.data('employeeRows'))[0].directReportId, 'UI-REPORT');
+      assert.equal((await storePage.$$('.card')).length, 2);
+      await capture('organization-store.png');
+      console.log('门店页面已验证，开始员工经营月记录');
+      await mp.evaluate(() => { const pages = getCurrentPages(); pages[pages.length - 1].person({ currentTarget: { dataset: { id: 'UI-MISSING' } } }); });
+      await wait(async () => (await mp.currentPage()).path === 'pages/history/history', '员工记录');
+      const historyPage = await mp.currentPage();
+      await wait(() => historyPage.data('ready'), '员工经营月记录');
+      await capture('organization-history.png');
+      await mp.evaluate(() => { wx.navigateBack(); });
+      await new Promise(resolve => setTimeout(resolve, 600));
+      storePage = await mp.currentPage();
+      await wait(() => storePage.data('ready'), '员工返回门店');
+      await storePage.callMethod('periodChange', { currentTarget: { dataset: { period: 'week' } } });
+      await wait(() => storePage.data('ready'), '门店经营周');
+      assert.ok((await storePage.data('employeeRows')).every(employee => !employee.directReportId));
+
+      await mp.evaluate(() => { wx.navigateBack(); });
+      await new Promise(resolve => setTimeout(resolve, 600));
+      org = await mp.currentPage();
+      await wait(() => org.data('ready'), '返回组织');
+      assert.equal(await org.data('organizationMarketId'), 'UI-MARKET');
+      await org.callMethod('orgChange', { currentTarget: { dataset: { view: 'people' } } });
+      await mp.evaluate(() => { const pages = getCurrentPages(); pages[pages.length - 1].person({ currentTarget: { dataset: { id: 'UI-EMP' } } }); });
+      await wait(async () => (await mp.currentPage()).path === 'pages/history/history', '人员查找直达');
+      await mp.evaluate(() => { wx.navigateBack(); });
+      await new Promise(resolve => setTimeout(resolve, 600));
+      org = await mp.currentPage();
+      await wait(() => org.data('ready'), '员工返回组织');
+      assert.equal(await org.data('orgView'), 'people');
+      console.log('员工记录及返回已验证，开始行内日报');
+      await org.callMethod('store', { currentTarget: { dataset: { id: 'UI-STORE' } } });
+      await wait(async () => (await mp.currentPage()).path === 'pages/manager/manager', '再次进入门店');
+      storePage = await mp.currentPage();
+      await wait(() => storePage.data('ready'), '门店今日');
+      await mp.evaluate(() => { const pages = getCurrentPages(); pages[pages.length - 1].open({ currentTarget: { dataset: { id: 'UI-REPORT' } } }); });
+      await wait(async () => (await mp.currentPage()).path === 'pages/detail/detail', '行内查看日报');
+      await wait(async () => (await mp.currentPage()).data('report'), '日报详情');
+      assert.deepEqual(exceptions, []);
+      console.log('组织完整路径 UI 验证通过：单多市场、人员筛选联动、门店紧凑列表、行内日报、经营月记录及返回（模拟接口）。');
+      return;
+    }
+    await mp.evaluate(() => { globalThis.__dailyUiStoreManager = false; getApp().onShow(); wx.setStorageSync("dailyWorkspace", "employee"); });
     const home = await mp.reLaunch("/pages/home/home");
     await wait(() => home.data("user"), "home");
     assert.equal((await home.data("user")).employeeId, "UI-EMP");
@@ -209,7 +282,7 @@ const automator = require("miniprogram-automator");
     await pk.callMethod('metricChange', { currentTarget: { dataset: { metric: 'visits' } } });
     assert.equal(await pk.data('metric'), 'consumption', 'PK榜只允许切换业绩和消耗');
     await mp.evaluate(() => wx.setStorageSync('dailyWorkspace', 'manager'));
-    await mp.evaluate(() => { globalThis.__dailyUiStoreManager = true; });
+    await mp.evaluate(() => { globalThis.__dailyUiStoreManager = true; getApp().onShow(); });
     const storeWorkbench = await mp.reLaunch('/pages/workbench/workbench');
     await wait(() => storeWorkbench.data('ready'), "storeWorkbench");
     assert.equal(await storeWorkbench.data('workspace'), 'manager');
@@ -219,14 +292,30 @@ const automator = require("miniprogram-automator");
     await wait(() => overview.data('overview'), "overview");
     assert.equal((await overview.data('overview')).markets[0].missing, 1);
     await mp.screenshot({ path: path.join(output, 'management.png') });
-    await mp.evaluate(() => { globalThis.__dailyUiMarket = true; });
+    await mp.evaluate(() => { globalThis.__dailyUiMarket = true; getApp().onShow(); });
     const marketOverview = await mp.reLaunch('/pages/home/home');
     await wait(() => marketOverview.data('overview'), '市场角色总览');
     assert.equal((await marketOverview.data('user')).staffLevel, 'market');
     await mp.screenshot({ path: path.join(output, 'market-overview.png') });
-    await mp.evaluate(() => { delete globalThis.__dailyUiMarket; });
+    await mp.evaluate(() => { delete globalThis.__dailyUiMarket; getApp().onShow(); });
     const org = await mp.reLaunch('/pages/workbench/workbench');
     await wait(() => org.data('ready'), "org");
+    assert.equal((await org.data('organizationMarkets')).length, 1);
+    assert.equal((await org.data('visibleStores'))[0].store_id, 'UI-STORE');
+    assert.equal(await org.$('picker[bindchange="organizationMarketChange"]'), null);
+    await mp.screenshot({ path: path.join(output, 'organization-single-market.png') });
+    await mp.evaluate(() => { globalThis.__dailyUiOrgMulti = true; });
+    await org.callMethod('load');
+    await wait(() => org.data('ready'), '多市场组织');
+    assert.equal((await org.data('organizationMarkets')).length, 2);
+    await org.callMethod('organizationMarketChange', { detail: { value: '1' } });
+    assert.deepEqual((await org.data('visibleStores')).map(s => s.store_id), ['UI-STORE-2']);
+    await mp.screenshot({ path: path.join(output, 'organization-multi-market.png') });
+    await org.callMethod('load');
+    assert.equal(await org.data('organizationMarketId'), 'UI-MARKET-2');
+    await mp.evaluate(() => { delete globalThis.__dailyUiOrgMulti; });
+    await org.callMethod('load');
+    assert.equal(await org.data('organizationMarketId'), 'UI-MARKET');
     await org.callMethod('orgChange', { currentTarget: { dataset: { view: 'people' } } });
     await org.callMethod('position', { currentTarget: { dataset: { value: '养生师' } } });
     assert.equal((await org.data('visibleEmployees')).length, 0);
@@ -240,7 +329,7 @@ const automator = require("miniprogram-automator");
     const mine = await mp.reLaunch('/pages/mine/mine');
     await wait(() => mine.data('user'), "mine");
     await mp.screenshot({ path: path.join(output, 'mine.png') });
-    await mp.evaluate(() => { globalThis.__dailyUiSubmitted = true; globalThis.__dailyUiStoreManager = false; wx.setStorageSync('dailyWorkspace', 'employee'); });
+    await mp.evaluate(() => { globalThis.__dailyUiSubmitted = true; globalThis.__dailyUiStoreManager = false; getApp().onShow(); wx.setStorageSync('dailyWorkspace', 'employee'); });
     await mp.navigateTo('/pages/report/report');
     await wait(async () => (await mp.currentPage()).path === 'pages/detail/detail', '本人提交后只读详情');
     const ownDetail = await mp.currentPage();
@@ -258,14 +347,20 @@ const automator = require("miniprogram-automator");
     console.log(
       "UI 验证通过：三套工作台、市场角色、填写保存、只读详情、目标校验、个人记录、PK业绩/消耗双榜、组织筛选和市场详情（模拟接口）",
     );
+  } catch (error) {
+    const message = await mp.evaluate(() => globalThis.__dailyUiLastError || '');
+    if (message) console.error('模拟器弹窗：' + message);
+    if (exceptions.length) console.error('模拟器异常：' + exceptions.join('；'));
+    throw error;
   } finally {
-    await mp.evaluate(() => { delete globalThis.__dailyUiSubmitted; delete globalThis.__dailyUiTarget; delete globalThis.__dailyUiMarket; delete globalThis.__dailyUiStoreManager; });
+    await mp.evaluate(() => { delete globalThis.__dailyUiLastError; delete globalThis.__dailyUiSubmitted; delete globalThis.__dailyUiTarget; delete globalThis.__dailyUiMarket; delete globalThis.__dailyUiStoreManager; delete globalThis.__dailyUiOrgMulti; });
     await mp.evaluate((workspace) => wx.setStorageSync("dailyWorkspace", workspace), savedWorkspace);
     await mp.restoreWxMethod("cloud.callFunction");
     await mp.restoreWxMethod("showModal");
     await mp.restoreWxMethod('showToast');
+    await mp.evaluate(() => getApp().onShow());
     await mp.reLaunch("/pages/home/home");
-    mp.disconnect();
+    await mp.disconnect();
   }
 })().catch((e) => {
   console.error(e.message);

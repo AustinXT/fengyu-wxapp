@@ -2,6 +2,31 @@ const pg = require("../db/pg");
 const v = require("../utils/validation");
 const { requireManagement } = require("../utils/report-scope");
 const submissions = require('../utils/submission-range');
+async function organizationMarkets(nodes, scopedStores) {
+  const markets = new Map(nodes.filter(n => n.type === '市场').map(n =>
+    [n.id, { id: n.id, name: n.name, storeIds: [] }]));
+  const storeIds = scopedStores.map(s => s.store_id);
+  // 仅从已授权门店寻找祖先市场；返回分组名称不会扩大市场数据权限。
+  const rows = storeIds.length ? await pg.query(`WITH RECURSIVE ancestors AS (
+    SELECT s.store_id,n.id,n.name,n.type,n.parent_id,ARRAY[n.id] AS path,0 AS depth
+    FROM stores s JOIN org_nodes n ON n.id=s.org_node_id WHERE s.store_id=ANY($1::text[])
+    UNION ALL
+    SELECT a.store_id,n.id,n.name,n.type,n.parent_id,a.path||n.id,a.depth+1
+    FROM ancestors a JOIN org_nodes n ON n.id=a.parent_id WHERE NOT n.id=ANY(a.path)
+  ) SELECT DISTINCT ON (store_id) store_id,id,name FROM ancestors
+    WHERE type='市场' ORDER BY store_id,depth`, [storeIds]) : [];
+  const assigned = new Set();
+  for (const row of rows) {
+    if (!storeIds.includes(row.store_id)) continue;
+    if (!markets.has(row.id)) markets.set(row.id, { id: row.id, name: row.name, storeIds: [] });
+    markets.get(row.id).storeIds.push(row.store_id);
+    assigned.add(row.store_id);
+  }
+  const result = [...markets.values()].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN') || a.id.localeCompare(b.id));
+  const unassigned = storeIds.filter(id => !assigned.has(id));
+  if (unassigned.length) result.push({ id: '__unassigned__', name: '未归属市场', storeIds: unassigned });
+  return result;
+}
 async function read(ctx) {
   requireManagement(ctx.auth);
   const nodes = await pg.query(
@@ -62,5 +87,7 @@ async function read(ctx) {
     employees,
     summary: submissions.summary(employees),
   };
+  if (ctx.event.payload?.includeOrganization === true)
+    ctx.result.organizationMarkets = await organizationMarkets(nodes, scopedStores);
 }
 module.exports = { read };

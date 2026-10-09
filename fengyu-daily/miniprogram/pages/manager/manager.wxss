@@ -1,0 +1,4 @@
+.store-report-page{padding-bottom:40rpx}
+.store-person-main{flex:1;min-width:0;overflow-wrap:anywhere}
+.store-person-name{font-weight:600}
+.report-action{margin:0;width:144rpx;min-width:144rpx;max-width:144rpx;box-sizing:border-box;padding:10rpx 12rpx;flex:0 0 144rpx;background:#fff;border:1rpx solid #e3cbc3;border-radius:10rpx;color:#c0322a;font-size:22rpx;line-height:1.6}

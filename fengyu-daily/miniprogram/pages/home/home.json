@@ -3,5 +3,6 @@
   "usingComponents": {
     "page-header": "/components/page-header/index"
   },
-  "navigationBarTextStyle": "black"
+  "navigationBarTextStyle": "black",
+  "enablePullDownRefresh": true
 }

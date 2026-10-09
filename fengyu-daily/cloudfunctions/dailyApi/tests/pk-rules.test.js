@@ -43,3 +43,24 @@ test('客量、新客、项目数也按周目标完成率排序', () => {
   assert.deepEqual(rankRows(rows, 'newCustomers').map((x) => x.id), ['A', 'B', 'C']);
   assert.deepEqual(rankRows(rows, 'projects').map((x) => x.id), ['B', 'A', 'C']);
 });
+
+test('双指标排名沿用各指标服务端规则，同率原序、零目标与未设置均精确一致', () => {
+  const { rankBothMetrics } = require('../utils/pk-rules');
+  const values = (done,target) => ({ weekDone:done,weekTarget:target });
+  const rows = [
+    {id:'A',sales:values(100,100),consumption:values(50,100)},
+    {id:'B',sales:values(50,100),consumption:values(100,100)},
+    {id:'C',sales:values(200,200),consumption:values(100,200)},
+    {id:'zero',sales:values(100,0),consumption:values(100,null)},
+    {id:'unset',sales:values(100,null),consumption:values(100,0)},
+  ];
+  for (const metric of ['sales','consumption']) {
+    const result=rankBothMetrics(rows,metric);
+    assert.deepEqual(result.map(r=>r.id),rankRows(rows,metric).map(r=>r.id));
+    for(const other of ['sales','consumption']) {
+      const local=[...result].sort((a,b)=>a.rankByMetric[other]-b.rankByMetric[other]);
+      assert.deepEqual(local.map(r=>r.id),rankRows(rows,other).map(r=>r.id));
+    }
+    assert.equal(result.some(r=>'_rankIndex' in r),false);
+  }
+});

@@ -1,3 +1,4 @@
+import { expireLogin, identityContext, sessionContext, sessionChanged, invalidateSession } from '../../utils/session';
 import {
   callApi,
   showError,
@@ -9,6 +10,8 @@ import {
 } from "../../utils/cloud";
 import { login, syncTabs } from "../../utils/workspace";
 Page({
+  _context: '',
+  _loadId: 0,
   data: {
     user: null as Employee | null,
     loading: false,
@@ -43,11 +46,22 @@ Page({
     });
     void this.load();
   },
+  async onPullDownRefresh() {
+    expireLogin();
+    try { await this.load(); }
+    finally { wx.stopPullDownRefresh(); }
+  },
   async load() {
-    if (this.data.refreshing) return;
+    const identity = identityContext();
+    if (this.data.refreshing && this._context === sessionContext()) return;
+    const loadId = ++this._loadId;
+    if (this._context !== sessionContext()) this.setData({ user: null, overview: null, recent: [], period: "today", scopes: [{ id: "", name: "全部授权范围" }], scopeIndex: 0 });
+    this._context = sessionContext();
     this.setData({ loading: !this.data.user, refreshing: true, error: false, date: today() });
     try {
       const { user, workspace } = await login();
+      if (identity !== identityContext() || loadId !== this._loadId) throw sessionChanged();
+      this._context = sessionContext();
       const isStoreManager = (user?.managerStores || []).length > 0;
       this.setData({ user, workspace,
         showGoalEntry: (workspace === 'manager' && isStoreManager) ||
@@ -56,11 +70,15 @@ Page({
       syncTabs(this, workspace, 0);
       if (user) {
         if (workspace === "management") {
+          // 首次/失败重试尚无市场列表时，先用今日加载合法范围。
+          if (!this.data.scopes[this.data.scopeIndex]?.id && this.data.scopes.length !== 2 && this.data.period !== 'today')
+            this.setData({ period: 'today' });
           const overview = await callApi<Management>("management.read", {
             date: this.data.date,
             period: this.data.period,
             nodeId: this.data.scopes[this.data.scopeIndex]?.id || undefined,
           });
+          if (identity !== identityContext() || loadId !== this._loadId) return;
           const scopes = [{ id: '', name: '全部授权范围' }, ...overview.nodes.filter((n) => n.type === '市场').map((n) => ({ id: n.id, name: n.name }))];
           this.setData({ overview, scopes });
           return;
@@ -73,30 +91,30 @@ Page({
           const scopeId = scope === 'store' ? user.managerStores[0]?.store_id : user.employeeId;
           const goal = await callApi<{ period: { name: string } | null; week: { id: string; name: string; start: string; end: string } | null;
             target: { month_confirmed: boolean; counts_month_confirmed?: boolean; weeks: Record<string, { sales: number | null; consumption: number | null }> } | null }>('target.read', { scope, scopeId });
+          if (identity !== identityContext() || loadId !== this._loadId) return;
           this.setData({ goalTitle: scope === 'store' ? '本店经营目标' : '经营目标',
             goalPeriod: goal.week ? `${goal.week.name}（${goal.week.start.slice(5)} 至 ${goal.week.end.slice(5)}）` : goal.period?.name || '尚未配置经营周期',
             goalLabel: !goal.target?.month_confirmed ? '设置月目标' : !goal.target.counts_month_confirmed ? '补充月目标' : goal.week && goal.target.weeks[goal.week.id]?.sales == null ? '设置本周目标' : '查看经营目标' });
 
-        })().catch(() => this.setData({ goalError: true }))
-          .finally(() => this.setData({ goalLoading: false }));
+        })().catch(() => { if (loadId === this._loadId) this.setData({ goalError: true }); })
+          .finally(() => { if (loadId === this._loadId) this.setData({ goalLoading: false }); });
         const statusTask = callApi<{ status: 'submitted' | 'draft' | null }>('report.status', { date: this.data.date })
-          .then(({ status }) => this.setData({
+          .then(({ status }) => { if (identity !== identityContext() || loadId !== this._loadId) return; this.setData({
             status: status === 'submitted' ? '已提交' : status ? '草稿' : '未填写',
             button: status === 'submitted' ? '查看今日日报' : status ? '继续填写' : '填写今日日报',
-          }))
-          .catch(() => this.setData({ statusError: true }))
-          .finally(() => this.setData({ statusLoading: false }));
-        const historyTask = callApi<{ reports: Report[] }>('report.history')
-          .then(({ reports }) => this.setData({ recent: reports.slice(0, 2) }))
-          .catch(() => this.setData({ historyError: true }))
-          .finally(() => this.setData({ historyLoading: false }));
+          }); })
+          .catch(() => { if (loadId === this._loadId) this.setData({ statusError: true }); })
+          .finally(() => { if (loadId === this._loadId) this.setData({ statusLoading: false }); });
+        const historyTask = callApi<{ reports: Report[] }>('report.history', { limit: 2 })
+          .then(({ reports }) => { if (identity === identityContext() && loadId === this._loadId) this.setData({ recent: reports.slice(0, 2) }); })
+          .catch(() => { if (loadId === this._loadId) this.setData({ historyError: true }); })
+          .finally(() => { if (loadId === this._loadId) this.setData({ historyLoading: false }); });
         await Promise.all([goalTask, statusTask, historyTask]);
       }
     } catch (e) {
-      this.setData({ error: true });
-      showError(e);
+      if (loadId === this._loadId) { this.setData({ error: true, overview: null, recent: [] }); showError(e); }
     } finally {
-      this.setData({ loading: false, refreshing: false });
+      if (loadId === this._loadId) this.setData({ loading: false, refreshing: false });
     }
   },
   async bindPhone(
@@ -132,6 +150,7 @@ Page({
         "auth.bindPhone",
         e.detail.code ? { code: e.detail.code } : { cloudID: e.detail.cloudID },
       );
+      invalidateSession();
       await this.load();
     } catch (error) {
       showError(error);
@@ -152,6 +171,7 @@ Page({
     try {
       await callApi("auth.bindTestCode", { code: this.data.testCode });
       wx.setStorageSync("dailyTestBindingCode", this.data.testCode);
+      invalidateSession();
       this.setData({ testCode: "" });
       await this.load();
     } catch (e) {
@@ -164,6 +184,7 @@ Page({
     if (!this.data.testBinding) return;
     wx.removeStorageSync("dailyTestBindingCode");
     wx.removeStorageSync("dailyWorkspace");
+    invalidateSession();
     void this.load();
   },
   history() {
@@ -173,11 +194,21 @@ Page({
   },
   scopeChange(e: WechatMiniprogram.CustomEvent<{ value: string }>) {
     if (this.data.refreshing) return;
-    this.setData({ scopeIndex: Number(e.detail.value) }); void this.load();
+    const scopeIndex = Number(e.detail.value);
+    if (!Number.isInteger(scopeIndex) || !this.data.scopes[scopeIndex]) return;
+    this.setData({ scopeIndex, overview: null,
+      period: scopeIndex === 0 && this.data.scopes.length !== 2 ? 'today' : this.data.period });
+    void this.load();
   },
   periodChange(e: WechatMiniprogram.CustomEvent) {
     if (this.data.refreshing) return;
-    this.setData({ period: e.currentTarget.dataset.period }); void this.load();
+    const period = e.currentTarget.dataset.period;
+    if (!['today', 'week', 'month'].includes(period)) return;
+    if (period !== 'today' && !this.data.scopes[this.data.scopeIndex]?.id && this.data.scopes.length !== 2) {
+      wx.showToast({ title: '请先在查看范围中选择一个市场', icon: 'none' });
+      return;
+    }
+    this.setData({ period, overview: null }); void this.load();
   },
   pk() { wx.navigateTo({ url: '/pages/pk/pk' }); },
   goal() {

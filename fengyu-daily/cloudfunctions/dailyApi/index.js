@@ -48,7 +48,7 @@ exports.main = async (event) => {
       ctx.auth = testEmployeeId
         ? await auth.requireTestUser(testEmployeeId)
         : await auth.requireUser(identity);
-    if (ctx.auth && ['report.read','report.submit','period.list','target.read','target.confirmMonth','target.saveWeek','metrics.read','pk.classes','pk.read'].includes(event.action)) {
+    if (ctx.auth && ((event.action === 'report.history' && event.payload?.includePeriods === true) || ['report.read','report.submit','period.list','target.read','target.confirmMonth','target.saveWeek','metrics.read','pk.classes','pk.read'].includes(event.action))) {
       const { calendarToday, ensureCalendar } = require('./utils/daily-calendar-auto');
       // 历史日期只读取，不因客户端历史查询创建月份；自动范围只由服务端当前日期决定。
       if (!event.payload?.date || event.payload.date >= calendarToday()) {

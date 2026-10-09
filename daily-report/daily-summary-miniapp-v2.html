@@ -903,6 +903,13 @@
       line-height: 1.5;
     }
 
+    .management-entry { display:flex;gap:10px;margin:12px 0; }
+    .management-entry button { flex:1; }
+    button:disabled { opacity:.45;cursor:not-allowed; }
+    .scope-columns { display:grid;grid-template-columns:1fr 1.4fr;gap:10px; }
+    .scope-column { max-height:300px;overflow:auto; }
+    .scope-choice { display:block;width:100%;padding:14px 10px;text-align:left;border:0;border-bottom:1px solid var(--line);background:white;font-size:14px; }
+    .scope-choice.active { background:#fff0ef;color:var(--brand);font-weight:700; }
     .market-overlay {
       position: absolute;
       inset: 0;
@@ -1364,7 +1371,7 @@
         <div class="click-map">
           <span>员工：首页设置本人月 / 周目标 → 填日报 → 系统列出服务单 / 订单 → 草稿 / 提交 → 详情快照。</span>
           <span>店长：首页处理个人日报并设置本店目标；本店按今日 / 周 / 月查看人员。</span>
-          <span>管理层：总览设置市场目标、关注门店与员工；组织页支持逐层下钻。</span>
+          <span>管理层：统一工作台；总览按全部市场 / 市场 / 门店筛选，组织按市场查看门店 → 员工记录 → 日报。</span>
           <span>后台：管理员可修改已使用的经营周，预览影响后保存；小程序重新打开即可读取配置。</span>
           <span>PK：先选择班级，再查看业绩榜或消耗榜；可按军团、区域筛选并切换名次顺序。</span>
         </div>
@@ -1457,7 +1464,7 @@
       const state = {
         role:"employee", adminScope:"hq", page:"home", stack:[], modal:null, toast:"",
         selectedMonth:"2026-07", period:"week", storePeriod:"today", selectedMarket:"all",
-        selectedStore:"westlake", selectedEmployee:"zhang", selectedRecordDate:data.today,
+        overviewStore:"all", orgMarket:"zhejiang", scopeDraftMarket:"zhejiang", pendingOrg:null, attentionOnly:false, selectedStore:"westlake", selectedEmployee:"zhang", selectedRecordDate:data.today,
         orgView:"tree", employeeRole:"全部", employeeSearch:"", employeeStore:"all",
         personalReportAnchor:"summary", contentScrollTop:0, editingSubmitted:false, form:initialForm(), candidateSearch:"", goalDraft:null, goalScope:null, pkMetric:"sales", pkClassId:null, pkSort:true, pkLegion:"all", pkArea:"all"
       };
@@ -1487,7 +1494,16 @@
       const currentUser = () => state.role === "manager" ? employee("zhao") : employee("zhang");
       const selectedMonth = () => { const m=data.months.find(x => x.id === state.selectedMonth) || data.months[0]; const config=periodConfig(); return m.id==="2026-07"&&config?{...m,range:`${config.monthStart.slice(5)} 至 ${config.monthEnd.slice(5)}`}:m; };
       const scopedMarketIds = () => state.adminScope === "market" ? ["zhejiang"] : data.markets.map(x => x.id);
-      const scopedStores = () => data.stores.filter(x => scopedMarketIds().includes(x.marketId) && (state.selectedMarket === "all" || x.marketId === state.selectedMarket));
+      const scopedStores = () => data.stores.filter(x => scopedMarketIds().includes(x.marketId) && (state.page === "organization" ? x.marketId === state.orgMarket : (state.selectedMarket === "all" || x.marketId === state.selectedMarket) && (state.overviewStore === "all" || x.id === state.overviewStore)));
+      const scopeLabel = () => state.overviewStore !== "all" ? `${market(store(state.overviewStore).marketId).name} · ${store(state.overviewStore).name}` : state.selectedMarket === "all" ? "全部授权市场" : market(state.selectedMarket).name;
+      function applyScope(marketId,storeId="all"){
+        if(marketId!=="all"&&!scopedMarketIds().includes(marketId))return;
+        if(marketId==="all"&&(state.adminScope!=="hq"||state.page==="organization"||state.pendingOrg))return;
+        if(storeId!=="all"&&!data.stores.some(s=>s.id===storeId&&s.marketId===marketId))return;
+        if(state.page==="organization"||state.pendingOrg){if(state.pendingOrg){state.orgView=state.pendingOrg;state.page="organization";state.stack=[];state.pendingOrg=null;state.attentionOnly=true;}state.orgMarket=marketId;state.employeeStore=storeId;}
+        else {state.selectedMarket=marketId;state.overviewStore=storeId;if(marketId==="all")state.period="today";}
+        state.modal=null;render();
+      }
       const employeesForStore = id => data.employees.filter(x => x.storeId === id);
       const periodLabel = value => ({today:"今日",week:"本经营周",month:"本经营月"}[value] || value);
       function submissionStats(people,period=state.period) {
@@ -1508,7 +1524,7 @@
       const pct = (done,target) => Number(target)>0 ? `${(Number(done||0)/Number(target)*100).toFixed(1)}%` : "--";
       const targetWeeks = () => (periodConfig()?.weeks || fallbackWeeks).map((week,index)=>({ ...week, id:week.id || `w${index+1}` }));
       const daysInWeek = week => Math.max(1,Math.round((new Date(`${week.end}T12:00:00`)-new Date(`${week.start}T12:00:00`))/86400000)+1);
-      const targetOwner = scope => scope==="personal" ? currentUser().id : scope==="store" ? currentUser().storeId : "zhejiang";
+      const targetOwner = scope => scope==="personal" ? currentUser().id : scope==="store" ? currentUser().storeId : (state.selectedMarket==="all"?"zhejiang":state.selectedMarket);
       const targetStorageKey = scope => `${scope}:${targetOwner(scope)}:${state.selectedMonth}`;
       const defaultMonthly = scope => scope==="market" ? {sales:880000,consumption:620000} : {sales:260000,consumption:180000};
       const weeklyAmounts = metric => { const weeks=targetWeeks(), amounts={};let used=0,complete=true;weeks.slice(0,3).forEach(w=>{const raw=metric.weeks?.[w.id];amounts[w.id]=raw==null||raw===""?null:Number(raw);if(amounts[w.id]===null)complete=false;else used+=amounts[w.id];});amounts[weeks[3].id]=complete?Math.max(0,Number(metric.month||0)-used):null;return amounts; };
@@ -1522,7 +1538,7 @@
       const weekError = (draft,week) => { if(!draft.monthConfirmed)return "请先确认本月目标。";if(!week)return "当前经营月没有可设置的经营周。";if(week.id===targetWeeks()[3].id)return "第 4 周由剩余目标自动生成。";for(const metric of targetMetrics){const item=draft[metric],raw=item.weeks[week.id];if(raw===""||raw==null||!Number.isFinite(Number(raw))||Number(raw)<0||(["visits","newCustomers","projects"].includes(metric)&&!Number.isInteger(Number(raw))))return `请填写有效的本周${targetMetricLabels[metric]}目标。`;const total=targetWeeks().slice(0,3).reduce((sum,w)=>sum+(w.id===week.id?Number(raw):Number(item.weeks[w.id]||0)),0);if(total>Number(item.month))return `${targetMetricLabels[metric]}前三周目标累计不能超过月目标。`;}return ""; };
       function targetFor(scope) { try { const all=JSON.parse(localStorage.getItem(TARGETS_KEY)||"{}"); return normalizedTarget(scope,all[targetStorageKey(scope)]); } catch (_) { return targetDefaults(scope); } }
       function saveTarget(scope,value) { let all={};try{all=JSON.parse(localStorage.getItem(TARGETS_KEY)||"{}");}catch(_){} all[targetStorageKey(scope)]=normalizedTarget(scope,value);localStorage.setItem(TARGETS_KEY,JSON.stringify(all)); }
-      const targetScopeName = scope => ({personal:"我的",store:"门店",market:"浙江市场"}[scope]);
+      const targetScopeName = scope => ({personal:"我的",store:"门店",market:market(state.selectedMarket==="all"?"zhejiang":state.selectedMarket).name}[scope]);
       const targetScopeTitle = scope => `${targetScopeName(scope)}经营目标`;
       const targetScopeFromRole = () => state.role==="manager" ? "store" : state.role==="admin" ? "market" : "personal";
       function achievement(scope,kind) { const target=targetFor(scope),ratio=kind==="week"?{sales:.748,consumption:.76}:{sales:.826,consumption:.792},weekId=targetWeeks().find(w=>w.start<=data.today&&data.today<=w.end)?.id||targetWeeks()[0].id; return {sales:{target:kind==="week"?weeklyAmounts(target.sales)[weekId]:target.sales.month,done:0},consumption:{target:kind==="week"?weeklyAmounts(target.consumption)[weekId]:target.consumption.month,done:0},ratio}; }
@@ -1619,7 +1635,7 @@
       function tag(status){ const cls=status==="submitted"?"ok":status==="draft"?"warn":"danger"; return `<span class="tag ${cls}">${statusText[status]||status}</span>`; }
       function statsCard(title, stats, subtitle=""){ return `<div class="card"><div class="section-head"><div><div class="section-title">${title}</div>${subtitle?`<div class="section-sub">${subtitle}</div>`:""}</div><span class="tag ${stats.rate>=90?'ok':stats.rate>=70?'warn':'danger'}">${stats.rate}%</span></div><div class="stats"><div class="stat"><span>应提交</span><b>${stats.due}</b></div><div class="stat"><span>已提交</span><b>${stats.submitted}</b></div><div class="stat"><span>未提交</span><b>${stats.missing}</b></div></div></div>`; }
       function goalEntry(scope="personal") { const goal=targetFor(scope),week=goalWeek(),label=!goal.monthConfirmed?"设置月目标":week&&!goal.weekConfirmed[week.id]?"设置本周目标":"查看经营目标",title=scope==="store"?"本店经营目标":scope==="market"?"区域经营目标":"经营目标";return `<div class="card goal-entry"><div class="goal-entry__main"><div><div class="section-title">${title}</div><div class="section-sub">${activeWeekLabel()}</div></div><button class="goal-entry__action" data-action="open-goal" data-goal-scope="${scope}">${label} ›</button></div><button class="goal-entry__pk" data-action="open-pk">经营指标 PK ›<small>查看班级、业绩榜和消耗榜</small></button></div>`; }
-      function periodSwitch(value, action="period"){ return `<div class="segmented">${[["today","今日"],["week","本经营周"],["month","本经营月"]].map(([id,label])=>`<button class="segment ${value===id?'active':''}" data-${action}="${id}">${label}</button>`).join("")}</div>`; }
+      function periodSwitch(value, action="period"){ const allMarkets=state.role==="admin"&&state.page==="overview"&&state.selectedMarket==="all"; return `<div class="segmented">${[["today","今日"],["week","本经营周"],["month","本经营月"]].map(([id,label])=>`<button class="segment ${value===id?'active':''}" data-${action}="${id}" ${allMarkets&&id!=="today"?'disabled title="请先选择市场或门店"':''}>${label}</button>`).join("")}</div>`; }
       function toast(){ return state.toast||reportStorageError ? `<div class="app-toast" role="status">${escapeHtml(state.toast||reportStorageError)}</div>` : ""; }
       function pkEntry(){const classes=pkClassesForRole(),label=classes.length?`${classes.length} 个可查看班级 · 业绩榜 / 消耗榜`:"本经营月暂未加入 PK 班级";return `<button class="pk-entry" data-action="open-pk"><strong>经营指标 PK ›</strong><span>${label}</span></button>`;}
 
@@ -1683,32 +1699,34 @@
       function personRow(person,period=state.period){
         const visible=person.status==="draft"?"missing":person.status, stats=submissionStats([person],period);
         const meta=period==="today"?`${person.role} · ${visible==="submitted"?'今日已提交':'今日未提交'}`:`${person.role} · 已交 ${stats.submitted}/${stats.due}`;
-        return `<div class="review-item clickable" data-person-open="${person.id}"><div class="avatar">${person.name[0]}</div><div><div class="review-name">${person.name}</div><div class="review-meta">${meta}</div></div>${period==="today"?tag(visible):`<span class="tag ${stats.rate>=70?'ok':'warn'}">${stats.rate}%</span>`}</div>`;
+        const direct=state.page==="storeReport"&&period==="today"?records(person.id).find(r=>r.date===data.today&&r.status==="submitted"):null;
+        return `<div class="review-item clickable" data-person-open="${person.id}"><div class="avatar">${person.name[0]}</div><div><div class="review-name">${person.name}</div><div class="review-meta">${meta}</div></div>${direct?`<button class="small-btn" data-record-owner="${person.id}" data-record-date="${direct.date}">查看日报</button>`:period==="today"?tag(visible):`<span class="tag ${stats.rate>=70?'ok':'warn'}">${stats.rate}%</span>`}</div>`;
       }
 
       function attentionOrder(item){ return (item.status==="missing"?0:item.status==="draft"?1:2)+item.id.length/100; }
       function overviewPage(){
-        const stores=scopedStores(), marketIds=[...new Set(stores.map(x=>x.marketId))], people=data.employees.filter(x=>stores.some(s=>s.id===x.storeId));
-        const isHeadquarters=state.adminScope==="hq", showMarkets=isHeadquarters&&state.selectedMarket==="all";
-        const title=isHeadquarters?"管理总览":`${market("zhejiang").name}总览`;
-        const scopeLabel=state.selectedMarket==="all"?"全部授权市场":market(state.selectedMarket).name;
-        const scopeControl=isHeadquarters?`<div class="overview-tools"><div class="filter-chip" data-action="open-scope">查看范围：${scopeLabel} <span class="chev">⌄</span></div></div>`:"";
-        const concernMarkets=marketIds.slice().sort((a,b)=>a.length-b.length).slice(0,3).map(marketRow).join("");
-        const concernStores=stores.slice().sort((a,b)=>a.id.length-b.id.length).slice(0,3).map(storeRow).join("");
-        const concernPeople=people.slice().sort((a,b)=>attentionOrder(a)-attentionOrder(b)).slice(0,3).map(x=>personRow(x,state.period)).join("");
-        return `${chrome()}${nav(title,false)}<div class="content">${scopeControl}${isHeadquarters?pkEntry():goalEntry("market")}<div class="report-section-divider" aria-hidden="true"></div>${periodSwitch(state.period)}${statsCard("提交概况",submissionStats(people,state.period),`${scopeLabel} · ${periodLabel(state.period)}`)}${showMarkets?`<div class="card"><div class="section-head"><div><div class="section-title">待关注市场</div><div class="section-sub">仅展示需要处理的市场</div></div></div>${concernMarkets}</div>`:""}<div class="card"><div class="section-head"><div><div class="section-title">待关注门店</div><div class="section-sub">仅展示需要处理的门店</div></div></div>${concernStores||'<div class="notice">当前范围暂无待关注门店。</div>'}</div><div class="card"><div class="section-head"><div><div class="section-title">待关注员工</div><div class="section-sub">仅展示需要处理的员工</div></div></div>${concernPeople||'<div class="notice">当前范围暂无可查看员工。</div>'}</div></div>${tabs("overview")}${scopeModal()}${toast()}`;
+        if(state.selectedMarket==="all")state.period="today";
+        const stores=scopedStores(), people=data.employees.filter(x=>stores.some(s=>s.id===x.storeId)), showMarkets=state.selectedMarket==="all";
+        const rankedStores=stores.filter(s=>submissionStats(employeesForStore(s.id),state.period).missing>0).sort((a,b)=>submissionStats(employeesForStore(b.id),state.period).missing-submissionStats(employeesForStore(a.id),state.period).missing);
+        const rankedPeople=people.filter(p=>submissionStats([p],state.period).missing>0).sort((a,b)=>submissionStats([b],state.period).missing-submissionStats([a],state.period).missing);
+        const marketIds=[...new Set(stores.map(s=>s.marketId))].filter(id=>submissionStats(people.filter(p=>store(p.storeId).marketId===id),state.period).missing>0);
+        const summary=submissionStats(people,state.period);
+        return `${chrome()}${nav("管理总览",false)}<div class="content"><div class="overview-tools" style="grid-template-columns:1fr"><button class="filter-chip" data-action="open-scope">查看范围：${scopeLabel()} <span>⌄</span></button></div><div class="management-entry"><button class="small-btn" data-action="open-goal" ${state.selectedMarket==='all'?'disabled':''}>市场经营目标 ›</button><button class="small-btn" data-action="open-pk">经营指标 PK ›</button></div>${periodSwitch(state.period)}${showMarkets?'<div class="period-note">跨市场仅汇总当日；查看经营周 / 月请先选择市场或门店。</div>':''}${statsCard("提交概况",summary,`${scopeLabel()} · ${periodLabel(state.period)} · ${data.today}`)}${showMarkets?`<div class="card"><div class="section-head"><div class="section-title">待关注市场</div></div>${marketIds.slice(0,3).map(marketRow).join('')||'<div class="notice">全部市场已交齐。</div>'}</div>`:''}<div class="card"><div class="section-head"><div class="section-title">待关注门店</div><button class="page-link" data-action="all-stores">查看全部 ›</button></div>${rankedStores.slice(0,3).map(storeRow).join('')||'<div class="notice">当前范围门店已交齐。</div>'}</div><div class="card"><div class="section-head"><div class="section-title">待关注员工</div><button class="page-link" data-action="all-people">查看全部 ›</button></div>${rankedPeople.slice(0,3).map(p=>personRow(p,state.period)).join('')||'<div class="notice">当前范围员工已交齐。</div>'}</div></div>${tabs("overview")}${scopeModal()}${toast()}`;
       }
       function marketRow(id){ const m=market(id), count=data.stores.filter(x=>x.marketId===id).length, stats=submissionStats(data.employees.filter(p=>store(p.storeId).marketId===id),state.period); return `<div class="tree-row" data-market-open="${id}"><div><strong>${m.name}</strong><span>${count} 家门店 · 提交率 ${stats.rate}%</span></div><b class="tree-arrow">›</b></div>`; }
       function storeRow(s){ const stats=submissionStats(employeesForStore(s.id),state.period); return `<div class="tree-row" data-store-open="${s.id}"><div><strong>${s.name}</strong><span>${market(s.marketId).name} · 已交 ${stats.submitted}/${stats.due}</span></div><b class="tree-arrow">›</b></div>`; }
 
       function organizationPage(){
-        return `${chrome()}${nav("组织",false)}<div class="content"><div class="segmented two"><button class="segment ${state.orgView==='tree'?'active':''}" data-org-view="tree">组织架构</button><button class="segment ${state.orgView==='people'?'active':''}" data-org-view="people">人员查找</button></div>${state.orgView==="tree"?organizationTree():peopleSearch()}</div>${tabs("organization")}${toast()}`;
+        return `${chrome()}${nav("组织",false)}<div class="content"><div class="segmented two"><button class="segment ${state.orgView==='tree'?'active':''}" data-org-view="tree">组织架构</button><button class="segment ${state.orgView==='people'?'active':''}" data-org-view="people">人员查找</button></div>${state.orgView==="tree"?organizationTree():peopleSearch()}</div>${tabs("organization")}${scopeModal()}${toast()}`;
       }
-      function organizationTree(){ const ids=scopedMarketIds(); const rows=state.adminScope==="market"?data.stores.filter(x=>x.marketId==="zhejiang").map(storeRow).join(""):ids.map(marketRow).join(""); return `<div class="card"><div class="section-head"><div><div class="section-title">${state.adminScope==='hq'?'全部授权市场':'浙江市场'}</div><div class="section-sub">${state.adminScope==='hq'?'按市场 → 门店 → 员工逐层查看':'按门店 → 员工逐层查看'}</div></div></div>${rows}</div>`; }
+      function organizationTree(){
+        const stores=scopedStores().filter(s=>!state.attentionOnly||submissionStats(employeesForStore(s.id),state.period).missing>0),people=data.employees.filter(p=>stores.some(s=>s.id===p.storeId));
+        return `<div class="overview-tools" style="grid-template-columns:1fr">${scopedMarketIds().length>1?`<button class="filter-chip" data-action="open-scope">${market(state.orgMarket).name} <span>⌄</span></button>`:`<div class="filter-chip">${market(state.orgMarket).name}</div>`}</div>${state.attentionOnly?'<button class="page-link" data-action="clear-attention">仅看未交齐 · 显示全部</button>':''}${periodSwitch(state.period)}${statsCard("提交概况",submissionStats(people,state.period),`${market(state.orgMarket).name} · ${periodLabel(state.period)}`)}<div class="card"><div class="section-head"><div class="section-title">门店列表</div><span class="section-sub">${stores.length} 家门店</span></div>${stores.map(storeRow).join('')||'<div class="notice">当前市场暂无授权门店。</div>'}</div>`;
+      }
       function peopleSearch(){
-        const allowedStores=data.stores.filter(x=>scopedMarketIds().includes(x.marketId)&&(state.selectedMarket==="all"||x.marketId===state.selectedMarket));
-        const list=data.employees.filter(x=>allowedStores.some(s=>s.id===x.storeId)).filter(x=>!state.employeeSearch||x.name.includes(state.employeeSearch)).filter(x=>state.employeeStore==="all"||x.storeId===state.employeeStore).filter(x=>state.employeeRole==="全部"||x.role.includes(state.employeeRole));
-        return `<input class="search-input" data-search placeholder="搜索员工姓名" value="${escapeHtml(state.employeeSearch)}"><div class="overview-tools" style="margin-top:10px">${state.adminScope==='hq'?`<div class="filter-chip" data-action="open-scope">${state.selectedMarket==='all'?'全部市场':market(state.selectedMarket).name} <span>⌄</span></div>`:`<div class="filter-chip">浙江市场</div>`}<div class="filter-chip" data-action="cycle-store">${state.employeeStore==='all'?'全部门店':store(state.employeeStore).name} <span>⌄</span></div></div><div class="filter-row">${["全部","店长","顾问","养生师"].map(x=>`<button class="filter ${state.employeeRole===x?'active':''}" data-role-filter="${x}">${x}</button>`).join("")}</div><div class="card"><div class="section-head"><div class="section-title">员工列表</div><span class="section-sub">${list.length} 人</span></div>${list.map(x=>personRow(x,"month")).join("")}</div>`;
+        const allowedStores=scopedStores();
+        const list=data.employees.filter(x=>allowedStores.some(s=>s.id===x.storeId)).filter(x=>!state.employeeSearch||x.name.includes(state.employeeSearch)).filter(x=>state.employeeStore==="all"||x.storeId===state.employeeStore).filter(x=>state.employeeRole==="全部"||x.role.includes(state.employeeRole)).filter(x=>!state.attentionOnly||submissionStats([x],state.period).missing>0);
+        return `${state.attentionOnly?'<button class="page-link" data-action="clear-attention">仅看未交齐 · 显示全部</button>':''}<input class="search-input" data-search placeholder="搜索员工姓名" value="${escapeHtml(state.employeeSearch)}"><div class="overview-tools" style="margin-top:10px">${state.adminScope==='hq'?`<div class="filter-chip" data-action="open-scope">${market(state.orgMarket).name} <span>⌄</span></div>`:`<div class="filter-chip">浙江市场</div>`}<div class="filter-chip" data-action="cycle-store">${state.employeeStore==='all'?'全部门店':store(state.employeeStore).name} <span>⌄</span></div></div><div class="filter-row">${["全部","店长","顾问","养生师"].map(x=>`<button class="filter ${state.employeeRole===x?'active':''}" data-role-filter="${x}">${x}</button>`).join("")}</div><div class="card"><div class="section-head"><div class="section-title">员工列表</div><span class="section-sub">${list.length} 人</span></div>${list.map(x=>personRow(x,state.period)).join("")}</div>`;
       }
 
       function rangeReportPage({title,subtitle,stats,listTitle,rows}){ return `${chrome()}${nav(title)}<div class="content no-tabs">${periodSwitch(state.period)}${statsCard("提交概况",stats,subtitle)}<div class="card"><div class="section-head"><div class="section-title">${listTitle}</div></div>${rows||'<div class="notice">当前范围暂无可查看的明细。</div>'}</div></div>${toast()}`; }
@@ -1720,6 +1738,7 @@
         if(state.role==="manager"){key="store";scopeLabel=`${store(person.storeId).name} · 本店汇总`;}
         else if(state.role==="admin"){
           if(state.adminScope==="market") {key="market";scopeLabel=`${market(store(person.storeId).marketId).name} · 市场汇总`;}
+          else if(state.overviewStore!=="all"||state.stack.some(x=>x.page==="organization"||x.page==="storeReport")){key="market";scopeLabel=`${market(store(person.storeId).marketId).name} · 市场汇总`;}
           else if(state.selectedMarket==="all"){key="allMarkets";scopeLabel="全部授权市场汇总";}
           else {key="market";scopeLabel=`${market(state.selectedMarket).name} · 市场汇总`;}
         }
@@ -1793,12 +1812,18 @@
       }
 
       function monthModal(){ if(state.modal!=="month")return""; return `<div class="market-overlay"><div class="market-sheet"><div class="sheet-title">选择经营月</div>${data.months.map(x=>`<div class="market-option ${x.id===state.selectedMonth?'active':''}" data-month="${x.id}"><div>${x.label}<span>${x.range}</span></div>${x.id===state.selectedMonth?'<b>✓</b>':''}</div>`).join("")}<div class="period-note">选择后立即生效</div></div></div>`; }
-      function scopeModal(){ if(state.modal!=="scope")return""; const options=state.adminScope==="market"?[{id:"zhejiang",name:"浙江市场"}]:[{id:"all",name:"全部授权市场"},...data.markets]; return `<div class="market-overlay"><div class="market-sheet"><div class="sheet-title">选择查看范围</div>${options.map(x=>`<div class="market-option ${x.id===state.selectedMarket?'active':''}" data-scope="${x.id}"><div>${x.name}<span>${x.id==='all'?'查看全部授权范围':'仅查看该市场'}</span></div>${x.id===state.selectedMarket?'<b>✓</b>':''}</div>`).join("")}<div class="period-note">范围由后台授权下发，选择后立即生效</div></div></div>`; }
+      function scopeModal(){
+        if(state.modal!=="scope")return "";
+        const org=state.page==="organization"||!!state.pendingOrg,ids=scopedMarketIds(),m=ids.includes(state.scopeDraftMarket)?state.scopeDraftMarket:ids[0];
+        const options=data.markets.filter(x=>ids.includes(x.id));
+        const stores=data.stores.filter(s=>s.marketId===m);
+        return `<div class="market-overlay"><div class="market-sheet"><div class="sheet-title">${org?'选择市场':'选择查看范围'}</div><div class="scope-columns"><div class="scope-column">${!org&&state.adminScope==='hq'?'<button class="scope-choice" data-scope="all">全部授权市场</button>':''}${options.map(x=>`<button class="scope-choice ${m===x.id?'active':''}" data-scope-market="${x.id}">${x.name}</button>`).join('')}</div><div class="scope-column"><button class="scope-choice" data-scope="${m}">${org?'查看该市场':'全部门店'}</button>${!org?stores.map(x=>`<button class="scope-choice" data-scope-store="${x.id}">${x.name}</button>`).join(''):''}</div></div><div class="period-note">${org?'选择市场后显示其授权门店，不增加页面层级。':'范围仅限当前身份授权；全部市场仅支持当日汇总。'}</div><div class="sheet-actions"><button class="btn" data-action="cancel-modal">取消</button></div></div></div>`;
+      }
       function confirmModal(){ if(!["leave","overwrite"].includes(state.modal))return""; const leave=state.modal==="leave"; return `<div class="market-overlay"><div class="market-sheet"><div class="sheet-title">${leave?'内容尚未保存':'覆盖当前补充内容？'}</div><p class="modal-copy">${leave?'离开后本次修改将不会保留。':'仅复制上次的整日补充，不覆盖本日关联业务。'}</p><div class="sheet-actions"><button class="btn" data-action="cancel-modal">取消</button><button class="btn primary" data-action="${leave?'confirm-leave':'confirm-copy'}">${leave?'直接离开':'确认覆盖'}</button></div></div></div>`; }
       function candidateModal(){if(state.modal!=="candidate")return"";const pool=businessForReport(state.form.ownerId,state.form.date),linkedSales=new Set(pool.filter(x=>x.type==="service").flatMap(x=>(x.sources||[]).map(source=>source.orderId)));const list=pool.filter(x=>(x.type==="service"||(x.allocated===true&&!linkedSales.has(x.id)))&&!state.form.entries.some(e=>e.id===x.id)&&`${x.id}${x.title}`.includes(state.candidateSearch.trim()));return `<div class="market-overlay"><div class="market-sheet"><div class="sheet-title">补充遗漏业务</div><p class="modal-copy">只显示本人员、本日报日期的已分配业绩独立销售单或服务单；来源销售单不重复选择。</p><input class="search-input" data-candidate-search placeholder="搜索顾客或单据编号" value="${escapeHtml(state.candidateSearch)}">${list.map(x=>`<div class="daily-candidate"><div><strong>${x.type==='sale'?'销售订单':'服务单'} · ${escapeHtml(x.title)}</strong><small>${escapeHtml(x.id)} · ${x.date}</small></div><button class="small-btn" data-add-business="${escapeHtml(x.id)}">添加</button></div>`).join('')||'<div class="notice">没有匹配的未添加条目。</div>'}<div class="sheet-actions"><button class="btn" data-action="cancel-modal">关闭</button></div></div></div>`;}
       function escapeHtml(value){ return String(value||"").replace(/[&<>"']/g,ch=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[ch])); }
 
-      function snapshot(){ const content=document.querySelector("#app-screen .content"); return {page:state.page,selectedMonth:state.selectedMonth,period:state.period,storePeriod:state.storePeriod,selectedMarket:state.selectedMarket,selectedStore:state.selectedStore,selectedEmployee:state.selectedEmployee,selectedRecordDate:state.selectedRecordDate,orgView:state.orgView,employeeRole:state.employeeRole,employeeStore:state.employeeStore,employeeSearch:state.employeeSearch,personalReportAnchor:state.personalReportAnchor,contentScrollTop:content?.scrollTop||0}; }
+      function snapshot(){ const content=document.querySelector("#app-screen .content"); return {page:state.page,selectedMonth:state.selectedMonth,period:state.period,storePeriod:state.storePeriod,selectedMarket:state.selectedMarket,overviewStore:state.overviewStore,orgMarket:state.orgMarket,attentionOnly:state.attentionOnly,selectedStore:state.selectedStore,selectedEmployee:state.selectedEmployee,selectedRecordDate:state.selectedRecordDate,orgView:state.orgView,employeeRole:state.employeeRole,employeeStore:state.employeeStore,employeeSearch:state.employeeSearch,personalReportAnchor:state.personalReportAnchor,contentScrollTop:content?.scrollTop||0}; }
       function openPage(page,push=true){ if(push)state.stack.push(snapshot()); state.page=page; state.modal=null; render(); }
       function back(force=false){ if(state.page==="fill"&&state.form.dirty&&!force){state.modal="leave";render();return;} const prev=state.stack.pop(); if(prev)Object.assign(state,prev); else state.page=state.role==="admin"?"overview":"home"; state.modal=null; render(); }
       function showToast(message){ state.toast=message; render(); clearTimeout(showToast.timer); showToast.timer=setTimeout(()=>{state.toast="";render();},1400); }
@@ -1854,7 +1879,7 @@
       });
       document.addEventListener("click",e=>{
         const role=e.target.closest("[data-role]");
-        if(role&&!e.target.closest("#app-screen")){state.role=role.dataset.role;state.adminScope=role.dataset.adminScope||state.adminScope;state.page=state.role==="admin"?"overview":"home";state.stack=[];state.selectedMarket=state.adminScope==="market"?"zhejiang":"all";state.selectedStore="westlake";state.selectedEmployee=state.role==="manager"?"zhao":"zhang";state.selectedMonth="2026-07";state.period="week";state.storePeriod="today";state.orgView="tree";state.employeeRole="全部";state.employeeSearch="";state.employeeStore="all";state.personalReportAnchor="summary";state.contentScrollTop=0;state.goalScope=null;state.goalDraft=null;state.toast="";render();return;}
+        if(role&&!e.target.closest("#app-screen")){state.role=role.dataset.role;state.adminScope=role.dataset.adminScope||state.adminScope;state.page=state.role==="admin"?"overview":"home";state.stack=[];state.selectedMarket=state.adminScope==="market"?"zhejiang":"all";state.selectedStore="westlake";state.selectedEmployee=state.role==="manager"?"zhao":"zhang";state.selectedMonth="2026-07";state.overviewStore="all";state.orgMarket="zhejiang";state.attentionOnly=false;state.pendingOrg=null;state.period="today";state.storePeriod="today";state.orgView="tree";state.employeeRole="全部";state.employeeSearch="";state.employeeStore="all";state.personalReportAnchor="summary";state.contentScrollTop=0;state.goalScope=null;state.goalDraft=null;state.toast="";render();return;}
         if(!e.target.closest("#app-screen"))return;
         if(e.target.closest("[data-pk-sort]")){state.pkSort=!state.pkSort;render();return;}
         const pkMetric=e.target.closest("[data-pk-metric]");if(pkMetric){state.pkMetric=pkMetric.dataset.pkMetric;render();return;}
@@ -1862,15 +1887,17 @@
         const addBusiness=e.target.closest("[data-add-business]");if(addBusiness){const item=businessForReport(state.form.ownerId,state.form.date).find(x=>x.id===addBusiness.dataset.addBusiness&&(x.type!=="sale"||x.allocated===true));if(item&&!state.form.entries.some(x=>x.id===item.id)){state.form.entries.push({id:item.id,businessSnapshot:structuredClone(item),feedback:"",issue:""});state.form.dirty=true;}state.modal=null;render();return;}
         const removeBusiness=e.target.closest("[data-remove-business]");if(removeBusiness){state.form.entries=state.form.entries.filter(x=>x.id!==removeBusiness.dataset.removeBusiness);state.form.dirty=true;render();return;}
         const tab=e.target.closest("[data-tab]");if(tab){state.stack=[];state.page=tab.dataset.tab;state.modal=null;if(state.page==="myStore")state.storePeriod="today";if(state.page==="records"){state.selectedEmployee=currentUser().id;state.personalReportAnchor="summary";}render();return;}
-        const period=e.target.closest("[data-period]");if(period){state.period=period.dataset.period;render();return;}
+        const period=e.target.closest("[data-period]");if(period){if(period.disabled)return;state.period=period.dataset.period;render();return;}
         const storePeriod=e.target.closest("[data-store-period]");if(storePeriod){state.storePeriod=storePeriod.dataset.storePeriod;render();return;}
         const month=e.target.closest("[data-month]");if(month){state.selectedMonth=month.dataset.month;if(state.page==="goal")state.goalDraft=targetFor(state.goalScope||targetScopeFromRole());state.modal=null;render();return;}
-        const scope=e.target.closest("[data-scope]");if(scope){state.selectedMarket=scope.dataset.scope;state.employeeStore="all";state.modal=null;render();return;}
+        const scope=e.target.closest("[data-scope]");if(scope){applyScope(scope.dataset.scope);return;}
+        const scopeMarket=e.target.closest("[data-scope-market]");if(scopeMarket){state.scopeDraftMarket=scopeMarket.dataset.scopeMarket;render();return;}
+        const scopeStore=e.target.closest("[data-scope-store]");if(scopeStore){const s=store(scopeStore.dataset.scopeStore);applyScope(s.marketId,s.id);return;}
         const org=e.target.closest("[data-org-view]");if(org){state.orgView=org.dataset.orgView;render();return;}
         const rf=e.target.closest("[data-role-filter]");if(rf){state.employeeRole=rf.dataset.roleFilter;render();return;}
-        const mo=e.target.closest("[data-market-open]");if(mo){state.selectedMarket=mo.dataset.marketOpen;openPage("marketReport");return;}
-        const so=e.target.closest("[data-store-open]");if(so){state.selectedStore=so.dataset.storeOpen;openPage("storeReport");return;}
-        const po=e.target.closest("[data-person-open]");if(po){state.selectedEmployee=po.dataset.personOpen;state.personalReportAnchor=(state.page==="myStore"&&state.storePeriod==="today")||state.period==="today"?"today":"summary";openPage("personalReport");return;}
+        const mo=e.target.closest("[data-market-open]");if(mo){state.stack.push(snapshot());state.selectedMarket=mo.dataset.marketOpen;state.overviewStore="all";openPage("marketReport",false);return;}
+        const so=e.target.closest("[data-store-open]");if(so){state.stack.push(snapshot());state.selectedStore=so.dataset.storeOpen;openPage("storeReport",false);return;}
+        const po=e.target.closest("[data-person-open]");if(po&&!e.target.closest("[data-record-date]")){state.stack.push(snapshot());state.selectedEmployee=po.dataset.personOpen;state.personalReportAnchor=(state.page==="myStore"&&state.storePeriod==="today")||state.period==="today"?"today":"summary";openPage("personalReport",false);return;}
         const ro=e.target.closest("[data-record-date]");if(ro){state.selectedEmployee=ro.dataset.recordOwner;state.selectedRecordDate=ro.dataset.recordDate;const row=records(state.selectedEmployee).find(x=>x.date===state.selectedRecordDate);if(row?.status==="draft"&&state.role!=="admin"&&state.selectedEmployee===currentUser().id){loadFormFromRecord(row);state.editingSubmitted=false;openPage("fill");}else openPage("detail");return;}
         const action=e.target.closest("[data-action]")?.dataset.action;if(!action)return;
         if(action==="back")back();
@@ -1884,11 +1911,13 @@
         if(action==="save-month-goal"){const scope=state.goalScope||targetScopeFromRole(),stored=targetFor(scope),draft=state.goalDraft||stored,error=monthError(draft,scope);if(stored.monthConfirmed){showToast("本月目标已确认，不能修改");return;}if(error){showToast(error);return;}draft.monthConfirmed=true;saveTarget(scope,draft);state.goalDraft=targetFor(scope);render();showToast("本月目标及负激励已确认，不可修改");}
         if(action==="save-week-goal"){const scope=state.goalScope||targetScopeFromRole(),stored=targetFor(scope),draft=state.goalDraft||stored,week=goalWeek(),error=weekError(draft,week);if(!stored.monthConfirmed){showToast("请先确认本月目标");return;}if(error){showToast(error);return;}draft.sales.month=stored.sales.month;draft.consumption.month=stored.consumption.month;draft.penalty=stored.penalty;draft.weekConfirmed[week.id]=true;saveTarget(scope,draft);state.goalDraft=targetFor(scope);render();showToast(`${week.name}目标已保存（演示）`);}
         if(action==="open-month"){state.modal="month";render();}
-        if(action==="open-scope"){state.modal="scope";render();}
+        if(action==="open-scope"){state.scopeDraftMarket=state.page==="organization"?state.orgMarket:state.selectedMarket==="all"?scopedMarketIds()[0]:state.selectedMarket;state.modal="scope";render();}
+        if(action==="all-stores"||action==="all-people"){const view=action==="all-people"?"people":"tree";if(state.selectedMarket==="all"){state.pendingOrg=view;state.scopeDraftMarket=scopedMarketIds()[0];state.modal="scope";}else{state.orgMarket=state.selectedMarket;state.employeeStore=state.overviewStore;state.orgView=view;state.attentionOnly=true;state.stack=[];state.page="organization";}render();}
+        if(action==="clear-attention"){state.attentionOnly=false;render();}
         if(action==="copy-last"){if(["action","growth","plan","summary"].some(key=>state.form[key])){state.modal="overwrite";render();}else copyLast();}
         if(action==="add-business"){state.candidateSearch="";state.modal="candidate";render();}
         if(action==="confirm-copy")copyLast();
-        if(action==="cancel-modal"){state.modal=null;render();}
+        if(action==="cancel-modal"){state.pendingOrg=null;state.modal=null;render();}
         if(action==="confirm-leave")back(true);
         if(action==="choose-mentor"){state.form.mentor=state.form.mentor?"":"李老师";state.form.dirty=true;render();}
         if(action==="choose-peer"){state.form.peer=state.form.peer?"":"赵六";state.form.dirty=true;render();}

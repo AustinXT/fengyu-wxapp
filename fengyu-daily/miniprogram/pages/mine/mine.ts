@@ -1,6 +1,9 @@
+import { identityContext, sessionContext, sessionChanged } from '../../utils/session';
 import { showError, Employee, Workspace } from "../../utils/cloud";
 import { login, syncTabs, setWorkspace } from "../../utils/workspace";
 Page({
+  _context: '',
+  _loadId: 0,
   data: {
     user: null as Employee | null,
     workspace: "employee" as Workspace,
@@ -12,10 +15,16 @@ Page({
     void this.load();
   },
   async load() {
-    if (this.data.loading) return;
+    const identity = identityContext();
+    if (this.data.loading && this._context === sessionContext()) return;
+    const loadId = ++this._loadId;
+    if (this._context !== sessionContext()) this.setData({ user: null, scopeLabel: "" });
+    this._context = sessionContext();
     this.setData({ loading: true });
     try {
       const { user, workspace } = await login();
+      if (identity !== identityContext() || loadId !== this._loadId) throw sessionChanged();
+      this._context = sessionContext();
       const scopeLabels = Array.from(
         new Map(
           (user?.roleBindings || [])
@@ -40,9 +49,10 @@ Page({
       });
       syncTabs(this, workspace, 2);
     } catch (e) {
+      if (loadId === this._loadId) this.setData({ user: null, scopeLabel: "" });
       showError(e);
     } finally {
-      this.setData({ loading: false });
+      if (loadId === this._loadId) this.setData({ loading: false });
     }
   },
   change() {

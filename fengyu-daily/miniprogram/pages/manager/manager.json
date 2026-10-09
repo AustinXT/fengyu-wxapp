@@ -1,1 +1,1 @@
-{"navigationBarTitleText": "门店日报", "usingComponents": {}}
+{"navigationBarTitleText": "门店日报", "navigationStyle": "custom", "usingComponents": {"page-header": "/components/page-header/index"}}
