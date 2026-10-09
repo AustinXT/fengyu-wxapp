@@ -1242,6 +1242,7 @@ export async function cleanupTestData(prefix = NS) {
 
     // ─── 4) point_batches / point_transactions ───
     // point_batches 同时 FK 到交易、订单和顾客，必须先于三者清理。
+    [`DELETE FROM conversion_point_transfers WHERE user_id LIKE $1 OR from_order_id LIKE $1 OR to_order_id LIKE $1`, [like]],
     [`DELETE FROM point_batches WHERE ref_order_id LIKE $1`, [like]],
     [
       `DELETE FROM point_batches

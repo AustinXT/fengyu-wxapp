@@ -403,6 +403,8 @@ export interface MallCategory {
 export type DocumentType = '售前一次' | '售前二次' | '售后'
 
 export interface SaleOrder {
+  /** 后端权威转换欠款；前端不从逐项金额重算。 */
+  conversionRemainingPayable?: number
   saleOrderId: string
   status: OrderStatus
   saleOrderType: SaleOrderType

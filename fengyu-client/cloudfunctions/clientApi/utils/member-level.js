@@ -64,10 +64,10 @@ async function recalcMemberLevel(client, clientUserId, threshold, sourceEnd) {
   // 滚动 12 个月消费额（与 cron refresh-member-levels.ts 字面对齐）：
   // 仅纳入 销售单 + 转换单；净额 = received - refunded_amount（已含退款冲销）。
   const spendRes = await client.query(
-    `SELECT COALESCE(SUM(GREATEST((so.received::numeric) - (so.refunded_amount::numeric), 0)) FILTER (
+    `SELECT COALESCE(GREATEST(SUM(CASE WHEN so.sale_order_type = '转换单' THEN (so.received::numeric) - (so.refunded_amount::numeric) ELSE GREATEST((so.received::numeric) - (so.refunded_amount::numeric), 0) END) FILTER (
               WHERE so.sale_order_type IN ('销售单','转换单')
                 AND so.paid_at >= (NOW() - INTERVAL '12 months')
-            ), 0) AS spend
+            ), 0), 0) AS spend
        FROM sale_orders so
       WHERE so.client_user_id = $1`,
     [clientUserId]

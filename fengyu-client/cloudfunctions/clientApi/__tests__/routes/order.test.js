@@ -907,6 +907,8 @@ describe('order.pay', () => {
     merchantRows = STORE_LAKALA_ROW,
     lockedOrderOverrides = {},
     membership = null,
+    pendingRefund = false,
+    conversionDebt = null,
   }) {
     let activeOutTradeNo = order.lakala_out_order_no || null
     const transactionSql = []
@@ -925,6 +927,10 @@ describe('order.pay', () => {
     pg.transaction.mockImplementation(async (cb) => {
       const clientQuery = vi.fn(async (sql, params) => {
         transactionSql.push({ sql, params })
+        if (/change_type='退款' AND status='待审批'/.test(sql)) return { rows: pendingRefund ? [{exists:1}] : [], rowCount: pendingRefund ? 1 : 0 }
+        if (/AS remaining FROM sale_orders/.test(sql)) {
+          const row=lockedOrder();return {rows:[{remaining:conversionDebt ?? Math.max(0,Number(row.total_amount||0)-Number(row.received||0)+Number(row.refunded_amount||0))}],rowCount:1}
+        }
         if (/FROM sale_orders[\s\S]*FOR UPDATE/.test(sql)) {
           return { rows: [lockedOrder()], rowCount: 1 }
         }
@@ -962,6 +968,13 @@ describe('order.pay', () => {
     })
     return { transactionSql }
   }
+
+  test('转换单退款待审批时锁内拒绝发起渠道支付，不预占意图',async()=>{
+    const {transactionSql}=mockPayQueries({order:{sale_order_id:'C548-PENDING',status:'待支付',sale_order_type:'转换单',store_id:'store-1',client_user_id:'user-001',opened_by:'EMP1',total_amount:200,received:0,sale_order_datetime:new Date().toISOString()},pendingRefund:true})
+    await expect(routes.pay(createBoundCtx({orderNo:'C548-PENDING'}))).rejects.toThrow('REFUND_IN_PROGRESS')
+    expect(__mocks__.lakalaClient.requestPreorder).not.toHaveBeenCalled()
+    expect(transactionSql.some(q=>/SET client_user_id = CASE/.test(q.sql))).toBe(false)
+  })
 
   test('首次入会缺人工归属：在预占意图及渠道下单前拒绝', async () => {
     const { transactionSql } = mockPayQueries({
@@ -4270,7 +4283,7 @@ describe('prepaid card deduction - order.confirmPrepaidFull', () => {
       const client = {
         query: vi.fn(async (sql, params) => {
           txnCalls.push({ sql, params })
-          if (/SELECT sale_order_id, status, client_user_id/.test(sql)) {
+          if (/SELECT sale_order_id, status, sale_order_type, client_user_id/.test(sql)) {
             return {
               rows: [{
                 sale_order_id: 'FY-001', status: '待支付', client_user_id: 'user-001',
@@ -4313,7 +4326,7 @@ describe('prepaid card deduction - order.confirmPrepaidFull', () => {
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
         query: vi.fn(async (sql) => {
-          if (/SELECT sale_order_id, status, client_user_id/.test(sql)) {
+          if (/SELECT sale_order_id, status, sale_order_type, client_user_id/.test(sql)) {
             return {
               rows: [{
                 sale_order_id: 'FY-001', status: '待支付', client_user_id: 'user-001',
@@ -4339,7 +4352,7 @@ describe('prepaid card deduction - order.confirmPrepaidFull', () => {
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
         query: vi.fn(async (sql) => {
-          if (/SELECT sale_order_id, status, client_user_id/.test(sql)) {
+          if (/SELECT sale_order_id, status, sale_order_type, client_user_id/.test(sql)) {
             return {
               rows: [{
                 sale_order_id: 'FY-001', status: '待支付', client_user_id: 'user-001',
@@ -4362,7 +4375,7 @@ describe('prepaid card deduction - order.confirmPrepaidFull', () => {
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
         query: vi.fn(async (sql) => {
-          if (/SELECT sale_order_id, status, client_user_id/.test(sql)) {
+          if (/SELECT sale_order_id, status, sale_order_type, client_user_id/.test(sql)) {
             return {
               rows: [{
                 sale_order_id: 'FY-001', status: '已支付', client_user_id: 'user-001',
@@ -4387,7 +4400,7 @@ describe('prepaid card deduction - order.confirmPrepaidFull', () => {
       const client = {
         query: vi.fn(async (sql, params) => {
           txnCalls.push({ sql })
-          if (/SELECT sale_order_id, status, client_user_id/.test(sql)) {
+          if (/SELECT sale_order_id, status, sale_order_type, client_user_id/.test(sql)) {
             return {
               rows: [{
                 sale_order_id: 'FY-001', status: '待支付', client_user_id: 'user-001',
@@ -4426,7 +4439,7 @@ describe('prepaid card deduction - order.confirmPrepaidFull', () => {
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
         query: vi.fn(async (sql) => {
-          if (/SELECT sale_order_id, status, client_user_id/.test(sql)) {
+          if (/SELECT sale_order_id, status, sale_order_type, client_user_id/.test(sql)) {
             return {
               rows: [{
                 sale_order_id: 'FY-001', status: '待支付', client_user_id: 'other-user',
@@ -4454,7 +4467,7 @@ describe('prepaid card deduction - order.confirmPrepaidFull', () => {
       const client = {
         query: vi.fn(async (sql) => {
           txnCalls.push({ sql })
-          if (/SELECT sale_order_id, status, client_user_id/.test(sql)) {
+          if (/SELECT sale_order_id, status, sale_order_type, client_user_id/.test(sql)) {
             return {
               rows: [{
                 sale_order_id: 'FY-001', status: '待支付', client_user_id: 'user-001',
@@ -4489,7 +4502,7 @@ describe('prepaid card deduction - order.confirmPrepaidFull', () => {
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
         query: vi.fn(async (sql) => {
-          if (/SELECT sale_order_id, status, client_user_id/.test(sql)) {
+          if (/SELECT sale_order_id, status, sale_order_type, client_user_id/.test(sql)) {
             return {
               rows: [{
                 sale_order_id: 'FY-001', status: '待支付', client_user_id: 'user-001',
@@ -4513,5 +4526,21 @@ describe('prepaid card deduction - order.confirmPrepaidFull', () => {
     const ctx = createBoundCtx({ saleOrderId: 'FY-001' }) // 不传 expectedBalanceUpdatedAt
     await routes.confirmPrepaidFull(ctx)
     expect(ctx.result.status).toBe('已支付')
+  })
+})
+
+
+describe('#548 纯卡锁内退款保护',()=>{
+  test('读到真实转换类型后待审批退款阻断扣卡',async()=>{
+    const captured=[]
+    pg.transaction.mockImplementation(async cb=>cb({query:async(sql,params)=>{
+      captured.push(String(sql))
+      if(/FROM sale_orders.*FOR UPDATE/s.test(sql))return {rows:[{sale_order_id:'C548',sale_order_type:'转换单',status:'待支付',client_user_id:'user-001',pending_prepaid_card_amount:200,payable_amount:0,lakala_out_order_no:null}]}
+      if(/change_type='退款' AND status='待审批'/.test(sql))return {rows:[{exists:1}]}
+      throw new Error('不应进入扣卡或写款项')
+    }}))
+    await expect(routes.confirmPrepaidFull(createBoundCtx({saleOrderId:'C548'}))).rejects.toThrow('REFUND_IN_PROGRESS')
+    expect(captured[0]).toContain('sale_order_type')
+    expect(captured.some(s=>/UPDATE prepaid_cards|INSERT INTO sale_order_payments/.test(s))).toBe(false)
   })
 })

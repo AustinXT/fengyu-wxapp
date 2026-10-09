@@ -136,10 +136,10 @@ export async function refreshMemberLevels(
       cwu.member_level_locked_until,
       cwu.member_level_upgraded_at,
       cwu.became_member_at,
-      COALESCE(SUM(GREATEST((so.received::numeric) - (so.refunded_amount::numeric), 0)) FILTER (
+      COALESCE(GREATEST(SUM(CASE WHEN so.sale_order_type = '转换单' THEN (so.received::numeric) - (so.refunded_amount::numeric) ELSE GREATEST((so.received::numeric) - (so.refunded_amount::numeric), 0) END) FILTER (
         WHERE so.sale_order_type IN ('销售单','转换单')
           AND so.paid_at >= (${nowSql} - INTERVAL '12 months')
-      ), 0) AS spend
+      ), 0), 0) AS spend
     FROM client_wechat_users cwu
     LEFT JOIN sale_orders so ON so.client_user_id = cwu.user_id
     WHERE cwu.customer_type = '会员客'

@@ -53,8 +53,8 @@ function buildMockTx({
       { client_user_id: clientUserId, sale_order_type: saleOrderType },
     ])
   }
-  execute.mockResolvedValueOnce([{ net_settled: netSettled }])
   execute.mockResolvedValueOnce([{ granted }])
+  execute.mockResolvedValueOnce([{ basis: Math.max(0,netSettled) * 100 }])
   execute.mockResolvedValueOnce([{ id: 1001 }])
   execute.mockResolvedValue({ rowCount: 1 })
   return { execute }
@@ -69,12 +69,12 @@ const withSavepoint = (execute: any) => ({
 })
 
 describe('ORDER_TYPES_EARN_POINTS', () => {
-  test('仅包含 销售单', () => {
+  test('销售单及转换单独立结算', () => {
     expect(ORDER_TYPES_EARN_POINTS.has('销售单')).toBe(true)
     expect(ORDER_TYPES_EARN_POINTS.has('内部单')).toBe(false)
     expect(ORDER_TYPES_EARN_POINTS.has('回款单')).toBe(false)
     expect(ORDER_TYPES_EARN_POINTS.has('退款单')).toBe(false)
-    expect(ORDER_TYPES_EARN_POINTS.has('转换单')).toBe(false)
+    expect(ORDER_TYPES_EARN_POINTS.has('转换单')).toBe(true)
   })
 })
 
@@ -85,7 +85,7 @@ describe('settlePointsForOrder — 正向发放', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const r = await settlePointsForOrder({ execute } as any, 'FY-XSD-WX-2604240001')
     expect(r).toEqual({ delta: 2, expected: 2, granted: 0 })
-    // 3 次 SELECT + 1 次 INSERT 流水 + 1 次 INSERT 批次 + 1 次 UPDATE 余额 = 6 次
+    // 4 次 SELECT + 1 次 INSERT 流水 + 1 次 INSERT 批次 + 1 次 UPDATE 余额 = 7 次
     expect(execute).toHaveBeenCalledTimes(6)
   })
 
@@ -101,7 +101,7 @@ describe('settlePointsForOrder — 正向发放', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const r = await settlePointsForOrder({ execute } as any, 'o1')
     expect(r).toEqual({ delta: 0, expected: 0, granted: 0 })
-    // 仅 3 次 SELECT，无 INSERT/UPDATE
+    // 仅 4 次 SELECT，无 INSERT/UPDATE
     expect(execute).toHaveBeenCalledTimes(3)
   })
 })

@@ -33,6 +33,7 @@ import { auditPaymentInvariants } from '../steps/audit-payment-invariants'
 describe('cron-worker STEP 7 — auditPaymentInvariants', () => {
   beforeEach(() => {
     mockExecute.mockReset()
+    mockExecute.mockResolvedValue([])
     mockDb.transaction.mockClear()
     notifyOpsMock.mockClear()
   })
@@ -41,14 +42,14 @@ describe('cron-worker STEP 7 — auditPaymentInvariants', () => {
     // 8 次 SELECT 均返回空（无违规）：I1 received / I2 refunded_amount / I2b refunded_le_received /
     // I3 points_balance / I4 prepaid_balance / I5 payable_eq_total_minus_prepaid /
     // I6 first_payment_attribution_eq_order / I6b card_attribution_eq_paired_primary
-    for (let i = 0; i < 8; i++) mockExecute.mockResolvedValueOnce([])
+    for (let i = 0; i < 9; i++) mockExecute.mockResolvedValueOnce([])
 
     const result = await auditPaymentInvariants(mockDb as never)
 
     expect(result.violations).toBe(0)
     expect(result.details).toEqual([])
     // 无 INSERT 调用、无 webhook
-    expect(mockExecute).toHaveBeenCalledTimes(8)
+    expect(mockExecute).toHaveBeenCalledTimes(9)
     expect(notifyOpsMock).not.toHaveBeenCalled()
     expect(mockDb.transaction).not.toHaveBeenCalled()
   })
@@ -64,6 +65,7 @@ describe('cron-worker STEP 7 — auditPaymentInvariants', () => {
     mockExecute.mockResolvedValueOnce([]) // I5
     mockExecute.mockResolvedValueOnce([]) // I6
     mockExecute.mockResolvedValueOnce([]) // I6b
+    mockExecute.mockResolvedValueOnce([]) // conversion_source_integrity
     mockExecute.mockResolvedValueOnce([]) // INSERT operation_logs
 
     const result = await auditPaymentInvariants(mockDb as never)
@@ -96,6 +98,7 @@ describe('cron-worker STEP 7 — auditPaymentInvariants', () => {
       { sale_order_id: 'o1', received: 100, computed: 0 },
     ])
     for (let i = 0; i < 7; i++) mockExecute.mockResolvedValueOnce([])
+    mockExecute.mockResolvedValueOnce([]) // conversion_source_integrity
     mockExecute.mockResolvedValueOnce([]) // INSERT operation_logs
 
     await auditPaymentInvariants(mockDb as never)
@@ -108,7 +111,7 @@ describe('cron-worker STEP 7 — auditPaymentInvariants', () => {
   })
 
   it('D. 6 项不变量按预期 SQL 模板出现', async () => {
-    for (let i = 0; i < 8; i++) mockExecute.mockResolvedValueOnce([])
+    for (let i = 0; i < 9; i++) mockExecute.mockResolvedValueOnce([])
 
     await auditPaymentInvariants(mockDb as never)
 
@@ -124,7 +127,7 @@ describe('cron-worker STEP 7 — auditPaymentInvariants', () => {
     expect(i1).toContain('LEFT JOIN')
     expect(i1.indexOf('LEFT JOIN')).toBeLessThan(i1.indexOf('WHERE'))
     expect(sqlTexts.some((s) => s.includes('refunded_amount') && s.includes("change_type = '退款'"))).toBe(true)
-    expect(sqlTexts.some((s) => s.includes('refunded_amount::numeric > so.received'))).toBe(true) // I2b refunded_le_received
+    expect(sqlTexts.some((s) => s.includes("refunded_amount::numeric > CASE WHEN so.sale_order_type = '转换单'") && s.includes("si.item_direction = '转入'") && s.includes("si.item_direction = '转出'"))).toBe(true) // I2b refunded_le_received
     expect(sqlTexts.some((s) => s.includes('points_balance') && s.includes('point_batches'))).toBe(true)
     expect(sqlTexts.some((s) => s.includes('prepaid_cards') && s.includes('card_transactions'))).toBe(true)
     expect(sqlTexts.some((s) => s.includes('payable_amount') && s.includes('total_amount'))).toBe(true)
@@ -152,6 +155,7 @@ describe('cron-worker STEP 7 — auditPaymentInvariants', () => {
       { sale_order_id: 'o2', refunded_amount: 50, computed: 0 },
     ])
     for (let i = 0; i < 6; i++) mockExecute.mockResolvedValueOnce([]) // I2b/I3/I4/I5/I6/I6b
+    mockExecute.mockResolvedValueOnce([]) // conversion_source_integrity
     mockExecute.mockResolvedValueOnce([]) // INSERT operation_logs
 
     const result = await auditPaymentInvariants(mockDb as never)

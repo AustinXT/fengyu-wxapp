@@ -24,9 +24,9 @@ import type { Db } from '../run'
 export const UPDATE_SPENDING_TIER_SQL = `
 WITH spend AS (
   SELECT u.user_id,
-         COALESCE(SUM(GREATEST((o.received::numeric) - (o.refunded_amount::numeric) - ${retainedRefundFeeSql('o.sale_order_id')}, 0)) FILTER (
+         COALESCE(GREATEST(SUM(CASE WHEN o.sale_order_type = '转换单' THEN (o.received::numeric) - (o.refunded_amount::numeric) - ${retainedRefundFeeSql('o.sale_order_id')} ELSE GREATEST((o.received::numeric) - (o.refunded_amount::numeric) - ${retainedRefundFeeSql('o.sale_order_id')}, 0) END) FILTER (
                     WHERE o.sale_order_type IN ('销售单', '转换单')
-                  ), 0) AS total
+                  ), 0), 0) AS total
     FROM client_wechat_users u
     LEFT JOIN sale_orders o
       ON o.client_user_id = u.user_id

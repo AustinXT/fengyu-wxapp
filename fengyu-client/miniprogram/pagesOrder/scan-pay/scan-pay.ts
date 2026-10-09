@@ -32,6 +32,7 @@ interface ScanOrder {
   isExperienceConversion: boolean;
   // #214：本人是否持有活动中的支付意图 —— 决定走 pay 还是 repay
   hasActivePaymentIntent?: boolean;
+  conversionRemainingPayable?: number | null;
   // 快照是否仍可直接复用 —— 决定 pay 内部复用还是重开一场，以及展示口径
   hasResumablePaymentIntent?: boolean;
   // 可续付场次的权威金额/方式/待扣卡额（不含凭据）；前端不再自行推算，避免口径分歧
@@ -213,7 +214,10 @@ Page({
       let remaining;
       if (isRepayment) {
         if (orderData.orderType === '转换单') {
-          remaining = Math.max(0, Math.round((totalAmount - received + refundedAmount) * 100) / 100);
+          if ((orderData.conversionRemainingPayable == null || !Number.isFinite(Number(orderData.conversionRemainingPayable))) && refundedAmount > 0) {
+            throw new Error('欠款金额暂未确认，请刷新后再付款');
+          }
+          remaining = Math.max(0, Number(orderData.conversionRemainingPayable ?? (totalAmount - received)));
         } else {
           const scanItems: any[] = Array.isArray(data.items) ? data.items : [];
           if (scanItems.length === 0) {

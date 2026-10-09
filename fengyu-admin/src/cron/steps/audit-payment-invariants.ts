@@ -34,6 +34,7 @@
  */
 
 import { sql } from 'drizzle-orm'
+import { CONVERSION_SOURCE_AUDIT_SQL } from '@/lib/conversion-sources'
 import type { Db } from '../run'
 import { notifyOps } from '../lib/notify'
 
@@ -102,7 +103,10 @@ export async function auditPaymentInvariants(db: Db): Promise<PaymentInvariantsR
            so.received::numeric        AS received,
            so.refunded_amount::numeric AS refunded_amount
     FROM sale_orders so
-    WHERE so.refunded_amount::numeric > so.received::numeric + ${MONEY_EPSILON}
+    WHERE so.refunded_amount::numeric > CASE WHEN so.sale_order_type = '转换单' THEN
+      LEAST(COALESCE((SELECT SUM(GREATEST(0, si.sale_amount::numeric)) FROM sale_items si WHERE si.sale_order_id = so.sale_order_id AND si.item_direction = '转入'), 0),
+        so.received::numeric + COALESCE((SELECT SUM(GREATEST(0, -si.received::numeric)) FROM sale_items si WHERE si.sale_order_id = so.sale_order_id AND si.item_direction = '转出'), 0))
+      ELSE so.received::numeric END + ${MONEY_EPSILON}
     LIMIT ${SAMPLE_LIMIT}
   `)) as Array<{ sale_order_id: string; received: string | number; refunded_amount: string | number }>
   if (r2b.length > 0) {
@@ -232,6 +236,9 @@ export async function auditPaymentInvariants(db: Db): Promise<PaymentInvariantsR
   if (r6b.length > 0) {
     details.push({ invariant: 'card_attribution_eq_paired_primary', count: r6b.length, samples: r6b as unknown as Array<Record<string, unknown>> })
   }
+
+  const sourceRows = await db.execute(sql.raw(CONVERSION_SOURCE_AUDIT_SQL)) as unknown as Array<Record<string, unknown>>
+  if (sourceRows.length) details.push({ invariant: 'conversion_source_integrity', count: sourceRows.length, samples: sourceRows })
 
   if (details.length > 0) {
     // operation_logs 单条聚合写入（避免 N 条小写）。target_id 用日期戳便于查询。

@@ -60,7 +60,7 @@ describe('寄存疗程卡退款审批：锁内可退次数复核', () => {
       try {
         const result = await cb({ query: async (sql) => {
           statements.push(sql)
-          if (sql.includes('FROM sale_orders') && sql.includes('FOR UPDATE')) return { rows: [{ sale_order_id: 'deposit', received: '960', refunded_amount: '0' }], rowCount: 1 }
+          if (sql.includes('SELECT sale_order_id, received, refunded_amount, lakala_out_order_no, pending_prepaid_card_amount FROM sale_orders') && sql.includes('FOR UPDATE')) return { rows: [{ sale_order_id: 'deposit', received: '960', refunded_amount: '0' }], rowCount: 1 }
           if (sql.includes('AS net')) return { rows: [{ net: 960 }], rowCount: 1 }
           if (sql.includes('FROM sale_items') && sql.includes('ORDER BY sale_item_id') && sql.includes('FOR UPDATE')) return { rows: [{
             sale_item_id: 'A', product_type: '疗程卡', quantity: 1,

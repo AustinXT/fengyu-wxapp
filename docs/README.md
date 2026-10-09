@@ -37,6 +37,7 @@ docs/
 | [012](changes/arch/012_split-picked-up-quantity-into-three-columns.md) | 2026-09-18 | sale_items.picked_up_quantity 三语义拆列（新增 refunded_quantity / converted_quantity） |
 | [014](changes/arch/014_database-integration-and-rollout-ledgers.md) | 2026-10-01 | 数据库变更独立开发、集中集成与分环境执行台账 |
 | [015](changes/arch/015_customer-type-monotonic-and-member-level-floor.md) | 2026-10-06 | 顾客分类改回只升不降 + 会员客等级下限初钻（#545，推翻 #257） |
+| [016](changes/arch/016_conversion-refund-local-responsibility.md) | 2026-10-09 | 转换单退款在本单闭环与转换时积分责任交接（#548） |
 
 ### ops — 生产操作
 

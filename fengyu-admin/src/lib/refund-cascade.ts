@@ -454,8 +454,18 @@ export async function cascadeRefund(
            EXISTS (SELECT 1 FROM sale_payment_item_receipts r WHERE r.sale_order_id = so.sale_order_id) AS has_receipts
       FROM sale_orders so WHERE so.sale_order_id = ${saleOrderId}
   `)) as unknown as Array<{ sale_order_type: string | null; has_receipts: boolean }>
+  const isConversionOrder = orderTypeRows[0]?.sale_order_type === '转换单'
   const isDepositOrder = orderTypeRows[0]?.sale_order_type === '寄存单'
   const skipReceiptReversal = isDepositOrder && orderTypeRows[0]?.has_receipts !== true
+
+  if (isConversionOrder) {
+    const rows = (await tx.execute(sql`SELECT BOOL_AND(EXISTS (SELECT 1 FROM sale_order_payments r
+      CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(public.try_jsonb(r.note) -> 'items') = 'array' THEN public.try_jsonb(r.note) -> 'items' ELSE '[]'::jsonb END) part
+      WHERE r.sale_order_id = si.sale_order_id AND r.change_type = '退款' AND r.status = '已支付'
+        AND part ->> 'refSaleItemId' = si.sale_item_id AND part ->> 'isFullItemRefund' = 'true')) AS full_refund
+    FROM sale_items si WHERE si.sale_order_id = ${saleOrderId} AND si.item_direction = '转入'`)) as unknown as Array<{ full_refund: boolean }>
+    wholeOrder = rows[0]?.full_refund === true
+  }
 
   // 仅「零消费全退」item 才作废服务提成（通道 2）+ 参与整单券判定（通道 3）；通道 1 不再依赖（Bug M 语义收敛）
   const fullItemIds = effItems.filter((it) => it.isFullItemRefund).map((it) => it.saleItemId)
@@ -482,7 +492,7 @@ export async function cascadeRefund(
             WHERE out_item.ref_sale_item_id = si.sale_item_id AND out_item.item_direction = '转出'
               AND conv_order.status <> '已关闭'), 0)::int AS converted_quantity
         FROM sale_items si CROSS JOIN (SELECT ${refundPaymentId}::bigint AS id) current_refund
-       WHERE si.sale_order_id = ${saleOrderId} AND si.item_direction = '购买' ORDER BY si.sale_item_id
+       WHERE si.sale_order_id = ${saleOrderId} AND si.item_direction = CASE WHEN (SELECT sale_order_type FROM sale_orders WHERE sale_order_id = ${saleOrderId}) = '转换单' THEN '转入'::item_direction ELSE '购买'::item_direction END ORDER BY si.sale_item_id
     `)) as unknown as Array<RefundSourceItem & { received: string }>
     if (note.items.some((it: { refSaleItemId: string }) => it.refSaleItemId === 'OVERPAY')) {
       note.items = remapLegacyOverpay(note.items, computeItemOverpayRemainders(paidRows))
@@ -519,7 +529,9 @@ export async function cascadeRefund(
   // INVALID_STATE: 退款金额无法完整映射到商品行实收（该单没有任何正向 receipt；自愈补 receipt
   // 只覆盖单购买行）——prod 多行且有钱的寄存单 6,142 单 / ¥38,293,737.84。
   // 空数组 ⇒ 下方写负数 receipt / 负数子分配的循环整体空跑，refundAllocatedCents 保持 0。
-  const receiptRefundItems = skipReceiptReversal
+  const receiptRefundItems = isConversionOrder
+    ? effItems.filter(it => it.saleItemId !== 'OVERPAY').map(it => ({ saleItemId: it.saleItemId, refundAmount: Number(it.netRefundAmount ?? it.refundAmount ?? 0) }))
+    : skipReceiptReversal
     ? []
     : await buildReceiptRefundItems(tx, saleOrderId, refundPaymentId, effItems)
   for (const it of receiptRefundItems) {
@@ -699,7 +711,10 @@ export async function cascadeRefund(
 
   // ── 4) point_transactions 比例冲销 + client_wechat_users.points_balance 重算（订单级） ──
   let reversedPoints = 0
-  if (note && Array.isArray(note.items)) {
+  if (isConversionOrder) {
+    const result = await settlePointsSafe(tx, saleOrderId, 'conversion.refund')
+    reversedPoints = Number(result.reversed ?? Math.max(0, -Number(result.delta || 0)))
+  } else if (note && Array.isArray(note.items)) {
     // 新退款按订单链可计消费净额重算，手续费不能因比例舍入保留一枚积分。
     const pointResult = await settlePointsSafe(tx, saleOrderId, 'refund')
     reversedPoints = Math.max(0, -Number(pointResult.delta ?? 0))

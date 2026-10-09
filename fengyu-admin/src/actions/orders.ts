@@ -1,5 +1,9 @@
 'use server'
 
+import { stripConversionSourcesFromNote, initializeConversionSources, rollbackConversionPointTransfers, conversionSourceQuery } from '@/lib/conversion-sources'
+
+import { getConversionDebt } from '@/lib/conversion-value'
+
 import { retainedRefundFeeSql } from '@/lib/refund-fee-sql'
 
 import { db } from '@/db'
@@ -477,6 +481,8 @@ async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string
      ORDER BY sale_order_id
      FOR UPDATE
   `)
+
+  await rollbackConversionPointTransfers(conversionSourceQuery(tx), saleOrderId)
 
   // 0. 先用一条语句按全局 sale_item_id 顺序锁住本单引用的**全部**源行。
   //    createConversionOrder 折抵时是单语句 ORDER BY si.sale_item_id ... FOR UPDATE OF si（不分类型），
@@ -3230,6 +3236,7 @@ export const getOrderById = withAnyPermission(
   }))
 
   return {
+    conversionRemainingPayable: r.order.saleOrderType === '转换单' ? await getConversionDebt(db, saleOrderId) : undefined,
     saleOrderId: r.order.saleOrderId,
     status: r.order.status as SaleOrder['status'],
     saleOrderType: r.order.saleOrderType as SaleOrder['saleOrderType'],
@@ -3755,7 +3762,7 @@ export const getOrderPayments = withAnyPermission(
     status: r.payment.status as import('@/lib/types').PaymentFlowStatus,
     sourceEnd: r.payment.sourceEnd as import('@/lib/types').PaymentSourceEnd,
     operatorEmployeeId: r.payment.operatorEmployeeId ?? null,
-    note: r.payment.note ?? null,
+    note: stripConversionSourcesFromNote(r.payment.note) ?? null,
     createdAt: r.payment.createdAt.toISOString(),
     paidAt: r.payment.paidAt?.toISOString() ?? null,
     performanceAttributionDate: r.payment.performanceAttributionDate ?? null,
@@ -3816,6 +3823,8 @@ export const confirmOfflinePayment = withPermission(
         throw new ApiError('CONFLICT', 'PAYMENT_INTENT_ACTIVE: 在线支付处理中，暂不能确认线下收款')
       }
 
+      if (locked.sale_order_type === '转换单' && await hasPendingRefund(tx, saleOrderId)) throw new ApiError('CONFLICT','REFUND_IN_PROGRESS: 转换单退款审批中，暂不可确认收款')
+
       const orderTotal = Number(locked.total_amount || 0)
       const orderActualPrepaid = Number(locked.prepaid_card_amount || 0)
       const orderPendingPrepaid = Number(locked.pending_prepaid_card_amount || 0)
@@ -3823,7 +3832,7 @@ export const confirmOfflinePayment = withPermission(
       const orderPayable = locked.payable_amount != null
         ? Number(locked.payable_amount)
         : Math.round((orderTotal - orderActualPrepaid - orderPendingPrepaid) * 100) / 100
-      const remainingPayable = Math.round((orderPayable - orderReceived) * 100) / 100
+      const remainingPayable = locked.sale_order_type === '转换单' ? Math.max(0, await getConversionDebt(tx, saleOrderId) - orderPendingPrepaid) : Math.round((orderPayable - orderReceived) * 100) / 100
 
       // 缺省确认金额（两步式 2026-06-07）= 开单约定实付草稿合计（pending_received）− 已收，cap 到剩余应付；
       // 无草稿（旧订单）回退全额 remainingPayable。前端 dialog 通常显式传 confirmAmount（已按 pending 预填），
@@ -3967,7 +3976,7 @@ export const confirmOfflinePayment = withPermission(
       const settleTarget = locked.sale_order_type === '充值单'
         ? Math.round(orderPayable * 100) / 100
         : Math.round(orderTotal * 100) / 100
-      const targetStatus: OrderStatus = newReceived + 0.005 >= settleTarget ? '已支付' : '部分支付'
+      const targetStatus: OrderStatus = (locked.sale_order_type === '转换单' ? newReceived - orderReceived + 0.005 >= remainingPayable + orderPendingPrepaid : newReceived + 0.005 >= settleTarget) ? '已支付' : '部分支付'
       const documentType = await classifySaleOrderDocumentType(tx, clientUserId, saleOrderId)
       // paid_at 写北京墙钟字面（见 lib/db-time）：结清→NOW()，未结清→NULL（保留原行为）。
       const paidAtExpr = targetStatus === '已支付' ? nowTs() : sql`NULL`
@@ -4263,6 +4272,11 @@ export const closeOrder = withPermission(
     .where(and(eq(saleOrders.saleOrderId, saleOrderId), scopeCondition(session, saleOrders.storeId)))
     .limit(1)
 
+  if(orderCtx?.saleOrderType === '转换单') {
+    const refunds = await db.execute(sql`SELECT 1 FROM sale_order_payments WHERE sale_order_id=${saleOrderId} AND change_type='退款' AND status IN ('待审批','已支付') LIMIT 1`)
+    if(refunds.length) return { success:false,message:'转换单已有退款，不允许撤销转换' }
+  }
+
   // issue #214：顾客唤起支付后没付款，渠道单仍在有效期内，旧实现只能拒绝关闭
   // （「在线支付处理中，暂不能关闭订单」），店员得等约 20 分钟。这里先向渠道关单并
   // 释放意图，再走下面**原样不动**的事务与 CAS（`AND lakala_out_order_no IS NULL`）。
@@ -4291,6 +4305,11 @@ export const closeOrder = withPermission(
   // 事务：关闭订单 + 作废分配，原子提交
   try {
     const txResult = await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT sale_order_id FROM sale_orders WHERE sale_order_id=${saleOrderId} AND ${scopeCondition(session, saleOrders.storeId) ?? sql`TRUE`} FOR UPDATE`)
+      if(orderCtx?.saleOrderType === '转换单') {
+        const refunds = await tx.execute(sql`SELECT 1 FROM sale_order_payments WHERE sale_order_id=${saleOrderId} AND change_type='退款' AND status IN ('待审批','已支付') LIMIT 1`)
+        if(refunds.length) throw new ApiError('CONFLICT','转换单已有退款，不允许撤销转换')
+      }
       const result = await tx
         .update(saleOrders)
         .set({
@@ -6656,7 +6675,7 @@ export const createConversionOrder = withPermission(
 
       // 5. 插入订单主表
       // 顾客补现场景：priceDiff > 0 → total_amount=priceDiff，status 按抵扣后应付决定
-      //   - payable > 0（仍需付现金）：'待支付'，扣卡延后到 confirmOffline / payNotify
+      //   - payable > 0（仍需付现金）：待支付，扣卡延后到确认到账
       //   - payable == 0 且有抵扣（全额抵扣）：事务内即时扣卡 → '已支付'，payment_method='无'
       // 其他（priceDiff <= 0）：total_amount=0 & status='已支付'
       const orderTotal = Math.max(0, priceDiff).toFixed(2)
@@ -6950,6 +6969,8 @@ export const createConversionOrder = withPermission(
           })
         }
       }
+
+      await initializeConversionSources(conversionSourceQuery(tx), saleOrderId)
 
       // 8. 差额退余：priceDiff < 0 → UPSERT prepaid_cards + card_transactions
       let prepaidCardCredit = 0
@@ -7841,7 +7862,7 @@ export const getRepayable = withPermission(
 
     // 欠款 = total − received（= settleTarget − received，与 status 结清判定一致）。
     // received 按 I1 含储值卡抵扣，须用总额减；旧口径 payable(扣卡) − received(含卡) 会让含卡部分支付单算成无欠款。
-    const remainingPayable = Math.round((Number(order.totalAmount) - Number(order.received)) * 100) / 100
+    const remainingPayable = order.saleOrderType === '转换单' ? await getConversionDebt(db, saleOrderId) : Math.round((Number(order.totalAmount) - Number(order.received)) * 100) / 100
 
     let cardBalance: number | null = null
     if (order.clientUserId) {
@@ -8035,7 +8056,7 @@ export const recordPayment = withPermission(
             throw new ApiError('INVALID_STATE', `子项 ${item.saleItemId} 已退款，不可再回款`)
           }
         }
-      } else if (orderHasRefund) {
+      } else if (orderHasRefund && locked.sale_order_type !== '转换单') {
         throw new ApiError('INVALID_STATE', '本单存在已退款项目，请按子项回款未退款的项目')
       }
 
@@ -8057,7 +8078,7 @@ export const recordPayment = withPermission(
       // payable + prepaid 在「回款新增储值卡抵扣」时会破裂（见下方结清判定注释），故直接锚 total 单调正确。
       const origTotal = Number(locked.total_amount || 0)
       const origPaid = Number(locked.received || 0)
-      const remainingPayable = Math.round((origTotal - origPaid) * 100) / 100
+      const remainingPayable = locked.sale_order_type === '转换单' ? await getConversionDebt(tx, saleOrderId) : Math.round((origTotal - origPaid) * 100) / 100
 
       // 3) 超额校验
       if (totalThisTime > remainingPayable + 0.001) {
@@ -8244,7 +8265,7 @@ export const recordPayment = withPermission(
       // 多笔储值卡回款后 origPayable + origPrepaid > total 误判部分支付）。改锚 total 单调正确。
       // 充值单不进回款路径（一次性付清），total 锚无副作用。
       const settleTarget = Math.round(origTotal * 100) / 100
-      const targetStatus: OrderStatus = settled + 0.001 >= settleTarget ? '已支付' : '部分支付'
+      const targetStatus: OrderStatus = (locked.sale_order_type === '转换单' ? totalThisTime + 0.001 >= remainingPayable : settled + 0.001 >= settleTarget) ? '已支付' : '部分支付'
       const documentType = ['部分支付', '已支付', '已完成'].includes(locked.status)
         ? null
         : await classifySaleOrderDocumentType(tx, locked.client_user_id, saleOrderId)
@@ -8497,13 +8518,7 @@ export const freezeConversionRepaymentAmount = withPermission(
         if (String(locked.lakala_out_order_no || '').trim()) {
           throw new ApiError('CONFLICT', 'PAYMENT_INTENT_ACTIVE: 订单已有进行中的在线支付，请等待支付结果后重试')
         }
-        const remainingCents = Math.round(
-          (
-            Number(locked.total_amount || 0) -
-            Number(locked.received || 0) +
-            Number(locked.refunded_amount || 0)
-          ) * 100,
-        )
+        const remainingCents = Math.round(await getConversionDebt(tx, saleOrderId) * 100)
         if (amountCents > remainingCents) {
           // 余额写进中文正文而非子标签位：本条的 catch 走 businessErrorMessage，
           // 留在子标签位会显示成「100.00: 本次回款金额超过订单欠款」（评审 round 5）。

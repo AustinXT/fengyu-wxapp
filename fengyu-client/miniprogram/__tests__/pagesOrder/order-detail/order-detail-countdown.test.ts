@@ -1279,3 +1279,20 @@ describe('order-detail.wxml 的倒计时文案分支 (#215)', () => {
     expect(countdownAt).toBeGreaterThan(offlineAt);
   });
 });
+
+
+describe('#548 转换详情权威余额', () => {
+  test.each([0,400])('部分退款商品只按后端欠款%s显示继续支付', async (remaining) => {
+    callClientApiMock.mockResolvedValueOnce({order:{sale_order_id:'FY-548',sale_order_type:'转换单',status:'部分支付',conversion_remaining_payable:remaining,received:200,refunded_amount:200},items:[{sale_item_id:'HOME548',item_direction:'转入',product_type:'家居产品',product_name:'家居',quantity:5,unit_price:200,unit_real_price:200,sale_amount:1000,received:400,refunded_amount:200}],payments:[]});
+    const page=createPageInstance(); await page.loadDetail('FY-548');
+    expect(page.data.outstandingAmount).toBe(remaining);
+    expect(page.data.canContinuePay).toBe(remaining>0);
+  });
+});
+
+test('#548 有退款但缺权威余额，金额待确认并阻止继续支付', async () => {
+ callClientApiMock.mockResolvedValueOnce({order:{sale_order_id:'UNKNOWN548',sale_order_type:'转换单',status:'部分支付',total_amount:600,received:200,refunded_amount:200},items:[],payments:[]});
+ const page=createPageInstance();await page.loadDetail('UNKNOWN548');
+ expect(page.data.order.outstanding_fmt).toBe('—');expect(page.data.canContinuePay).toBe(false);
+ expect(Toast.fail).toHaveBeenCalledWith('欠款金额暂未确认，请刷新后再付款');
+});

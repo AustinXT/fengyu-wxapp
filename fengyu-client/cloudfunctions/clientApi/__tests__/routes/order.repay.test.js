@@ -394,7 +394,8 @@ describe('order.repay', () => {
     })
     await expect(routes.repay(ctx)).rejects.toThrow(/CONFLICT: PAYMENT_INTENT_ACTIVE/)
     expect(globalThis.__mocks__.lakalaClient.requestPreorder).not.toHaveBeenCalled()
-    expect(router.mock.calls).toHaveLength(1)
+    expect(router.mock.calls).toHaveLength(2)
+    expect(router.mock.calls[1][0]).toMatch(/change_type='退款'.*status='待审批'/s)
     expect(router.mock.calls.some(([sql]) => /^\s*(UPDATE|INSERT|DELETE)\b/.test(sql))).toBe(false)
   })
 
@@ -441,7 +442,8 @@ describe('order.repay', () => {
       prepaidCardAmount: 0,
     })
     await expect(routes.repay(ctx)).rejects.toThrow(/INVALID_STATE: CONVERSION_REPAYMENT_USE_ORDER_PAY/)
-    expect(router.mock.calls).toHaveLength(1)
+    expect(router.mock.calls).toHaveLength(2)
+    expect(router.mock.calls[1][0]).toMatch(/change_type='退款'.*status='待审批'/s)
     expect(globalThis.__mocks__.lakalaClient.requestPreorder).not.toHaveBeenCalled()
   })
 

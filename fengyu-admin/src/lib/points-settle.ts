@@ -1,32 +1,16 @@
-import { retainedRefundFeeSql } from './refund-fee-sql'
-/**
- * 积分发放工具 — admin 端实现（链净额差值法）
- *
- * 三端独立维护副本之一（与 fengyu-staff/cloudfunctions/staffApi/utils/points.js
- * + fengyu-client/cloudfunctions/clientApi/utils/points.js
- * + fengyu-client/cloudfunctions/payNotify/points.js 算法字节同义）。
- *
- * 修改 SQL 时必须同步另外三端，由 staffApi __tests__/routes/recalc-customer-type-sql.test.js
- * 守护一致性。
- *
- * 触发点（修复 audit-15 P0-15-01）：
- *   - confirmOfflinePayment — 管理后台确认线下收款
- *   - recordPayment         — 管理后台录入回款
- */
+import { getPointAccount, conversionSourceQuery, refreshConversionSources, recordConversionInheritedReversal, lockConversionPointBatches } from './conversion-sources'
 import { sql } from 'drizzle-orm'
 import { db } from '@/db'
 import { consumePointBatches, grantPointBatch } from '@/lib/points-batches'
-
 type AdminTx = Parameters<Parameters<typeof db.transaction>[0]>[0]
-
-// 参与积分发放的订单类型（决策 D1：内部单不发；回款/转换/退款单不是原始发放点，
-// 它们引用的原销售单才发，通过 ref_sale_order_id 传递给 settle）
-export const ORDER_TYPES_EARN_POINTS = new Set(['销售单'])
+// 销售单扣除已交接基数；转换单结算本单旧积分责任与新增补款积分。
+export const ORDER_TYPES_EARN_POINTS = new Set(['销售单', '转换单'])
 
 export interface SettleResult {
   delta: number
   expected: number
   granted: number
+  reversed?: number
   skipped?: string
   error?: string
 }
@@ -35,8 +19,8 @@ export interface SettleResult {
  * 结算某条订单链的积分
  *
  * @param tx                      - Drizzle 事务上下文（调用方必须在 db.transaction 内调用）
- * @param originalSaleOrderId     - 原销售单 ID；若当前业务触发点是派生单
- *                                  （回款/退款/转换），传 ref_sale_order_id
+ * @param originalSaleOrderId     - 当前责任账户 ID（销售单或转换单）；若当前业务触发点是派生单
+ *                                  （回款/退款），传对应销售单或转换单 ID
  */
 export async function settlePointsForOrder(
   tx: AdminTx,
@@ -74,37 +58,19 @@ export async function settlePointsForOrder(
     }
   }
 
-  // 2. 汇总整条订单链的已到账净额（原单 + 全部派生单）
-  //    2026-04-26 sale-order-domain-refactor: paid_amount 已 DROP，改用 received - refunded_amount
-  //    退款单 refunded_amount 为正，回款单 received 为正；累加得链净额
-  const sumRes = await tx.execute(sql`
-    SELECT COALESCE(SUM(COALESCE(received,0) - COALESCE(refunded_amount,0) - ${sql.raw(retainedRefundFeeSql('sale_orders.sale_order_id'))}), 0)::numeric AS net_settled
-      FROM sale_orders
-     WHERE sale_order_id = ${originalSaleOrderId}
-        OR ref_sale_order_id = ${originalSaleOrderId}
-  `)
-  const sumRows = sumRes as unknown as Array<{ net_settled: string | number }>
-  const netSettled = Number(sumRows[0]?.net_settled ?? 0)
+  if (saleOrderType === '转换单') await refreshConversionSources(conversionSourceQuery(tx), originalSaleOrderId)
+  const account = await getPointAccount(conversionSourceQuery(tx), originalSaleOrderId, saleOrderType)
+  const { expected, granted } = account
 
-  // 3. 目标积分（决策 D3：不允许负余额，expected 下界为 0）
-  const expected = Math.floor(Math.max(0, netSettled) / 100)
-
-  // 4. 已发积分合计（按 ref_order_id 聚合，等级升级/兑换等非本链流水自然排除）
-  const grantedRes = await tx.execute(sql`
-    SELECT COALESCE(SUM(amount), 0)::bigint AS granted
-      FROM point_transactions
-     WHERE ref_order_id = ${originalSaleOrderId}
-       AND type IN ('消费赠送','消费冲销')
-  `)
-  const grantedRows = grantedRes as unknown as Array<{ granted: string | number }>
-  const granted = Number(grantedRows[0]?.granted ?? 0)
-
-  // 5. 差值判断 — delta=0 天然幂等
-  const delta = expected - granted
-  if (delta === 0) {
-    return { delta: 0, expected, granted }
-  }
-
+  const conversion = saleOrderType === '转换单'
+  const inheritedReversal = conversion ? Math.max(0,account.inheritedOwned-account.inheritedPoints) : 0
+  const ownDelta = conversion ? (expected-account.inheritedPoints-account.ownGranted) : expected-granted
+  const delta = ownDelta-inheritedReversal
+  const changes=[{delta:ownDelta,pointClass:conversion ? 'cash' as const : undefined},{delta:-inheritedReversal,pointClass:'inherited' as const}].filter(c=>c.delta!==0)
+  if (!changes.length) return {delta:0,expected,granted}
+  if (conversion) await lockConversionPointBatches(conversionSourceQuery(tx),userId,originalSaleOrderId)
+  for (const change of changes) {
+    const delta=change.delta
   const type = delta > 0 ? '消费赠送' : '消费冲销'
   // partial unique uq_point_txn_order_user_type (user_id, ref_order_id, type) WHERE ref_order_id IS NOT NULL AND type IN ('消费赠送','消费冲销')
   // 分次回款/退款累加：同 (user,order,type) 已有行时把增量 delta 累加进唯一行（granted=SUM 口径不变），
@@ -133,9 +99,13 @@ export async function settlePointsForOrder(
       userId,
       amount: delta,
       refOrderId: originalSaleOrderId,
+      onlyOrder: saleOrderType === '转换单',
+      pointClass: change.pointClass,
     })
   }
 
+  }
+  if (inheritedReversal) await recordConversionInheritedReversal(conversionSourceQuery(tx),originalSaleOrderId,inheritedReversal)
   await tx.execute(sql`
     UPDATE client_wechat_users c
        SET points_balance    = COALESCE((
@@ -148,7 +118,7 @@ export async function settlePointsForOrder(
      WHERE c.user_id = ${userId}
   `)
 
-  return { delta, expected, granted }
+  return conversion ? {delta,expected,granted,reversed:inheritedReversal+Math.max(0,-ownDelta)} : {delta,expected,granted}
 }
 
 /**

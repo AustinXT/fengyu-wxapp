@@ -53,6 +53,7 @@ async function expirePointBatches(
       FROM point_batches
       WHERE remaining_amount > 0
         AND expire_at <= ${nowSql}
+      ORDER BY expire_at, id
       FOR UPDATE
     ),
     inserted_txns AS (

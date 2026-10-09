@@ -47,7 +47,7 @@ function buildMockClient({
     }
 
     if (/FROM\s+sale_orders/i.test(s) && /received/i.test(s) && /refunded_amount/i.test(s)) {
-      return { rows: [{ net_settled: netSettled }] }
+      return { rows: [{ basis: Math.max(0,netSettled) * 100 }] }
     }
 
     if (/FROM\s+point_transactions/i.test(s) && /SUM\(amount\)/i.test(s)) {
@@ -88,12 +88,12 @@ function countQueries(queries, pattern) {
 }
 
 describe('ORDER_TYPES_EARN_POINTS', () => {
-  test('仅包含 销售单', () => {
+  test('销售单及转换单独立结算', () => {
     expect(ORDER_TYPES_EARN_POINTS.has('销售单')).toBe(true)
     expect(ORDER_TYPES_EARN_POINTS.has('内部单')).toBe(false)
     expect(ORDER_TYPES_EARN_POINTS.has('回款单')).toBe(false)
     expect(ORDER_TYPES_EARN_POINTS.has('退款单')).toBe(false)
-    expect(ORDER_TYPES_EARN_POINTS.has('转换单')).toBe(false)
+    expect(ORDER_TYPES_EARN_POINTS.has('转换单')).toBe(true)
   })
 })
 
@@ -101,7 +101,7 @@ describe('settlePointsForOrder — P0-15-01b 回归：SUM 不再引用已 DROP �
   test('链净汇总 SQL 必须用 received - refunded_amount 表达式，禁止 SUM(paid_amount)', async () => {
     const { client, queries } = buildMockClient({ netSettled: 280, granted: 0 })
     await settlePointsForOrder(client, 'o1')
-    const sumQuery = findQuery(queries, /AS\s+net_settled/i)
+    const sumQuery = findQuery(queries, /AS\s+basis/i)
     expect(sumQuery).toBeDefined()
     expect(sumQuery.sql).toMatch(/received/)
     expect(sumQuery.sql).toMatch(/refunded_amount/)
@@ -169,7 +169,7 @@ describe('settlePointsForOrder — 退款冲销', () => {
 
     const batchConsume = findQuery(queries, /UPDATE\s+point_batches/i)
     expect(batchConsume).toBeDefined()
-    expect(batchConsume.params).toEqual(['user-001', 1, 'o1'])
+    expect(batchConsume.params).toEqual(['user-001', 1, 'o1', false, null])
   })
 
   test('二次退款尾差归零：netSettled=140, granted=1 → delta=0 无写入', async () => {

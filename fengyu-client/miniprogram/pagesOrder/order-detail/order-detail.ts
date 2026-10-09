@@ -43,6 +43,7 @@ interface OrderDetailItem {
 }
 
 interface OrderDetailData {
+  conversion_remaining_payable?: number;
   sale_order_id: string;
   status: string;
   sale_order_type: string;
@@ -497,12 +498,11 @@ Page({
       // 行级口径待付额：已退行不计入（已退款不可再支付），只有「未退且未付清」的行可继续支付。
       // sale_items.received 为行净额（STEP 1.5 已扣该行退款）；未退行 received净 = received毛。
       // 2026-04-26 sale-order-domain-refactor: received/refunded_amount 替代已 DROP 的 paid_amount。
+      const conversionBalanceUnknown = order.sale_order_type === '转换单' && (order.conversion_remaining_payable == null || !Number.isFinite(Number(order.conversion_remaining_payable))) && Number(order.refunded_amount || 0) > 0;
+      if (conversionBalanceUnknown) Toast.fail('欠款金额暂未确认，请刷新后再付款');
       let outstandingSum = 0;
       if (order.sale_order_type === '转换单') {
-        outstandingSum = Math.max(
-          0,
-          Number(order.total_amount || 0) - Number(order.received || 0) + Number(order.refunded_amount || 0),
-        );
+        outstandingSum = conversionBalanceUnknown ? 0 : Math.max(0, Number(order.conversion_remaining_payable ?? Math.max(0,Number(order.total_amount || 0)-Number(order.received || 0))));
       } else {
         for (const it of itemsWithProgress) {
           const refunded = Number(it.refunded_amount ?? 0);
@@ -525,7 +525,7 @@ Page({
           items: displayItems,
           order_time_fmt: formatDateTimeShort(order.sale_order_datetime),
           expire_time_fmt: expireTimeFmt,
-          outstanding_fmt: outstanding.toFixed(2),
+          outstanding_fmt: conversionBalanceUnknown ? '—' : outstanding.toFixed(2),
           refunded_fmt: refundedFmt,
           has_refund: hasRefund,
         },

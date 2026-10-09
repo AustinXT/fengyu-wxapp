@@ -329,6 +329,8 @@ export const saleItems = pgTable(
      * Σ(购买行) = sale_orders.received − Σ逐项退款（不再恒等毛额 received）。**不是行单价**（行价看 sale_amount）。
      */
     received: numeric("received", { precision: 10, scale: 2 }).notNull(),
+    /** 转换已付本金来源，整数分；内部使用，普通订单/未确认历史数据为空。 */
+    conversionValueSnapshot: jsonb("conversion_value_snapshot"),
     /**
      * 储值卡实付分摊。按本单所有 sale_items.received 的有符号净额比例分摊订单
      * prepaid_card_amount；最后一个非零实收项用减法吸收分币尾差。分母为 0 时全部置 0。

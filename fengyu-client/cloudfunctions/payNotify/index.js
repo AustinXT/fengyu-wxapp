@@ -1,3 +1,4 @@
+const { getConversionDebt } = require('./conversion-value')
 /**
  * payNotify - 微信支付回调云函数
  *
@@ -1189,7 +1190,7 @@ exports.main = async (event) => {
         [targetOrderNo]
       )
       const paidSum = Number(sumRes.rows[0]?.paid_sum || 0)
-      const remaining = Math.round((payableAmount - paidSum) * 100) / 100
+      const remaining = targetOrder.sale_order_type === '转换单' ? Math.max(0, await getConversionDebt(client, targetOrderNo) - Number(targetOrder.pending_prepaid_card_amount || 0)) : Math.round((payableAmount - paidSum) * 100) / 100
       const thisPayAmount = (payAmountInput !== undefined && payAmountInput !== null)
         ? Math.round(Number(payAmountInput) * 100) / 100
         : remaining
@@ -1316,7 +1317,7 @@ exports.main = async (event) => {
       )
       // payable_amount 已排除 actual/pending 储值卡，终态仍按现金净到账判断。
       const newPaidSum = Math.round(Number(paidAggregateRes.rows[0]?.cash_paid_sum || 0) * 100) / 100
-      const fullyPaid = newPaidSum + 0.001 >= payableAmount
+      const fullyPaid = targetOrder.sale_order_type === '转换单' ? thisPayAmount + 0.001 >= remaining : newPaidSum + 0.001 >= payableAmount
       const newStatus = fullyPaid ? '已支付' : '部分支付'
       const newReceived = Math.round(Number(paidAggregateRes.rows[0]?.received_sum || 0) * 100) / 100
 
@@ -1501,10 +1502,9 @@ exports.main = async (event) => {
            END::spending_tier,
            updated_at = NOW()
            FROM (
-             SELECT COALESCE(SUM(GREATEST((received::numeric) - (refunded_amount::numeric) - ${retainedRefundFeeSql('sale_orders.sale_order_id')}, 0)), 0) AS total
+             SELECT COALESCE(GREATEST(SUM(CASE WHEN sale_order_type = '转换单' THEN (received::numeric) - (refunded_amount::numeric) - ${retainedRefundFeeSql('sale_orders.sale_order_id')} ELSE GREATEST((received::numeric) - (refunded_amount::numeric) - ${retainedRefundFeeSql('sale_orders.sale_order_id')}, 0) END), 0), 0) AS total
              FROM sale_orders
              WHERE client_user_id = $1
-               AND status IN ('已支付', '已完成')
                AND sale_order_type IN ('销售单','转换单')
            ) t
            WHERE user_id = $1`,
