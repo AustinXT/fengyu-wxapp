@@ -61,6 +61,8 @@ run('#548 隔离 PG 转换退款（真实级联与权益重算）', () => {
   test('800折抵+200现金退1000；负receipt，不伪造收款，不恢复旧卡，重算不复活',async()=>{
     const [row]=await setup(); expect(Number(row.received)).toBe(1000)
     expect(await refund(row)).toBe(1000)
+    const saved=(await c.query("SELECT public.try_jsonb(note) AS note FROM sale_order_payments WHERE sale_order_id='C548' AND change_type='退款' AND status='已支付'")).rows[0].note
+    expect(saved.items[0].conversionSources.reduce((sum,x)=>sum+x.valueCents,0)).toBe(100000)
     await recalcPaidSessionsForOrder(c,'C548')
     const [after]=(await c.query("SELECT * FROM sale_items WHERE sale_item_id=$1",[row.sale_item_id])).rows
     expect(Number(after.received)).toBe(0); expect(after.paid_sessions).toBe(0)
@@ -271,6 +273,27 @@ run('#548 隔离 PG 转换退款（真实级联与权益重算）', () => {
     const after=(await c.query("SELECT * FROM sale_items WHERE sale_order_id='C548' AND item_direction='转入' ORDER BY sale_item_id")).rows
     expect(after.map(r=>Number(r.received))).toEqual([0,0.02,0.01])
     expect(after.map(r=>r.conversion_value_snapshot.valueCents)).toEqual([0,2,1])
+  })
+
+  test('来源凭据丢失时拒绝积分复发，已有快照差额由只读审计发现', async () => {
+    const [row]=await setup({linked:true}); await settlePointsForOrder(c,'O548'); await refund(row);
+    const {CONVERSION_SOURCE_AUDIT_SQL}=require('../../utils/conversion-sources');
+    expect((await c.query(CONVERSION_SOURCE_AUDIT_SQL)).rows).toHaveLength(0);
+    await c.query("UPDATE sale_order_payments SET note=(public.try_jsonb(note) #- '{items,0,conversionSources}')::text WHERE sale_order_id='C548' AND change_type='退款'");
+    await c.query('SAVEPOINT bad_source');
+    await expect(settlePointsForOrder(c,'O548')).rejects.toThrow('积分来源不完整');
+    await c.query('ROLLBACK TO SAVEPOINT bad_source');
+    expect((await c.query(CONVERSION_SOURCE_AUDIT_SQL)).rows.some(r=>r.reason==='refund-source-evidence-incomplete')).toBe(true);
+    await c.query("UPDATE sale_items SET conversion_value_snapshot=jsonb_set(conversion_value_snapshot,'{valueCents}','1'::jsonb) WHERE sale_item_id='IN548-0'");
+    expect((await c.query(CONVERSION_SOURCE_AUDIT_SQL)).rows.some(r=>r.reason==='snapshot-invalid-or-money-mismatch')).toBe(true);
+    expect(Number((await c.query("SELECT points_balance FROM client_wechat_users WHERE user_id='T548'")).rows[0].points_balance)).toBe(0);
+  })
+  test('快照本金被改坏时退款拒绝，而诊断记录不回滚正常资金', async () => {
+    const [row]=await setup();
+    await c.query("UPDATE sale_items SET conversion_value_snapshot=jsonb_set(conversion_value_snapshot,'{valueCents}','90000'::jsonb)||jsonb_build_object('sources',jsonb_build_array(jsonb_build_object('sourceOrderId','O548','pointOrderId','O548','valueCents',90000))) WHERE sale_item_id='IN548-0'");
+    await c.query('SAVEPOINT bad_value');
+    await expect(refund(row)).rejects.toThrow('本金与已付金额不一致');
+    await c.query('ROLLBACK TO SAVEPOINT bad_value');
   })
 
 })

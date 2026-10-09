@@ -214,6 +214,9 @@ Page({
       let remaining;
       if (isRepayment) {
         if (orderData.orderType === '转换单') {
+          if ((orderData.conversionRemainingPayable == null || !Number.isFinite(Number(orderData.conversionRemainingPayable))) && refundedAmount > 0) {
+            throw new Error('欠款金额暂未确认，请刷新后再付款');
+          }
           remaining = Math.max(0, Number(orderData.conversionRemainingPayable ?? (totalAmount - received)));
         } else {
           const scanItems: any[] = Array.isArray(data.items) ? data.items : [];

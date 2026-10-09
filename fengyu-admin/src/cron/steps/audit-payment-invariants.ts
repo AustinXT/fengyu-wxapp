@@ -34,6 +34,7 @@
  */
 
 import { sql } from 'drizzle-orm'
+import { CONVERSION_SOURCE_AUDIT_SQL } from '@/lib/conversion-sources'
 import type { Db } from '../run'
 import { notifyOps } from '../lib/notify'
 
@@ -235,6 +236,9 @@ export async function auditPaymentInvariants(db: Db): Promise<PaymentInvariantsR
   if (r6b.length > 0) {
     details.push({ invariant: 'card_attribution_eq_paired_primary', count: r6b.length, samples: r6b as unknown as Array<Record<string, unknown>> })
   }
+
+  const sourceRows = await db.execute(sql.raw(CONVERSION_SOURCE_AUDIT_SQL)) as unknown as Array<Record<string, unknown>>
+  if (sourceRows.length) details.push({ invariant: 'conversion_source_integrity', count: sourceRows.length, samples: sourceRows })
 
   if (details.length > 0) {
     // operation_logs 单条聚合写入（避免 N 条小写）。target_id 用日期戳便于查询。

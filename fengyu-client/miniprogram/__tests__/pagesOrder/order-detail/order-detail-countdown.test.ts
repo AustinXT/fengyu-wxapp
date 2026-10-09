@@ -1289,3 +1289,10 @@ describe('#548 转换详情权威余额', () => {
     expect(page.data.canContinuePay).toBe(remaining>0);
   });
 });
+
+test('#548 有退款但缺权威余额，金额待确认并阻止继续支付', async () => {
+ callClientApiMock.mockResolvedValueOnce({order:{sale_order_id:'UNKNOWN548',sale_order_type:'转换单',status:'部分支付',total_amount:600,received:200,refunded_amount:200},items:[],payments:[]});
+ const page=createPageInstance();await page.loadDetail('UNKNOWN548');
+ expect(page.data.order.outstanding_fmt).toBe('—');expect(page.data.canContinuePay).toBe(false);
+ expect(Toast.fail).toHaveBeenCalledWith('欠款金额暂未确认，请刷新后再付款');
+});

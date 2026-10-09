@@ -12,7 +12,7 @@ function core(file) {
   const ast = parse(fs.readFileSync(path.join(root,file),'utf8'), {sourceType:'module',plugins:['typescript']})
   return ast.program.body.map(n => n.type === 'ExportNamedDeclaration' ? n.declaration : n)
     .filter(n => n.type === 'FunctionDeclaration' && n.id.name !== 'conversionSourceQuery'
-      || n.type === 'VariableDeclaration' && n.declarations[0].id.name === 'CONVERSION_POINT_OFFSETS_SQL').map(canonical)
+      || n.type === 'VariableDeclaration' && ['CONVERSION_POINT_OFFSETS_SQL','CONVERSION_SOURCE_AUDIT_SQL','CONVERSION_UNKNOWN_POINT_SOURCE_SQL'].includes(n.declarations[0].id.name)).map(canonical)
 }
 describe('#548 四端来源和积分偏移独立副本合同',()=>{
   test.each(files)('%s 完整来源算法同义', file => expect(core(file)).toEqual(core(files[0])))

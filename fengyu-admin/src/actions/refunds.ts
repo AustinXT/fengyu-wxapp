@@ -1,6 +1,6 @@
 'use server'
 
-import { refreshConversionSources, recordConversionRefundSources, lockConversionPointRoots, conversionSourceQuery } from '@/lib/conversion-sources'
+import { refreshConversionSources, recordConversionRefundSources, lockConversionPointRoots, conversionSourceQuery, stripConversionSourcesFromNote } from '@/lib/conversion-sources'
 
 import { conversionDebtSql } from '@/lib/conversion-value'
 
@@ -1554,6 +1554,7 @@ export const approveRefund = withPermission(
                  updated_at = NOW()
            WHERE so.sale_order_id = ${refSaleOrderId}
              AND so.status IN ('已支付', '已完成', '部分支付')
+             AND (so.sale_order_type <> '转换单' OR ${sql.raw(conversionDebtSql('so.sale_order_id'))} <= 0.01)
              AND EXISTS (SELECT 1 FROM deposit_items)
              AND NOT EXISTS (SELECT 1 FROM deposit_items di WHERE di.has_usable_right)
              AND ((SELECT refunded_sessions FROM this_refund_sessions) > 0 OR ((SELECT sale_order_type FROM sale_orders WHERE sale_order_id = ${refSaleOrderId}) = '转换单' AND EXISTS (
@@ -2020,7 +2021,7 @@ export const getRefundById = withAnyPermission(
       status: r.payment.status as SaleOrderPayment['status'],
       sourceEnd: r.payment.sourceEnd as SaleOrderPayment['sourceEnd'],
       operatorEmployeeId: r.payment.operatorEmployeeId ?? null,
-      note: r.payment.note ?? null,
+      note: stripConversionSourcesFromNote(r.payment.note) ?? null,
       createdAt: r.payment.createdAt.toISOString(),
       paidAt: r.payment.paidAt?.toISOString() ?? null,
       performanceAttributionDate: r.payment.performanceAttributionDate ?? null,

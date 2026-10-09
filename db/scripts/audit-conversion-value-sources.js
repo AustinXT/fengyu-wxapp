@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // 只读来源缺口审计，不生成已付价值，不写库；显式 DATABASE_URL，无远程默认值。
 const { Client } = require('pg')
+const { CONVERSION_SOURCE_AUDIT_SQL } = require('../../fengyu-staff/cloudfunctions/staffApi/utils/conversion-sources')
 async function main() {
   if (!process.env.DATABASE_URL) throw new Error('请显式提供 DATABASE_URL')
   const client = new Client({ connectionString: process.env.DATABASE_URL })
@@ -19,7 +20,8 @@ async function main() {
       WHERE so.sale_order_type = '转换单' AND so.status <> '已关闭'
         AND si.conversion_value_snapshot IS NULL
       ORDER BY si.sale_order_id, si.sale_item_id`)
-    console.log(JSON.stringify({ missingCount: result.rows.length, items: result.rows }, null, 2))
+    const integrity = await client.query(CONVERSION_SOURCE_AUDIT_SQL)
+    console.log(JSON.stringify({ integrityViolations: integrity.rows, missingCount: result.rows.length, items: result.rows }, null, 2))
     await client.query('ROLLBACK')
   } finally { await client.end() }
 }

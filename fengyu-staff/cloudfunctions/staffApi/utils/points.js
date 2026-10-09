@@ -1,4 +1,4 @@
-const { CONVERSION_POINT_OFFSETS_SQL } = require('./conversion-sources')
+const { CONVERSION_POINT_OFFSETS_SQL, assertConversionRefundSourcesKnown } = require('./conversion-sources')
 const { retainedRefundFeeSql } = require('./refund-fee-sql')
 /**
  * 积分发放工具 — 订单链净额差值法（ticket 2026-04-24 points-accrual-on-sale-order）
@@ -103,6 +103,8 @@ async function settlePointsForOrder(client, originalSaleOrderId) {
   if (!ORDER_TYPES_EARN_POINTS.has(saleOrderType)) {
     return { delta: 0, expected: 0, granted: 0, skipped: `order-type-${saleOrderType}` }
   }
+
+  await assertConversionRefundSourcesKnown(async (text, params) => (await client.query(text, params)).rows, userId)
 
   // 2. 汇总整条订单链的已到账净额（原单 + 全部派生单）
   //    2026-04-26 sale-order-domain-refactor: paid_amount 已 DROP，改用 received - refunded_amount

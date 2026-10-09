@@ -175,7 +175,7 @@ describe('settlePointsForOrder — 退款冲销', () => {
     expect(r).toEqual({ delta: 0, expected: 1, granted: 1 })
 
     // 验证仅 3 次查询（SELECT 原单 + SELECT 链净 + SELECT 已发），无 INSERT/UPDATE
-    expect(client.query).toHaveBeenCalledTimes(4)
+    expect(client.query).toHaveBeenCalledTimes(5)
     expect(countQueries(queries, /INSERT\s+INTO\s+point_transactions/i)).toBe(0)
     expect(countQueries(queries, /UPDATE\s+client_wechat_users/i)).toBe(0)
   })
@@ -295,7 +295,7 @@ describe('settlePointsForOrder — 幂等重放', () => {
     expect(r2).toEqual({ delta: 0, expected: 2, granted: 2 })
     expect(countQueries(second.queries, /INSERT\s+INTO\s+point_transactions/i)).toBe(0)
     expect(countQueries(second.queries, /UPDATE\s+client_wechat_users/i)).toBe(0)
-    expect(second.client.query).toHaveBeenCalledTimes(4)
+    expect(second.client.query).toHaveBeenCalledTimes(5)
   })
 })
 

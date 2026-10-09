@@ -4390,6 +4390,7 @@ const refundCapNow = Math.max(paymentsNetNow, Number(lockedOrder.received || 0) 
                updated_at = NOW()
          WHERE so.sale_order_id = $1
            AND so.status IN ('已支付', '已完成', '部分支付')
+           AND (so.sale_order_type <> '转换单' OR ${conversionDebtSql('so.sale_order_id')} <= 0.01)
            AND EXISTS (SELECT 1 FROM deposit_items)
            AND NOT EXISTS (SELECT 1 FROM deposit_items di WHERE di.has_usable_right)
            AND ((SELECT refunded_sessions FROM this_refund_sessions) > 0 OR ((SELECT sale_order_type FROM sale_orders WHERE sale_order_id = $1) = '转换单' AND EXISTS (
@@ -7562,7 +7563,7 @@ async function refundDetail(ctx) {
       auditName: r.approved_by_name,
       auditAt: r.audit_at,
       auditRemark: r.audit_remark,
-      noteJson: detail,
+      noteJson: detail ? JSON.parse(stripConversionSourcesFromNote(JSON.stringify(detail))) : detail,
     },
     origOrder: {
       saleOrderId: r.sale_order_id,

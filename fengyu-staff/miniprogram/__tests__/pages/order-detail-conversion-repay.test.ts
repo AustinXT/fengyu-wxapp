@@ -399,3 +399,18 @@ test('#182 纯余数转出quantity=0在详情中不被默认值改成1', async (
   expect(page.data.order.items[0].quantity).toBe(0)
   expect(page.data.order.displayItems[0].quantity).toBe(0)
 })
+
+test('#548 有退款且旧响应缺欠款字段，不报零欠款、不允许新收款', async () => {
+ vi.mocked(callStaffApi).mockResolvedValueOnce({order:{sale_order_id:'UNKNOWN548',sale_order_type:'转换单',status:'部分支付',total_amount:'600',received:'200',refunded_amount:'200'},items:[],payments:[],cardBalance:0} as never);
+ const page=createPage();await page.loadDetail('UNKNOWN548');
+ expect(page.data.order.hasDebt).toBe(true);
+ expect(page.data.order.remainingPayable).toBe('—');
+ expect(page.data.order.canInitiateRepayment).toBe(false);
+ expect(wx.showToast).toHaveBeenCalledWith({title:'欠款金额暂未确认，请刷新后再收款',icon:'none'});
+});
+test('#548 无退款旧响应仍可按原现金差额回款', async () => {
+ vi.mocked(callStaffApi).mockResolvedValueOnce({order:{sale_order_id:'LEGACY548',sale_order_type:'转换单',status:'部分支付',total_amount:'600',received:'200',refunded_amount:'0'},items:[],payments:[],cardBalance:0} as never);
+ const page=createPage();await page.loadDetail('LEGACY548');
+ expect(page.data.order.remainingPayable).toBe('400.00');
+ expect(page.data.order.canInitiateRepayment).toBe(true);
+});

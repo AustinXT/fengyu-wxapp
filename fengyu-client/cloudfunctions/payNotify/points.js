@@ -1,4 +1,4 @@
-const { CONVERSION_POINT_OFFSETS_SQL } = require('./conversion-sources')
+const { CONVERSION_POINT_OFFSETS_SQL, assertConversionRefundSourcesKnown } = require('./conversion-sources')
 const { retainedRefundFeeSql } = require('./refund-fee-sql')
 /**
  * 积分发放工具 — 订单链净额差值法（ticket 2026-04-24 points-accrual-on-sale-order）

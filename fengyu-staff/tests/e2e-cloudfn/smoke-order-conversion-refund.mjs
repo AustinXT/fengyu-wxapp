@@ -48,6 +48,17 @@ async function main(){
   assert.equal(after[0].paid_sessions,0);assert.equal(Number(after[1].received),500)
   const last=await apply(mixed.orderId,b.sale_item_id);await call('order.approveRefund',{paymentId:last.paymentId})
   assert.equal((await pgQuery('SELECT status FROM sale_orders WHERE sale_order_id=$1',[mixed.orderId]))[0].status,'已退款')
+  const owed=await scenario('COURSEDEBT',{cash:100,two:true});
+  // A有9次已付，已用6次，退当前剩余3次，但仍有1次未付50元。
+  await pgQuery('UPDATE sale_items SET remaining_sessions=4 WHERE sale_item_id=$1',[owed.items[0].sale_item_id]);
+  await pgQuery('UPDATE sale_items SET remaining_sessions=1 WHERE sale_item_id=$1',[owed.items[1].sale_item_id]);
+  const owedRefund=await apply(owed.orderId,owed.items[0].sale_item_id);
+  assert.equal(owedRefund.finalRefundAmount,150);
+  await call('order.approveRefund',{paymentId:owedRefund.paymentId});
+  assert.equal((await pgQuery('SELECT status FROM sale_orders WHERE sale_order_id=$1',[owed.orderId]))[0].status,'部分支付');
+  assert.equal(Number((await call('order.detail',{saleOrderId:owed.orderId})).order.conversion_remaining_payable),100);
+  await call('order.createRepayment',{refSaleOrderId:owed.orderId,repayAmount:100,paymentMethod:'线下'});
+  assert.equal((await pgQuery('SELECT paid_sessions FROM sale_items WHERE sale_item_id=$1',[owed.items[0].sale_item_id]))[0].paid_sessions,7);
   // 家居部分退后只补未退4件；现金码上限须扣待结算储值卡。
   const homeSourceSku=await createTestProduct({suffix:'HOMESRC',productKind:'护理项目',productType:'疗程卡',salesCategory:'他销自耗',price:400,sessionCount:1})
   const homeTargetSku=await createTestProduct({suffix:'HOMETGT',productKind:'家居产品',productType:'家居产品',salesCategory:'他销自耗',price:200,sessionCount:null})

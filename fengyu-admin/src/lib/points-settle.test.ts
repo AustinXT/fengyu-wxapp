@@ -53,6 +53,7 @@ function buildMockTx({
       { client_user_id: clientUserId, sale_order_type: saleOrderType },
     ])
   }
+  execute.mockResolvedValueOnce([]) // conversion source evidence guard
   execute.mockResolvedValueOnce([{ net_settled: netSettled }])
   execute.mockResolvedValueOnce([{ offset_amount: 0 }])
   execute.mockResolvedValueOnce([{ granted }])
@@ -87,7 +88,7 @@ describe('settlePointsForOrder — 正向发放', () => {
     const r = await settlePointsForOrder({ execute } as any, 'FY-XSD-WX-2604240001')
     expect(r).toEqual({ delta: 2, expected: 2, granted: 0 })
     // 4 次 SELECT + 1 次 INSERT 流水 + 1 次 INSERT 批次 + 1 次 UPDATE 余额 = 7 次
-    expect(execute).toHaveBeenCalledTimes(7)
+    expect(execute).toHaveBeenCalledTimes(8)
   })
 
   test('消费 100 元整 → delta=+1', async () => {
@@ -103,7 +104,7 @@ describe('settlePointsForOrder — 正向发放', () => {
     const r = await settlePointsForOrder({ execute } as any, 'o1')
     expect(r).toEqual({ delta: 0, expected: 0, granted: 0 })
     // 仅 4 次 SELECT，无 INSERT/UPDATE
-    expect(execute).toHaveBeenCalledTimes(4)
+    expect(execute).toHaveBeenCalledTimes(5)
   })
 })
 
@@ -113,7 +114,7 @@ describe('settlePointsForOrder — 退款冲销', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const r = await settlePointsForOrder({ execute } as any, 'o1')
     expect(r).toEqual({ delta: -1, expected: 1, granted: 2 })
-    expect(execute).toHaveBeenCalledTimes(7)
+    expect(execute).toHaveBeenCalledTimes(8)
   })
 
   test('二次退款尾差归零：netSettled=140, granted=1 → delta=0 无写入', async () => {
@@ -121,7 +122,7 @@ describe('settlePointsForOrder — 退款冲销', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const r = await settlePointsForOrder({ execute } as any, 'o1')
     expect(r).toEqual({ delta: 0, expected: 1, granted: 1 })
-    expect(execute).toHaveBeenCalledTimes(4)
+    expect(execute).toHaveBeenCalledTimes(5)
   })
 
   test('全额退款：netSettled=0, granted=2 → delta=-2', async () => {
@@ -145,7 +146,7 @@ describe('settlePointsForOrder — 边界保护', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const r = await settlePointsForOrder({ execute } as any, 'o1')
     expect(r).toEqual({ delta: 0, expected: 0, granted: 0 })
-    expect(execute).toHaveBeenCalledTimes(4)
+    expect(execute).toHaveBeenCalledTimes(5)
   })
 })
 

@@ -479,7 +479,9 @@ Page({
       const received = Number(o.received || 0);
       const refundedAmount = Number(o.refunded_amount || 0);
       const netReceived = Math.round((received - refundedAmount) * 100) / 100;
-      const grossRemainingPayable = o.sale_order_type === '转换单' ? Number(o.conversion_remaining_payable ?? 0) : Math.max(0, Math.round((totalAmount - netReceived) * 100) / 100);
+      const conversionBalanceUnknown = o.sale_order_type === '转换单' && (o.conversion_remaining_payable == null || !Number.isFinite(Number(o.conversion_remaining_payable))) && refundedAmount > 0;
+      if (conversionBalanceUnknown) wx.showToast({title:'欠款金额暂未确认，请刷新后再收款',icon:'none'});
+      const grossRemainingPayable = o.sale_order_type === '转换单' ? (conversionBalanceUnknown ? 0 : Number(o.conversion_remaining_payable ?? Math.max(0,totalAmount-received))) : Math.max(0, Math.round((totalAmount - netReceived) * 100) / 100);
       // 现金待收 = total − netReceived − pendingPrepaid。
       // actual 储值卡已包含在 received，不能再扣；pending 尚未进入 received，需单独从本次现金欠款扣除。
       const remainingPayable = Math.max(0, Math.round((grossRemainingPayable - pendingPrepaidCardAmount) * 100) / 100);
@@ -492,15 +494,15 @@ Page({
         || (orderType === '转换单'
           && (o.status === '待支付' || o.status === '部分支付'));
       const hasDebt = hasRepayableStatus
-        && remainingPayable > 0
+        && (remainingPayable > 0 || conversionBalanceUnknown)
         && !o.is_experience_conversion;
-      const canInitiateRepayment = hasDebt && !hasActivePaymentCap;
+      const canInitiateRepayment = hasDebt && !conversionBalanceUnknown && !hasActivePaymentCap;
       const canResumeOnlinePayment = orderType === '转换单'
         && (o.status === '待支付' || o.status === '部分支付')
         && hasActivePaymentCap
         && remainingPayable > 0
         && !o.is_experience_conversion;
-      const canViewQrcode = o.status === '待支付' || canResumeOnlinePayment;
+      const canViewQrcode = !conversionBalanceUnknown && (o.status === '待支付' || canResumeOnlinePayment);
       const activePaymentAmount = hasActivePaymentCap
         ? Math.min(remainingPayable, frozenPaymentAmount > 0 ? frozenPaymentAmount : remainingPayable)
         : 0;
@@ -547,8 +549,8 @@ Page({
           paidAmount: netReceived.toFixed(2),
           prepaidCardAmount: prepaidCardAmount.toFixed(2),
           pendingPrepaidCardAmount: pendingPrepaidCardAmount.toFixed(2),
-          grossRemainingPayable: grossRemainingPayable.toFixed(2),
-          remainingPayable: remainingPayable.toFixed(2),
+          grossRemainingPayable: conversionBalanceUnknown ? '—' : grossRemainingPayable.toFixed(2),
+          remainingPayable: conversionBalanceUnknown ? '—' : remainingPayable.toFixed(2),
           hasDebt,
           hasActivePaymentCap,
           activePaymentAmount: activePaymentAmount.toFixed(2),
