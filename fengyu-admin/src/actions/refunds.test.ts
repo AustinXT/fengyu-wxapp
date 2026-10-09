@@ -66,7 +66,7 @@ vi.mock('@/lib/member-threshold', () => ({ getMemberThreshold: vi.fn(async () =>
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }))
 vi.mock('@/lib/system-config', () => ({ getPointsToYuanRate: vi.fn(async () => 0.01) }))
 
-import { estimateRefundOverdraft, createRefund, approveRefund } from './refunds'
+import { estimateRefundOverdraft, createRefund, approveRefund, getRefundable } from './refunds'
 import { ApiError } from '@/lib/api-error'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
@@ -428,5 +428,21 @@ describe('approveRefund — 退款快照CAS', () => {
     expect(cas.__sqlValues).toContain('-100')
     expect(cas.__sqlValues).toContain(null)
     expect(queries.some((query) => query.__sqlText.includes('UPDATE sale_orders'))).toBe(false)
+  })
+})
+
+
+describe('#548 admin 可退项入口与提单口径',()=>{
+  beforeEach(()=>{vi.clearAllMocks();(db.select as any).mockReset();(db.execute as any).mockReset();(getSession as any).mockResolvedValue(mockSession)})
+  it.each([
+    ['转换单',true,true],['转换单',false,false],['销售单',true,false],['寄存单',true,false],
+  ])('待支付%s，已有已付价值%s，可退候选放行%s',async(type,paidValue,allowed)=>{
+    const order={storeId:'STORE-1',status:'待支付',saleOrderType:type,totalAmount:'200',received:'0',refundedAmount:'0',prepaidCardAmount:'0',paymentMethod:'线下',clientUserId:'C1'}
+    ;(db.select as any).mockReturnValueOnce({from:()=>({where:()=>({limit:async()=>[order]})})})
+    const item={saleItemId:'IN1',skuId:'SKU1',productName:'商品',productType:'家居产品',quantity:10,unitPrice:'100',unitRealPrice:'100',saleAmount:'1000',received:'800',pickedUpQuantity:0,refundedQuantity:0,convertedQuantity:0}
+    ;(db.select as any).mockReturnValueOnce({from:()=>({leftJoin:()=>({where:async()=>[{item,rightsReceived:'800',pickedQuantity:0,convertedAmount:'0',convertedQuantity:0,skuUnit:'盒'}]})})})
+    ;(db.execute as any).mockResolvedValue(paidValue ? [{exists:1}] : [])
+    if(allowed) { const res=await getRefundable('C548A');expect(res.items).toHaveLength(1);expect(res.items[0].refundableAmount).toBe(800) }
+    else await expect(getRefundable('C548A')).rejects.toThrow('不允许退款')
   })
 })

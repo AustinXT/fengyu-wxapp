@@ -388,7 +388,9 @@ export const getRefundable = withAnyPermission(
   if (!['销售单', '寄存单', '转换单'].includes(order.saleOrderType)) {
     throw new Error('INVALID_STATE: 仅销售单/寄存单/转换单支持退款')
   }
-  if (!['已支付', '已完成', '部分支付'].includes(order.status)) {
+  const pendingWithPaidValue = order.saleOrderType === '转换单' && order.status === '待支付'
+    && (await db.execute(sql`SELECT 1 FROM sale_items WHERE sale_order_id=${saleOrderId} AND item_direction='转入' AND received::numeric>0 LIMIT 1`)).length>0
+  if (!['已支付', '已完成', '部分支付'].includes(order.status) && !pendingWithPaidValue) {
     throw new Error(`INVALID_STATE: 当前状态"${order.status}"不允许退款`)
   }
 

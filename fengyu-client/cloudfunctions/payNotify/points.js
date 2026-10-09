@@ -31,8 +31,7 @@ async function consumePointBatches(client, { userId, amount, refOrderId, onlyOrd
           AND ($4::boolean = false OR ref_order_id = $3)
           AND ($5::text IS NULL OR (source_type='消费赠送' AND
             ((source_transaction_id IN (SELECT id FROM point_transactions WHERE ref_order_id=$3 AND type='消费赠送')) OR id IN (SELECT public.try_numeric(b->>'toBatchId')::bigint FROM conversion_point_transfers t CROSS JOIN LATERAL jsonb_array_elements(COALESCE(t.batch_snapshot->'batches','[]'::jsonb)) b WHERE t.to_order_id=$3 AND b->>'ownCash'='true')) = ($5::text='cash')))
-        ORDER BY CASE WHEN $3::text IS NOT NULL AND ref_order_id = $3 THEN 0 ELSE 1 END,
-                 expire_at, id
+        ORDER BY expire_at, id
         FOR UPDATE
      ),
      prioritized AS (

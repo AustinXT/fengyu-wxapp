@@ -440,4 +440,16 @@ run('#548 隔离 PG 转换退款（真实级联与权益重算）', () => {
     expect(Number((await c.query("SELECT points_balance FROM client_wechat_users WHERE user_id='T548'")).rows[0].points_balance)).toBe(0)
   })
 
+  test('统一批次锁序后普通销售冲销仍优先本单，较早到期的其他单余额保持',async()=>{
+    await setup({beforeTransfer:async()=>{
+      await c.query("UPDATE point_batches SET earned_at=NOW()-INTERVAL '200 days',expire_at=NOW()+INTERVAL '165 days' WHERE ref_order_id='O548'")
+    }})
+    const tx=(await c.query("INSERT INTO point_transactions(user_id,ref_order_id,type,amount) VALUES('T548','O548','获取',50) RETURNING id")).rows[0].id
+    await grantPointBatch(c,{userId:'T548',pointTransactionId:tx,type:'获取',amount:50,refOrderId:'O548'})
+    const {consumePointBatches}=require('../../utils/points')
+    await consumePointBatches(c,{userId:'T548',amount:-3,refOrderId:'O548'})
+    expect(Number((await c.query("SELECT SUM(remaining_amount) AS n FROM point_batches WHERE ref_order_id='O548'")).rows[0].n)).toBe(47)
+    expect(Number((await c.query("SELECT SUM(remaining_amount) AS n FROM point_batches WHERE ref_order_id='C548'")).rows[0].n)).toBe(10)
+  })
+
 })
