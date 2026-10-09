@@ -1247,6 +1247,12 @@ function normalizeRequestedPayAmount(payAmountInput) {
  * 在单个行锁事务内重读订单资金快照、校验卡余额、计算本次金额并预占拉卡拉单号。
  * payment_method / client_user_id 的支付计划更新必须以刚预占的精确 out_trade_no 为 CAS。
  */
+async function assertNoPendingConversionRefund(client, order) {
+  if(order.sale_order_type!=='转换单') return
+  const r=await client.query("SELECT 1 FROM sale_order_payments WHERE sale_order_id=$1 AND change_type='退款' AND status='待审批' LIMIT 1",[order.sale_order_id])
+  if(r.rows.length) throw new Error('CONFLICT: REFUND_IN_PROGRESS: 转换单退款审批中，暂不可付款')
+}
+
 async function reserveDirectOnlinePaymentIntent({
   orderNo,
   userId,
@@ -1289,6 +1295,7 @@ async function reserveDirectOnlinePaymentIntent({
       }
     }
 
+    await assertNoPendingConversionRefund(client, order)
     const totalAmount = Math.round(Number(order.total_amount || 0) * 100) / 100
     const prepaidAmount = Math.round(Number(order.prepaid_card_amount || 0) * 100) / 100
     const pendingPrepaidAmount = Math.round(Number(order.pending_prepaid_card_amount || 0) * 100) / 100
@@ -4043,6 +4050,7 @@ async function confirmPrepaidFull(ctx) {
     if (order.client_user_id && order.client_user_id !== userId) {
       throw new Error('PERMISSION_DENIED: 无权操作该订单')
     }
+    await assertNoPendingConversionRefund(client, order)
     const prepaidCardAmount = Number(order.pending_prepaid_card_amount || 0)
     const payableAmount = Number(order.payable_amount || 0) > 0
       ? Number(order.payable_amount)
@@ -4272,6 +4280,7 @@ async function repay(ctx) {
     if (origOrder.is_experience_conversion === true) {
       throw new Error('INVALID_STATE: EXPERIENCE_CONVERSION_REPAYMENT_FORBIDDEN: 体验转换不允许补款')
     }
+    await assertNoPendingConversionRefund(client, origOrder)
     currentStatus = origOrder.status
 
     const frozenPaymentAmount = Number(origOrder.first_payment_amount || 0)

@@ -907,6 +907,8 @@ describe('order.pay', () => {
     merchantRows = STORE_LAKALA_ROW,
     lockedOrderOverrides = {},
     membership = null,
+    pendingRefund = false,
+    conversionDebt = null,
   }) {
     let activeOutTradeNo = order.lakala_out_order_no || null
     const transactionSql = []
@@ -925,6 +927,10 @@ describe('order.pay', () => {
     pg.transaction.mockImplementation(async (cb) => {
       const clientQuery = vi.fn(async (sql, params) => {
         transactionSql.push({ sql, params })
+        if (/change_type='退款' AND status='待审批'/.test(sql)) return { rows: pendingRefund ? [{exists:1}] : [], rowCount: pendingRefund ? 1 : 0 }
+        if (/AS remaining FROM sale_orders/.test(sql)) {
+          const row=lockedOrder();return {rows:[{remaining:conversionDebt ?? Math.max(0,Number(row.total_amount||0)-Number(row.received||0)+Number(row.refunded_amount||0))}],rowCount:1}
+        }
         if (/FROM sale_orders[\s\S]*FOR UPDATE/.test(sql)) {
           return { rows: [lockedOrder()], rowCount: 1 }
         }
@@ -962,6 +968,13 @@ describe('order.pay', () => {
     })
     return { transactionSql }
   }
+
+  test('转换单退款待审批时锁内拒绝发起渠道支付，不预占意图',async()=>{
+    const {transactionSql}=mockPayQueries({order:{sale_order_id:'C548-PENDING',status:'待支付',sale_order_type:'转换单',store_id:'store-1',client_user_id:'user-001',opened_by:'EMP1',total_amount:200,received:0,sale_order_datetime:new Date().toISOString()},pendingRefund:true})
+    await expect(routes.pay(createBoundCtx({orderNo:'C548-PENDING'}))).rejects.toThrow('REFUND_IN_PROGRESS')
+    expect(__mocks__.lakalaClient.requestPreorder).not.toHaveBeenCalled()
+    expect(transactionSql.some(q=>/SET client_user_id = CASE/.test(q.sql))).toBe(false)
+  })
 
   test('首次入会缺人工归属：在预占意图及渠道下单前拒绝', async () => {
     const { transactionSql } = mockPayQueries({

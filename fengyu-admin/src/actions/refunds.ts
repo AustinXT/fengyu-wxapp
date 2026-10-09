@@ -1246,9 +1246,10 @@ export const approveRefund = withPermission(
   try {
     cascade = await db.transaction(async (tx) => {
       // 先原单、再退款流水 CAS；与寄存申请、转换统一锁序，避免唯一索引等待成环。
-      const lockedOrders = await tx.execute(sql`SELECT sale_order_id, received, refunded_amount FROM sale_orders WHERE sale_order_id = ${refSaleOrderId} FOR UPDATE`) as unknown as Array<{ received: string | number; refunded_amount: string | number }>
+      const lockedOrders = await tx.execute(sql`SELECT sale_order_id, received, refunded_amount, lakala_out_order_no, pending_prepaid_card_amount FROM sale_orders WHERE sale_order_id = ${refSaleOrderId} FOR UPDATE`) as unknown as Array<{ received: string | number; refunded_amount: string | number; lakala_out_order_no: string | null; pending_prepaid_card_amount: string | number }>
       const lockedOrder = lockedOrders[0]
       if (!lockedOrder) throw new ApiError('NOT_FOUND', 'REFUND_ORDER_MISSING: 原销售单不存在')
+      if(pre.orderSaleOrderType === '转换单' && (lockedOrder.lakala_out_order_no || Number(lockedOrder.pending_prepaid_card_amount || 0)>0)) throw new ApiError('CONFLICT','PAYMENT_INTENT_ACTIVE: 转换单存在进行中的支付，请先完成或取消后退款')
       // G：原单与资金上限必须来自同一持锁事务，不能使用事务外预查的金额。
       const capNowRes = await tx.execute(sql`
         SELECT COALESCE(SUM(amount), 0)::numeric AS net FROM sale_order_payments
@@ -1305,7 +1306,10 @@ export const approveRefund = withPermission(
         throw new ApiError('CONFLICT', 'CONCURRENT_CHANGED: 退款状态已变更，请刷新后重试')
       }
 
-      if (pre.orderSaleOrderType === '转换单') await recordConversionRefundSources(conversionSourceQuery(tx), refSaleOrderId, idNum)
+      if (pre.orderSaleOrderType === '转换单') {
+        await recordConversionRefundSources(conversionSourceQuery(tx), refSaleOrderId, idNum)
+        await tx.execute(sql`UPDATE sale_orders SET first_payment_amount=NULL WHERE sale_order_id=${refSaleOrderId} AND lakala_out_order_no IS NULL`)
+      }
 
       // 3) 重算原单 refunded_amount = -SUM(已支付退款 amount)
       // CAS-EXEMPT: 仅累加 refunded_amount，status 由其他路径（recordPayment 等）另行 CAS

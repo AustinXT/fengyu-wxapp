@@ -2000,6 +2000,7 @@ async function qrcode(ctx) {
       if (String(locked.lakala_out_order_no || '').trim()) {
         throw new Error('CONFLICT: ONLINE_PAYMENT_INTENT_ACTIVE: 已有进行中的在线回款，请勿重复出码')
       }
+      await assertNoPendingRefund(client, saleOrderId)
       const remainingPayable = Math.max(0, await getConversionDebt(client, saleOrderId) - Number(locked.pending_prepaid_card_amount || 0))
       if (roundedPaymentAmount > remainingPayable + 0.001) {
         throw new Error('INVALID_PARAMS: 本次在线回款金额不能超过订单欠款')
@@ -4092,9 +4093,10 @@ async function approveRefund(ctx) {
   await pg.transaction(async (client) => {
     // 与申请/转换统一为原单→退款流水→源行；必须在余额读取和退款 CAS 之前取锁。
     const sourceQuery = async (text, params) => (await client.query(text, params)).rows
-    const lockedOrderRes = await client.query('SELECT sale_order_id, received, refunded_amount FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE', [refSaleOrderId])
+    const lockedOrderRes = await client.query('SELECT sale_order_id, received, refunded_amount, lakala_out_order_no, pending_prepaid_card_amount FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE', [refSaleOrderId])
     const lockedOrder = lockedOrderRes.rows[0]
     if (!lockedOrder) throw new Error('NOT_FOUND: 原销售单不存在')
+    if(sopRow.sale_order_type==='转换单' && (lockedOrder.lakala_out_order_no || Number(lockedOrder.pending_prepaid_card_amount || 0)>0)) throw new Error('CONFLICT: PAYMENT_INTENT_ACTIVE: 转换单存在进行中的支付，请先完成或取消后退款')
     // G 复校：审批前重算可退余额（本笔仍待审批，SUM 已支付自动排除），防 create→approve 间余额变化导致超退。
     // create 时已校验，但其间回款/其它操作可能改变余额；in-flight 唯一约束保证本笔是唯一待审批。两端镜像 admin refunds.ts。
     const capNowRes = await client.query(
@@ -4147,7 +4149,10 @@ const refundCapNow = Math.max(paymentsNetNow, Number(lockedOrder.received || 0) 
       throw new Error('CONFLICT: 退款流水状态或明细已变更，请刷新后重新审批')
     }
 
-    if (sopRow.sale_order_type === '转换单') await recordConversionRefundSources(sourceQuery, refSaleOrderId, paymentId)
+    if (sopRow.sale_order_type === '转换单') {
+      await recordConversionRefundSources(sourceQuery, refSaleOrderId, paymentId)
+      await client.query('UPDATE sale_orders SET first_payment_amount=NULL WHERE sale_order_id=$1 AND lakala_out_order_no IS NULL',[refSaleOrderId])
+    }
 
     // 2. 重算 sale_orders.refunded_amount = -SUM(已支付退款)（Bug F：累加→重算，幂等、自愈，对齐 admin/schema 不变量）
     // CAS-EXEMPT: 仅维护资金列 refunded_amount，不翻 status。本笔已在上方 CAS 翻为'已支付'，SUM 含本笔。
