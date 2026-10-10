@@ -3,7 +3,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { Client } from 'pg'
-import { PgDialect } from 'drizzle-orm/pg-core'
+import { PgDialect, getViewConfig } from 'drizzle-orm/pg-core'
+import { saleReportablePaymentEvents } from '@db/order'
 import type { SQL } from 'drizzle-orm'
 
 const { execute, session, range } = vi.hoisted(() => ({
@@ -64,7 +65,7 @@ describe.skipIf(!testUrl)('数据中心关闭订单 PostgreSQL 回归', () => {
         status text DEFAULT '已支付', amount numeric(10,2), note text,
         performance_attribution_date date, paid_at timestamptz DEFAULT NOW(), created_at timestamptz DEFAULT NOW()
       );
-      CREATE TEMP TABLE sale_items (sale_item_id text PRIMARY KEY, product_kind_at_sale text);
+      CREATE TEMP TABLE sale_items (sale_item_id text PRIMARY KEY, product_kind_at_sale text, is_experience boolean NOT NULL DEFAULT false);
       CREATE TEMP TABLE sale_payment_item_receipts (sale_payment_id bigint, sale_item_id text, amount numeric);
       CREATE TEMP TABLE client_wechat_users (user_id text, customer_type text, became_member_at timestamptz);
       INSERT INTO org_nodes VALUES ('M',NULL,'市场','测试市场',true),('A','M','门店','A',true),('B','M','门店','B',true),('Z','M','门店','Z',true);
@@ -84,16 +85,19 @@ describe.skipIf(!testUrl)('数据中心关闭订单 PostgreSQL 回归', () => {
         ('closed-positive','退款',-100,'2026-09-03'),
         ('closed-recharge','首次支付',5000,'2026-09-01'),('only-closed','退款',-200,'2026-09-01');
     `)
-    // 重放实际迁移中的款项视图，保留款项状态、拓客及充值判定。
+    // 重放实际迁移中的款项视图，保留款项状态及充值判定。
     for (const [file, view] of [
       ['0041_bizarre_wolfpack.sql', 'sale_order_performance_events'],
-      ['0057_oval_calypso.sql', 'sale_reportable_payment_events'],
     ]) {
       const source = fs.readFileSync(path.join(root, 'db/migrations', file), 'utf8')
       const ddl = source.match(new RegExp(`CREATE VIEW "public"\\."${view}" AS \\([\\s\\S]*?\\n\\);`))?.[0]
       expect(ddl).toBeTruthy()
       await pg.query(ddl!.replace('CREATE VIEW "public".', 'CREATE TEMP VIEW '))
     }
+    // #553：既有资金视图保持不变，资格使用当前 schema，不能继续只测旧 0057。
+    const reportable = dialect.sqlToQuery(getViewConfig(saleReportablePaymentEvents).query!)
+    expect(reportable.params).toEqual([])
+    await pg.query(`CREATE TEMP VIEW sale_reportable_payment_events AS (${reportable.sql})`)
     execute.mockImplementation(async (fragment: SQL) => {
       const q = dialect.sqlToQuery(fragment)
       // 所有组织/客型业绩及门店排行均执行实际 SQL；技师/服务等不属于本回归的查询保持空集。

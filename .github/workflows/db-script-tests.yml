@@ -14,6 +14,9 @@ on:
   pull_request:
     paths:
       - 'db/scripts/**'
+      # #553 候选视图与已售体验快照真库回归
+      - 'db/schema/order.ts'
+      - 'db/rollout/requests/issue-553*'
       - 'fengyu-admin/src/cron/lib/member-level.ts'
       # payment-migrations-regression.test.js 对迁移 SQL 与 journal 做字面量断言
       - 'db/migrations/**'
@@ -146,7 +149,7 @@ jobs:
           SHENGMEI_PG_TEST_URL: postgresql://postgres:test@localhost:5432/test
         run: NODE_PATH="$PWD/db/node_modules" node --test db/scripts/__tests__/shengmei-freeze.pg.test.js
 
-      - name: Run #494 tuoke performance regression
+      - name: Run #553 sold experience performance regression
         env:
           TUOKE_PG_TEST_URL: postgresql://postgres:test@localhost:5432/test
         run: NODE_PATH="$PWD/db/node_modules" node --test db/scripts/__tests__/tuoke-performance.pg.test.js
