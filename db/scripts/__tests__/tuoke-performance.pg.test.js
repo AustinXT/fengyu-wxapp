@@ -4,7 +4,7 @@ const assert = require('node:assert/strict')
 const { Client } = require('pg')
 const fs = require('node:fs')
 const path = require('node:path')
-const candidate = fs.readFileSync(path.resolve(__dirname, '../../rollout/requests/issue-553.sql'), 'utf8')
+const migration = fs.readFileSync(path.resolve(__dirname, '../../migrations/0064_experience_performance_only_trial.sql'), 'utf8')
 
 const url = process.env.TUOKE_PG_TEST_URL
 if (!url) {
@@ -19,7 +19,7 @@ if (!url) {
     const { rows } = await db.query('SELECT current_database() AS name')
     assert.ok(!['fengyu_wxapp', 'fengyu_e2e'].includes(rows[0].name))
     await db.query('BEGIN')
-    await db.query(candidate)
+    await db.query(migration)
   })
   test.after(async () => { if (db) { await db.query('ROLLBACK'); await db.end() } })
   test.beforeEach(async () => {

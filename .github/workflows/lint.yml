@@ -28,6 +28,8 @@ on:
       - '.github/workflows/lint.yml'
       # schema 改动也要触发：cross-end inventory 守护把 db/schema/inventory.ts 当权威锚
       - 'db/schema/**'
+      # #553 候选单独编辑时也执行 schema/正式迁移等价守护
+      - 'db/rollout/requests/issue-553*'
       # migration 也要触发：新加的 trigger 可能让盘点开始产流水/改在手量。
       # ⚠️ 单测看不到数据库 trigger，触发只是让**其余**守护跑一遍；
       #    trigger 行为面必须靠 INV-06 在真库上人工跑（见 tests/e2e-inventory-ui/README.md）。
@@ -412,3 +414,7 @@ jobs:
             'src/app/(main)/(inventory)/inventory/_components/inventory-suppliers-page.test.tsx' \
             'src/app/(main)/(inventory)/inventory/_components/inventory-skus-page.test.tsx' \
             'src/app/(main)/(inventory)/inventory/_components/inventory-operations-page.test.tsx'
+
+      - name: Run experience performance migration equivalence guards (#553)
+        working-directory: fengyu-admin
+        run: npx vitest run src/lib/data-center/experience-performance-views.test.ts
