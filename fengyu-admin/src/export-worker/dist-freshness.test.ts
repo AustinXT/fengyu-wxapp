@@ -132,6 +132,14 @@ function moduleSegments(dist: string, file: string, keepIndent = false): string[
 
 const PROBES: Probe[] = [
   {
+    label: '#553 体验资格：类别不影响款项、子项及残差准入',
+    file: '../db/schema/order.ts',
+    pattern: /^(WHERE (?:si\.)?is_experience IS DISTINCT FROM true|si\.product_kind_at_sale, si\.is_experience|CASE WHEN rb\.is_experience = true OR rb\.eligible_total = 0|CASE WHEN si\.is_experience = true)$/,
+    minLines: 6,
+    uniqueLines: 5,
+    exactLinesInModule: true,
+  },
+  {
     label: '#529 手续费分摊版本：卡项/顾客导出必须携带新版留存手续费SQL',
     file: 'src/lib/refund-fee-sql.ts',
     pattern: /AND (?:COALESCE\()?public\.try_numeric\(public\.try_jsonb\(rfp\.note\) ->> 'refundAccountingVersion'\)/,
@@ -139,7 +147,7 @@ const PROBES: Probe[] = [
     exactCountsInModule: true,
   },
   {
-    label: '拓客款项视图 · 按款项关联 receipt（#494）',
+    label: '可计款项视图 · 按款项关联 receipt（#494）',
     file: '../db/schema/order.ts',
     pattern: /^(LEFT JOIN LATERAL \(|WHERE spir\.sale_payment_id = spe\.sale_payment_id)$/,
     minLines: 2,
@@ -147,7 +155,7 @@ const PROBES: Probe[] = [
     exactLinesInModule: true,
   },
   {
-    label: '拓客子项视图 · receipt 分配上界与残差防重复（#494）',
+    label: '可计子项视图 · receipt 分配上界与残差防重复（#494）',
     file: '../db/schema/order.ts',
     pattern: /^(SELECT 'receipt:' \|\| r\.receipt_id::text AS event_key,|receipt_bounded AS \(|END AS allocatable_amount|ELSE ROUND\(rb\.allocatable_amount \* rb\.amount \/ rb\.eligible_total, 2\)|THEN rr\.allocatable_amount - SUM\(rr\.rounded_amount\) OVER \(\) \+ rr\.rounded_amount|WHERE sipe\.is_legacy_residual)$/,
     minLines: 6,

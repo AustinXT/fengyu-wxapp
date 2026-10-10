@@ -3,7 +3,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { createRequire } from 'node:module'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { PgDialect } from 'drizzle-orm/pg-core'
+import { PgDialect, getViewConfig } from 'drizzle-orm/pg-core'
+import { saleReportablePaymentEvents } from '@db/order'
 import { Client } from 'pg'
 import type { SQL } from 'drizzle-orm'
 import type { AuthSession } from '@/lib/types'
@@ -94,7 +95,7 @@ describe.skipIf(!testUrl)('旧储值业绩 PostgreSQL 回归', () => {
         performance_attribution_date date, paid_at timestamptz DEFAULT NOW(), created_at timestamptz DEFAULT NOW()
       );
       CREATE INDEX ON sale_order_payments(sale_order_id);
-      CREATE TEMP TABLE sale_items (sale_item_id text, product_kind_at_sale text);
+      CREATE TEMP TABLE sale_items (sale_item_id text, product_kind_at_sale text, is_experience boolean NOT NULL DEFAULT false);
       CREATE TEMP TABLE sale_payment_item_receipts (sale_payment_id bigint, sale_item_id text, amount numeric);
       INSERT INTO org_nodes VALUES ('A','门店',true),('B','门店',true),('Z','门店',true);
       INSERT INTO stores VALUES ('A','A'),('B','B'),('Z','Z');
@@ -102,12 +103,15 @@ describe.skipIf(!testUrl)('旧储值业绩 PostgreSQL 回归', () => {
     // 重放真正的已发布款项视图定义，避免手写简化视图掩盖退款/储值卡口径。
     for (const [file, view] of [
       ['db/migrations/0041_bizarre_wolfpack.sql', 'sale_order_performance_events'],
-      ['db/migrations/0057_oval_calypso.sql', 'sale_reportable_payment_events'],
     ]) {
       const ddl = read(file).match(new RegExp(`CREATE VIEW "public"\\."${view}" AS \\([\\s\\S]*?\\n\\);`))?.[0]
       expect(ddl, view).toBeTruthy()
       await db.query(ddl!.replace('CREATE VIEW "public".', 'CREATE TEMP VIEW '))
     }
+    // #553：既有资金视图保持不变，资格使用当前 schema，不能继续只测旧 0057。
+    const reportable = dialect.sqlToQuery(getViewConfig(saleReportablePaymentEvents).query!)
+    expect(reportable.params).toEqual([])
+    await db.query(`CREATE TEMP VIEW sale_reportable_payment_events AS (${reportable.sql})`)
     await db.query(`
       INSERT INTO sale_orders(sale_order_id,store_id,sale_order_type,legacy_source,remark) VALUES
         ('old-aug','A','充值单',NULL,'已修改订单备注'),

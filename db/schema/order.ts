@@ -852,9 +852,9 @@ export const saleOrderPerformanceEvents = pgView(
 
 /**
  * 报表专用可计业绩款项。原视图 `amount` 始终代表资金事实；
- * 本视图的 `performance_amount` 才按商品品项剔除拓客款。
+ * 本视图的 `performance_amount` 只按已售行体验快照剔除体验款（#553）。
  * receipt 与款项金额不一致（混合储值卡等）时按 receipt 净额分摊，
- * 对负拓客子项造成的普通品项溢出按本笔实收封顶。
+ * 对负体验子项造成的非体验份额溢出按本笔实收封顶；品项类别仅用于分组。
  */
 export const saleReportablePaymentEvents = pgView(
   "sale_reportable_payment_events",
@@ -902,7 +902,7 @@ export const saleReportablePaymentEvents = pgView(
     SELECT NULLIF(COUNT(*), 0) AS receipt_count,
            SUM(spir.amount::numeric) AS receipt_amount,
            COALESCE(SUM(spir.amount::numeric) FILTER (
-             WHERE si.product_kind_at_sale IS DISTINCT FROM '拓客引流卡'
+             WHERE si.is_experience IS DISTINCT FROM true
            ), 0) AS regular_amount,
            COUNT(*) FILTER (WHERE si.product_kind_at_sale IS NULL) AS unknown_count
     FROM sale_payment_item_receipts spir
@@ -1005,10 +1005,10 @@ export const saleItemPerformanceEvents = pgView(
 `);
 
 /**
- * 子项可计业绩：现金款按最终可计金额拆分，储值卡抵扣保留普通品项价值；
- * 子项分配额不超过原普通 receipt 净额；最后一条普通子项吸收分币尾差，
+ * 子项可计业绩：现金款按最终可计金额拆分，储值卡抵扣保留非体验价值；
+ * 子项分配额不超过原非体验 receipt 净额；最后一条非体验子项吸收分币尾差，
  * 未分摊的款项留给未分类兜底，避免与历史 residual 重复计算。
- * 历史残差沿原归属日期保留普通品项，拓客残差归零。
+ * 历史残差沿原归属日期保留非体验商品，体验残差归零；分类不影响准入。
  */
 export const saleReportableItemEvents = pgView(
   "sale_reportable_item_events",
@@ -1040,7 +1040,7 @@ export const saleReportableItemEvents = pgView(
     WITH receipt_base AS (
       SELECT spir.id AS receipt_id, spir.sale_item_id,
              spir.amount::numeric AS amount, spir.sales_category,
-             si.product_kind_at_sale
+             si.product_kind_at_sale, si.is_experience
       FROM sale_payment_item_receipts spir
       JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
       WHERE spir.sale_payment_id = spe.sale_payment_id
@@ -1048,10 +1048,10 @@ export const saleReportableItemEvents = pgView(
     receipt_totals AS (
       SELECT SUM(amount) AS receipt_total,
              COALESCE(SUM(amount) FILTER (
-               WHERE product_kind_at_sale IS DISTINCT FROM '拓客引流卡'
+               WHERE is_experience IS DISTINCT FROM true
              ), 0) AS eligible_total,
              MAX(receipt_id) FILTER (
-               WHERE product_kind_at_sale IS DISTINCT FROM '拓客引流卡'
+               WHERE is_experience IS DISTINCT FROM true
              ) AS last_eligible_receipt_id
       FROM receipt_base
     ),
@@ -1078,7 +1078,7 @@ export const saleReportableItemEvents = pgView(
     ),
     receipt_rounded AS (
       SELECT rb.*,
-             CASE WHEN rb.product_kind_at_sale = '拓客引流卡' OR rb.eligible_total = 0
+             CASE WHEN rb.is_experience = true OR rb.eligible_total = 0
                   THEN 0::numeric
                   ELSE ROUND(rb.allocatable_amount * rb.amount / rb.eligible_total, 2)
              END AS rounded_amount
@@ -1096,7 +1096,7 @@ export const saleReportableItemEvents = pgView(
   UNION ALL
   SELECT sipe.event_key, sipe.receipt_id, sipe.sale_payment_id,
          sipe.sale_order_id, sipe.sale_item_id, sipe.store_id, sipe.amount,
-         CASE WHEN si.product_kind_at_sale = '拓客引流卡'
+         CASE WHEN si.is_experience = true
               THEN 0::numeric(10, 2) ELSE sipe.amount END AS performance_amount,
          si.product_kind_at_sale, sipe.sales_category, sipe.change_type,
          sipe.performance_date, sipe.is_initial_event, sipe.is_legacy_residual

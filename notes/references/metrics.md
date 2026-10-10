@@ -4,17 +4,20 @@
 > 字段格式：`表名.列名`；筛选条件标准缩写见底部。
 > **术语备注**：以下指标定义中出现的 `product_type='院装产品'` 字面量已于 2026-04-25 在 PG enum 中重命名为 `'家居产品'`，业务口径与代码同步。
 
-> **2026-10-01 #494 拓客业绩口径**：以下成文历史中的 `sale_order_performance_events.amount`、
-> `sale_item_performance_events.amount`、`sale_payment_item_allocations.allocated_amount` 仍是**原始资金/子项/员工分配事实**，
-> 凡指标名为「业绩」或以业绩为金额分子，改读 `sale_reportable_payment_events.performance_amount`、
-> `sale_reportable_item_events.performance_amount`，员工业绩按后者与 receipt 原金额之比缩放既有分配额。
-> `sale_items.product_kind_at_sale='拓客引流卡'` 的款项不计业绩；正负混合款按款项实收封顶，
-> 一笔 5000 元、普通子项 5168 元、拓客子项 −168 元的转换款计 5000 元，子项尾差吸收后逐分勾稽。
-> 无 receipt / receipt 净额为零的款项保留本笔组织业绩并归未分类；真实充值单保留原业绩，旧余额转入按下文规则排除。
-> 储值卡抵扣不计组织现金业绩，但普通品项的卡抵扣价值仍计子项/生美业绩；拓客品项卡抵扣为 0。
-> 原始实付、退款、储值卡余额和**提成金额**不因此变化。老单的商品品项按迁移时分类回填一次，
-> 新单在下单时冻结；因此迁移会重算历史月份一次，未来商品改类不回溯已售订单。
-> 商品周期的历史残差没有对应款项，保留普通品项原归属日，拓客残差归零；它与现金款项单列对账。
+> **2026-10-10 #553 体验业绩口径（覆盖 #494 的按类别排除规则）**：以下成文历史中的
+> `sale_order_performance_events.amount`、`sale_item_performance_events.amount`、`sale_payment_item_allocations.allocated_amount`
+> 仍是**原始资金/子项/员工分配事实**。凡指标名为「业绩」或以业绩为金额分子，读
+> `sale_reportable_payment_events.performance_amount`、`sale_reportable_item_events.performance_amount`；
+> 员工业绩按后者与 receipt 原金额之比缩放既有分配额，**应发提成不缩放**。
+> 只按 `sale_items.is_experience=true` 的已售快照剔除体验部分；`false` 正常计入。
+> 一级/二级品项类别仅用于分组展示；非体验粉红公益卡正常参与销售、退款及转换净业绩。
+> 同一笔混合款仅剔除体验份额；正负混合款按本笔实收封顶，最后非体验 receipt 吸收分币尾差。
+> 例如非体验粉红转出 −168 元、其他非体验商品转入 5168 元，子项有符号合计与组织业绩均为 5000 元。
+> 无 receipt / receipt 净额为零的款项保留本笔组织业绩并归未分类；真实充值保留，旧余额转入按下文排除。
+> 储值卡抵扣不计组织现金业绩，但非体验卡抵扣价值仍计子项/生美业绩；体验子项卡抵扣为 0。
+> 原始实付、退款、储值卡余额和**提成金额**不因此变化。资格只读已售体验快照，后改 SKU 标记或分类不回溯历史；
+> 分类快照保留原分组。视图迁移按新规则重算历史查询，不回填体验标记或改资金流水。
+> 历史 residual 保留非体验商品原归属日、体验部分归零，与现金款项单列勾稽。正式视图迁移待集中集成，业务库上线另行授权。
 
 ---
 
@@ -156,8 +159,8 @@
 | 新会员 | `COUNT(*)` | `client_wechat_users.bound_employee_id` | `[became_member_at_period]` | `became_member_at IS NOT NULL`；`bound_employee_id IS NULL` 的新会员不归属任何员工（与"无归属新会员"差额由监控关注） |
 | 收入 | 销售提成 + 服务提成 | 销售=`sale_payment_item_allocations.employee_id`；服务=`service_commissions.employee_id` | 销售按 `[spe.performance_date_period]`；服务按 `[service_date_period]` | `is_void=FALSE`；销售使用 `commission_amount`；服务使用 `service_commissions.commission_amount` |
 
-> **业绩 vs 收入区别**：业绩是剔除拓客的员工销售营业额份额；收入 = 原有销售提成 + 服务提成（`service_commissions`），提成金额不随本次报表业绩排除而变化，因此两者不可直接按比例比较。
-> staff `todayCommission` 的 `todayAmount` / `thisMonthAmount` / `lastMonthAmount` 虽沿用“分成”命名，历史公式是 `allocated_amount`（销售营业额分配份额），故按本次可计子项比例缩放；它们不是员工应发提成。真正的销售提成仍是 `commission_amount`，收入查看和提成结算不按拓客比例改写。
+> **业绩 vs 收入区别**：业绩是剔除体验部分的员工销售营业额份额；收入 = 原有销售提成 + 服务提成（`service_commissions`），提成金额不随本次报表业绩排除而变化，因此两者不可直接按比例比较。
+> staff `todayCommission` 的 `todayAmount` / `thisMonthAmount` / `lastMonthAmount` 虽沿用“分成”命名，历史公式是 `allocated_amount`（销售营业额分配份额），故按本次可计子项比例缩放；它们不是员工应发提成。真正的销售提成仍是 `commission_amount`，收入查看和提成结算不按体验资格比例改写。
 >
 > **2026-09-03 员工归属口径变更（实耗 / 客流 / 项目数）**：归属字段从 `service_items.employee_id`
 > 改为 `service_commissions.employee_id`（`is_void=FALSE`），实耗额外乘 `allocation_ratio`。
@@ -1154,7 +1157,7 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 | 指标 | 公式 | 说明 |
 |------|------|------|
 | ☆ 业绩合计 | = 销售板「总业绩」：`SUM(spe.performance_amount)` ∩ 已支付 ∩ `change_type IN ('首次支付','回款','退款')` ∩ `sale_order_type IN ('销售单','转换单','充值单')` ∩ `legacy_source IS DISTINCT FROM 'workfine'` ∩ `[spe.performance_date]` | **含充值**（原型「合计 = 4 类之和」不含）。**不带**「父订单已结清」（`so.status='已支付'`）过滤，与 #300 同方向 |
-| 各经营类型 / 品项业绩 | 款项集合同上但只取销售单 + 转换单；直接汇总 `sale_reportable_item_events.performance_amount` 的 receipt 行，按 `sale_items.sales_category` / SKU 所挂二级品项分组；再以「款项可计额 − receipt 可计额」补未分类差额 | 拓客 receipt 为 0，普通 receipt 按款项金额封顶且不超过原普通分摊额；储值卡抵扣不进入此现金款项集。无 receipt、零分母及分摊缺口通过差额进入「未分类」，不丢钱。`sku_id` / `sales_category` 缺失时也归未分类 |
+| 各经营类型 / 品项业绩 | 款项集合同上但只取销售单 + 转换单；直接汇总 `sale_reportable_item_events.performance_amount` 的 receipt 行，按 `sale_items.sales_category` / SKU 所挂二级品项分组；再以「款项可计额 − receipt 可计额」补未分类差额 | 体验 receipt 为 0，非体验 receipt 按款项金额封顶且不超过原非体验分摊额；储值卡抵扣不进入此现金款项集。无 receipt、零分母及分摊缺口通过差额进入「未分类」，不丢钱。`sku_id` / `sales_category` 缺失时也归未分类 |
 | ☆ 充值 | 款项集合同上但只取充值单 | 充值单没有商品明细，单列在「生态合作业绩」与「业绩合计」之间 |
 | 服务（各经营类型 / 合计） | = 销售板「总实耗」：`SUM(sit.unit_real_price * sit.session_used)` ∩ `so.status='已完成'` ∩ `[service_date]` ∩ 剔除寄存单退款专用单，按 `service_items.sales_category` 分组 | 按核销门店。☆ **含寄存单老卡核销**：2026-08 服务合计 4,575,126.33 中寄存单核销 3,417,853.37（74.7%），服务合计约为业绩合计的 1.33 倍——数字正确，交付前向甲方说明 |
 | ☆ 自销自耗业绩占比 | 自销自耗业绩 ÷ 业绩合计 | 分母跟业绩口径走（含充值）：2026-08 含充值 33.3%、不含 35.6%。遇负数照常计算（验收要求，含业绩合计为负），**只有分母为 0 → `--`**；#310 的负基期规则只管增幅徽章，不管占比 |
@@ -1244,7 +1247,7 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 | **体验（tiyan）** | 在 `[startDate, endDate]` 内有销售单/转换单购买（当日净额 > 0 的正数购买日），但全历史（截至 endDate）从未有进入达标日的顾客 |
 
 > **同一天合并规则**：同一顾客 + 同一门店 + 同一 product_kind + 同一日期的多笔消费先合并；进入基线汇总三类订单，复购达标仅汇总销售单/转换单，再分别对比 threshold。
-> **金额口径**：三类订单均读 `sale_reportable_item_events.performance_amount`，拓客品项为 0；寄存单只参与进入基线，不计入体验/进入/复购的区间业绩。
+> **金额口径**：三类订单均读 `sale_reportable_item_events.performance_amount`，已售体验子项为 0，品项类别不影响资格；寄存单只参与进入基线，不计入体验/进入/复购的区间业绩。
 > ⚠ **2026-09-14 订正**：原写「直接使用 `sale_items.received` 累计净实收」已失效——改走事件视图后，同一笔订单的跨月回款会分摊到各自归属日，而不是整单压在下单日。
 > **订单状态口径**：周期统计不要求 `so.status='已支付'`；排除 `已关闭/已作废/未审核/待审批/支付失败` 后，分别按进入金额列和真实购买金额列判断是否达标，部分支付订单也可能达标。
 > **三类关系**：体验 ∩ 品项进入 = ∅，体验 ∩ 复购 = ∅；品项进入当天本身不算复购，必须存在 entry_date 之后的达标日。
